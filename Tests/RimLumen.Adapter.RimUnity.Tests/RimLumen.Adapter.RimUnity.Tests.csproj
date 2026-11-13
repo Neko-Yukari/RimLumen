@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>RimLumen.Adapter.RimUnity.Tests</AssemblyName>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <GenerateDependencyFile>true</GenerateDependencyFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../Source/RimLumen.Adapter.RimUnity/RimLumen.Adapter.RimUnity.csproj" />
+    <ProjectReference Include="../../Source/RimLumen.Core/RimLumen.Core.csproj" />
+    <Reference Include="RimUnity"><HintPath>$(WorkshopRoot)/3819570122/1.7/Assemblies/RimUnity.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="RimUnity.Core"><HintPath>$(WorkshopRoot)/3819570122/1.7/Assemblies/RimUnity.Core.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(GameRoot)/Assembly-CSharp.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="RimWorld"><HintPath>$(GameRoot)/RimWorld.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="UnityStubs"><HintPath>$(GameRoot)/UnityStubs.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="Waylith"><HintPath>$(GameRoot)/Waylith.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="Brutal.Vulkan"><HintPath>$(GameRoot)/Brutal.Vulkan.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="Brutal.Vulkan.Abstractions"><HintPath>$(GameRoot)/Brutal.Vulkan.Abstractions.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="Brutal.Vulkan.Vma"><HintPath>$(GameRoot)/Brutal.Vulkan.Vma.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="Brutal.Core.Common"><HintPath>$(GameRoot)/Brutal.Core.Common.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="Brutal.Core.Memory"><HintPath>$(GameRoot)/Brutal.Core.Memory.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="Brutal.Slang"><HintPath>$(GameRoot)/Brutal.Slang.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="Brutal.Core.Numerics"><HintPath>$(GameRoot)/Brutal.Core.Numerics.dll</HintPath><Private>true</Private></Reference>
+  </ItemGroup>
+</Project>
