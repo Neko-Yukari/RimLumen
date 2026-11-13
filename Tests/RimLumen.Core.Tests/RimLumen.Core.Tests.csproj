@@ -28,6 +28,18 @@
     <Reference Include="Brutal.Vulkan.Abstractions">
       <HintPath>$(GameRoot)/Brutal.Vulkan.Abstractions.dll</HintPath>
     </Reference>
+    <Reference Include="Brutal.Vulkan.Vma">
+      <HintPath>$(GameRoot)/Brutal.Vulkan.Vma.dll</HintPath>
+    </Reference>
+    <Reference Include="Brutal.Core.Common">
+      <HintPath>$(GameRoot)/Brutal.Core.Common.dll</HintPath>
+    </Reference>
+    <Reference Include="Brutal.Core.Memory">
+      <HintPath>$(GameRoot)/Brutal.Core.Memory.dll</HintPath>
+    </Reference>
+    <Reference Include="Brutal.Slang">
+      <HintPath>$(GameRoot)/Brutal.Slang.dll</HintPath>
+    </Reference>
     <Reference Include="Brutal.Core.Numerics">
       <HintPath>$(GameRoot)/Brutal.Core.Numerics.dll</HintPath>
     </Reference>
