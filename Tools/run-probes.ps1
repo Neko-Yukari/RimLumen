@@ -34,6 +34,8 @@ $quitPath = 'Root.Shutdown/Application.Quit'
 $validationPolicy = 'sync-khronos-settings-host-proof-v3'
 $baselinePath = $null
 $baselineReport = $null
+$freshArtifact = $null
+$vanillaUnion = $null
 $comparison = $null
 $baselineCaptured = $false
 # Reviewed Waylith.dll (GraphicsDevice.cs:233-255 enables SynchronizationValidationEXT in pNext).
@@ -99,16 +101,73 @@ function Get-ValidationReport([string]$LogText) {
     }
 }
 
-function Compare-ValidationReport($Current, $Reference) {
+function Get-VanillaBaselineArtifact([string]$Directory) {
+    $run = $null
+    $ids = @()
+    $reason = $null
+    try {
+        foreach ($file in @('run-result.json', 'ModsConfig.xml', 'Player.log', 'validation-report.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $Directory $file) -PathType Leaf)) { throw "Missing $file" }
+        }
+        $run = Get-Content -LiteralPath (Join-Path $Directory 'run-result.json') -Raw | ConvertFrom-Json
+        if ($run.Baseline -isnot [bool] -or -not $run.Baseline) { throw 'run-result.json Baseline is not true' }
+        [xml]$mods = Get-Content -LiteralPath (Join-Path $Directory 'ModsConfig.xml') -Raw
+        $active = @($mods.SelectNodes('/ModsConfigData/activeMods/li') | ForEach-Object { $_.InnerText.Trim() })
+        if ($active.Count -ne 1 -or $active[0] -ine 'ludeon.rimworld') { throw "ModsConfig.xml is not Core-only: $($active -join ', ')" }
+        if ([IO.File]::ReadAllText((Join-Path $Directory 'Player.log')) -match '\[RimLumen\] Installed:') { throw 'Player.log contains RimLumen Install line' }
+        $report = Get-Content -LiteralPath (Join-Path $Directory 'validation-report.json') -Raw | ConvertFrom-Json
+        if ($null -eq $report -or $null -eq $report.PSObject.Properties['Messages']) { throw 'validation-report.json has no Messages array' }
+        foreach ($message in $report.Messages) {
+            if ([string]::IsNullOrWhiteSpace($message.Id)) { throw 'validation-report.json contains a message without an id' }
+        }
+        $ids = @($report.Messages.Id | Where-Object { $_ } | Sort-Object -Unique)
+    }
+    catch { $reason = $_.Exception.Message; $ids = @() }
+    [pscustomobject]@{
+        Verified = ($null -eq $reason); RunId = Split-Path -Leaf $Directory; Directory = $Directory
+        ValidationPolicy = $run.ValidationPolicy; LayerHash = $run.LayerHash
+        Ids = $ids; Reason = $reason
+    }
+}
+
+function Get-VanillaBaselineUnion([string]$ResultsRoot) {
+    $verified = @()
+    $skipped = @()
+    foreach ($directory in (Get-ChildItem -LiteralPath $ResultsRoot -Directory | Sort-Object Name -Descending)) {
+        $artifact = Get-VanillaBaselineArtifact $directory.FullName
+        if ($artifact.Verified) { $verified += $artifact } else { $skipped += $artifact }
+    }
+    [pscustomobject]@{ VerifiedArtifacts = $verified; SkippedArtifacts = $skipped }
+}
+
+function Compare-ValidationReport($Current, $Reference, [object[]]$VerifiedArtifacts = @(), $FreshArtifact = $null) {
     $ids = @(@($Current.Messages.Id) + @($Reference.Messages.Id) | Where-Object { $_ } | Sort-Object -Unique)
     $rows = @(foreach ($id in $ids) {
-        [pscustomobject]@{ Id = $id; Baseline = @($Reference.Messages | Where-Object Id -eq $id).Count; Current = @($Current.Messages | Where-Object Id -eq $id).Count }
+        $freshCount = @($Reference.Messages | Where-Object Id -eq $id).Count
+        $proofs = @()
+        if ($freshCount -gt 0) {
+            $proofs += [pscustomobject]@{ Source = 'fresh'; RunId = $FreshArtifact.RunId; ValidationPolicy = $FreshArtifact.ValidationPolicy; LayerHash = $FreshArtifact.LayerHash }
+        }
+        # Historical evidence admits message IDs only. Leaks are NEVER admitted against the union.
+        if ($id -ne 'VUID-vkDestroyDevice-device-05137') {
+            foreach ($artifact in $VerifiedArtifacts) {
+                if ($artifact.Verified -and $artifact.RunId -ne $FreshArtifact.RunId -and $artifact.Ids -contains $id) {
+                    $proofs += [pscustomobject]@{ Source = $artifact.RunId; RunId = $artifact.RunId; ValidationPolicy = $artifact.ValidationPolicy; LayerHash = $artifact.LayerHash }
+                }
+            }
+        }
+        [pscustomobject]@{
+            Id = $id; Baseline = $freshCount; Current = @($Current.Messages | Where-Object Id -eq $id).Count
+            ProvenBy = $(if ($proofs.Count -gt 0) { $proofs.Source -join ', ' } else { 'unproven' })
+            Proofs = $proofs
+        }
     })
     $owned = @($Current.Messages | Where-Object { $_.NamesRimLumenOwnedHandle -or $_.InsideRimLumenCommands }).Count
-    $newIds = @($rows | Where-Object { $_.Current -gt 0 -and $_.Baseline -eq 0 } | ForEach-Object Id)
+    $newIds = @($rows | Where-Object { $_.Current -gt 0 -and $_.Proofs.Count -eq 0 } | ForEach-Object Id)
     [pscustomobject]@{
         Passed = ($owned -eq 0 -and $Current.LeakedObjectCount -le $Reference.LeakedObjectCount -and $newIds.Count -eq 0)
         OwnedMessageCount = $owned; NewIds = $newIds; Rows = $rows
+        FreshBaselineRunId = $FreshArtifact.RunId
         BaselineLeaks = $Reference.LeakedObjectCount; CurrentLeaks = $Current.LeakedObjectCount
     }
 }
@@ -171,7 +230,51 @@ if ($TestReportGate) {
     if ((Get-LayerSettingsProof $echo $log $true @('SYNC-HAZARD-WRITE-AFTER-WRITE')).Passed) { throw 'Hazard without extra properties accepted.' }
     if (-not (Get-LayerSettingsProof $echo $log $true @('SYNC-HAZARD-WRITE-AFTER-WRITE [Extra properties]')).Passed) { throw 'Complete settings proof rejected.' }
     if ((Get-LayerSettingsProof $echo $log $true @('SYNC-HAZARD [Extra properties]', 'SYNC-HAZARD')).Passed) { throw 'Only one of two hazards has extra properties.' }
-    Write-Host 'REPORT GATE: 19 assertions passed; no game/process/profile operations performed.'
+    # Exercise the artifact reader on its actual file seam; these temporary fixtures are not device evidence.
+    $fixtures = Join-Path $env:LOCALAPPDATA ('Temp/opencode/rimlumen-union-test-' + [guid]::NewGuid().ToString('N'))
+    try {
+        foreach ($fixture in @(
+            @{ Name='old-vanilla'; Baseline=$true; Mods='<li>ludeon.rimworld</li>'; Log='vanilla'; Id='OLD-ONLY' },
+            @{ Name='bad-mods'; Baseline=$true; Mods='<li>ludeon.rimworld</li><li>nekoyukari.rimlumen</li>'; Log='vanilla'; Id='BAD-MODS-ONLY' },
+            @{ Name='not-baseline'; Baseline=$false; Mods='<li>ludeon.rimworld</li>'; Log='vanilla'; Id='NOT-BASELINE-ONLY' },
+            @{ Name='installed'; Baseline=$true; Mods='<li>ludeon.rimworld</li>'; Log='[RimLumen] Installed: pass=6'; Id='INSTALLED-ONLY' },
+            @{ Name='malformed'; Baseline=$true; Mods='<li>ludeon.rimworld</li>'; Log='vanilla'; Id='MALFORMED-ONLY' },
+            @{ Name='missing'; Baseline=$true; Mods='<li>ludeon.rimworld</li>'; Log='vanilla'; Id='MISSING-ONLY' }
+        )) {
+            $dir = Join-Path $fixtures $fixture.Name
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            @{ Baseline=$fixture.Baseline; ValidationPolicy='older-policy'; LayerHash='older-layer' } | ConvertTo-Json | Set-Content (Join-Path $dir 'run-result.json')
+            "<ModsConfigData><activeMods>$($fixture.Mods)</activeMods></ModsConfigData>" | Set-Content (Join-Path $dir 'ModsConfig.xml')
+            $fixture.Log | Set-Content (Join-Path $dir 'Player.log')
+            @{ Messages=@(@{Id=$fixture.Id}); LeakedObjectCount=20 } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $dir 'validation-report.json')
+        }
+        '{broken' | Set-Content (Join-Path $fixtures 'malformed/validation-report.json')
+        Remove-Item -LiteralPath (Join-Path $fixtures 'missing/validation-report.json')
+        $union = Get-VanillaBaselineUnion $fixtures
+        if ($union.VerifiedArtifacts.Count -ne 1 -or $union.VerifiedArtifacts[0].RunId -ne 'old-vanilla') { throw 'Unverified vanilla artifact was admitted.' }
+        if ($union.SkippedArtifacts.Count -ne 5 -or @($union.SkippedArtifacts | Where-Object { -not $_.Reason }).Count -gt 0) { throw 'Skipped artifacts/reasons missing.' }
+        $fresh = [pscustomobject]@{RunId='fresh-run';ValidationPolicy='current-policy';LayerHash='current-layer'}
+        $olderId = [pscustomobject]@{Id='OLD-ONLY';NamesRimLumenOwnedHandle=$false;InsideRimLumenCommands=$false}
+        $current = [pscustomobject]@{Messages=@($olderId);LeakedObjectCount=6}
+        $decision = Compare-ValidationReport $current $reference $union.VerifiedArtifacts $fresh
+        if (-not $decision.Passed) { throw 'Verified older vanilla ID rejected.' }
+        $row = $decision.Rows | Where-Object Id -eq 'OLD-ONLY'
+        if ($row.ProvenBy -ne 'old-vanilla') { throw 'Proving run id missing.' }
+        if ($row.Proofs[0].ValidationPolicy -ne 'older-policy' -or $row.Proofs[0].LayerHash -ne 'older-layer') { throw 'Historical policy/hash provenance missing.' }
+        $decision.Rows | Format-Table Id, Baseline, Current, ProvenBy -AutoSize -Wrap | Out-String -Width 240 | Write-Host
+        foreach ($unknown in @('BAD-MODS-ONLY', 'NOT-BASELINE-ONLY', 'ABSENT-EVERYWHERE')) {
+            $current.Messages = @([pscustomobject]@{Id=$unknown;NamesRimLumenOwnedHandle=$false;InsideRimLumenCommands=$false})
+            if ((Compare-ValidationReport $current $reference $union.VerifiedArtifacts $fresh).Passed) { throw "Unproven ID admitted: $unknown" }
+        }
+        $current.Messages=@($olderId); $current.LeakedObjectCount=7
+        if ((Compare-ValidationReport $current $reference $union.VerifiedArtifacts $fresh).Passed) { throw 'Old baseline leaks20 hid an increase over fresh6.' }
+        $current.LeakedObjectCount=6; $olderId.NamesRimLumenOwnedHandle=$true
+        if ((Compare-ValidationReport $current $reference $union.VerifiedArtifacts $fresh).Passed) { throw 'Historical ID hid an owned handle.' }
+        $olderId.NamesRimLumenOwnedHandle=$false; $olderId.InsideRimLumenCommands=$true
+        if ((Compare-ValidationReport $current $reference $union.VerifiedArtifacts $fresh).Passed) { throw 'Historical ID hid an owned command.' }
+    }
+    finally { if (Test-Path -LiteralPath $fixtures) { Remove-Item -LiteralPath $fixtures -Recurse -Force } }
+    Write-Host 'REPORT GATE: 30 assertions passed; temporary artifact fixtures removed; no game/process/profile operations performed.'
     exit 0
 }
 
@@ -182,10 +285,15 @@ Write-Host "Artifacts: $out"
 try {
     if (-not $Baseline) {
         $layerHash = (Get-FileHash (Join-Path $layerRoot 'VkLayer_khronos_validation.dll')).Hash
-        foreach ($candidate in (Get-ChildItem (Join-Path $repoRoot '.scratch/probe-results') -Filter run-result.json -Recurse | Sort-Object FullName -Descending)) {
-            $run = Get-Content $candidate.FullName -Raw | ConvertFrom-Json
+        $vanillaUnion = Get-VanillaBaselineUnion (Join-Path $repoRoot '.scratch/probe-results')
+        $vanillaUnion | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $out 'vanilla-baseline-union.json') -Encoding utf8
+        foreach ($skipped in $vanillaUnion.SkippedArtifacts) { Write-Host "Skipped vanilla artifact $($skipped.RunId): $($skipped.Reason)" }
+        foreach ($artifact in $vanillaUnion.VerifiedArtifacts) { Write-Host "Verified vanilla artifact $($artifact.RunId): policy=$($artifact.ValidationPolicy); layer=$($artifact.LayerHash); ids=$($artifact.Ids -join ', ')" }
+        foreach ($candidate in $vanillaUnion.VerifiedArtifacts) {
+            $run = Get-Content -LiteralPath (Join-Path $candidate.Directory 'run-result.json') -Raw | ConvertFrom-Json
             if ($run.BaselineCaptured -and $run.HostEnableProofPassed -and $run.LayerSettingsProof.Passed -and $run.QuitPath -eq $quitPath -and $run.ValidationPolicy -eq $validationPolicy -and $run.LayerHash -eq $layerHash -and $run.WaylithHash -eq $expectedWaylithHash) {
-                $baselinePath = Join-Path $candidate.DirectoryName 'validation-report.json'
+                $freshArtifact = $candidate
+                $baselinePath = Join-Path $candidate.Directory 'validation-report.json'
                 $baselineReport = Get-Content $baselinePath -Raw | ConvertFrom-Json
                 break
             }
@@ -367,8 +475,8 @@ finally {
             if ($report) { @($report.Groups | Select-Object Id, Phase, Count) | Format-Table -AutoSize | Out-String | Write-Host }
             Write-Host "Baseline leaked objects: $(if ($report) { $report.LeakedObjectCount } else { 'unparsed' })"
         } elseif ($report -and $baselineReport) {
-            $comparison = Compare-ValidationReport $report $baselineReport
-            $comparison.Rows | Format-Table -AutoSize | Out-String | Write-Host
+            $comparison = Compare-ValidationReport $report $baselineReport $vanillaUnion.VerifiedArtifacts $freshArtifact
+            $comparison.Rows | Format-Table Id, Baseline, Current, ProvenBy -AutoSize -Wrap | Out-String -Width 240 | Write-Host
             Write-Host "Leaked objects: baseline=$($comparison.BaselineLeaks); current=$($comparison.CurrentLeaks); ownedMessages=$($comparison.OwnedMessageCount)"
             if (-not $comparison.Passed) { $exitCode = 1 }
             $comparison | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'baseline-comparison.json') -Encoding utf8
@@ -400,6 +508,7 @@ finally {
             QuitPath = $quitPath; ValidationPolicy = $validationPolicy
             LayerHash = $(if (Test-Path (Join-Path $layerRoot 'VkLayer_khronos_validation.dll')) { (Get-FileHash (Join-Path $layerRoot 'VkLayer_khronos_validation.dll')).Hash } else { $null })
             BaselineReport = $baselinePath; AttributionGatePassed = ($null -ne $comparison -and $comparison.Passed)
+            VanillaBaselineUnionReport = $(if ($vanillaUnion) { Join-Path $out 'vanilla-baseline-union.json' } else { $null })
             ProcessExitCode = $(if ($process -and $process.HasExited) { $process.ExitCode } else { $null })
             NoBarrier = [bool]$NoBarrier; LayerProof = $layerProof; SyncProof = $syncProof
         } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $out 'run-result.json') -Encoding utf8
