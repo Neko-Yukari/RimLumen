@@ -2,6 +2,9 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Scene;
+using RimLumen.Core.ParticlesGpu;
+using System.Runtime.CompilerServices;
 using RimLumen.Core.Rendering.Probes.Contributors;
 using RimWorldWaylith.Rendering;
 using UnityStubs.Rendering;
@@ -20,7 +23,7 @@ using Waylith.Rendering.Compute;
 
 namespace RimLumen.Core.Rendering.Probes;
 
-internal sealed class ProbeSession
+internal sealed partial class ProbeSession
 {
     private readonly ProbeOptions options;
     private readonly List<ProbeCheck> checks = new();
@@ -50,14 +53,17 @@ internal sealed class ProbeSession
         try
         {
             Directory.CreateDirectory(options.OutputDirectory);
+            LumenSceneBootstrap.EnsureInitialized();
+            RuntimeHelpers.RunClassConstructor(typeof(LumenGpuParticlesBootstrap).TypeHandle);
+            RimLumenRenderHost.EnableVanillaAdditiveBloom = false;
             var device = app.GraphicsDevice ?? throw new InvalidOperationException("Probe requires a GraphicsDevice.");
             bool validation = device.ValidationEnabled && device.InstanceEnabledLayers.Contains("VK_LAYER_KHRONOS_validation");
             string layers = string.Join(",", device.InstanceEnabledLayers);
             Log.Message($"[RimLumen] ValidationEnabled={device.ValidationEnabled}; InstanceEnabledLayers={layers}");
             checks.Add(new ProbeCheck("validation-layer", validation, layers, new Dictionary<string, double>()));
-            CompileShaders(modRoot, checks);
+            try { CompileShaders(modRoot, checks); }
+            catch (Exception ex) { CheckFailed("T4", ex); }
             checks.Add(RoundTrip());
-            if (checks.Any(check => !check.Passed)) { Finish(); return; }
             Find.TickManager.Pause();
             Current.CameraDriver.enabled = false;
             // Time.timeScale is a stub. maximumDeltaTime also caps UnityTimeState.Time accumulation.
@@ -72,6 +78,7 @@ internal sealed class ProbeSession
             mapIndex = Array.FindIndex(app.FrameRenderer.Features.ToArray(), feature => feature.GetType().Name == "MapRenderFeature");
             app.FrameRenderer.RenderThreadFrameEnded += RecordMapCounts;
             Current.CameraDriver.StartCoroutine(GuardedFrames());
+            return; // Recorded failures do not terminate the independent frame checks.
         }
         catch (Exception ex)
         {
@@ -102,13 +109,23 @@ internal sealed class ProbeSession
                 foreach (var item in windowVisibility) item.Key.drawInScreenshotMode = item.Value;
             }
             app.FrameRenderer.RenderThreadFrameEnded -= RecordMapCounts;
+            pipeline.MeasureContributors = false;
+            app.OnUpdate -= SubmitCompatQuad;
+            RimLumenRenderHost.EnableVanillaAdditiveBloom = false;
+            workload?.Stop(allowFadeOut: false);
             ssbo?.Disarm();
             synthetic?.Disarm();
+            app.WaitForRenderThreadIdle();
+            app.GraphicsDevice!.WaitIdleAndRun(() => { });
             if (ssbo != null) { LumenHostRegistry.UnregisterContributor(ssbo); ssbo.Dispose(); }
             if (synthetic != null) { LumenHostRegistry.UnregisterContributor(synthetic); synthetic.Dispose(); }
             checks.Add(new ProbeCheck("routed-persistent", pipeline.UnsupportedPersistentDraws == 0,
                 "Dynamic MeshDrawCommand supported; routed persistent FinalDrawItem copying has no public API.",
                 new Dictionary<string, double> { ["unsupportedPersistentDrawItems"] = pipeline.UnsupportedPersistentDraws }));
+            foreach (string required in new[] { "T1a", "T1b", "T2", "T3", "T4", "P1-idle", "P1-active", "feature-order",
+                "P2-L2-10k", "P2-L2-50k", "P2-L1-Glower", "Compat-VanillaAdditive", "validation-layer" })
+                if (!checks.Any(check => check.Id == required))
+                    CheckFailed(required, new InvalidOperationException("Required dependent observation unavailable; see failed setup/capture check details."));
             bool passed = checks.Count > 0 && checks.All(check => check.Passed);
             try
             {
@@ -144,122 +161,6 @@ internal sealed class ProbeSession
             Waylith.UnityCompat.UnityRuntime.Current!.App.ExitCode = passed ? 0 : 1;
             Log.Message($"[RimLumen] QuitPath=Root.Shutdown/Application.Quit; exit={ (passed ? 0 : 1) }");
             Root.Shutdown();
-    }
-
-    private IEnumerator GuardedFrames()
-    {
-        IEnumerator frames = Frames();
-        while (true)
-        {
-            bool more;
-            try { more = frames.MoveNext(); }
-            catch (Exception ex)
-            {
-                checks.Add(new ProbeCheck("frame-session", false, ex.ToString(), new Dictionary<string, double>()));
-                break;
-            }
-            if (!more) break;
-            yield return frames.Current;
-        }
-        Finish();
-    }
-
-    private IEnumerator Frames()
-    {
-        // realtimeSinceStartup is Stopwatch-backed with no public freeze. Do not silently remove
-        // visible realtime motes to manufacture equality: reject that unsupported scene explicitly.
-        int realTimeMotes = RealTime.moteList.allMotes.Count(mote => mote.Spawned && mote.Map == Find.CurrentMap && mote.def.mote.realTime);
-        if (realTimeMotes != 0)
-            throw new InvalidOperationException($"Deterministic capture unavailable: {realTimeMotes} realtime motes use an unfrozen Stopwatch clock.");
-        var captures = new Dictionary<string, byte[]>();
-        var counts = new Dictionary<string, (int Draws, int Persistent)>();
-        int width = 0;
-        int height = 0;
-        var emissiveRect = new NormalizedRect(0.18f, 0.25f, 0.18f, 0.20f);
-        var softRect = new NormalizedRect(0.62f, 0.25f, 0.20f, 0.20f);
-        ProbeNoOpFeature? orderProbe = null;
-        string[] orderBefore = Array.Empty<string>();
-        long idleClearDelta = 0, idleDrawDelta = 0;
-        foreach (string stage in new[] { "A", "B", "Aprime", "active", "T1b" })
-        {
-            if (stage == "A" || stage == "Aprime") pipeline.Detach();
-            if (stage == "B" || stage == "active") pipeline.Attach();
-            if (stage == "active")
-            {
-                synthetic = new SyntheticHdrQuadContributor(8f, emissiveRect, softRect);
-                LumenHostRegistry.RegisterContributor(synthetic);
-                synthetic.Arm();
-                orderProbe = new ProbeNoOpFeature();
-                int imgui = Array.FindIndex(app.FrameRenderer.Features.ToArray(), feature => feature.GetType().Name.Contains("ImGui", StringComparison.OrdinalIgnoreCase));
-                app.FrameRenderer.InsertFeature(imgui, orderProbe);
-                orderBefore = app.FrameRenderer.Features.Select(feature => feature.GetType().Name).ToArray();
-            }
-            if (stage == "T1b")
-            {
-                ssbo = new SsboBarrierProbeContributor(options.DisableBarrier);
-                LumenHostRegistry.RegisterContributor(ssbo);
-                ssbo.Arm();
-            }
-            long clearsBefore = pipeline.Pre.Clears;
-            long drawsBefore = pipeline.Composite.Draws;
-            // Settle feature snapshots and in-flight submissions before requesting the measurement frame.
-            for (int i = 0; i < 6; i++) yield return new UnityEngine.WaitForEndOfFrame();
-            IScreenCaptureBackend backend = ScreenCaptureBackend.Current ?? throw new InvalidOperationException("Screen capture backend unavailable.");
-            if (!backend.RequestCapture()) throw new InvalidOperationException("Swapchain transfer readback unsupported.");
-            yield return new UnityEngine.WaitForEndOfFrame();
-            // ScreenCaptureFeature._readable exists only inside EndOfFrame.Run (source:115-126), not after FrameEnqueued returns.
-            if (!backend.TryReadScreen(out byte[] rgba, out width, out height)) throw new InvalidOperationException("TryReadScreen failed at " + stage);
-            captures[stage] = rgba;
-            counts[stage] = (mapDraws, mapPersistent);
-            if (UnityEngine.Time.time != frozenTime)
-                throw new InvalidOperationException("Unity render time advanced during deterministic capture.");
-            if (stage == "B")
-            {
-                idleClearDelta = pipeline.Pre.Clears - clearsBefore;
-                idleDrawDelta = pipeline.Composite.Draws - drawsBefore;
-            }
-            File.WriteAllBytes(Path.Combine(options.OutputDirectory, stage + ".rgba"), rgba);
-            if (stage == "active")
-            {
-                string[] after = app.FrameRenderer.Features.Select(feature => feature.GetType().Name).ToArray();
-                int self = Array.IndexOf(after, nameof(RimLumenCompositeFeature));
-                bool ordered = self >= 0 && self + 1 < after.Length && after[self + 1].Contains("ImGui", StringComparison.OrdinalIgnoreCase);
-                checks.Add(new ProbeCheck("feature-order", ordered, "Before: " + string.Join(" -> ", orderBefore) + "; After: " + string.Join(" -> ", after), new Dictionary<string, double>()));
-                if (orderProbe != null) app.FrameRenderer.RemoveFeature(orderProbe);
-                HdrTargets.Slot slot = pipeline.Targets.Slots[pipeline.LastRenderedSlot];
-                byte[] hdr = GpuTextureService.ReadbackTexture2D(slot.Color.Color, width, height, 8)
-                    ?? throw new InvalidOperationException("RGBA16F readback failed.");
-                File.WriteAllBytes(Path.Combine(options.OutputDirectory, "active.rgba16f"), hdr);
-                MeasureActive(captures["Aprime"], rgba, hdr, width, height, emissiveRect, softRect);
-            }
-        }
-        PixelDiffResult noise = PixelMetrics.Compare(captures["A"], captures["Aprime"], width, height);
-        PixelDiffResult idle = PixelMetrics.Compare(captures["A"], captures["B"], width, height);
-        bool equalCounts = counts["A"] == counts["B"] && counts["A"] == counts["Aprime"];
-        var idleMetrics = new Dictionary<string, double>
-        {
-            ["noiseMaxAbsDelta"] = noise.MaxAbsDelta, ["noiseDifferingPixels"] = noise.DifferingPixels,
-            ["idleMaxAbsDelta"] = idle.MaxAbsDelta, ["idleDifferingPixels"] = idle.DifferingPixels,
-            ["width"] = width, ["height"] = height,
-            ["idleClears"] = idleClearDelta, ["idleCompositeDraws"] = idleDrawDelta,
-            ["frozenUnityTime"] = frozenTime, ["realTimeMotes"] = realTimeMotes,
-            ["hiddenWindowCount"] = windowVisibility.Count
-        };
-        foreach (string stage in new[] { "A", "B", "Aprime" })
-        {
-            idleMetrics[stage + ".mapMainSubmittedDrawItems.Draws"] = counts[stage].Draws;
-            idleMetrics[stage + ".mapMainSubmittedDrawItems.Persistent"] = counts[stage].Persistent;
-        }
-        checks.Add(new ProbeCheck("T3", true, "RequestCapture/TryReadScreen read RGBA8 in host EndOfFrame; active HDR read back as 8 B/px half.",
-            new Dictionary<string, double> { ["width"] = width, ["height"] = height }));
-        checks.Add(new ProbeCheck("P1-idle", noise.MaxAbsDelta == 0 && idle.MaxAbsDelta == 0 && equalCounts && idleClearDelta == 0 && idleDrawDelta == 0,
-            "Paused fixed camera; maximumDeltaTime=0; host screenshot mode, windows hidden; full-frame A/B/A with exact zero threshold. mapMainSubmittedDrawItems are pre-batching submissions, not vkCmdDraw counts: MeshDrawStats.cs:43 is Conditional(MESH_DRAW_STATS), fields private.", idleMetrics));
-        checks.Add(new ProbeCheck("T1b", ssbo!.DispatchesEnqueued > 0 && ssbo.DrawsRecorded > 0 &&
-            (options.DisableBarrier ? ssbo.BarriersRecorded == 0 : ssbo.BarriersRecorded > 0),
-            options.DisableBarrier ? "No-barrier control; script reports SYNC-HAZARD count separately." : "Enqueue -> explicit buffer barrier -> HDR draw.",
-            new Dictionary<string, double> { ["dispatches"] = ssbo.DispatchesEnqueued, ["barriers"] = ssbo.BarriersRecorded, ["draws"] = ssbo.DrawsRecorded }));
-        checks.Add(new ProbeCheck("T2", pipeline.Pre.ActiveFrames > 0, "Shared scene depth attached read-only; final validation-error gate is in run-probes.ps1.",
-            new Dictionary<string, double> { ["activeFrames"] = pipeline.Pre.ActiveFrames, ["clears"] = pipeline.Pre.Clears, ["compositeDraws"] = pipeline.Composite.Draws }));
     }
 
     private void RecordMapCounts(RenderFrame frame)
@@ -351,18 +252,23 @@ internal sealed class ProbeSession
         string root = Path.Combine(modRoot, "1.7", "Shaders");
         string[] paths = Directory.GetFiles(root, "*.glsl", SearchOption.AllDirectories);
         Array.Sort(paths, StringComparer.Ordinal);
-        bool passed = paths.Length > 0;
+        bool passed = true;
+        int stages = 0;
+        var includes = new List<string>();
         foreach (string path in paths)
         {
             string relative = Path.GetRelativePath(root, path).Replace('\\', '/');
             try
             {
-                RuntimeShaderStage stage = path.EndsWith(".comp.glsl", StringComparison.Ordinal) ? RuntimeShaderStage.Compute
-                    : path.EndsWith(".vert.glsl", StringComparison.Ordinal) ? RuntimeShaderStage.Vertex
-                    : path.EndsWith(".frag.glsl", StringComparison.Ordinal) ? RuntimeShaderStage.Fragment
-                    : throw new InvalidDataException("Shader has no recognized stage suffix: " + relative);
+                RuntimeShaderStage? stage = ShaderProbeFiles.Classify(path, File.ReadAllText(path));
+                if (stage == null)
+                {
+                    includes.Add(relative);
+                    continue;
+                }
+                stages++;
                 byte[] spirv = RuntimeShaderCompiler.Compile(ShaderSourceLoader.ReadShaderSource(path), path, "main",
-                    RuntimeShaderLanguage.Glsl, stage, out bool cacheHit);
+                    RuntimeShaderLanguage.Glsl, stage.Value, out bool cacheHit);
                 checks.Add(new ProbeCheck("T4/" + relative, spirv.Length > 0, $"Slang {stage}; cacheHit={cacheHit}",
                     new Dictionary<string, double> { ["spirvBytes"] = spirv.Length, ["cacheHit"] = cacheHit ? 1 : 0 }));
                 passed &= spirv.Length > 0;
@@ -373,7 +279,8 @@ internal sealed class ProbeSession
                 checks.Add(new ProbeCheck("T4/" + relative, false, ex.ToString(), new Dictionary<string, double>()));
             }
         }
-        checks.Add(new ProbeCheck("T4", passed, $"Compiled {paths.Length} GLSL files through RuntimeShaderCompiler (Slang).",
-            new Dictionary<string, double> { ["files"] = paths.Length }));
+        checks.Add(new ProbeCheck("T4", passed && stages > 0,
+            $"Compiled {stages} stage files through Slang. Include-only (no stage suffix, no main entry point, compiled via consumers): {string.Join(", ", includes)}.",
+            new Dictionary<string, double> { ["stageFiles"] = stages, ["includeOnlyFiles"] = includes.Count }));
     }
 }

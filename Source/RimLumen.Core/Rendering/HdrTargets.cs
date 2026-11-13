@@ -13,6 +13,7 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
     internal sealed class Slot
     {
         internal RenderTexture Color = null!;
+        internal RenderTexture DepthSnapshot = null!;
         internal RenderTexture[] Down = Array.Empty<RenderTexture>();
         internal RenderTexture[] Up = Array.Empty<RenderTexture>();
         internal VkFramebuffer Framebuffer;
@@ -43,7 +44,11 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
             Slots = new Slot[app.RenderContext!.FramesInFlight];
             for (int frame = 0; frame < Slots.Length; frame++)
             {
-                Slot slot = new() { Color = Make(width, height, $"RimLumen.Hdr.{frame}") };
+                Slot slot = new()
+                {
+                    Color = Make(width, height, $"RimLumen.Hdr.{frame}"),
+                    DepthSnapshot = MakeDepth(width, height, depthFormat, $"RimLumen.DepthSnapshot.{frame}")
+                };
                 slot.Down = new RenderTexture[sizes.Length];
                 slot.Up = new RenderTexture[Math.Max(0, sizes.Length - 1)];
                 for (int level = 0; level < sizes.Length; level++)
@@ -77,6 +82,19 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         result.Create();
         Log.Message($"[RimLumen] OwnedVkObject type=VkImage handle=0x{result.Color.Image.VkHandle:X} name={name}");
         Log.Message($"[RimLumen] OwnedVkObject type=VkImageView handle=0x{result.ColorView.VkHandle:X} name={name}");
+        Log.Message($"[RimLumen] OwnedVkObject type=VkSampler handle=0x{result.Sampler.VkHandle:X} name={name}");
+        return result;
+    }
+
+    private static RenderTexture MakeDepth(int width, int height, VkFormat format, string name)
+    {
+        // No color allocation: RenderTexture exposes the copied depth through the existing contract.
+        RenderTexture result = new(width, height, VkFormat.Undefined, format, name: name);
+        result.Create();
+        Log.Message($"[RimLumen] OwnedVkObject type=VkImage handle=0x{result.Depth!.Image.VkHandle:X} name={name}");
+        Log.Message($"[RimLumen] OwnedVkObject type=VkImageView handle=0x{result.DepthView.VkHandle:X} name={name}.Attachment");
+        if (!result.DepthSampleView.Equals(result.DepthView))
+            Log.Message($"[RimLumen] OwnedVkObject type=VkImageView handle=0x{result.DepthSampleView.VkHandle:X} name={name}.Sample");
         Log.Message($"[RimLumen] OwnedVkObject type=VkSampler handle=0x{result.Sampler.VkHandle:X} name={name}");
         return result;
     }
@@ -137,6 +155,7 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         {
             if (!slot.Framebuffer.IsNull()) device.DestroyFramebuffer(slot.Framebuffer, device.VkAllocator);
             slot.Color.Dispose();
+            slot.DepthSnapshot.Dispose();
             foreach (RenderTexture texture in slot.Down) texture.Dispose();
             foreach (RenderTexture texture in slot.Up) texture.Dispose();
         }

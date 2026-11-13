@@ -45,15 +45,25 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             RuntimeShaderStage.Vertex, "RimLumen.ParticleBillboard.Vertex");
         fragment = PostFxPassHelpers.Compile(device, ShaderSourceLoader.ReadShaderSource("Particles/ParticleBillboard.frag.glsl"),
             RuntimeShaderStage.Fragment, "RimLumen.ParticleBillboard.Fragment");
+        LogHandle("VkPipelineLayout", $"{layout.VkHandle:X}", "ParticleDraw");
+        LogHandle("VkShaderModule", $"{vertex.VkHandle:X}", "ParticleVertex");
+        LogHandle("VkShaderModule", $"{fragment.VkHandle:X}", "ParticleFragment");
     }
+
+    internal static void LogHandle(string type, string hex, string name) =>
+        Verse.Log.Message($"[RimLumen] OwnedVkObject type={type} handle=0x{hex} name={name}");
 
     internal static VkDescriptorSetLayoutBinding Binding(int binding, VkDescriptorType type, VkShaderStageFlags stages) => new()
     {
         Binding = binding, DescriptorCount = 1, DescriptorType = type, StageFlags = stages
     };
 
-    internal static VkDescriptorSetLayout CreateLayout(DeviceEx device, VkDescriptorSetLayoutBinding[] bindings) =>
-        device.CreateDescriptorSetLayout(new DescriptorSetLayoutEx.CreateInfo { Bindings = bindings }, device.VkAllocator);
+    internal static VkDescriptorSetLayout CreateLayout(DeviceEx device, VkDescriptorSetLayoutBinding[] bindings)
+    {
+        var result = device.CreateDescriptorSetLayout(new DescriptorSetLayoutEx.CreateInfo { Bindings = bindings }, device.VkAllocator);
+        LogHandle("VkDescriptorSetLayout", $"{result.VkHandle:X}", "ParticleLayout");
+        return result;
+    }
 
     internal static unsafe VkDescriptorPool CreatePool(DeviceEx device, int emitterCount)
     {
@@ -62,10 +72,12 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageBuffer, DescriptorCount = count * 3 + 3 };
         sizes[1] = new VkDescriptorPoolSize { Type = VkDescriptorType.UniformBuffer, DescriptorCount = count + 1 };
         sizes[2] = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = count * 2 };
-        return device.CreateDescriptorPool(new VkDescriptorPoolCreateInfo
+        var result = device.CreateDescriptorPool(new VkDescriptorPoolCreateInfo
         {
             MaxSets = count + 2, PoolSizeCount = 3, PoolSizes = sizes
         }, device.VkAllocator);
+        LogHandle("VkDescriptorPool", $"{result.VkHandle:X}", "ParticlePool");
+        return result;
     }
 
     internal unsafe void Draw(in LumenHdrDrawContext context, ParticleFrame snapshot,
@@ -73,6 +85,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
     {
         FrameContext frame = context.Frame;
         VkDescriptorSet cameraSet = DescriptorSetWriter.AllocateDescriptorSet(device, resources.Pool, frameLayout);
+        LogHandle("VkDescriptorSet", $"{cameraSet.VkHandle:X}", "ParticleCamera");
         Matrix4x4 viewProjection = context.ViewProjection;
         resources.Camera.Upload(new ReadOnlySpan<Matrix4x4>(in viewProjection));
         WriteBuffers(device, cameraSet, new[] { 0 }, new[] { resources.Camera }, VkDescriptorType.UniformBuffer);
@@ -81,8 +94,9 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         var scissor = new VkRect2D(frame.Extent);
         frame.CommandBuffer.SetScissor(0, new ReadOnlySpan<VkRect2D>(in scissor));
         Matrix4x4.Invert(snapshot.Context.ViewMatrix, out Matrix4x4 inverseView);
-        Vector3 right = Vector3.Normalize(new Vector3(inverseView.M11, inverseView.M12, inverseView.M13));
-        Vector3 up = Vector3.Normalize(new Vector3(inverseView.M21, inverseView.M22, inverseView.M23));
+        // Host view matrices multiply column vectors: inverseView's columns are camera axes in world space.
+        Vector3 right = Vector3.Normalize(new Vector3(inverseView.M11, inverseView.M21, inverseView.M31));
+        Vector3 up = Vector3.Normalize(new Vector3(inverseView.M12, inverseView.M22, inverseView.M32));
         Matrix4x4 projection = snapshot.Context.ProjectionMatrix;
         RenderTexture? source = context.SceneColorDepthSource;
         VkImageView depthView = default;
@@ -115,11 +129,12 @@ internal sealed class ParticleGpuDrawResources : IDisposable
                 Draw = new Vector4(i, texturePresent[i] ? 1 : 0, source is null ? 0 : 1,
                     emitter.Blend == LumenBlendMode.Premultiplied ? 1 : 0),
                 CameraRight = new Vector4(right, 0), CameraUp = new Vector4(up, 0),
-                Projection = new Vector4(projection.M33, projection.M43, projection.M34, projection.M44),
+                Projection = new Vector4(projection.M33, projection.M34, projection.M43, projection.M44),
                 DepthUv = new Vector4(1f / frame.Extent.Width, 1f / frame.Extent.Height, 0, 0)
             };
             resources.Materials.Upload(new ReadOnlySpan<DrawUniforms>(in uniforms), (long)i * resources.UniformStride);
             VkDescriptorSet set = DescriptorSetWriter.AllocateDescriptorSet(device, resources.Pool, materialLayout);
+            LogHandle("VkDescriptorSet", $"{set.VkHandle:X}", "ParticleMaterial");
             WriteBuffers(device, set, new[] { 1, 2, 3 }, new[] { particles, resources.Emitters, resources.Curves }, VkDescriptorType.StorageBuffer);
             var uniformInfo = new VkDescriptorBufferInfo
             {
@@ -150,6 +165,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
                 pipeline = PostFxPassHelpers.CreateFullscreenPipeline(device, frame.RenderPass, frame.SampleCount,
                     vertex, fragment, layout, blend, "RimLumen.Particles");
                 pipelines.Add(key, pipeline);
+                LogHandle("VkPipeline", $"{pipeline.VkHandle:X}", "ParticleDraw");
             }
             frame.CommandBuffer.BindPipeline(VkPipelineBindPoint.Graphics, pipeline);
             frame.CommandBuffer.BindDescriptorSet(VkPipelineBindPoint.Graphics, layout, 0, cameraSet, default(Span<ByteSize32>));
@@ -214,6 +230,8 @@ internal sealed class ParticleGpuFrame : IDisposable
         Curves = GpuComputeBuffer.Create(device, frame.GraphicsDevice.Allocator, "Lumen.Curves", (long)EmitterCapacity * 64 * 32);
         Camera = GpuComputeBuffer.Create(device, frame.GraphicsDevice.Allocator, "Lumen.Camera", 64, VkBufferUsageFlags.UniformBufferBit);
         Materials = GpuComputeBuffer.Create(device, frame.GraphicsDevice.Allocator, "Lumen.Materials", (long)EmitterCapacity * UniformStride, VkBufferUsageFlags.UniformBufferBit);
+        foreach (var buffer in new[] { Emitters, Fields, Curves, Camera, Materials })
+            ParticleGpuDrawResources.LogHandle("VkBuffer", $"{buffer.Buffer.VkHandle:X}", "ParticleFrame");
     }
 
     internal void Upload(ParticleFrame frame)
