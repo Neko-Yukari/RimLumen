@@ -161,6 +161,59 @@ public static class CpuParticleSimulatorSuite
     }
 
     [LumenFact]
+    public static void PausedNonLoopingEmitterGetsFullDurationWindowAndEmissionLocalBurstsWhenActivatedLate()
+    {
+        var rateSpec = new EmitterSpec
+        {
+            Name = "late-rate", Looping = false, Duration = 0.5f, RateOverTime = 4f,
+            StartLifetimeMin = 3f, StartLifetimeMax = 3f,
+        };
+        var simulator = new CpuParticleSimulator();
+        int id = simulator.AcquireEmitter(rateSpec, Matrix4x4.Identity, emitting: false);
+        Step(simulator, 1.5f);
+        Check(simulator.ActiveEmitterCount == 1 && simulator.LiveParticleCount == 0 && !simulator.HasActiveWork,
+            "Paused non-looping emitter does not drain or die while paused");
+        simulator.SetEmitterParams(id, true, 1f, 1f);
+        Step(simulator, 0.25f);
+        Check(simulator.LiveParticleCount == 1 && simulator.HasActiveWork,
+            "Quarter-second after late activation spawns one particle at rate 4");
+        Step(simulator, 0.25f);
+        Check(simulator.LiveParticleCount == 2,
+            "Full half-second activation window spawns two particles total");
+        Step(simulator, 0.5f);
+        Check(simulator.LiveParticleCount == 2 && simulator.HasActiveWork,
+            "Emission stops once 0.5s of activation time elapses; live particles survive");
+        Step(simulator, 2.5f);
+        Check(simulator.LiveParticleCount == 0 && !simulator.HasActiveWork && simulator.ActiveEmitterCount == 0,
+            "Live particles finish their lifetime and emitter then drains");
+
+        var burstSimulator = new CpuParticleSimulator();
+        int burstId = burstSimulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "late-burst-window", Looping = false, Duration = 0.5f,
+            StartLifetimeMin = 3f, StartLifetimeMax = 3f,
+            Bursts = new[] { (0.25f, 2), (0.75f, 3) },
+        }, Matrix4x4.Identity, emitting: false);
+        Step(burstSimulator, 0.25f);
+        Check(burstSimulator.LiveParticleCount == 0, "Burst does not fire at 0.25s of paused game time");
+        Step(burstSimulator, 0.75f);
+        Check(burstSimulator.LiveParticleCount == 0 && burstSimulator.ActiveEmitterCount == 1,
+            "Paused burst emitter survives past 1s of paused game time");
+        burstSimulator.SetEmitterParams(burstId, true, 1f, 1f);
+        Step(burstSimulator, 0.1f);
+        Check(burstSimulator.LiveParticleCount == 0, "Burst at 0.25s waits for 0.25s of emission time");
+        Step(burstSimulator, 0.15f);
+        Check(burstSimulator.LiveParticleCount == 2, "Burst at 0.25s fires 0.25s after activation");
+        Step(burstSimulator, 1f);
+        Check(burstSimulator.LiveParticleCount == 2, "Burst at 0.75s beyond 0.5s duration never fires");
+
+        var guardSimulator = new CpuParticleSimulator();
+        guardSimulator.AcquireEmitter(rateSpec, Matrix4x4.Identity, emitting: true);
+        Step(guardSimulator, 1f);
+        Check(guardSimulator.LiveParticleCount == 2, "Emitter acquired while emitting still spawns 2 across 1s");
+    }
+
+    [LumenFact]
     public static void VortexTurnsPositiveXIntoNegativeZ()
     {
         var simulator = new CpuParticleSimulator();

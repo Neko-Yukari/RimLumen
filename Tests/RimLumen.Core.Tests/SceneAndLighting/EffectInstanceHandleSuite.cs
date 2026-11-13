@@ -287,6 +287,45 @@ public static class EffectInstanceHandleSuite
     }
 
     [LumenFact]
+    public static void DefaultMapIndexKeepsBoundDriverWhenSecondMapRegistersAndStopsWhenBoundDriverDisposes()
+    {
+        var asset = LitAsset("b3.sticky-default-map");
+        var service = VfxTestData.Service(asset);
+        service.GlowerDriverProvider = mapIndex =>
+            LumenMapLightingRegistry.TryResolve(mapIndex, out var driver) ? driver : null;
+        var sinkA = new RecordingGlowGridSink();
+        var sinkB = new RecordingGlowGridSink();
+        using var mapA = new LumenMapLightingComponent(new Map { uniqueID = 111 }, sinkA);
+        using var mapB = new LumenMapLightingComponent(new Map { uniqueID = 222 }, sinkB);
+        mapA.FinalizeInit();
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest
+        {
+            EffectId = asset.EffectId,
+        });
+        VfxTestData.Step(service, 0.25f);
+        GlowAssert.Equal(1, sinkA.Registrations.Count);
+        GlowAssert.Equal(0, sinkA.DeregisterCount);
+        GlowAssert.Equal(1, handle.LightCount);
+
+        mapB.FinalizeInit();
+        VfxTestData.Step(service, 0.25f);
+        VfxAssert.Check(sinkA.Registrations.Count == 1 && sinkA.DeregisterCount == 0 && sinkB.Registrations.Count == 0,
+            $"Expected map A to keep 1 registration (0 deregistrations) and map B to have 0; got A=({sinkA.Registrations.Count}, dereg={sinkA.DeregisterCount}), B={sinkB.Registrations.Count}.");
+        GlowAssert.Equal(true, handle.IsAlive);
+        GlowAssert.Equal(1, handle.LightCount);
+        GlowAssert.Equal(0, mapB.Driver.TrackedLightCount);
+
+        mapA.Dispose();
+        VfxTestData.Step(service, 0.25f);
+        GlowAssert.Equal(false, handle.IsAlive);
+        GlowAssert.Equal(false, handle.IsEmitting);
+        GlowAssert.Equal(0, handle.LightCount);
+        GlowAssert.Equal(0, sinkB.Registrations.Count);
+        GlowAssert.Equal(0, mapB.Driver.TrackedLightCount);
+        GlowAssert.Equal(sinkA.Registrations.Count, sinkA.DeregisterCount);
+    }
+
+    [LumenFact]
     public static void FadeStopDrainsParticlesFadesLightsAndCannotBeRestarted()
     {
         var asset = LitAsset("b3.fade");

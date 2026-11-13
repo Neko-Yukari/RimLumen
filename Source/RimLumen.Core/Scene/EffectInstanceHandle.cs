@@ -179,8 +179,10 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     //      a looping asset (any emitter with Looping) rewinds them so the next cycle fires them again.
     //   4. every emitter binding is pushed to its backend (SetEmitterTransform/SetEmitterParams or
     //      UpdateInstance), every light binding calls MapGlowerDriver.Update with this frame's cell.
-    //      A bound driver that has been disposed means the map is gone: the handle calls Stop(false)
-    //      instead of rebinding its lights to another map.
+    //      The map driver is bound once, at the first frame that resolves one while the handle emits, and
+    //      then kept for the handle's life: an effect belongs to the map it was played on, so a later
+    //      registration (another map, or a reload of the same one) must not steal its lights. A bound
+    //      driver that has been disposed means the map is gone, and the handle calls Stop(false).
     //   5. a fade-out stop that has finished (all emitters released, lights removed) marks the handle dead.
     internal void Advance(float deltaTime)
     {
@@ -262,18 +264,14 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
 
     private void UpdateLights(float intensity)
     {
-        if (driver is { IsDisposed: true })
+        if (driver is null && IsEmitting)
+            driver = owner.GlowerDriverProvider?.Invoke(request.MapIndex);
+        if (driver is null) return;
+        if (driver.IsDisposed)
         {
             Stop(false);
             return;
         }
-        var resolved = owner.GlowerDriverProvider?.Invoke(request.MapIndex);
-        if (IsEmitting && resolved is { IsDisposed: false } && !ReferenceEquals(driver, resolved))
-        {
-            RemoveLights();
-            driver = resolved;
-        }
-        if (driver is null) return;
         float fadeMultiplier = IsEmitting ? 1f : Math.Clamp(1f - fadeTime / LightFadeSeconds, 0f, 1f);
         for (int i = 0; i < asset.Nodes.Length; i++)
         {

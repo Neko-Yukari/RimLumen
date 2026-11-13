@@ -149,9 +149,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     // Requires: main thread; context.DeltaTime >= 0.
     // Ensures: advances emitter time, spawns rate/burst particles, integrates the four force-field
     //          kinds, expires particles, and rebuilds the quad/vertex/index batch for this frame.
-    // Ensures: a Looping emitter wraps its time at Duration and keeps emitting; a non-looping emitter
-    //          stops emitting once its time passes Duration, while already spawned particles finish
-    //          their own lifetime.
+    // Ensures: a Looping emitter wraps its time at Duration and keeps emitting. A non-looping emitter
+    //          accumulates its own emission clock, advanced only while it is Emitting, and stops emitting
+    //          once that clock reaches Duration, so an emitter activated later (Trigger on a node that
+    //          started paused) still gets a full Duration window instead of dying before it runs.
+    //          Burst times are emission-local for a non-looping emitter. Particles already spawned always
+    //          finish their own lifetime.
     public void CaptureMainThread(in LumenCaptureContext context)
     {
         int existingCount = particleCount;
@@ -160,12 +163,13 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         {
             var emitter = emitters[id];
             var spec = emitter.Spec;
-            double start = emitter.Time;
-            double end = start + dt;
             bool looping = spec.Looping && spec.Duration > 0f;
             bool limited = !spec.Looping && spec.Duration > 0f;
+            if (!looping && emitter.State != EmissionState.Emitting) continue;
+            double start = emitter.Time;
+            double end = start + dt;
             double emissionEnd = limited ? Math.Min(end, spec.Duration) : end;
-            emitter.Time = looping ? end % spec.Duration : end;
+            emitter.Time = looping ? end % spec.Duration : emissionEnd;
             if (emitter.State == EmissionState.Emitting)
             {
                 double emissionDt = Math.Max(0d, emissionEnd - start);
