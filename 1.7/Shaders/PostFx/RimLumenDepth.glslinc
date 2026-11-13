@@ -1,0 +1,17 @@
+#ifndef RIMLUMEN_DEPTH_INCLUDED
+#define RIMLUMEN_DEPTH_INCLUDED
+
+// Waylith reverse-Z: near=1, far=0. Parameters: near, far, orthographic flag, feather distance.
+float RimLumenLinearDepth(float deviceDepth, vec4 depthParams)
+{
+    if (depthParams.z > 0.5)
+        return depthParams.y - deviceDepth * (depthParams.y - depthParams.x);
+    return depthParams.x * depthParams.y / (depthParams.x + deviceDepth * (depthParams.y - depthParams.x));
+}
+
+float RimLumenSoftParticleFade(float sceneLinearDepth, float particleLinearDepth, float fadeDistance)
+{
+    return clamp((sceneLinearDepth - particleLinearDepth) / fadeDistance, 0.0, 1.0);
+}
+
+#endif
