@@ -11,10 +11,23 @@ public static class AdditiveEmissiveFilter
         { "GlowOverlay", "OxygenOverlayIndoors", "GravshipLensFlare", "UnlitAdditive", "MoteWater" };
 
     // Ensures: true iff Blend.Enabled && DstColor == One && ColorOp == Add && SrcColor in {SrcAlpha, One}
-    //   && !Depth.Write && shaderKey is not in ExcludedShaderKeys (ordinal match against the key's last
-    //   path segment, i.e. text after the final '/' or '\\'; null/empty key => false).
+    //   && !Depth.Write && shaderKey is not in ExcludedShaderKeys (exact ordinal match; Shader.Key is the
+    //   bare ShaderDef defName, Assembly-CSharp.decompiled.cs:43579; null/empty key => false).
     public static bool IsAdditiveEmissive(in PipelineState state, string? shaderKey)
     {
-        throw new NotImplementedException();
+        if (!state.Blend.Enabled || state.Blend.DstColor != BlendFactor.One || state.Blend.ColorOp != BlendOp.Add
+            || (state.Blend.SrcColor != BlendFactor.SrcAlpha && state.Blend.SrcColor != BlendFactor.One)
+            || state.Depth.Write || string.IsNullOrEmpty(shaderKey))
+        {
+            return false;
+        }
+        foreach (string excludedKey in ExcludedShaderKeys)
+        {
+            if (string.Equals(shaderKey, excludedKey, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 }
