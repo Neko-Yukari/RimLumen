@@ -247,6 +247,46 @@ public static class EffectInstanceHandleSuite
     }
 
     [LumenFact]
+    public static void DisposedMapStopsItsHandleWithoutMigratingLightsToAnotherMap()
+    {
+        var asset = LitAsset("b3.map-dispose");
+        var service = VfxTestData.Service(asset);
+        service.GlowerDriverProvider = mapIndex =>
+            LumenMapLightingRegistry.TryResolve(mapIndex, out var driver) ? driver : null;
+        var firstSink = new RecordingGlowGridSink();
+        var secondSink = new RecordingGlowGridSink();
+        using var first = new LumenMapLightingComponent(new Map { uniqueID = 111 }, firstSink);
+        using var second = new LumenMapLightingComponent(new Map { uniqueID = 222 }, secondSink);
+        first.FinalizeInit();
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest
+        {
+            EffectId = asset.EffectId, MapIndex = 111,
+        });
+        VfxTestData.Step(service, 0.25f);
+        GlowAssert.Equal(true, handle.IsAlive);
+        GlowAssert.Equal(1, firstSink.Registrations.Count);
+        GlowAssert.Equal(1, firstSink.LiveHandles.Count);
+        GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
+        second.FinalizeInit();
+        first.Dispose();
+        VfxTestData.Step(service, 0.25f);
+
+        VfxAssert.Check(!handle.IsAlive && secondSink.Registrations.Count == 0,
+            $"Map 111 teardown expected IsAlive=False and map 222 registrations=0; got IsAlive={handle.IsAlive}, map 222 registrations={secondSink.Registrations.Count}.");
+        GlowAssert.Equal(false, handle.IsEmitting);
+        GlowAssert.Equal(0, handle.LightCount);
+        GlowAssert.Equal(0, handle.CpuEmitterCount);
+        GlowAssert.Equal(0, service.Simulator.ActiveEmitterCount);
+        GlowAssert.Equal(0, service.Simulator.LiveParticleCount);
+        GlowAssert.Equal(0, service.LiveHandleCount);
+        GlowAssert.Equal(0, firstSink.LiveHandles.Count);
+        GlowAssert.Equal(1, firstSink.DeregisterCount);
+        GlowAssert.Equal(firstSink.Registrations.Count, firstSink.DeregisterCount);
+        GlowAssert.Equal(0, secondSink.LiveHandles.Count);
+        GlowAssert.Equal(0, second.Driver.TrackedLightCount);
+    }
+
+    [LumenFact]
     public static void FadeStopDrainsParticlesFadesLightsAndCannotBeRestarted()
     {
         var asset = LitAsset("b3.fade");

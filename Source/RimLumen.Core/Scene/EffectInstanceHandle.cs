@@ -262,12 +262,12 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
 
     private void UpdateLights(float intensity)
     {
-        var resolved = owner.GlowerDriverProvider?.Invoke(request.MapIndex);
         if (driver is { IsDisposed: true })
         {
-            Array.Fill(lightIds, -1);
-            driver = null;
+            Stop(false);
+            return;
         }
+        var resolved = owner.GlowerDriverProvider?.Invoke(request.MapIndex);
         if (IsEmitting && resolved is { IsDisposed: false } && !ReferenceEquals(driver, resolved))
         {
             RemoveLights();

@@ -44,9 +44,9 @@ public sealed class LumenMapLightingComponent : MapComponent, IDisposable
 }
 
 /// <summary>
-/// Map-id keyed registry of <see cref="MapGlowerDriver"/> instances. Negative or unknown map indices
+/// Map-id keyed registry of <see cref="MapGlowerDriver"/> instances. Only negative map indices
 /// resolve to the most recently registered map, because <see cref="Contracts.LumenPlayRequest.MapIndex"/>
-/// defaults to -1 for "whatever map is being played".
+/// defaults to -1 for "whatever map is being played"; non-negative indices require an exact map key.
 /// </summary>
 public static class LumenMapLightingRegistry
 {
@@ -77,10 +77,11 @@ public static class LumenMapLightingRegistry
     //          registered driver. False with driver == null when nothing matches.
     public static bool TryResolve(int mapIndex, out MapGlowerDriver? driver)
     {
-        if (drivers.TryGetValue(mapIndex, out driver))
+        if (mapIndex >= 0)
         {
-            return true;
+            return drivers.TryGetValue(mapIndex, out driver);
         }
+        driver = null;
         if (registrationOrder.Count == 0)
         {
             return false;

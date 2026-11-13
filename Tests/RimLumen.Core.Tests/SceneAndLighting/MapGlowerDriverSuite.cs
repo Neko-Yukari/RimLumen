@@ -88,6 +88,42 @@ public static class MapGlowerDriverSuite
     }
 
     [LumenFact]
+    public static void PositiveIntensityQuantizedToBlackStaysRegisteredUntilIntensityIsNonPositive()
+    {
+        var sink = new RecordingGlowGridSink();
+        using var driver = new MapGlowerDriver(sink);
+        int id = driver.Add(new PointLightSpec(5f, 1f, Vector3.One));
+        var cell = new IntVec3(3, 0, 7);
+        driver.Update(id, cell, 0f, 0.001f);
+        driver.Update(id, cell, 1f, 0.005f);
+        GlowAssert.Equal(new ColorInt(0, 0, 0, 255), sink.Registrations[0].Color);
+        GlowAssert.Equal(1, driver.ActiveLightCount);
+        GlowAssert.Equal(1, sink.LiveHandles.Count);
+        GlowAssert.Equal(1, sink.Registrations.Count);
+        GlowAssert.Equal(0, sink.DeregisterCount);
+
+        driver.Update(id, cell, 2f, 0.008f);
+        GlowAssert.Equal(new ColorInt(4, 4, 4, 255), sink.Registrations[1].Color);
+        GlowAssert.Equal(1, sink.LiveHandles.Count);
+        GlowAssert.Equal(2, sink.Registrations.Count);
+        GlowAssert.Equal(1, sink.DeregisterCount);
+        driver.Update(id, cell, 3f, 0.001f);
+        GlowAssert.Equal(new ColorInt(0, 0, 0, 255), sink.Registrations[2].Color);
+        GlowAssert.Equal(1, driver.ActiveLightCount);
+        GlowAssert.Equal(1, sink.LiveHandles.Count);
+        GlowAssert.Equal("RDRDR", string.Concat(sink.Events));
+
+        driver.Update(id, cell, 4f, 0f);
+        driver.Update(id, cell, 5f, -0.001f);
+        GlowAssert.Equal(1, driver.TrackedLightCount);
+        GlowAssert.Equal(0, driver.ActiveLightCount);
+        GlowAssert.Equal(0, sink.LiveHandles.Count);
+        GlowAssert.Equal(3, sink.Registrations.Count);
+        GlowAssert.Equal(3, sink.DeregisterCount);
+        GlowAssert.Equal("RDRDRD", string.Concat(sink.Events));
+    }
+
+    [LumenFact]
     public static void NonPositiveIntensityUnregistersButKeepsLightForReactivation()
     {
         var sink = new RecordingGlowGridSink();
