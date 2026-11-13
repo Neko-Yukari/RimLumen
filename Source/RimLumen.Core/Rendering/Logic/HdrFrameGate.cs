@@ -15,6 +15,8 @@ public static class HdrFrameGate
     // Ensures: Skip iff !anyContributorActive && routedDrawCount == 0 && !probeForcesActive; else Render.
     public static HdrFrameMode Decide(bool anyContributorActive, int routedDrawCount, bool probeForcesActive)
     {
-        throw new NotImplementedException();
+        return anyContributorActive || routedDrawCount > 0 || probeForcesActive
+            ? HdrFrameMode.Render
+            : HdrFrameMode.Skip;
     }
 }

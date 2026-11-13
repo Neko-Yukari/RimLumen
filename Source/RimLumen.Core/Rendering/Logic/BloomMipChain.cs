@@ -12,6 +12,25 @@ public static class BloomMipChain
     //   level 0 is always present (clamped to >= 1 per dimension).
     public static MipSize[] Compute(int width, int height, int maxLevels, int minDimension)
     {
-        throw new NotImplementedException();
+        ArgumentOutOfRangeException.ThrowIfLessThan(width, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(height, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxLevels, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(minDimension, 1);
+
+        var levels = new System.Collections.Generic.List<MipSize>();
+        int mipWidth = width / 2 + width % 2;
+        int mipHeight = height / 2 + height % 2;
+        levels.Add(new MipSize(mipWidth, mipHeight));
+        while (levels.Count < maxLevels)
+        {
+            mipWidth = mipWidth / 2 + mipWidth % 2;
+            mipHeight = mipHeight / 2 + mipHeight % 2;
+            if (mipWidth < minDimension || mipHeight < minDimension)
+            {
+                break;
+            }
+            levels.Add(new MipSize(mipWidth, mipHeight));
+        }
+        return levels.ToArray();
     }
 }

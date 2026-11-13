@@ -13,13 +13,36 @@ public static class FeatureOrderGuard
     //   to InsertFeature AFTER RemoveFeature(self) (when selfIndex >= 0) so self lands right before ImGui.
     public static int ComputeCompositeReinsertIndex(IReadOnlyList<string> featureTypeNames, int selfIndex)
     {
-        throw new NotImplementedException();
+        for (int i = 0; i < featureTypeNames.Count; i++)
+        {
+            if (featureTypeNames[i].Contains("ImGui", StringComparison.OrdinalIgnoreCase))
+            {
+                if (selfIndex >= 0 && selfIndex == i - 1)
+                {
+                    return -1;
+                }
+                return selfIndex >= 0 && selfIndex < i ? i - 1 : i;
+            }
+        }
+        return -1;
     }
 
     // Requires: featureTypeNames is the current feature order (Type.Name), without the RimLumen pre-backbuffer feature.
     // Ensures: returns indexOf("MapRenderFeature") + 1 when "PostFxFeature" exists after it; otherwise -1.
     public static int ComputePreBackbufferInsertIndex(IReadOnlyList<string> featureTypeNames)
     {
-        throw new NotImplementedException();
+        int mapIndex = -1;
+        for (int i = 0; i < featureTypeNames.Count; i++)
+        {
+            if (mapIndex < 0 && featureTypeNames[i] == "MapRenderFeature")
+            {
+                mapIndex = i;
+            }
+            else if (mapIndex >= 0 && featureTypeNames[i] == "PostFxFeature")
+            {
+                return mapIndex + 1;
+            }
+        }
+        return -1;
     }
 }
