@@ -33,6 +33,10 @@ internal sealed class ProbeSession
     private int mapIndex;
     private SyntheticHdrQuadContributor? synthetic;
     private SsboBarrierProbeContributor? ssbo;
+    private float? savedMaximumDeltaTime;
+    private bool savedScreenshotMode;
+    private readonly Dictionary<Window, bool> windowVisibility = new();
+    private float frozenTime;
 
     private ProbeSession(ProbeOptions options) => this.options = options;
 
@@ -56,6 +60,15 @@ internal sealed class ProbeSession
             if (checks.Any(check => !check.Passed)) { Finish(); return; }
             Find.TickManager.Pause();
             Current.CameraDriver.enabled = false;
+            // Time.timeScale is a stub. maximumDeltaTime also caps UnityTimeState.Time accumulation.
+            savedMaximumDeltaTime = UnityEngine.Time.maximumDeltaTime;
+            UnityEngine.Time.maximumDeltaTime = 0f;
+            frozenTime = UnityEngine.Time.time;
+            savedScreenshotMode = Find.UIRoot.screenshotMode.Active;
+            Find.UIRoot.screenshotMode.Active = true;
+            ScreenFader.SetColor(UnityEngine.Color.clear);
+            app.OnUpdate += PrepareDeterministicFrame;
+            PrepareDeterministicFrame();
             mapIndex = Array.FindIndex(app.FrameRenderer.Features.ToArray(), feature => feature.GetType().Name == "MapRenderFeature");
             app.FrameRenderer.RenderThreadFrameEnded += RecordMapCounts;
             Current.CameraDriver.StartCoroutine(GuardedFrames());
@@ -68,8 +81,26 @@ internal sealed class ProbeSession
         if (checks.Any(check => !check.Passed)) Finish();
     }
 
+    private void PrepareDeterministicFrame()
+    {
+        // ScreenshotMode hides letters/messages/alerts. Windows opt out individually, including
+        // EditWindow_Log (drawInScreenshotMode=true), which may open again on validation errors.
+        foreach (Window window in Find.WindowStack.Windows)
+        {
+            if (!windowVisibility.ContainsKey(window)) windowVisibility.Add(window, window.drawInScreenshotMode);
+            window.drawInScreenshotMode = false;
+        }
+    }
+
     private void Finish()
     {
+            app.OnUpdate -= PrepareDeterministicFrame;
+            if (savedMaximumDeltaTime.HasValue)
+            {
+                UnityEngine.Time.maximumDeltaTime = savedMaximumDeltaTime.Value;
+                Find.UIRoot.screenshotMode.Active = savedScreenshotMode;
+                foreach (var item in windowVisibility) item.Key.drawInScreenshotMode = item.Value;
+            }
             app.FrameRenderer.RenderThreadFrameEnded -= RecordMapCounts;
             ssbo?.Disarm();
             synthetic?.Disarm();
@@ -95,6 +126,8 @@ internal sealed class ProbeSession
                     MapId = Find.CurrentMap?.uniqueID,
                     options.DisableBarrier,
                     LogRoot = FileLog.StartedRoot,
+                    QuitPath = "Root.Shutdown/Application.Quit",
+                    ExpectedProcessExitCode = passed ? 0 : 1,
                     ValidationClean = false, // Final log validation (including shutdown) belongs to run-probes.ps1.
                     LoadedVulkanModules = modules,
                     Checks = checks,
@@ -107,7 +140,10 @@ internal sealed class ProbeSession
                 passed = false;
                 Log.Error("[RimLumen] Could not write probe result: " + ex);
             }
-            app.Quit(passed ? 0 : 1);
+            // Match Bootstrap -QuitAfterBoot: Steam shutdown and Application.quitting also run.
+            Waylith.UnityCompat.UnityRuntime.Current!.App.ExitCode = passed ? 0 : 1;
+            Log.Message($"[RimLumen] QuitPath=Root.Shutdown/Application.Quit; exit={ (passed ? 0 : 1) }");
+            Root.Shutdown();
     }
 
     private IEnumerator GuardedFrames()
@@ -130,6 +166,11 @@ internal sealed class ProbeSession
 
     private IEnumerator Frames()
     {
+        // realtimeSinceStartup is Stopwatch-backed with no public freeze. Do not silently remove
+        // visible realtime motes to manufacture equality: reject that unsupported scene explicitly.
+        int realTimeMotes = RealTime.moteList.allMotes.Count(mote => mote.Spawned && mote.Map == Find.CurrentMap && mote.def.mote.realTime);
+        if (realTimeMotes != 0)
+            throw new InvalidOperationException($"Deterministic capture unavailable: {realTimeMotes} realtime motes use an unfrozen Stopwatch clock.");
         var captures = new Dictionary<string, byte[]>();
         var counts = new Dictionary<string, (int Draws, int Persistent)>();
         int width = 0;
@@ -170,6 +211,8 @@ internal sealed class ProbeSession
             if (!backend.TryReadScreen(out byte[] rgba, out width, out height)) throw new InvalidOperationException("TryReadScreen failed at " + stage);
             captures[stage] = rgba;
             counts[stage] = (mapDraws, mapPersistent);
+            if (UnityEngine.Time.time != frozenTime)
+                throw new InvalidOperationException("Unity render time advanced during deterministic capture.");
             if (stage == "B")
             {
                 idleClearDelta = pipeline.Pre.Clears - clearsBefore;
@@ -198,7 +241,9 @@ internal sealed class ProbeSession
             ["noiseMaxAbsDelta"] = noise.MaxAbsDelta, ["noiseDifferingPixels"] = noise.DifferingPixels,
             ["idleMaxAbsDelta"] = idle.MaxAbsDelta, ["idleDifferingPixels"] = idle.DifferingPixels,
             ["width"] = width, ["height"] = height,
-            ["idleClears"] = idleClearDelta, ["idleCompositeDraws"] = idleDrawDelta
+            ["idleClears"] = idleClearDelta, ["idleCompositeDraws"] = idleDrawDelta,
+            ["frozenUnityTime"] = frozenTime, ["realTimeMotes"] = realTimeMotes,
+            ["hiddenWindowCount"] = windowVisibility.Count
         };
         foreach (string stage in new[] { "A", "B", "Aprime" })
         {
@@ -208,7 +253,7 @@ internal sealed class ProbeSession
         checks.Add(new ProbeCheck("T3", true, "RequestCapture/TryReadScreen read RGBA8 in host EndOfFrame; active HDR read back as 8 B/px half.",
             new Dictionary<string, double> { ["width"] = width, ["height"] = height }));
         checks.Add(new ProbeCheck("P1-idle", noise.MaxAbsDelta == 0 && idle.MaxAbsDelta == 0 && equalCounts && idleClearDelta == 0 && idleDrawDelta == 0,
-            "Paused fixed camera A/B/A. mapMainSubmittedDrawItems are pre-batching submissions, not vkCmdDraw counts: MeshDrawStats.cs:43 is Conditional(MESH_DRAW_STATS), fields private.", idleMetrics));
+            "Paused fixed camera; maximumDeltaTime=0; host screenshot mode, windows hidden; full-frame A/B/A with exact zero threshold. mapMainSubmittedDrawItems are pre-batching submissions, not vkCmdDraw counts: MeshDrawStats.cs:43 is Conditional(MESH_DRAW_STATS), fields private.", idleMetrics));
         checks.Add(new ProbeCheck("T1b", ssbo!.DispatchesEnqueued > 0 && ssbo.DrawsRecorded > 0 &&
             (options.DisableBarrier ? ssbo.BarriersRecorded == 0 : ssbo.BarriersRecorded > 0),
             options.DisableBarrier ? "No-barrier control; script reports SYNC-HAZARD count separately." : "Enqueue -> explicit buffer barrier -> HDR draw.",

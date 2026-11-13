@@ -75,6 +75,9 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
     {
         RenderTexture result = new(width, height, VkFormat.R16G16B16A16SFloat, name: name);
         result.Create();
+        Log.Message($"[RimLumen] OwnedVkObject type=VkImage handle=0x{result.Color.Image.VkHandle:X} name={name}");
+        Log.Message($"[RimLumen] OwnedVkObject type=VkImageView handle=0x{result.ColorView.VkHandle:X} name={name}");
+        Log.Message($"[RimLumen] OwnedVkObject type=VkSampler handle=0x{result.Sampler.VkHandle:X} name={name}");
         return result;
     }
 

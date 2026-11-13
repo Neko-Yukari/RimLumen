@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Numerics;
 using System.Threading;
 using Brutal.VulkanApi;
+using Brutal.VulkanApi.Abstractions;
+using Brutal.Numerics;
 using RimLumen.Core.Contracts;
 using Waylith.Graphics;
 using Waylith.Rendering;
@@ -65,6 +67,7 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
             HdrTargets.Slot slot = owner.Targets.Ensure(ctx.SubmissionFrameIndex, scene);
             var frame = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer, owner.Targets.RenderPass,
                 slot.Framebuffer, slot.Color.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat, scene.DepthFormat);
+            frame.CommandBuffer.BeginDebugLabel("RimLumen/HDR\0"u8, new float4(1f, 0.5f, 0f, 1f));
             var barrierContext = new LumenBarrierContext { Frame = frame, FrameIndex = payload.Index };
             foreach (ILumenFrameContributor contributor in payload.Contributors)
                 contributor.RecordBufferBarriers(in barrierContext);
@@ -95,6 +98,7 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
             frame.CommandBuffer.EndRenderPass();
             slot.Color.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
             RecordBloom(in ctx, slot);
+            frame.CommandBuffer.EndDebugLabel();
             Interlocked.Increment(ref feature.ActiveFrames);
             Interlocked.Increment(ref feature.Clears);
             Interlocked.Add(ref feature.RoutedDrawItems, payload.Mesh.Draws.Count);

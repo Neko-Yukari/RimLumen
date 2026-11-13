@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Threading;
+using Brutal.Numerics;
+using Brutal.VulkanApi;
+using Brutal.VulkanApi.Abstractions;
 using Waylith.Graphics;
 using Waylith.Rendering;
 using Waylith.Rendering.PostFx;
@@ -57,7 +60,9 @@ internal sealed class RimLumenCompositeFeature : IRenderFeature
             SetInput(2, scene);
             Vector4 parameters = new(0.16f, 0f, 1f / scene.Width, 1f / scene.Height);
             SetPushConstants(in parameters);
+            ctx.CommandBuffer.BeginDebugLabel("RimLumen/Composite\0"u8, new float4(1f, 0.5f, 0f, 1f));
             RecordInline(in ctx, ctx.RenderPass, ctx.SampleCount);
+            ctx.CommandBuffer.EndDebugLabel();
             Interlocked.Increment(ref feature.Draws);
         }
     }
