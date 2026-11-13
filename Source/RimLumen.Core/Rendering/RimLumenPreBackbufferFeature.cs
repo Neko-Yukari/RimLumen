@@ -88,8 +88,13 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
                 SceneColorDepthSource = scene, ViewProjection = payload.Mesh.View.ViewProjection,
                 SoftParticleDepthParams = payload.DepthParams
             };
-            foreach (ILumenFrameContributor contributor in payload.Contributors)
-                contributor.RecordHdrDraws(in drawContext);
+            owner.L1Renderer.BeginRecord(in drawContext);
+            try
+            {
+                foreach (ILumenFrameContributor contributor in payload.Contributors)
+                    contributor.RecordHdrDraws(in drawContext);
+            }
+            finally { owner.L1Renderer.EndRecord(); }
             if (payload.Mesh.Draws.Count > 0)
             {
                 renderer.InvalidateCommandBufferBindings();

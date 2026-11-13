@@ -182,7 +182,7 @@ vvl.enable_message_limit = false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    foreach ($argument in @('-NoWindow', '-NoCrashDialog', '-quicktest', '-EnableVulkanValidation', "-savedatafolder=$profile")) {
+    foreach ($argument in @('-NoWindow', '-NoCrashDialog', '-quicktest', '-WindowSize=1920,1080', '-EnableVulkanValidation', "-savedatafolder=$profile")) {
         $start.ArgumentList.Add($argument)
     }
     if ($Baseline) {
@@ -216,7 +216,7 @@ vvl.enable_message_limit = false
         if ($result.QuitPath -ne $quitPath) { throw 'Probe quit path differs from baseline.' }
         if ($process.ExitCode -ne $result.ExpectedProcessExitCode) { throw "Unexpected process exit $($process.ExitCode); probe expected $($result.ExpectedProcessExitCode)." }
         Write-Host "Process exit=$($process.ExitCode); probe Passed=$($result.Passed); expected=$($result.ExpectedProcessExitCode)"
-        foreach ($required in @('T1a', 'T1b', 'T2', 'T3', 'T4', 'P1-idle', 'P1-active', 'feature-order', 'validation-layer')) {
+        foreach ($required in @('T1a', 'T1b', 'T2', 'T3', 'T4', 'P1-idle', 'P1-active', 'P2-L2-10k', 'P2-L2-50k', 'P2-L1-Glower', 'Compat-VanillaAdditive', 'feature-order', 'validation-layer')) {
             $check = @($result.Checks | Where-Object Id -eq $required)
             if ($check.Count -ne 1 -or -not $check[0].Passed) { throw "Required check failed or absent: $required" }
         }

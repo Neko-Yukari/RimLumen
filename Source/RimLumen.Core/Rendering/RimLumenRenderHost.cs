@@ -10,6 +10,8 @@ public static class RimLumenRenderHost
 {
     internal static RimLumenPipeline? Pipeline { get; private set; }
 
+    public static bool EnableVanillaAdditiveBloom { get; set; } = false;
+
     internal static void SetFrameCapabilities(bool hdr, bool depth)
     {
         Capabilities = Capabilities with { IsHdrActive = hdr, IsSceneDepthAvailable = depth };

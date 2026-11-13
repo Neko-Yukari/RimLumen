@@ -2,6 +2,9 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Scene;
+using RimLumen.Core.ParticlesGpu;
+using System.Runtime.CompilerServices;
 using RimLumen.Core.Rendering.Probes.Contributors;
 using RimWorldWaylith.Rendering;
 using UnityStubs.Rendering;
@@ -20,7 +23,7 @@ using Waylith.Rendering.Compute;
 
 namespace RimLumen.Core.Rendering.Probes;
 
-internal sealed class ProbeSession
+internal sealed partial class ProbeSession
 {
     private readonly ProbeOptions options;
     private readonly List<ProbeCheck> checks = new();
@@ -50,6 +53,9 @@ internal sealed class ProbeSession
         try
         {
             Directory.CreateDirectory(options.OutputDirectory);
+            LumenSceneBootstrap.EnsureInitialized();
+            RuntimeHelpers.RunClassConstructor(typeof(LumenGpuParticlesBootstrap).TypeHandle);
+            RimLumenRenderHost.EnableVanillaAdditiveBloom = false;
             var device = app.GraphicsDevice ?? throw new InvalidOperationException("Probe requires a GraphicsDevice.");
             bool validation = device.ValidationEnabled && device.InstanceEnabledLayers.Contains("VK_LAYER_KHRONOS_validation");
             string layers = string.Join(",", device.InstanceEnabledLayers);
@@ -102,8 +108,14 @@ internal sealed class ProbeSession
                 foreach (var item in windowVisibility) item.Key.drawInScreenshotMode = item.Value;
             }
             app.FrameRenderer.RenderThreadFrameEnded -= RecordMapCounts;
+            pipeline.MeasureContributors = false;
+            app.OnUpdate -= SubmitCompatQuad;
+            RimLumenRenderHost.EnableVanillaAdditiveBloom = false;
+            workload?.Stop(allowFadeOut: false);
             ssbo?.Disarm();
             synthetic?.Disarm();
+            app.WaitForRenderThreadIdle();
+            app.GraphicsDevice!.WaitIdleAndRun(() => { });
             if (ssbo != null) { LumenHostRegistry.UnregisterContributor(ssbo); ssbo.Dispose(); }
             if (synthetic != null) { LumenHostRegistry.UnregisterContributor(synthetic); synthetic.Dispose(); }
             checks.Add(new ProbeCheck("routed-persistent", pipeline.UnsupportedPersistentDraws == 0,
@@ -252,7 +264,7 @@ internal sealed class ProbeSession
         }
         checks.Add(new ProbeCheck("T3", true, "RequestCapture/TryReadScreen read RGBA8 in host EndOfFrame; active HDR read back as 8 B/px half.",
             new Dictionary<string, double> { ["width"] = width, ["height"] = height }));
-        checks.Add(new ProbeCheck("P1-idle", noise.MaxAbsDelta == 0 && idle.MaxAbsDelta == 0 && equalCounts && idleClearDelta == 0 && idleDrawDelta == 0,
+        checks.Add(new ProbeCheck("P1-idle", width == 1920 && height == 1080 && noise.MaxAbsDelta == 0 && idle.MaxAbsDelta == 0 && equalCounts && idleClearDelta == 0 && idleDrawDelta == 0,
             "Paused fixed camera; maximumDeltaTime=0; host screenshot mode, windows hidden; full-frame A/B/A with exact zero threshold. mapMainSubmittedDrawItems are pre-batching submissions, not vkCmdDraw counts: MeshDrawStats.cs:43 is Conditional(MESH_DRAW_STATS), fields private.", idleMetrics));
         checks.Add(new ProbeCheck("T1b", ssbo!.DispatchesEnqueued > 0 && ssbo.DrawsRecorded > 0 &&
             (options.DisableBarrier ? ssbo.BarriersRecorded == 0 : ssbo.BarriersRecorded > 0),
@@ -260,6 +272,10 @@ internal sealed class ProbeSession
             new Dictionary<string, double> { ["dispatches"] = ssbo.DispatchesEnqueued, ["barriers"] = ssbo.BarriersRecorded, ["draws"] = ssbo.DrawsRecorded }));
         checks.Add(new ProbeCheck("T2", pipeline.Pre.ActiveFrames > 0, "Shared scene depth attached read-only; final validation-error gate is in run-probes.ps1.",
             new Dictionary<string, double> { ["activeFrames"] = pipeline.Pre.ActiveFrames, ["clears"] = pipeline.Pre.Clears, ["compositeDraws"] = pipeline.Composite.Draws }));
+        ssbo.Disarm();
+        synthetic!.Disarm();
+        IEnumerator workloads = ParticleWorkloads(captures["Aprime"], width, height);
+        while (workloads.MoveNext()) yield return workloads.Current;
     }
 
     private void RecordMapCounts(RenderFrame frame)
