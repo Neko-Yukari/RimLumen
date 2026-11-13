@@ -140,7 +140,8 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
             }
             var parameters = new GpuEmitterParams
             {
-                World = instance.World,
+                // Slang's RowMajor SSBO uses matrix * column vector; scene transforms use row vectors.
+                World = Matrix4x4.Transpose(instance.World),
                 Slots = new Vector4(instance.Slots.Offset, instance.Slots.Capacity, budget, 0),
                 Shape = new Vector4((float)spec.Shape, spec.ShapeExtents.X, spec.ShapeExtents.Y, spec.ShapeExtents.Z),
                 Ranges = new Vector4(spec.StartSpeedMin, spec.StartSpeedMax, spec.StartLifetimeMin, spec.StartLifetimeMax),

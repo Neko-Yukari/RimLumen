@@ -94,8 +94,9 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         var scissor = new VkRect2D(frame.Extent);
         frame.CommandBuffer.SetScissor(0, new ReadOnlySpan<VkRect2D>(in scissor));
         Matrix4x4.Invert(snapshot.Context.ViewMatrix, out Matrix4x4 inverseView);
-        Vector3 right = Vector3.Normalize(new Vector3(inverseView.M11, inverseView.M12, inverseView.M13));
-        Vector3 up = Vector3.Normalize(new Vector3(inverseView.M21, inverseView.M22, inverseView.M23));
+        // Host view matrices multiply column vectors: inverseView's columns are camera axes in world space.
+        Vector3 right = Vector3.Normalize(new Vector3(inverseView.M11, inverseView.M21, inverseView.M31));
+        Vector3 up = Vector3.Normalize(new Vector3(inverseView.M12, inverseView.M22, inverseView.M32));
         Matrix4x4 projection = snapshot.Context.ProjectionMatrix;
         RenderTexture? source = context.SceneColorDepthSource;
         VkImageView depthView = default;
@@ -128,7 +129,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
                 Draw = new Vector4(i, texturePresent[i] ? 1 : 0, source is null ? 0 : 1,
                     emitter.Blend == LumenBlendMode.Premultiplied ? 1 : 0),
                 CameraRight = new Vector4(right, 0), CameraUp = new Vector4(up, 0),
-                Projection = new Vector4(projection.M33, projection.M43, projection.M34, projection.M44),
+                Projection = new Vector4(projection.M33, projection.M34, projection.M43, projection.M44),
                 DepthUv = new Vector4(1f / frame.Extent.Width, 1f / frame.Extent.Height, 0, 0)
             };
             resources.Materials.Upload(new ReadOnlySpan<DrawUniforms>(in uniforms), (long)i * resources.UniformStride);

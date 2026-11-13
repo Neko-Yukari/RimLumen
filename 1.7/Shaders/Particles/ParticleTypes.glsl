@@ -12,9 +12,9 @@ struct GpuParticle
 
 struct GpuEmitterParams
 {
-    // Upload System.Numerics.Matrix4x4 verbatim. Its row-major row-vector
-    // bytes become GLSL columns: World * p already performs the CPU transform.
-    // Do NOT transpose on either side a second time.
+    // Slang emits RowMajor SSBO storage and matrix * column-vector operations.
+    // The CPU transposes System.Numerics row-vector scene transforms once at upload.
+    // Camera ViewProj already uses the host's column-vector convention; it is not transposed.
     mat4 World;
     vec4 Slots;
     vec4 Shape;
