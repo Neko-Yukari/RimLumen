@@ -18,6 +18,7 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
 {
     internal const int InstanceCount = 32;
     internal const int InstanceBytes = 32;
+    private const int IndirectBytes = 16;
     private const string ComputeShader = "Probes/SsboQuads.comp.glsl";
     private const string VertexShader = "Probes/SsboQuads.vert.glsl";
     private const string FragmentShader = "Probes/SsboQuads.frag.glsl";
@@ -25,6 +26,7 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
     private readonly bool disableBarrier;
     private readonly object gate = new();
     private Slot[] slots = Array.Empty<Slot>();
+    private int nextSlot;
     private ProbeDrawResources? resources;
     private ComputeKernel? kernel;
     private bool armed;
@@ -65,7 +67,7 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
         lock (gate)
         {
             armed = false;
-            foreach (Slot slot in slots) slot.EnqueuedFrame = 0;
+            foreach (Slot slot in slots) slot.Enqueued = false;
         }
     }
 
@@ -75,7 +77,13 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
         lock (gate)
         {
             if (slots.Length == 0) CreateResources();
-            SlotFor(context.FrameIndex).Aspect = (float)context.ViewportWidth / context.ViewportHeight;
+            // FrameNumber may skip: retain its identity, but rotate slots by actual capture count.
+            Slot slot = slots[nextSlot];
+            nextSlot = (nextSlot + 1) % slots.Length;
+            slot.FrameIndex = context.FrameIndex;
+            slot.Captured = true;
+            slot.Enqueued = false;
+            slot.Aspect = (float)context.ViewportWidth / context.ViewportHeight;
         }
     }
 
@@ -88,11 +96,12 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
             if (slots.Length == 0) return;
             slot = SlotFor(context.FrameIndex);
             if (kernel is null) return;
-            slot.EnqueuedFrame = context.FrameIndex + 1;
+            slot.Enqueued = true;
         }
 
         ComputeDispatch dispatch = ComputeDispatch.Rent(kernel!, 1, 1, 1);
         dispatch.SetStorageBuffer(0, slot.Instances);
+        dispatch.SetStorageBuffer(1, slot.Indirect);
         ComputePush push = new()
         {
             FramePhase = (float)(context.FrameIndex % 4096) * 0.137f,
@@ -113,10 +122,10 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
         {
             if (slots.Length == 0) return;
             slot = SlotFor(context.FrameIndex);
-            if (slot.EnqueuedFrame != context.FrameIndex + 1) return;
+            if (!slot.Enqueued) return;
         }
 
-        Span<VkBufferMemoryBarrier> bars = stackalloc VkBufferMemoryBarrier[1];
+        Span<VkBufferMemoryBarrier> bars = stackalloc VkBufferMemoryBarrier[2];
         bars[0] = new VkBufferMemoryBarrier
         {
             SrcAccessMask = VkAccessFlags.ShaderWriteBit,
@@ -126,6 +135,16 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
             Buffer = slot.Instances.Buffer,
             Offset = ByteSize.Zero,
             Size = ByteSize.Of(InstanceCount * InstanceBytes)
+        };
+        bars[1] = new VkBufferMemoryBarrier
+        {
+            SrcAccessMask = VkAccessFlags.ShaderWriteBit,
+            DstAccessMask = VkAccessFlags.ShaderReadBit | VkAccessFlags.IndirectCommandReadBit,
+            SrcQueueFamilyIndex = -1,
+            DstQueueFamilyIndex = -1,
+            Buffer = slot.Indirect.Buffer,
+            Offset = ByteSize.Zero,
+            Size = ByteSize.Of(IndirectBytes)
         };
         context.Frame.CommandBuffer.PipelineBarrier(
             VkPipelineStageFlags.ComputeShaderBit,
@@ -146,13 +165,13 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
         {
             if (slots.Length == 0) return;
             slot = SlotFor(context.FrameIndex);
-            if (slot.EnqueuedFrame != context.FrameIndex + 1) return;
+            if (!slot.Enqueued) return;
             draw = resources!;
         }
 
         FrameContext frame = context.Frame;
         draw.Bind(in frame, slot.Index);
-        frame.CommandBuffer.Draw(6, InstanceCount, 0, 0);
+        frame.CommandBuffer.DrawIndirect(slot.Indirect.Buffer, ByteSize.Zero, 1, ByteSize.Of(IndirectBytes));
         System.Threading.Interlocked.Increment(ref drawsRecorded);
     }
 
@@ -176,6 +195,7 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
         foreach (Slot slot in old)
         {
             slot.Instances.Dispose();
+            slot.Indirect.Dispose();
         }
     }
 
@@ -183,7 +203,9 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
     {
         EngineApplication app = EngineApplication.Instance ?? throw new InvalidOperationException("Waylith 主循环尚未创建。");
         DeviceEx device = app.Device;
-        int slotCount = app.RenderContext!.FramesInFlight + 2;
+        // RenderThread holds F queued packets, F submitted packets, one recording and one capturing.
+        // 2F+2 slots avoid reuse until the oldest GPU submission's fence has been consumed.
+        int slotCount = 2 * app.RenderContext!.FramesInFlight + 2;
 
         slots = new Slot[slotCount];
         for (int i = 0; i < slotCount; i++)
@@ -192,7 +214,9 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
             {
                 Index = i,
                 Instances = GpuTextureService.CreateComputeBuffer($"RimLumen.Probe.Ssbo{i}",
-                    InstanceCount * InstanceBytes) ?? throw new InvalidOperationException("GPU compute buffer service is not configured.")
+                    InstanceCount * InstanceBytes) ?? throw new InvalidOperationException("GPU compute buffer service is not configured."),
+                Indirect = GpuComputeBuffer.Create(device, app.GraphicsDevice!.Allocator,
+                    $"RimLumen.Probe.Indirect{i}", IndirectBytes, extraUsage: VkBufferUsageFlags.IndirectBufferBit)
             };
         }
         resources = new ProbeDrawResources(device, VertexShader, FragmentShader, depthTest: false,
@@ -202,11 +226,18 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
         kernel = ComputeKernelCache.Load(ComputeShader, "main",
             new ReadOnlySpan<ComputeBinding>(new[]
             {
-                new ComputeBinding(0, ComputeBindingType.StorageBuffer)
+                new ComputeBinding(0, ComputeBindingType.StorageBuffer),
+                new ComputeBinding(1, ComputeBindingType.StorageBuffer)
             }), Marshal.SizeOf<ComputePush>());
     }
 
-    private Slot SlotFor(ulong frameIndex) => slots[(int)(frameIndex % (ulong)slots.Length)];
+    private Slot SlotFor(ulong frameIndex)
+    {
+        foreach (Slot slot in slots)
+            if (slot.Captured && slot.FrameIndex == frameIndex)
+                return slot;
+        throw new InvalidOperationException($"No captured SSBO probe slot for frame {frameIndex}.");
+    }
 
     private static void DestroyAfterIdle(ProbeDrawResources? draw)
     {
@@ -222,8 +253,10 @@ public sealed class SsboBarrierProbeContributor : ILumenFrameContributor, IDispo
         internal int Index;
         internal float Aspect;
         internal GpuComputeBuffer Instances = null!;
-        // FrameIndex + 1 of the dispatch enqueued into this slot; 0 means "nothing pending".
-        internal ulong EnqueuedFrame;
+        internal GpuComputeBuffer Indirect = null!;
+        internal ulong FrameIndex;
+        internal bool Captured;
+        internal bool Enqueued;
     }
 
     [StructLayout(LayoutKind.Sequential)]

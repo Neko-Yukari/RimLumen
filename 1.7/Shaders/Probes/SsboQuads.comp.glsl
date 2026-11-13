@@ -1,6 +1,6 @@
 #version 450
 
-// T1b probe: writes per-instance quad records. Indirect args await the Vma assembly reference.
+// T1b probe: writes per-instance quad records and the four uint VkDrawIndirectCommand fields.
 // set 0 is the compute kernel layout built by ComputeKernelCache from the binding list in C#.
 
 struct QuadInstance
@@ -16,6 +16,14 @@ layout(set = 0, binding = 0) buffer QuadInstances
 {
     QuadInstance instances[];
 } quads;
+
+layout(set = 0, binding = 1) buffer DrawArguments
+{
+    uint vertexCount;
+    uint instanceCount;
+    uint firstVertex;
+    uint firstInstance;
+} args;
 
 layout(push_constant) uniform Push
 {
@@ -47,4 +55,11 @@ void main()
     quads.instances[i].size = vec2(push.quadSize / max(push.aspect, 0.001), push.quadSize);
     quads.instances[i].color = vec4(1.0 + 2.5 * flicker, 0.4 + 1.6 * (1.0 - flicker), 0.2, 1.0);
 
+    if (i == 0u)
+    {
+        args.vertexCount = 6u;
+        args.instanceCount = COUNT;
+        args.firstVertex = 0u;
+        args.firstInstance = 0u;
+    }
 }
