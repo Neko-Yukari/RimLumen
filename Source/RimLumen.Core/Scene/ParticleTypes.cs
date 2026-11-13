@@ -43,8 +43,8 @@ public struct CpuParticle
 /// </summary>
 public interface IL1ParticleBatchSink
 {
-    // Requires: called on the main thread inside the RimLumen VFX pass.
-    // Ensures: submits one dynamic quad batch (4 vertices per particle, 6 indices per particle)
-    //          using the given spans; the spans are only valid for the duration of the call.
+    // Requires: called on the render thread inside the RimLumen HDR VFX pass; main-thread staging
+    //           of mutable simulator buffers must already have completed during CaptureMainThread.
+    // Ensures: submits one dynamic quad batch (4 vertices per particle, 6 indices per particle).
     void Submit(ReadOnlySpan<ParticleVertex> vertices, ReadOnlySpan<uint> indices, int liveParticleCount);
 }
