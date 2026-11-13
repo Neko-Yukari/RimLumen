@@ -32,8 +32,28 @@
       <HintPath>$(GameRoot)/Brutal.Vulkan.Abstractions.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Brutal.Vulkan.Vma">
+      <HintPath>$(GameRoot)/Brutal.Vulkan.Vma.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Brutal.Core.Collections">
+      <HintPath>$(GameRoot)/Brutal.Core.Collections.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Brutal.Core.Common">
       <HintPath>$(GameRoot)/Brutal.Core.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Brutal.Core.Strings">
+      <HintPath>$(GameRoot)/Brutal.Core.Strings.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Brutal.Interop">
+      <HintPath>$(GameRoot)/Brutal.Interop.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Brutal.Texture">
+      <HintPath>$(GameRoot)/Brutal.Texture.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Brutal.Core.Maths">
