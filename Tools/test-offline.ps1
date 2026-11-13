@@ -9,7 +9,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$testProj = Join-Path $repoRoot 'Tests/RimLumen.Core.Tests/RimLumen.Core.Tests.csproj'
+$testProjects = @(
+    (Join-Path $repoRoot 'Tests/RimLumen.Core.Tests/RimLumen.Core.Tests.csproj'),
+    (Join-Path $repoRoot 'Tests/RimLumen.Adapter.RimUnity.Tests/RimLumen.Adapter.RimUnity.Tests.csproj')
+)
 
 if (-not (Test-Path -LiteralPath $DotnetExe)) {
     throw "Portable .NET 10 SDK not found at: $DotnetExe"
@@ -22,12 +25,14 @@ $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE = '1'
 New-Item -ItemType Directory -Force -Path $env:DOTNET_CLI_HOME | Out-Null
 
-$runArgs = @('run', '--project', $testProj, '-c', $Configuration, '--')
-if ($Filter) {
-    $runArgs += @('--filter', $Filter)
-}
+foreach ($testProj in $testProjects) {
+    $runArgs = @('run', '--project', $testProj, '-c', $Configuration, '--')
+    if ($Filter) {
+        $runArgs += @('--filter', $Filter)
+    }
 
-& $DotnetExe @runArgs
-if ($LASTEXITCODE -ne 0) {
-    throw "Offline tests failed with exit code $LASTEXITCODE"
+    & $DotnetExe @runArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Offline tests failed for $testProj with exit code $LASTEXITCODE"
+    }
 }

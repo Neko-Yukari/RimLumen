@@ -18,7 +18,7 @@ public static class RimUnityAdapterBootstrap
         foreach (var mod in mods)
         {
             string directory = Path.Combine(mod.RootDir, "1.7", "Data", "RimUnity");
-            if (File.Exists(Path.Combine(directory, "catalog.json")) || File.Exists(Path.Combine(directory, "catalog.json.gz")))
+            if (File.Exists(Path.Combine(directory, "catalog.json")))
                 provider.RegisterPackageRoot(mod.PackageIdPlayerFacing, directory);
         }
         LumenSceneBootstrap.EnsureInitialized();

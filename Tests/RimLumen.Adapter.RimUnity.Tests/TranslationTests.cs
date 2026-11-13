@@ -38,7 +38,6 @@ internal static class TranslationTests
         Check.Reasons(["renderMode.Mesh"], meshResult.Reasons, "mesh reasons");
         AssertFallback("velocityOverLifetime", Data(("enabled", Number(1)), ("x", Constant(2))), "velocityOverLifetime.linear");
         AssertFallback("rotationOverLifetime", Data(("enabled", Number(1))), "rotationOverLifetime");
-        AssertFallback("forceOverLifetime", Data(("enabled", Number(1)), ("x", Constant(2))), "forceOverLifetime.lateral");
         AssertFallback("forceOverLifetime", Data(("enabled", Number(1)), ("y", Curve(0, 1))), "forceOverLifetime.curve");
         AssertFallback("lights", Data(("enabled", Number(1)), ("ratio", Number(0.5f))), "lights.ratio");
         var probabilistic = Particles();
@@ -98,21 +97,41 @@ internal static class TranslationTests
         foreach (int max in new[] { 32, 256 })
         {
             var particles = Particles(max);
-            particles.members.Single(m => m.name == "shape").value = Data(("enabled", Number(1)), ("shapeType", Number(0)));
+            particles.members.Single(m => m.name == "shape").value = Data(("enabled", Number(1)), ("shapeType", Number(0)), ("radius", Number(0)));
             particles.members.Single(m => m.name == "main").value.fields.Add(Member("gravityModifier", Constant(2)));
+            particles.members.Single(m => m.name == "main").value.fields.RemoveAll(m => m.name == "startSpeed");
+            particles.members.Single(m => m.name == "main").value.fields.Add(Member("startSpeed", Constant(0)));
+            particles.members.Add(Member("forceOverLifetime", Data(("enabled", Number(1)), ("x", Constant(4)), ("z", Constant(-2)))));
             particles.members.Add(Member("limitVelocityOverLifetime", Data(("enabled", Number(1)), ("dampen", Number(.25f)))));
             var asset = new RimUnityPrefabTranslator().Translate("gravity", Prefab(particles), _ => null, _ => null, out var report);
             Check.Equal(max == 32 ? LumenParticleTier.L1_NativeCpu : LumenParticleTier.L2_GpuCompute, report.Nodes.Single().Tier, "gravity tier");
             ForceFieldSpec force = asset.Nodes.Single().Emitter!.ForceFields.Single();
             Check.Equal(ForceFieldKind.GravityDrag, force.Kind, "gravity kind");
-            Check.Equal(new Vector3(0, -19.62f, 0), force.CenterOrAxis, "canonical acceleration");
+            Check.Equal(new Vector3(4, -19.62f, -2), force.CenterOrAxis, "canonical acceleration");
             Check.Equal(new Vector3(.25f, 0, 0), force.Parameters, "canonical drag");
             Check.Equal(0f, force.Radius, "canonical radius");
             Check.Equal(1f, force.Strength, "canonical strength");
             if (first.HasValue) Check.Equal(first.Value, force, "L1 and L2 canonical fields identical");
             first = force;
+
+            var sim = new RimLumen.Core.Scene.CpuParticleSimulator();
+            int emitterId = sim.AcquireEmitter(asset.Nodes.Single().Emitter!, Matrix4x4.Identity, emitting: false);
+            sim.EmitBurst(emitterId, 1);
+            float dt = 0.5f;
+            sim.CaptureMainThread(new LumenCaptureContext
+            {
+                FrameIndex = 1,
+                DeltaTime = dt,
+                ViewportWidth = 1920,
+                ViewportHeight = 1080,
+                ViewMatrix = Matrix4x4.Identity,
+                ProjectionMatrix = Matrix4x4.Identity,
+                LumenRenderPassId = 0,
+            });
+            Vector3 expectedVel = new Vector3(4, -19.62f, -2) * dt * MathF.Exp(-0.25f * dt);
+            Check.True(Vector3.Distance(expectedVel, sim.LiveParticles[0].Velocity) < 1e-4f, "CPU simulator matches canonical 3D GravityDrag velocity");
         }
-        Console.WriteLine("GRAVITY fields L1==L2 accel=(0,-19.62,0) drag=(0.25,0,0) radius=0 strength=1; CPU physics NOT tested");
+        Console.WriteLine("GRAVITY fields L1==L2 accel=(4,-19.62,-2) drag=(0.25,0,0) radius=0 strength=1; CPU physics verified on L1 + L2->CPU fallback");
     }
 
     private static void AssertFallback(string module, ValueData value, string reason)

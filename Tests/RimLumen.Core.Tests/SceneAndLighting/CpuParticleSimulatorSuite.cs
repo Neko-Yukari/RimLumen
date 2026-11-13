@@ -267,6 +267,27 @@ public static class CpuParticleSimulatorSuite
     }
 
     [LumenFact]
+    public static void CanonicalThreeDimensionalGravityDragMatchesGpuFormula()
+    {
+        var simulator = new CpuParticleSimulator();
+        int id = simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "canonical-gravity", StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+            StartSpeedMin = 0f, StartSpeedMax = 0f,
+            ForceFields = new[]
+            {
+                new ForceFieldSpec(ForceFieldKind.GravityDrag, new Vector3(4f, -19.62f, -2f), new Vector3(0.25f, 0f, 0f), 0f, 1f),
+            },
+        }, Matrix4x4.Identity, false);
+        simulator.EmitBurst(id, 1);
+        float dt = 0.5f;
+        Step(simulator, dt);
+        Vector3 expectedVel = new Vector3(4f, -19.62f, -2f) * dt * MathF.Exp(-0.25f * dt);
+        Vector(expectedVel, simulator.LiveParticles[0].Velocity);
+        Vector(expectedVel * dt, simulator.LiveParticles[0].Position);
+    }
+
+    [LumenFact]
     public static void LifetimeBoundaryDrainAndImmediateStop()
     {
         var simulator = new CpuParticleSimulator();

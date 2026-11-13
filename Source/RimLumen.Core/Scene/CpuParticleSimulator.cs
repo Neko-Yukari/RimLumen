@@ -310,8 +310,16 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             switch (field.Kind)
             {
                 case ForceFieldKind.GravityDrag:
-                    particle.Velocity.Y -= field.Parameters.X * dt;
-                    particle.Velocity *= MathF.Max(0f, 1f - field.Parameters.Y * dt);
+                    if (field.CenterOrAxis != Vector3.Zero || field.Strength != 0f)
+                    {
+                        particle.Velocity = (particle.Velocity + field.CenterOrAxis * (field.Strength * dt))
+                            * MathF.Exp(-MathF.Max(0f, field.Parameters.X) * dt);
+                    }
+                    else
+                    {
+                        particle.Velocity.Y -= field.Parameters.X * dt;
+                        particle.Velocity *= MathF.Max(0f, 1f - field.Parameters.Y * dt);
+                    }
                     break;
                 case ForceFieldKind.Vortex:
                     Vector3 axis = NormalizeOr(field.CenterOrAxis, Vector3.UnitY);

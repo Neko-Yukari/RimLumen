@@ -49,8 +49,6 @@ public sealed class RimUnityTierClassifier
             }
         bool gpu = maxParticles >= L2ParticleThreshold || rate * maxLifetime + maxBurst >= L2ParticleThreshold;
         AddShapeReasons(Member(particleSystem.members, "shape"), main, gpu, reasons);
-        if (!gpu && Enabled(force) && (Nonzero(Field(force, "x")) || Nonzero(Field(force, "z"))))
-            reasons.Add("forceOverLifetime.lateral");
         if (reasons.Count != 0) return (LumenParticleTier.L0_ExternalCpu, reasons);
         if (maxParticles >= L2ParticleThreshold) reasons.Add("maxParticles >= L2ParticleThreshold");
         if (rate * maxLifetime + maxBurst >= L2ParticleThreshold) reasons.Add("peakConcurrent >= L2ParticleThreshold");
