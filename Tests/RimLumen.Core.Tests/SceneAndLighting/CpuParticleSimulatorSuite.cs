@@ -104,6 +104,63 @@ public static class CpuParticleSimulatorSuite
     }
 
     [LumenFact]
+    public static void NonLoopingDurationStopsRateAndDrainsParticles()
+    {
+        var spec = new EmitterSpec
+        {
+            Name = "one-shot", Looping = false, Duration = 0.5f, RateOverTime = 4f,
+            StartLifetimeMin = 3f, StartLifetimeMax = 3f,
+        };
+        var simulator = new CpuParticleSimulator();
+        simulator.AcquireEmitter(spec, Matrix4x4.Identity);
+        Step(simulator, 0.5f);
+        Check(simulator.LiveParticleCount == 2, "Half-second emits exactly two particles");
+        Step(simulator, 0.5f);
+        Check(simulator.LiveParticleCount == 2, "One-shot still has only two particles at one second");
+        Step(simulator, 1f);
+        Check(simulator.LiveParticleCount == 2 && simulator.HasActiveWork, "No more spawns at two seconds; live particles keep work active");
+        Step(simulator, 1.5f);
+        Check(simulator.LiveParticleCount == 0 && !simulator.HasActiveWork, "Particles expire at age three and one-shot drains");
+
+        var crossing = new CpuParticleSimulator();
+        crossing.AcquireEmitter(spec, Matrix4x4.Identity);
+        Step(crossing, 1f);
+        Check(crossing.LiveParticleCount == 2, "A step crossing Duration only accumulates half a second of emission");
+    }
+
+    [LumenFact]
+    public static void LoopingDurationKeepsEmittingAcrossThreeCycles()
+    {
+        var simulator = new CpuParticleSimulator();
+        simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "loop-rate", Looping = true, Duration = 0.5f, RateOverTime = 4f,
+            StartLifetimeMin = 3f, StartLifetimeMax = 3f,
+        }, Matrix4x4.Identity);
+        Step(simulator, 0.5f);
+        Check(simulator.LiveParticleCount == 2, "First cycle emits two");
+        Step(simulator, 0.5f);
+        Check(simulator.LiveParticleCount == 4, "Second cycle emits two more");
+        Step(simulator, 0.5f);
+        Check(simulator.LiveParticleCount == 6 && simulator.HasActiveWork, "Third cycle emits two more and remains active");
+    }
+
+    [LumenFact]
+    public static void NonLoopingBurstBeyondDurationNeverFires()
+    {
+        var simulator = new CpuParticleSimulator();
+        simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "late-burst", Looping = false, Duration = 0.5f,
+            StartLifetimeMin = 3f, StartLifetimeMax = 3f, Bursts = new[] { (0.75f, 2) },
+        }, Matrix4x4.Identity);
+        Step(simulator, 1f);
+        Check(simulator.LiveParticleCount == 0, "Burst at 0.75 is outside the half-second duration");
+        Step(simulator, 1f);
+        Check(simulator.LiveParticleCount == 0 && !simulator.HasActiveWork, "Expired empty emitter remains idle");
+    }
+
+    [LumenFact]
     public static void VortexTurnsPositiveXIntoNegativeZ()
     {
         var simulator = new CpuParticleSimulator();
@@ -249,17 +306,31 @@ public static class CpuParticleSimulatorSuite
     public static void HorizontalStretchedAndMeshBillboards()
     {
         var simulator = new CpuParticleSimulator();
-        int horizontal = simulator.AcquireEmitter(new EmitterSpec { Name = "horizontal", BillboardMode = LumenBillboardMode.Horizontal, StartSizeMin = 2f, StartSizeMax = 2f }, Matrix4x4.Identity, false);
+        int horizontal = simulator.AcquireEmitter(new EmitterSpec { Name = "horizontal", BillboardMode = LumenBillboardMode.Horizontal, StartSizeMin = 2f, StartSizeMax = 2f }, Matrix4x4.CreateTranslation(0f, 5f, 0f), false);
         int stretched = simulator.AcquireEmitter(new EmitterSpec { Name = "stretched", BillboardMode = LumenBillboardMode.StretchedVelocity, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 2f, StartSpeedMax = 2f, VelocityStretchFactor = 2f }, Matrix4x4.CreateRotationX(-MathF.PI / 2f), false);
         int mesh = simulator.AcquireEmitter(new EmitterSpec { Name = "mesh", BillboardMode = LumenBillboardMode.Mesh, StartSizeMin = 2f, StartSizeMax = 2f }, Matrix4x4.Identity, false);
         simulator.EmitBurst(horizontal, 1); simulator.EmitBurst(stretched, 1); simulator.EmitBurst(mesh, 1);
         Step(simulator, 0f);
-        Vector(new Vector3(-1f, -1f, 0f), simulator.Vertices[0].Position);
+        Vector(new Vector3(-1f, 5f, 1f), simulator.Vertices[0].Position);
+        Vector(new Vector3(1f, 5f, 1f), simulator.Vertices[1].Position);
+        Vector(new Vector3(1f, 5f, -1f), simulator.Vertices[2].Position);
+        Vector(new Vector3(-1f, 5f, -1f), simulator.Vertices[3].Position);
+        Vector(new Vector3(0f, 4f, 0f), Vector3.Cross(
+            simulator.Vertices[1].Position - simulator.Vertices[0].Position,
+            simulator.Vertices[2].Position - simulator.Vertices[0].Position));
         Vector(new Vector3(-1f, -5f, 0f), simulator.Vertices[4].Position);
         Vector(new Vector3(1f, 5f, 0f), simulator.Vertices[6].Position);
         Vector(new Vector3(-1f, -1f, 0f), simulator.Vertices[8].Position);
+        Step(simulator, 0f, Matrix4x4.CreateRotationY(MathF.PI / 4f));
+        Vector(new Vector3(-MathF.Sqrt(2f), 5f, 0f), simulator.Vertices[0].Position);
+        Vector(new Vector3(0f, 5f, MathF.Sqrt(2f)), simulator.Vertices[1].Position);
+        Vector(new Vector3(MathF.Sqrt(2f), 5f, 0f), simulator.Vertices[2].Position);
+        Vector(new Vector3(0f, 5f, -MathF.Sqrt(2f)), simulator.Vertices[3].Position);
+        Vector(new Vector3(0f, 4f, 0f), Vector3.Cross(
+            simulator.Vertices[2].Position - simulator.Vertices[0].Position,
+            simulator.Vertices[3].Position - simulator.Vertices[0].Position));
         Step(simulator, 0f, Matrix4x4.CreateRotationZ(MathF.PI / 2f));
-        Vector(new Vector3(-1f, -1f, 0f), simulator.Vertices[0].Position);
+        Vector(new Vector3(-1f, 5f, 1f), simulator.Vertices[0].Position);
     }
 
     [LumenFact]
@@ -310,6 +381,36 @@ public static class CpuParticleSimulatorSuite
         Check(simulator.LiveParticles[0].FlipbookFrame == 3, "Three-quarter lifetime frame three");
         Uv(new Vector2(0.5f, 0f), simulator.Vertices[0].Uv);
         Uv(new Vector2(1f, 0.5f), simulator.Vertices[2].Uv);
+    }
+
+    [LumenFact]
+    public static void TwoFlipbookCyclesRepeatAndKeepUvsInsideEachTile()
+    {
+        var simulator = new CpuParticleSimulator();
+        int id = simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "two-cycles", StartLifetimeMin = 4f, StartLifetimeMax = 4f,
+            FlipbookTilesX = 2, FlipbookTilesY = 2, FlipbookCycles = 2f,
+        }, Matrix4x4.Identity, false);
+        simulator.EmitBurst(id, 1);
+        var samples = new[]
+        {
+            (Dt: 0.5f, Frame: 1, Min: new Vector2(0.5f, 0.5f), Max: new Vector2(1f, 1f)),
+            (Dt: 0.5f, Frame: 2, Min: new Vector2(0f, 0f), Max: new Vector2(0.5f, 0.5f)),
+            (Dt: 1f, Frame: 0, Min: new Vector2(0f, 0.5f), Max: new Vector2(0.5f, 1f)),
+            (Dt: 1.5f, Frame: 3, Min: new Vector2(0.5f, 0f), Max: new Vector2(1f, 0.5f)),
+        };
+        foreach (var sample in samples)
+        {
+            Step(simulator, sample.Dt);
+            Check(simulator.LiveParticles[0].FlipbookFrame == sample.Frame,
+                $"At age {simulator.LiveParticles[0].Age}, expected frame {sample.Frame}, got {simulator.LiveParticles[0].FlipbookFrame}");
+            Uv(sample.Min, simulator.Vertices[0].Uv);
+            Uv(sample.Max, simulator.Vertices[2].Uv);
+            foreach (var vertex in simulator.Vertices)
+                Check(vertex.Uv.X >= sample.Min.X && vertex.Uv.X <= sample.Max.X
+                    && vertex.Uv.Y >= sample.Min.Y && vertex.Uv.Y <= sample.Max.Y, "UV stays inside the expected tile");
+        }
     }
 
     [LumenFact]

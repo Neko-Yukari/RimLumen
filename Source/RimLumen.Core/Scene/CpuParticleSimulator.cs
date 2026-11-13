@@ -163,10 +163,13 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             double start = emitter.Time;
             double end = start + dt;
             bool looping = spec.Looping && spec.Duration > 0f;
+            bool limited = !spec.Looping && spec.Duration > 0f;
+            double emissionEnd = limited ? Math.Min(end, spec.Duration) : end;
             emitter.Time = looping ? end % spec.Duration : end;
             if (emitter.State == EmissionState.Emitting)
             {
-                emitter.RateRemainder += (double)spec.RateOverTime * emitter.RateMultiplier * dt;
+                double emissionDt = Math.Max(0d, emissionEnd - start);
+                emitter.RateRemainder += (double)spec.RateOverTime * emitter.RateMultiplier * emissionDt;
                 double count = Math.Floor(emitter.RateRemainder);
                 emitter.RateRemainder -= count;
                 Spawn(id, emitter, (int)Math.Min(Math.Max(0, count), spec.MaxParticles));
@@ -174,13 +177,14 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 {
                     double crossings = looping
                         ? Math.Floor((end - burst.Time) / spec.Duration) - Math.Floor((start - burst.Time) / spec.Duration)
-                        : (start < burst.Time && end >= burst.Time ? 1 : 0);
+                        : (start < burst.Time && emissionEnd >= burst.Time ? 1 : 0);
                     if (looping && (burst.Time < 0 || burst.Time > spec.Duration)) crossings = 0;
                     if (!emitter.Started && burst.Time == 0f && dt > 0f) crossings++;
                     if (crossings > 0)
                         Spawn(id, emitter, (int)Math.Min(crossings * burst.Count, spec.MaxParticles));
                 }
             }
+            if (limited && end >= spec.Duration) emitter.State = EmissionState.Draining;
             if (dt > 0f) emitter.Started = true;
         }
         for (int i = 0; i < existingCount; i++)
@@ -352,7 +356,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             particle.Size = particle.StartSize * CurveEvaluator.Evaluate(spec.SizeOverLifetime, age) * spec.LengthScale;
             particle.Color = spec.StartColorLinear * GradientEvaluator.Evaluate(spec.ColorOverLifetime, age) * (spec.HdrIntensity * emitter.IntensityMultiplier);
             int tiles = spec.FlipbookTilesX * spec.FlipbookTilesY;
-            particle.FlipbookFrame = Math.Clamp((int)(age * spec.FlipbookCycles * tiles), 0, tiles - 1);
+            int frame = (int)MathF.Floor(age * spec.FlipbookCycles * tiles);
+            particle.FlipbookFrame = tiles > 1 && spec.FlipbookCycles > 1f
+                ? frame % tiles : Math.Clamp(frame, 0, tiles - 1);
             Vector3 position = particle.Position, velocity = particle.Velocity;
             if (!spec.WorldSpaceSimulation)
             {
@@ -363,8 +369,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             float halfWidth = particle.Size * 0.5f, halfHeight = halfWidth;
             if (spec.BillboardMode == LumenBillboardMode.Horizontal)
             {
-                up = Vector3.UnitY;
                 right = NormalizeOr(new Vector3(cameraRight.X, 0f, cameraRight.Z), Vector3.UnitX);
+                up = NormalizeOr(Vector3.Cross(Vector3.UnitY, right), Vector3.UnitZ);
             }
             else if (spec.BillboardMode == LumenBillboardMode.StretchedVelocity)
             {
