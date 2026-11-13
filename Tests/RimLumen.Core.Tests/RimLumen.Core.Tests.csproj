@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>RimLumen.Core.Tests</AssemblyName>
+    <RootNamespace>RimLumen.Core.Tests</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <GenerateDependencyFile>true</GenerateDependencyFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Source\RimLumen.Core\RimLumen.Core.csproj" />
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(GameRoot)/Assembly-CSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="RimWorld">
+      <HintPath>$(GameRoot)/RimWorld.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityStubs">
+      <HintPath>$(GameRoot)/UnityStubs.dll</HintPath>
+    </Reference>
+    <Reference Include="Waylith">
+      <HintPath>$(GameRoot)/Waylith.dll</HintPath>
+    </Reference>
+    <Reference Include="Brutal.Vulkan">
+      <HintPath>$(GameRoot)/Brutal.Vulkan.dll</HintPath>
+    </Reference>
+    <Reference Include="Brutal.Vulkan.Abstractions">
+      <HintPath>$(GameRoot)/Brutal.Vulkan.Abstractions.dll</HintPath>
+    </Reference>
+    <Reference Include="Brutal.Core.Numerics">
+      <HintPath>$(GameRoot)/Brutal.Core.Numerics.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

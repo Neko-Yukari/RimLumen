@@ -1,27 +1,22 @@
 # RimLumen
 
-RimWorld 1.7 跑在 **Waylith** 引擎上（Ludeon 自研，基于 RocketWerkz/Ahwoo 的 Brutal 框架：.NET + Vulkan + Slang + GLFW），不是 Unity。Unity 的 API 由游戏根目录的 `UnityStubs.dll` / `Waylith.UnityCompat.dll` 模拟。
+面向 RimWorld 1.7（Waylith / Vulkan + Slang）的独立视效资产与 HDR 渲染子引擎。默认作为零侵入基础框架层运行（空载 0 像素改动），0 处 Harmony 补丁，与 RimIris、Raycast Lighting、Celestial Lighting 正交共存。
 
-现有的 Unity 兼容层是 **RimUnity**（`Chezhou.RimUnity`，MIT，作者 chezhou9413）：它把一部分 Unity 组件在 Waylith 上重新实现，模组才能「在 Unity 里制作、在游戏里播放」。
+## 架构与目录归属
 
-**RimLumen** 是这一层的现代渲染基础设施：
+- `Source/RimLumen.Core/Contracts/`：跨模块共享契约与注册表（主干 `master` 冻结维护）。
+- `Source/RimLumen.Core/Rendering/`、`1.7/Shaders/PostFx/`：P0 探针、HDR `RGBA16F` 渲染与深度共享、多级 Bloom、局部色调映射、扭曲采样、UI 前顺位守卫与像素零差自检（`gpu-foundation`）。
+- `Source/RimLumen.Core/{Assets,Scene,Lighting}/`：原生 `EffectGraph` 节点树（2.5D 地面层 + 90° 高度层）、曲线与时间轴、L1 原生轻量 CPU 粒子、高频 `RegisterCustomGlower` 随身点光（`scene-and-lighting`）。
+- `Source/RimLumen.Core/ParticlesGpu/`、`1.7/Shaders/Particles/`：L2 GPU Compute 粒子与流体力场（Curl/Vortex/吸引子）及 SSBO 直绘（`gpu-particles`）。
+- `Source/RimLumen.Adapter.RimUnity/`、`Source/RimLumen.Core/Compat/`：P3 过渡期可拔除导入桥接与默认关闭的原版加色发光体重画器（`adapter-rimunity`）。
 
-- HDR 渲染目标、局部色调映射、曝光、分层泛光、热扭曲、计算着色器粒子
-- 一套能承载这些能力的资源格式与加载器
-- 一套能力查询接口，让模组按「后端支持什么」降级，而不是按「装了哪个模组」写分支
+## 构建与离线测试
 
-## 与 RimUnity 的关系（待定）
+使用本机便携版 .NET 10 SDK（`Tools/build.ps1` 自动定位）：
 
-调研后决定：给上游提 PR，还是独立实现并复用其导出格式。判据是复用比例——如果 RimUnity 的导出格式、粒子运行时、材质转换能直接吃下，就做独立实现并兼容其格式，避免两份 RimUnity 冲突；如果核心渲染通道必须改在它内部，就走 PR。
+```powershell
+pwsh -NoProfile -File Tools/build.ps1
+pwsh -NoProfile -File Tools/test-offline.ps1
+```
 
-## 不以修改游戏本体为前提
-
-不 patch Waylith 内部私有结构，优先走 `UnityStubs` 暴露的公开 API 与 RimUnity 已有的扩展点。
-
-## 状态
-
-规划阶段，尚无实现。任务书见 `docs/00-brief.md`，事实与证据见 `docs/01-research.md`。
-
-## 使用方
-
-`Whisper-of-the-Forest`（`NekoYukari.WhisperOfTheForest`）是第一个使用者，但本项目按通用库设计。模组开源，素材可以用 CC-BY-SA / GPL 这类宽松或传染许可，只需在引用处标注来源与许可。
+策划与定稿决策见 `docs/02-plan.md` 与 `docs/03-decisions.md`。

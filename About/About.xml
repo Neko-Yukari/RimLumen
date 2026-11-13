@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <packageId>NekoYukari.RimLumen</packageId>
+  <name>RimLumen</name>
+  <author>Neko_Yukari</author>
+  <supportedVersions>
+    <li>1.7</li>
+  </supportedVersions>
+  <description>Native HDR VFX asset and GPU compute particle sub-engine for RimWorld 1.7 (Waylith / Vulkan).</description>
+</ModMetaData>
