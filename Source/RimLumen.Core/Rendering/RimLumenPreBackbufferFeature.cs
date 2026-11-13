@@ -65,6 +65,7 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
                 ?? throw new InvalidOperationException("Active RimLumen frame has no scene color/depth source.");
             if (!scene.HasDepth) throw new InvalidOperationException("RimLumen requires scene depth.");
             HdrTargets.Slot slot = owner.Targets.Ensure(ctx.SubmissionFrameIndex, scene);
+            HdrDepthSnapshot.Record(ctx.CommandBuffer, scene, slot.DepthSnapshot);
             var frame = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer, owner.Targets.RenderPass,
                 slot.Framebuffer, slot.Color.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat, scene.DepthFormat);
             frame.CommandBuffer.BeginDebugLabel("RimLumen/HDR\0"u8, new float4(1f, 0.5f, 0f, 1f));
@@ -85,7 +86,7 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
             var drawContext = new LumenHdrDrawContext
             {
                 Frame = frame, FrameIndex = payload.Index, HdrColorTarget = slot.Color,
-                SceneColorDepthSource = scene, ViewProjection = payload.Mesh.View.ViewProjection,
+                SceneColorDepthSource = slot.DepthSnapshot, ViewProjection = payload.Mesh.View.ViewProjection,
                 SoftParticleDepthParams = payload.DepthParams
             };
             owner.L1Renderer.BeginRecord(in drawContext);
