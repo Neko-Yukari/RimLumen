@@ -179,6 +179,8 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     //      a looping asset (any emitter with Looping) rewinds them so the next cycle fires them again.
     //   4. every emitter binding is pushed to its backend (SetEmitterTransform/SetEmitterParams or
     //      UpdateInstance), every light binding calls MapGlowerDriver.Update with this frame's cell.
+    //      A bound driver that has been disposed means the map is gone: the handle calls Stop(false)
+    //      instead of rebinding its lights to another map.
     //   5. a fade-out stop that has finished (all emitters released, lights removed) marks the handle dead.
     internal void Advance(float deltaTime)
     {

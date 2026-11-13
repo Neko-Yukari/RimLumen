@@ -56,8 +56,11 @@ public static class SpacePlaneTransform
 
     // Requires: asset is non-null; destination.Length >= asset.Nodes.Length; every
     //           Nodes[i].ParentIndex is -1 or in [0, i) (see InMemoryAssetCatalog.Register).
-    // Ensures: destination[i] == (Nodes[i].ParentIndex < 0 ? rootWorld : destination[Nodes[i].ParentIndex])
-    //          * BuildLocalMatrix(Nodes[i]), so a node inherits its parent's accumulated transform.
+    // Ensures: destination[i] == BuildLocalMatrix(Nodes[i]) *
+    //          (Nodes[i].ParentIndex < 0 ? rootWorld : destination[Nodes[i].ParentIndex]).
+    //          Under the row-vector convention v' = v * M this is "local first, then parent", because
+    //          v * L * P == v * (L * P): translating a child by (1,0,0) under a root that scales 2,
+    //          yaws 90 degrees and sits at (10,0,20) yields (10,0,18), not (11,0,20).
     // Ensures: writes exactly Nodes.Length entries and reads nothing past them.
     public static void BuildWorldMatrices(EffectAsset asset, Matrix4x4 rootWorld, Span<Matrix4x4> destination)
     {
@@ -65,7 +68,7 @@ public static class SpacePlaneTransform
         {
             var node = asset.Nodes[i];
             var parent = node.ParentIndex < 0 ? rootWorld : destination[node.ParentIndex];
-            destination[i] = parent * BuildLocalMatrix(node);
+            destination[i] = BuildLocalMatrix(node) * parent;
         }
     }
 }

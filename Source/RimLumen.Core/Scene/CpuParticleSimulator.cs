@@ -149,6 +149,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     // Requires: main thread; context.DeltaTime >= 0.
     // Ensures: advances emitter time, spawns rate/burst particles, integrates the four force-field
     //          kinds, expires particles, and rebuilds the quad/vertex/index batch for this frame.
+    // Ensures: a Looping emitter wraps its time at Duration and keeps emitting; a non-looping emitter
+    //          stops emitting once its time passes Duration, while already spawned particles finish
+    //          their own lifetime.
     public void CaptureMainThread(in LumenCaptureContext context)
     {
         int existingCount = particleCount;

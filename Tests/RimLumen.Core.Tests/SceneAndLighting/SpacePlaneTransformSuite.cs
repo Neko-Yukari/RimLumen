@@ -99,7 +99,7 @@ public static class SpacePlaneTransformSuite
     }
 
     [LumenFact]
-    public static void WorldMatricesUseParentTimesLocalAndWriteOnlyNodeSlots()
+    public static void WorldMatricesComposeLocalThenParentAndWriteOnlyNodeSlots()
     {
         var asset = new EffectAsset
         {
@@ -126,16 +126,21 @@ public static class SpacePlaneTransformSuite
         storage.Fill(sentinel);
         var destination = storage[1..];
         SpacePlaneTransform.BuildWorldMatrices(asset, root, destination);
-        AssertClose(new Vector3(11f, 22f, 33f), Vector3.Transform(Vector3.Zero, destination[0]));
-        AssertClose(new Vector3(27f, 72f, 139f), Vector3.Transform(Vector3.Zero, destination[1]));
-        AssertClose(new Vector3(0f, 0f, -8f), Vector3.TransformNormal(Vector3.UnitX, destination[1]));
+        // first: (0,0,0) + (1,2,3) = (1,2,3), x2 = (2,4,6), yaw 90 = (6,4,-2), + (10,20,30).
+        AssertClose(new Vector3(16f, 24f, 28f), Vector3.Transform(Vector3.Zero, destination[0]));
+        // child: (5,6,7) + (1,2,3) = (6,8,10), x2 = (12,16,20), yaw 90 = (20,16,-12), + (10,20,30).
+        AssertClose(new Vector3(30f, 36f, 18f), Vector3.Transform(Vector3.Zero, destination[1]));
+        // child axes: local scale (2,3,4) once, then the root's x2 and yaw 90.
+        AssertClose(new Vector3(0f, 0f, -4f), Vector3.TransformNormal(Vector3.UnitX, destination[1]));
         AssertClose(new Vector3(0f, 6f, 0f), Vector3.TransformNormal(Vector3.UnitY, destination[1]));
-        AssertClose(new Vector3(4f, 0f, 0f), Vector3.TransformNormal(Vector3.UnitZ, destination[1]));
-        AssertClose(new Vector3(27f, -129f, 72f), Vector3.Transform(Vector3.Zero, destination[2]));
-        AssertClose(new Vector3(0f, 8f, 0f), Vector3.TransformNormal(Vector3.UnitX, destination[2]));
-        AssertClose(new Vector3(0f, 0f, 6f), Vector3.TransformNormal(Vector3.UnitY, destination[2]));
-        AssertClose(new Vector3(4f, 0f, 0f), Vector3.TransformNormal(Vector3.UnitZ, destination[2]));
-        AssertClose(new Vector3(9f, 20f, 30f), Vector3.Transform(Vector3.Zero, destination[3]));
+        AssertClose(new Vector3(8f, 0f, 0f), Vector3.TransformNormal(Vector3.UnitZ, destination[1]));
+        // grandchild: origin (0,10,0) x child scale (2,3,4) = (0,30,0), +(5,6,7)+(1,2,3) = (6,38,10).
+        AssertClose(new Vector3(30f, 96f, 18f), Vector3.Transform(Vector3.Zero, destination[2]));
+        AssertClose(new Vector3(0f, 0f, -4f), Vector3.TransformNormal(Vector3.UnitX, destination[2]));
+        AssertClose(new Vector3(8f, 0f, 0f), Vector3.TransformNormal(Vector3.UnitY, destination[2]));
+        AssertClose(new Vector3(0f, -6f, 0f), Vector3.TransformNormal(Vector3.UnitZ, destination[2]));
+        // sibling root: (-1,0,0) x2 = (-2,0,0), yaw 90 = (0,0,2), + (10,20,30).
+        AssertClose(new Vector3(10f, 20f, 32f), Vector3.Transform(Vector3.Zero, destination[3]));
         if (storage[0] != sentinel || storage[^1] != sentinel)
         {
             throw new InvalidOperationException("BuildWorldMatrices wrote outside the node slots.");
@@ -147,6 +152,91 @@ public static class SpacePlaneTransformSuite
         {
             throw new InvalidOperationException("An empty asset must write no entries.");
         }
+    }
+
+    [LumenFact]
+    public static void ChildOffsetTravelsThroughRootScaleAndYaw()
+    {
+        var asset = new EffectAsset
+        {
+            EffectId = "offset",
+            Nodes = new[] { new EffectNodeSpec { Name = "child", LocalPosition = new Vector3(1f, 0f, 0f) } },
+        };
+        Span<Matrix4x4> destination = stackalloc Matrix4x4[1];
+        var root = SpacePlaneTransform.BuildRootMatrix(new Vector3(10f, 0f, 20f), 90f, 2f);
+        SpacePlaneTransform.BuildWorldMatrices(asset, root, destination);
+        // (1,0,0) x2 = (2,0,0), yaw 90 = (0,0,-2), + (10,0,20) = (10,0,18).
+        AssertClose(new Vector3(10f, 0f, 18f), Vector3.Transform(Vector3.Zero, destination[0]));
+    }
+
+    [LumenFact]
+    public static void TwoLevelChainCompoundsScaleAndYaw()
+    {
+        var asset = new EffectAsset
+        {
+            EffectId = "compound",
+            Nodes = new[]
+            {
+                new EffectNodeSpec
+                {
+                    Name = "child", LocalScale = new Vector3(3f),
+                    LocalRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI / 2f),
+                    LocalPosition = new Vector3(1f, 0f, 0f),
+                },
+                new EffectNodeSpec { Name = "grandchild", ParentIndex = 0, LocalPosition = new Vector3(1f, 0f, 0f) },
+            },
+        };
+        Span<Matrix4x4> destination = stackalloc Matrix4x4[2];
+        var root = SpacePlaneTransform.BuildRootMatrix(Vector3.Zero, 90f, 2f);
+        SpacePlaneTransform.BuildWorldMatrices(asset, root, destination);
+        // child origin: (1,0,0) x2 = (2,0,0), yaw 90 = (0,0,-2).
+        AssertClose(new Vector3(0f, 0f, -2f), Vector3.Transform(Vector3.Zero, destination[0]));
+        // child axes: x3 in its own frame, then root x2 and yaw 90; two yaws = 180 degrees.
+        AssertClose(new Vector3(-6f, 0f, 0f), Vector3.TransformNormal(Vector3.UnitX, destination[0]));
+        AssertClose(new Vector3(0f, 0f, -6f), Vector3.TransformNormal(Vector3.UnitZ, destination[0]));
+        // grandchild offset (1,0,0) is length 6 along child +X, from child origin (0,0,-2).
+        AssertClose(new Vector3(-6f, 0f, -2f), Vector3.Transform(Vector3.Zero, destination[1]));
+    }
+
+    [LumenFact]
+    public static void ParentYawRotatesChildOffsetWithoutScalingItByChildLocalScale()
+    {
+        var asset = new EffectAsset
+        {
+            EffectId = "rotate-offset",
+            Nodes = new[]
+            {
+                new EffectNodeSpec { Name = "child", LocalScale = new Vector3(3f), LocalPosition = new Vector3(1f, 0f, 0f) },
+            },
+        };
+        Span<Matrix4x4> destination = stackalloc Matrix4x4[1];
+        var root = SpacePlaneTransform.BuildRootMatrix(new Vector3(10f, 0f, 20f), 90f, 1f);
+        SpacePlaneTransform.BuildWorldMatrices(asset, root, destination);
+        // Position is not multiplied by the node's own scale: (1,0,0) -> yaw 90 -> (0,0,-1), + origin.
+        AssertClose(new Vector3(10f, 0f, 19f), Vector3.Transform(Vector3.Zero, destination[0]));
+        // The local scale applies exactly once to the child's own axes: 3, then yaw 90 onto -Z.
+        AssertClose(new Vector3(0f, 0f, -3f), Vector3.TransformNormal(Vector3.UnitX, destination[0]));
+    }
+
+    [LumenFact]
+    public static void ComposedChildMatrixEqualsLocalMatrixThenRootWorld()
+    {
+        var rootNode = new EffectNodeSpec { Name = "root" };
+        var child = new EffectNodeSpec
+        {
+            Name = "child", ParentIndex = 0,
+            LocalRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI / 4f),
+            LocalPosition = new Vector3(2f, 0f, 0f),
+        };
+        var asset = new EffectAsset { EffectId = "convention", Nodes = new[] { rootNode, child } };
+        var rootWorld = SpacePlaneTransform.BuildRootMatrix(Vector3.Zero, 30f, 1f);
+        Span<Matrix4x4> destination = stackalloc Matrix4x4[2];
+        SpacePlaneTransform.BuildWorldMatrices(asset, rootWorld, destination);
+        // local (2,0,0) yawed 30 degrees: (2 cos 30, 0, -2 sin 30).
+        AssertClose(new Vector3(1.7320508f, 0f, -1f), Vector3.Transform(Vector3.Zero, destination[1]));
+        var localThenRoot = Vector3.Transform(
+            Vector3.Transform(Vector3.Zero, SpacePlaneTransform.BuildLocalMatrix(child)), rootWorld);
+        AssertClose(localThenRoot, Vector3.Transform(Vector3.Zero, destination[1]));
     }
 
     private static void AssertClose(Vector3 expected, Vector3 actual)

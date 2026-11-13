@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Verse;
 
@@ -6,11 +7,14 @@ namespace RimLumen.Core.Lighting;
 /// <summary>
 /// Owns the per-map <see cref="MapGlowerDriver"/> and its lifecycle. RimWorld creates one
 /// <see cref="MapComponent"/> per map, so this component is the map-unload anchor that guarantees
-/// every custom glower is deregistered.
+/// every custom glower is deregistered. It implements <see cref="IDisposable"/> as well as
+/// <c>MapRemoved</c> because <c>Map.Dispose</c> (AC:77526) only disposes components that implement
+/// IDisposable and never calls MapRemoved when the player returns to the main menu.
 /// </summary>
-public sealed class LumenMapLightingComponent : MapComponent
+public sealed class LumenMapLightingComponent : MapComponent, IDisposable
 {
     private readonly MapGlowerDriver driver;
+    private bool disposed;
 
     // Requires: map is non-null. Uses a VerseGlowGridSink over map.glowGrid.
     public LumenMapLightingComponent(Map map) : base(map) => driver = new MapGlowerDriver(new VerseGlowGridSink(map));
@@ -24,8 +28,13 @@ public sealed class LumenMapLightingComponent : MapComponent
     public override void FinalizeInit() => LumenMapLightingRegistry.Register(map.uniqueID, driver);
 
     // Ensures: deregisters every glower (Driver.Dispose) and removes the map from the registry.
-    public override void MapRemoved()
+    public override void MapRemoved() => Dispose();
+
+    // Ensures: same teardown as MapRemoved, idempotent, so Map.Dispose also releases every glower.
+    public void Dispose()
     {
+        if (disposed) return;
+        disposed = true;
         driver.Dispose();
         LumenMapLightingRegistry.Unregister(map.uniqueID, driver);
     }
@@ -63,8 +72,9 @@ public static class LumenMapLightingRegistry
         }
     }
 
-    // Ensures: true with the driver for mapIndex, or with the most recently registered driver when
-    //          mapIndex is negative or unknown; false with driver == null when nothing is registered.
+    // Ensures: mapIndex >= 0 resolves only that exact map key, so an effect bound to a unloaded map can
+    //          never migrate its lights onto another map; a negative mapIndex resolves the most recently
+    //          registered driver. False with driver == null when nothing matches.
     public static bool TryResolve(int mapIndex, out MapGlowerDriver? driver)
     {
         if (drivers.TryGetValue(mapIndex, out driver))
