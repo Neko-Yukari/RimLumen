@@ -11,42 +11,76 @@
   <description>【中文】
 RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可编程光影包与 GPU 粒子框架，随游戏暂停与倍速同步推进。
 
-模组作者：
-- 原生 RGBA16F HDR 渲染与 0–7 级可配 Bloom 泛光
-- 声明式多 Pass 光影包（ShaderPacks）：支持自定义中间渲染目标、持久化历史缓冲、场景深度与地图光场（mapLightField）采样、实时参数滑杆与热重载隔离
-- L2 Vulkan Compute 粒子（实例化绘制、点吸引子 / 旋涡 / 3D 旋度湍流 / 重力阻尼）与 L1 CPU 粒子（自定义贴图、Flipbook 序列帧、速度拉伸）
-- 深度感知软粒子（Soft Particles）与随节点移动的动态 GlowGrid 点光
-- Vertical3D 真 3D 垂直空间模式：朝天 3D 物理模拟，自动适配原版 2D 俯视与 IsoRim Waylith 等 3D 视角
-- 三种原生接入（XML LumenEffectDef、Data/RimLumen/*.lumen.json、C# RimLumenApi）与可选 Chezhou.RimUnity 桥接
+【面向模组开发者】
+1. 原生 RGBA16F HDR 通道与可编程光影包（ShaderPacks）
+- 在地图与 UI 之间分配 RGBA16F 浮点目标与 0–7 级可配 Bloom 链，高亮中心自然向白炽感过渡且保留边缘色相；自动识别并增强原版与第三方加法混合发光绘制。
+- 在 Mod 的 ShaderPacks/ 或 Config/RimLumen/ShaderPacks/ 放入 pack.json 与 GLSL 片段着色器，支持自定义中间渲染目标（R16G16B16A16SFloat / R8G8B8A8UNorm / R16SFloat）、跨帧持久化历史缓冲、场景深度与地图光场（mapLightField：屋顶、地面亮度、室内封闭度、战争迷雾）采样。
+- 支持设置页实时参数滑杆与热重载；外部着色器编译或管线校验失败时隔离报错并保留上一份有效包继续运行。
 
-玩家：
-- 装上即用：自动增强原版与第三方模组的加色发光特效，内置 5 档即切风格（Standard / Atmospheric / Cinematic / Vibrant / Crisp），并支持扩展光影包
-- 设置页支持光影包实时调参、热重载、逐像素可关闭的原版发光增强开关、粒子密度调节（10%–100%）与可选娱乐演示建筑（烟花发射器与粒子喷泉）
+2. L2 GPU Compute 与 L1 原生 CPU 双路粒子
+- L2 GPU 粒子：位置、生命周期、重力阻尼、点吸引子、旋涡与 3D 旋度湍流在 Vulkan Compute 着色器内模拟并常驻显存，经引擎 MeshBatchRenderer 实例化直接上屏。
+- L1 CPU 粒子：适合轻量化或逻辑驱动特效，支持自定义贴图、Flipbook 序列帧动画与按速度方向拉伸的流火效果。
+- 深度感知软粒子与动态点光：转存 R32SFloat 场景深度使粒子靠近墙体和地形边缘时平滑淡出，支持随节点移动的动态 GlowGrid 点光。
 
-推荐搭配：
-- RimUnity（一键把 Unity 导出特效接入 RimLumen HDR/GPU 管线）：https://steamcommunity.com/sharedfiles/filedetails/?id=3819570122
-- IsoRim Waylith（3D 视角体验，RimLumen 原生适配 3D 投影与软粒子）：https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
+3. 真 3D 垂直空间模式（Vertical3D）
+- Vertical3D 在朝天的真 3D 空间进行物理模拟，绘制阶段按当前相机矩阵自适应投影：在原版 2D 正俯视下自动上投，在 IsoRim Waylith 等 3D 视角下还原真实立体高度、景深与速度拉伸比例。
+
+4. 三种原生接入与可选 RimUnity 桥接
+- 原生入口：XML LumenEffectDef、1.7/Data/RimLumen/*.lumen.json 配置与 C# RimLumenApi.Play / PlayAtCell。
+- 可选 Chezhou.RimUnity 桥接：读取其导出的预制体 JSON 与 .rutex 贴图，自动接管支持的粒子节点进入 HDR/GPU 管线，未支持模块交回 RimUnity 统一句柄控制。
+
+【面向玩家】
+- 开箱即用 + 5 档内置光影包：
+  · Standard（标准平衡）：自然 HDR 泛光基准，不改原版地图色调。
+  · Atmospheric（荒野夜雾）：利用屋顶与光场区分室内外，夜间荒野压暗、地表薄雾与 7 级散射。
+  · Cinematic（电影光丝）：横向变形光丝、6 级柔和泛光与跨帧自适应曝光。
+  · Vibrant（霓虹高饱和）：抑制高光泛白，强化色彩饱和度与能量光晕。
+  · Crisp（锐利克制）：高起辉阈值与 3 级紧致泛光，保留地形与 UI 锐利清晰。
+- 实时滑杆与热重载：设置页支持实时调节当前光影包参数、热重载、逐像素可还原的原版发光增强开关、粒子密度（10%–100%）与可选娱乐演示建筑（烟花发射器与粒子喷泉）。
+- 6 站对照演示说明（见宣传图）：#1 LDR vs HDR 泛光 / #2 L1 速度拉伸 / #3 动态点光照地 / #4 深度软粒子穿墙淡出 / #5 L2 GPU 12k 旋涡 / #6 原版发光自动 HDR。
+- 实测性能参考（1080p · RTX 4080 SUPER · 无校验层 · 3 力场 + 5 级 Bloom + 软粒子，每档 60 帧）：0–50,000 粒子整帧均值 5.54–5.55 ms（~180 FPS），100,000 粒子 5.76 ms（174 FPS），250,000 粒子 8.49 ms（118 FPS），500,000 粒子 14.79 ms（68 FPS）；全档位主线程耗时低于 0.01 ms。默认 1,048,576 共享槽位满池后安全降级不报错。
+
+【推荐搭配】
+- RimUnity：https://steamcommunity.com/sharedfiles/filedetails/?id=3819570122
+- IsoRim Waylith：https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
 
 （兼容说明：基于 Waylith 公开渲染管线扩展，不使用 Harmony 补丁并内置渲染异常熔断机制。）
 
 【English】
 RimLumen is an HDR VFX, programmable ShaderPack, and GPU particle framework for RimWorld 1.7 (Waylith / Vulkan), synchronized with game pause and speed multipliers.
 
-Modders:
-- Native RGBA16F HDR rendering with a configurable 0–7 mip bloom chain
-- Declarative multi-pass ShaderPacks: custom intermediate targets, persistent history buffers, scene depth and mapLightField sampling, live parameter sliders, and isolated hot-reload error handling
-- L2 Vulkan Compute particles (instanced rendering, point attractors, vortex, 3D curl turbulence, gravity/drag) and L1 CPU particles (custom textures, flipbooks, velocity stretch)
-- Depth-aware soft particles and moving dynamic GlowGrid point lights
-- Vertical3D true-3D space mode: skyward 3D physics with automatic projection for vanilla 2D and 3D camera mods such as IsoRim Waylith
-- Three entry points (XML LumenEffectDef, Data/RimLumen/*.lumen.json, C# RimLumenApi) plus an optional Chezhou.RimUnity bridge
+[For Modders]
+1. Native RGBA16F HDR Pipeline and Programmable ShaderPacks
+- Allocates an RGBA16F floating-point target and a configurable 0–7 mip HDR bloom chain before UI rendering, keeping bright cores warm without clipping edge hues. Automatically picks up vanilla and third-party additive glow draws.
+- Place pack.json and fragment GLSL shaders in a mod's ShaderPacks/ folder or Config/RimLumen/ShaderPacks/ to declare custom intermediate targets (R16G16B16A16SFloat, R8G8B8A8UNorm, R16SFloat), persistent history buffers, scene depth sampling, and the built-in mapLightField texture (roof state, ground glow, indoor enclosure, fog of war).
+- Exposes live UI sliders and hot-reload in Mod Settings; broken shaders or invalid graphs report an isolated diagnostic message and keep the last valid pack active without tripping the fail-safe.
 
-Players:
-- Plug and play: automatically enhances vanilla and third-party additive glow effects, with 5 built-in ShaderPacks (Standard, Atmospheric, Cinematic, Vibrant, Crisp) and support for custom packs
-- Mod Settings includes live ShaderPack sliders, hot reload, a clean pixel-identical toggle for vanilla additive glow, a Particle Density slider (10%–100%), and optional Demo Joy Buildings (Firework Launcher and Particle Fountain)
+2. GPU Compute and Native CPU Particle Paths
+- L2 GPU Compute: simulates position, lifetime, gravity/drag, point attractors, vortex, and 3D curl turbulence in Vulkan Compute shaders, rendering via MeshBatchRenderer instanced draws.
+- L1 Native CPU: designed for lighter or logic-driven emitters with custom textures, flipbooks, and velocity-stretched sparks.
+- Depth-Aware Soft Particles and Dynamic Point Lights: copies scene depth to R32SFloat for smooth wall/terrain edge fading and supports moving dynamic GlowGrid point lights.
 
-Recommended Companions:
-- RimUnity (bridge Unity-exported effects into RimLumen HDR/GPU): https://steamcommunity.com/sharedfiles/filedetails/?id=3819570122
-- IsoRim Waylith (3D camera view, natively supported by RimLumen Vertical3D and soft particles): https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
+3. True-3D Vertical Space (Vertical3D)
+- Simulates physics in true skyward 3D space and adapts automatically at render time—projecting upward in vanilla 2D top-down view while preserving real altitude, depth, and velocity stretch under 3D camera mods such as IsoRim Waylith.
+
+4. Three Native Entry Points and Optional RimUnity Bridge
+- Author effects via XML LumenEffectDef, 1.7/Data/RimLumen/*.lumen.json, or C# RimLumenApi.Play / PlayAtCell.
+- When Chezhou.RimUnity is enabled, RimLumen reads exported prefab JSON and .rutex textures, upgrades supported particle nodes to native HDR/GPU rendering, and leaves unsupported modules to RimUnity under a unified playback handle.
+
+[For Players]
+- Plug and Play with 5 Built-in ShaderPacks:
+  · Standard: balanced HDR bloom baseline matching vanilla color tone.
+  · Atmospheric: indoor/outdoor aware night fog and 7-mip air scattering via mapLightField.
+  · Cinematic: anamorphic streaks, 6-mip soft bloom, and adaptive exposure.
+  · Vibrant: suppresses highlight desaturation and boosts energy glow chroma.
+  · Crisp: high threshold with tight 3-mip bloom to keep terrain and UI sharp in combat.
+- Live Tuning and Demo Buildings: adjust per-pack sliders, hot-reload shaders, toggle vanilla additive glow (pixel-identical when off and no RimLumen effects play), scale Particle Density (10%–100%), and optionally enable Demo Joy Buildings (Firework Launcher and Particle Fountain).
+- 6-Station Showcase Legend (see screenshots): #1 LDR vs HDR Bloom / #2 L1 Velocity Stretch / #3 Moving GlowGrid Light / #4 Soft Particle Wall Fade / #5 L2 GPU 12k Vortex / #6 Auto Vanilla HDR.
+- Measured Benchmark (1080p, RTX 4080 SUPER, validation off, 3 force fields + 5-mip bloom + soft particles, 60 frames/step): 0–50,000 particles at 5.54–5.55 ms (~180 FPS), 100,000 at 5.76 ms (174 FPS), 250,000 at 8.49 ms (118 FPS), and 500,000 at 14.79 ms (68 FPS), with main-thread capture under 0.01 ms. Shared 1,048,576-slot pool degrades gracefully if exhausted.
+
+[Recommended Companions]
+- RimUnity: https://steamcommunity.com/sharedfiles/filedetails/?id=3819570122
+- IsoRim Waylith: https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
 
 (Compatibility note: built on Waylith's public render-graph APIs with zero Harmony patches and an automatic rendering fail-safe.)</description>
 </ModMetaData>
