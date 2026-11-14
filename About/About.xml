@@ -21,6 +21,10 @@ RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可�
 - 装上即用：自动增强原版与第三方模组的加色发光特效，内置 5 档即切风格（Standard / Atmospheric / Cinematic / Vibrant / Crisp），并支持扩展光影包
 - 设置页支持光影包实时调参、热重载、逐像素可关闭的原版发光增强开关、粒子密度调节（10%–100%）与可选娱乐演示建筑（烟花发射器与粒子喷泉）
 
+推荐搭配：
+- RimUnity（一键把 Unity 导出特效接入 RimLumen HDR/GPU 管线）：https://steamcommunity.com/sharedfiles/filedetails/?id=3819570122
+- IsoRim Waylith（3D 视角体验，RimLumen 原生适配 3D 投影与软粒子）：https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
+
 （兼容说明：基于 Waylith 公开渲染管线扩展，不使用 Harmony 补丁并内置渲染异常熔断机制。）
 
 【English】
@@ -37,6 +41,10 @@ Modders:
 Players:
 - Plug and play: automatically enhances vanilla and third-party additive glow effects, with 5 built-in ShaderPacks (Standard, Atmospheric, Cinematic, Vibrant, Crisp) and support for custom packs
 - Mod Settings includes live ShaderPack sliders, hot reload, a clean pixel-identical toggle for vanilla additive glow, a Particle Density slider (10%–100%), and optional Demo Joy Buildings (Firework Launcher and Particle Fountain)
+
+Recommended Companions:
+- RimUnity (bridge Unity-exported effects into RimLumen HDR/GPU): https://steamcommunity.com/sharedfiles/filedetails/?id=3819570122
+- IsoRim Waylith (3D camera view, natively supported by RimLumen Vertical3D & soft particles): https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
 
 (Compatibility note: built on Waylith's public render-graph APIs with zero Harmony patches and an automatic rendering fail-safe.)</description>
 </ModMetaData>
