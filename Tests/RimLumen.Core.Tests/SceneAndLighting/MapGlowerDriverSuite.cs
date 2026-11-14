@@ -198,7 +198,7 @@ public static class MapGlowerDriverSuite
         GlowAssert.Equal(1, driver.RegisterCallCount);
         GlowAssert.Equal(0, driver.DeregisterCallCount);
 
-        driver.Update(id, MapGlowerDriver.CellFromWorld(new Vector3(3.5f, 0f, 7.1f)), 2f, 1f);
+        driver.Update(id, MapGlowerDriver.CellFromWorld(new Vector3(4f, 0f, 7.1f)), 2f, 1f);
         GlowAssert.Equal(new IntVec3(4, 0, 7), sink.Registrations[1].Cell);
         GlowAssert.Equal("RDR", string.Concat(sink.Events));
         GlowAssert.Equal(2, driver.RegisterCallCount);
@@ -206,12 +206,21 @@ public static class MapGlowerDriverSuite
     }
 
     [LumenFact]
-    public static void CellFromWorldRoundsEveryAxisHalfAwayFromZero()
+    public static void WorldCellCenterAndNegativeCoordinatesUseFloor()
     {
-        GlowAssert.Equal(new IntVec3(0, 0, 0), MapGlowerDriver.CellFromWorld(new Vector3(0.49f, -0.49f, 0f)));
-        GlowAssert.Equal(new IntVec3(1, -1, 2), MapGlowerDriver.CellFromWorld(new Vector3(0.5f, -0.5f, 1.5f)));
-        GlowAssert.Equal(new IntVec3(-2, 3, -3), MapGlowerDriver.CellFromWorld(new Vector3(-1.5f, 2.5f, -2.5f)));
-        GlowAssert.Equal(new IntVec3(-2, 3, -4), MapGlowerDriver.CellFromWorld(new Vector3(-1.51f, 3.49f, -3.51f)));
+        GlowAssert.Equal(new IntVec3(10, 0, 20), MapGlowerDriver.CellFromWorld(new Vector3(10.5f, 3f, 20.5f)));
+        UnityEngine.Vector3 center = new IntVec3(10, 0, 20).ToVector3Shifted();
+        GlowAssert.Equal(new IntVec3(10, 0, 20), MapGlowerDriver.CellFromWorld(new Vector3(center.x, center.y, center.z)));
+        GlowAssert.Equal(new IntVec3(-1, 0, -2), MapGlowerDriver.CellFromWorld(new Vector3(-0.1f, 9f, -1.1f)));
+    }
+
+    [LumenFact]
+    public static void CellFromWorldFloorsToGroundCell()
+    {
+        GlowAssert.Equal(new IntVec3(0, 0, 0), MapGlowerDriver.CellFromWorld(new Vector3(0.99f, -0.49f, 0f)));
+        GlowAssert.Equal(new IntVec3(0, 0, 1), MapGlowerDriver.CellFromWorld(new Vector3(0.5f, -0.5f, 1.5f)));
+        GlowAssert.Equal(new IntVec3(-2, 0, -3), MapGlowerDriver.CellFromWorld(new Vector3(-1.5f, 2.5f, -2.5f)));
+        GlowAssert.Equal(new IntVec3(-2, 0, -4), MapGlowerDriver.CellFromWorld(new Vector3(-1.51f, 3.49f, -3.51f)));
     }
 
     [LumenFact]

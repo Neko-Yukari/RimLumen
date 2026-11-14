@@ -1,13 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.Numerics;
 using System.Threading;
 using Brutal.Numerics;
-using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
 using Waylith.Graphics;
 using Waylith.Rendering;
-using Waylith.Rendering.PostFx;
 
 namespace RimLumen.Core.Rendering;
 
@@ -24,46 +21,65 @@ internal sealed class RimLumenCompositeFeature : IRenderFeature
         Passes = new IRenderPass[] { pass };
     }
 
-    public bool IsActive => owner.Captured != null;
+    public bool IsActive => owner.Captured is { RenderHdr: true };
     public IReadOnlyList<IRenderPass> Passes { get; }
     public object? CaptureFrame(in FrameTiming timing)
     {
+        if (RimLumenRenderHost.FailSafeTripped) return null;
         owner.GuardCompositeOrder();
-        return owner.Captured;
+        return owner.Captured is { RenderHdr: true } frame ? frame : null;
     }
-    public void OnRenderTargetRebuilt(IRenderTarget target) => pass.Invalidate();
-    internal void Dispose() => pass.Dispose();
+    public void OnRenderTargetRebuilt(IRenderTarget target) => owner.ShaderPack.InvalidateInline();
+    internal void Dispose() { }
 
-    private sealed class InlinePass : PostEffectPass
+    private sealed class InlinePass(RimLumenCompositeFeature feature, RimLumenPipeline owner) : IRenderPass
     {
-        private readonly RimLumenCompositeFeature feature;
-        private readonly RimLumenPipeline owner;
+        public byte PassId => RimLumenRenderHost.LumenRenderPassId;
+        public PassAttachment? Attachment => null;
+        public bool PreBackbuffer => false;
 
-        internal InlinePass(RimLumenCompositeFeature feature, RimLumenPipeline owner)
-            : base("RimLumenComposite", "RimLumenComposite.frag.glsl", new[] { 0, 1, 2 },
-                new BlendState(true, BlendFactor.One, BlendFactor.OneMinusSrcAlpha, BlendOp.Add,
-                    BlendFactor.One, BlendFactor.OneMinusSrcAlpha, BlendOp.Add), pushConstantSize: 16)
+        public void Record(in FrameContext ctx, object? featurePayload)
         {
-            this.feature = feature;
-            this.owner = owner;
+            if (featurePayload is not PipelineFrame { RenderHdr: true } payload || RimLumenRenderHost.FailSafeTripped) return;
+            try
+            {
+                HdrTargets.Slot slot = owner.Targets.Slots[ctx.SubmissionFrameIndex];
+                RenderTexture scene = owner.SceneComposite.Source?.Invoke(ctx.SubmissionFrameIndex)
+                    ?? throw new InvalidOperationException("Scene source disappeared before RimLumen composite.");
+                ShaderPackUniforms uniforms = payload.Uniforms;
+                ShaderPackSpec packSpec = owner.ShaderPack.Spec;
+                ctx.CommandBuffer.BeginDebugLabel("RimLumen/Composite\0"u8, new float4(1f, 0.5f, 0f, 1f));
+                try
+                {
+                    try
+                    {
+                        owner.ShaderPack.RecordComposite(in ctx, slot, scene, in uniforms, payload.HasHdrDraws, payload.HasSceneDepth);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (RimLumenRenderHost.ShouldRevertPackOnFailure(packSpec))
+                        {
+                            RimLumenRenderHost.ReportRuntimePackFailure(packSpec, ex);
+                            return;
+                        }
+                        if (RimLumenRenderHost.ShouldTripFailSafeOnFailure(packSpec))
+                        {
+                            owner.TripRenderFailSafe(ex);
+                            return;
+                        }
+                        throw;
+                    }
+                }
+                finally
+                {
+                    ctx.CommandBuffer.EndDebugLabel();
+                }
+                Interlocked.Increment(ref feature.Draws);
+            }
+            catch (Exception ex) when (!RimLumenRenderHost.VerboseDiagnostics) { owner.TripRenderFailSafe(ex); }
         }
+        public void OnRenderTargetRebuilt(IRenderTarget target) => owner.ShaderPack.InvalidateInline();
 
-        public override bool PreBackbuffer => false;
-        public override void Record(in FrameContext ctx, object? featurePayload)
-        {
-            if (featurePayload is not PipelineFrame) return;
-            HdrTargets.Slot slot = owner.Targets.Slots[ctx.SubmissionFrameIndex];
-            RenderTexture scene = owner.SceneComposite.Source?.Invoke(ctx.SubmissionFrameIndex)
-                ?? throw new InvalidOperationException("Scene source disappeared before RimLumen composite.");
-            SetInput(0, slot.Color);
-            SetInput(1, slot.Bloom);
-            SetInput(2, scene);
-            Vector4 parameters = new(0.16f, 0f, 1f / scene.Width, 1f / scene.Height);
-            SetPushConstants(in parameters);
-            ctx.CommandBuffer.BeginDebugLabel("RimLumen/Composite\0"u8, new float4(1f, 0.5f, 0f, 1f));
-            RecordInline(in ctx, ctx.RenderPass, ctx.SampleCount);
-            ctx.CommandBuffer.EndDebugLabel();
-            Interlocked.Increment(ref feature.Draws);
-        }
+        public void Dispose() { }
     }
 }

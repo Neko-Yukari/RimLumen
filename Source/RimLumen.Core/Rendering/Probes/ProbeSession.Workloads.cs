@@ -209,7 +209,8 @@ internal sealed partial class ProbeSession
         HdrTargets.Slot slot = pipeline.Targets.Slots[pipeline.LastRenderedSlot];
         byte[] hdr = GpuTextureService.ReadbackTexture2D(slot.Color.Color, width, height, 8)
             ?? throw new InvalidOperationException("HDR readback failed: " + id);
-        byte[] glow = GpuTextureService.ReadbackTexture2D(slot.Bloom.Color, slot.Bloom.Width, slot.Bloom.Height, 8)
+        RenderTexture bloomTex = slot.Bloom ?? throw new InvalidOperationException("Bloom target unavailable: " + id);
+        byte[] glow = GpuTextureService.ReadbackTexture2D(bloomTex.Color, bloomTex.Width, bloomTex.Height, 8)
             ?? throw new InvalidOperationException("Bloom readback failed: " + id);
         byte[] idle = captures[id + "-reference"];
         int emissive = 0, halo = 0, brightened = 0;
@@ -225,4 +226,155 @@ internal sealed partial class ProbeSession
     }
 
     private static float Half(byte[] data, int offset) => (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(data, offset));
+
+    private IEnumerator RunBenchmarkSchedule()
+    {
+        var steps = new List<object>();
+        object? poolOverflowResult = null;
+        var gpu = LumenHostRegistry.GpuParticleEngine as LumenGpuParticleEngine
+            ?? throw new InvalidOperationException("Native GPU engine was not bootstrapped.");
+        IntVec3 cell = Current.CameraDriver.MapPosition;
+        if (!cell.InBounds(Find.CurrentMap)) throw new InvalidOperationException("Camera centre is outside the map.");
+        Vector3 origin = new(cell.x + 0.5f, 0f, cell.z + 0.5f);
+        int mapId = Find.CurrentMap.uniqueID;
+
+        try
+        {
+            foreach (int targetCount in new[] { 0, 10_000, 50_000, 100_000, 250_000, 500_000 })
+            {
+                string id = targetCount == 0 ? "Bench-0-Idle" : $"Bench-{targetCount / 1000}k";
+                if (targetCount > 0) RegisterWorkload(id, targetCount, LumenParticleTier.L2_GpuCompute, false);
+                try
+                {
+                    if (targetCount > 0)
+                    {
+                        workload = LumenSceneBootstrap.Service.Play(new LumenPlayRequest
+                        { EffectId = id, MapIndex = mapId, OriginWorld = origin });
+                        if (!workload.IsAlive) throw new InvalidOperationException("Benchmark workload failed to start: " + id);
+                    }
+                    int warmup = targetCount == 0 ? 15 : 8;
+                    for (int i = 0; i < warmup; i++) yield return new UnityEngine.WaitForEndOfFrame();
+
+                    pipeline.ContributorMilliseconds.Clear();
+                    pipeline.MeasureContributors = true;
+                    var frameMs = new List<double>(60);
+                    for (int i = 0; i < 60; i++)
+                    {
+                        long t0 = Stopwatch.GetTimestamp();
+                        yield return new UnityEngine.WaitForEndOfFrame();
+                        frameMs.Add(Stopwatch.GetElapsedTime(t0).TotalMilliseconds);
+                    }
+                    pipeline.MeasureContributors = false;
+
+                    int live = targetCount == 0 ? 0 : gpu.CountLiveParticles();
+                    double meanMs = frameMs.Average();
+                    var sorted = frameMs.OrderBy(v => v).ToArray();
+                    double p95Ms = sorted[Math.Min(sorted.Length - 1, (int)Math.Ceiling(sorted.Length * 0.95) - 1)];
+                    double maxMs = sorted[^1];
+                    double captureEnqueueMs = pipeline.ContributorMilliseconds.TryGetValue(gpu.Name, out var samples) && samples.Count > 0
+                        ? samples.Average() : 0.0;
+
+                    steps.Add(new
+                    {
+                        Id = id,
+                        TargetParticles = targetCount,
+                        LiveParticles = live,
+                        MeasuredFrames = frameMs.Count,
+                        FrameMeanMs = Math.Round(meanMs, 3),
+                        FrameP95Ms = Math.Round(p95Ms, 3),
+                        FrameMaxMs = Math.Round(maxMs, 3),
+                        ApproxFps = Math.Round(1000.0 / Math.Max(0.001, meanMs), 1),
+                        CpuCaptureEnqueueMeanMs = Math.Round(captureEnqueueMs, 4),
+                    });
+
+                    workload?.Stop(allowFadeOut: false);
+                    workload = null;
+                    yield return new UnityEngine.WaitForEndOfFrame();
+                    yield return new UnityEngine.WaitForEndOfFrame();
+                }
+                finally
+                {
+                    workload?.Stop(allowFadeOut: false);
+                    workload = null;
+                    if (targetCount > 0) LumenSceneBootstrap.Catalog.Unregister(id);
+                }
+            }
+
+            // Real-device 1M pool overflow protection + 10s yellow warning throttle check.
+            RegisterWorkload("Bench-Pool900k", 900_000, LumenParticleTier.L2_GpuCompute, false);
+            RegisterWorkload("Bench-Pool200k", 200_000, LumenParticleTier.L2_GpuCompute, false);
+            var service = LumenSceneBootstrap.Service;
+            Func<long> prevClock = service.ClockMsProvider;
+            Action<string> prevSink = service.PoolExhaustedWarningSink;
+            ILumenEffectHandle? baseHandle = null;
+            try
+            {
+                long fakeNowMs = 1_000;
+                var capturedWarnings = new List<string>();
+                service.ClockMsProvider = () => fakeNowMs;
+                service.PoolExhaustedWarningSink = msg =>
+                {
+                    capturedWarnings.Add(msg);
+                    Verse.Log.Warning(msg);
+                };
+                baseHandle = service.Play(new LumenPlayRequest { EffectId = "Bench-Pool900k", MapIndex = mapId, OriginWorld = origin });
+                bool baseAlive = baseHandle.IsAlive;
+                using var overflow1 = service.Play(new LumenPlayRequest { EffectId = "Bench-Pool200k", MapIndex = mapId, OriginWorld = origin });
+                using var overflow2 = service.Play(new LumenPlayRequest { EffectId = "Bench-Pool200k", MapIndex = mapId, OriginWorld = origin });
+                int warningsInWindow = capturedWarnings.Count;
+                fakeNowMs += LumenVfxService.PoolExhaustedWarningCooldownMs;
+                using var overflow3 = service.Play(new LumenPlayRequest { EffectId = "Bench-Pool200k", MapIndex = mapId, OriginWorld = origin });
+                int warningsAfterCooldown = capturedWarnings.Count;
+                poolOverflowResult = new
+                {
+                    DefaultPoolCapacity = EmitterSlotAllocator.DefaultCapacity,
+                    Base900kAlive = baseAlive,
+                    Overflow1Alive = overflow1.IsAlive,
+                    Overflow2Alive = overflow2.IsAlive,
+                    Overflow3Alive = overflow3.IsAlive,
+                    WarningsIn10sWindow = warningsInWindow,
+                    WarningsAfter10sCooldown = warningsAfterCooldown,
+                };
+            }
+            finally
+            {
+                baseHandle?.Stop(allowFadeOut: false);
+                service.ClockMsProvider = prevClock;
+                service.PoolExhaustedWarningSink = prevSink;
+                LumenSceneBootstrap.Catalog.Unregister("Bench-Pool900k");
+                LumenSceneBootstrap.Catalog.Unregister("Bench-Pool200k");
+            }
+            yield return new UnityEngine.WaitForEndOfFrame();
+        }
+        finally
+        {
+            app.OnUpdate -= PrepareDeterministicFrame;
+            Find.UIRoot.screenshotMode.Active = savedScreenshotMode;
+            foreach (var item in windowVisibility) item.Key.drawInScreenshotMode = item.Value;
+            pipeline.MeasureContributors = false;
+            RimLumenRenderHost.ForceUnscaledSimulationTime = false;
+            app.WaitForRenderThreadIdle();
+            app.GraphicsDevice!.WaitIdleAndRun(() => { });
+        }
+
+        var device = app.GraphicsDevice!;
+        Directory.CreateDirectory(options.OutputDirectory);
+        string outPath = Path.Combine(options.OutputDirectory, "bench-result.json");
+        File.WriteAllText(outPath, System.Text.Json.JsonSerializer.Serialize(new
+        {
+            StartedUtc = started,
+            DurationSeconds = Math.Round(timer.Elapsed.TotalSeconds, 3),
+            GpuName = UnityEngine.SystemInfo.graphicsDeviceName ?? "Unknown",
+            ValidationEnabled = device.ValidationEnabled,
+            InstanceEnabledLayers = device.InstanceEnabledLayers.ToArray(),
+            VanillaAdditiveBloom = RimLumenRenderHost.EnableVanillaAdditiveBloom,
+            Resolution = $"{width}x{height}",
+            DefaultSlotCapacity = EmitterSlotAllocator.DefaultCapacity,
+            Steps = steps,
+            PoolOverflowCheck = poolOverflowResult,
+        }, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        Log.Message($"[RimLumen] Benchmark finished in {timer.Elapsed.TotalSeconds:F2}s -> {outPath}");
+        Waylith.UnityCompat.UnityRuntime.Current!.App.ExitCode = 0;
+        Root.Shutdown();
+    }
 }

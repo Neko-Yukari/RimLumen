@@ -131,12 +131,9 @@ public sealed class MapGlowerDriver : IDisposable
         isDisposed = true;
     }
 
-    // Ensures: RimWorld cell for a world position: each component rounded half away from zero
-    //          (MidpointRounding.AwayFromZero), matching IntVec3Utility.ToIntVec3's Mathf.RoundToInt.
+    // GlowGrid is a ground-cell grid: floor X/Z, ignoring visual altitude.
     public static IntVec3 CellFromWorld(Vector3 worldPosition) => new(
-        (int)MathF.Round(worldPosition.X, MidpointRounding.AwayFromZero),
-        (int)MathF.Round(worldPosition.Y, MidpointRounding.AwayFromZero),
-        (int)MathF.Round(worldPosition.Z, MidpointRounding.AwayFromZero));
+        (int)MathF.Floor(worldPosition.X), 0, (int)MathF.Floor(worldPosition.Z));
 
     private void Deregister(Light light)
     {

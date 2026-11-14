@@ -349,7 +349,7 @@ khronos_validation.enable_message_limit = false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    foreach ($argument in @('-NoWindow', '-NoCrashDialog', '-quicktest', '-WindowSize=1920,1080', '-EnableVulkanValidation', "-savedatafolder=$profile")) {
+    foreach ($argument in @('-NoWindow', '-NoCrashDialog', '-ResetVulkanFallback', '-quicktest', '-WindowSize=1920,1080', '-EnableVulkanValidation', "-savedatafolder=$profile")) {
         $start.ArgumentList.Add($argument)
     }
     if ($Baseline) {
@@ -361,6 +361,7 @@ khronos_validation.enable_message_limit = false
     }
     $start.Environment['VK_ADD_LAYER_PATH'] = $layerRoot
     $start.Environment.Remove('VK_LAYER_PATH') | Out-Null
+    $start.Environment['VK_LOADER_LAYERS_DISABLE'] = '~implicit~'
     $start.Environment['VK_LOADER_DEBUG'] = 'layer'
     $start.Environment['VK_LAYER_SETTINGS_PATH'] = $out
     $start.Environment['VK_LAYER_VALIDATE_SYNC'] = '1'

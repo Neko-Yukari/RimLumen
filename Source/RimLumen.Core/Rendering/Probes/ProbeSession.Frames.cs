@@ -34,7 +34,7 @@ internal sealed partial class ProbeSession
         {
             ("P1-idle", IdleFrames), ("feature-order", FeatureOrderFrames), ("P1-active", ActiveFrames), ("T1b", BarrierFrames),
             ("P2-L2-10k", () => GpuWorkload(10_000)), ("P2-L2-50k", () => GpuWorkload(50_000)),
-            ("P2-L1-Glower", L1Workload), ("Compat-VanillaAdditive", CompatFrames)
+            ("P2-L1-Glower", L1Workload), ("Compat-VanillaAdditive", CompatFrames), ("ShaderPack-RouteB", ShaderPackFrames)
         })
         {
             var stack = new Stack<IEnumerator>();

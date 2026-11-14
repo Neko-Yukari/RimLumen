@@ -5,19 +5,28 @@ namespace RimLumen.Core.ParticlesGpu;
 
 public readonly record struct EmitterSlotRange(int Offset, int Capacity);
 
+public sealed class ParticlePoolExhaustedException : InvalidOperationException
+{
+    public ParticlePoolExhaustedException(string message) : base(message) { }
+}
+
 public sealed class EmitterSlotAllocator
 {
+    // 1M slots * 64 bytes/particle = 64 MB device-local SSBO (under half of Vulkan 1.2's 128 MB minimum
+    // maxStorageBufferRange) and stays exact in IEEE-754 float slot fields (< 2^24).
+    public const int DefaultCapacity = 1_048_576;
+
     private readonly List<EmitterSlotRange> free = new();
     private readonly HashSet<EmitterSlotRange> live = new();
 
-    public EmitterSlotAllocator(int capacity = 65536)
+    public EmitterSlotAllocator(int capacity = DefaultCapacity)
     {
         if (capacity <= 0) throw new ArgumentOutOfRangeException(nameof(capacity));
         free.Add(new EmitterSlotRange(0, capacity));
     }
 
     // Requires: count > 0.
-    // Ensures: returns an exclusive contiguous range or throws on exhaustion.
+    // Ensures: returns an exclusive contiguous range or throws ParticlePoolExhaustedException on exhaustion.
     public EmitterSlotRange Allocate(int count)
     {
         if (count <= 0) throw new ArgumentOutOfRangeException(nameof(count));
@@ -31,7 +40,7 @@ public sealed class EmitterSlotAllocator
             live.Add(result);
             return result;
         }
-        throw new InvalidOperationException("No contiguous particle slot range can satisfy the allocation.");
+        throw new ParticlePoolExhaustedException("No contiguous particle slot range can satisfy the allocation.");
     }
 
     // Requires: range is a live allocation from this allocator.

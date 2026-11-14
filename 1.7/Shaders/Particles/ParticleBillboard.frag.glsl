@@ -35,12 +35,13 @@ void main()
         float sceneDepth = texture(_LumenSceneDepth, depthUv).r;
         float separation = eyeDistance(sceneDepth) - eyeDistance(gl_FragCoord.z);
         if (separation < 0.0)
-            discard; // The empty-vertex-layout graphics pipeline has no fixed-function depth test.
+            discard; // Occlusion test lives here: the material pipeline runs with fixed-function depth test disabled.
         if (vSoftDistance > 0.0)
             color.a *= clamp(separation / vSoftDistance, 0.0, 1.0);
     }
     if (color.a <= 0.0)
         discard;
+    // Additive blends with One/One, so its rgb must be premultiplied (the alternative SrcAlpha factor is not used).
     if (material._LumenDraw.w > 0.5)
         color.rgb *= color.a;
     outColor = color;

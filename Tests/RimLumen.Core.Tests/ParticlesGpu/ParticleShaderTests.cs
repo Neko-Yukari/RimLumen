@@ -7,6 +7,7 @@ using System.Runtime.Loader;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using RimLumen.Core.ParticlesGpu;
+using Waylith.Graphics.Meshes;
 using Waylith.Rendering;
 
 namespace RimLumen.Core.Tests.ParticlesGpu;
@@ -100,10 +101,45 @@ public static class ParticleShaderTests
         }), "Graphics texture properties/bindings differ from C# binding contract.");
         Require(!ShaderMetadataParser.ValidateStageInterface(vertex, fragment, "particle.vert", "particle.frag"),
             "Waylith reports mismatched vertex/fragment varyings.");
-        Require(!Regex.IsMatch(vertex, @"layout\s*\(\s*location\s*=\s*\d+\s*\)\s*in\b"),
-            "Draw(6,capacity,0,0) requires no vertex attributes.");
+        // L2 draws one static quad mesh per instance: the vertex shader reads only the quad corner
+        // (its xy is the billboard UV) and gl_InstanceIndex picks the particle.
+        MatchCollection inputs = Regex.Matches(vertex,
+            @"layout\s*\(\s*location\s*=\s*(?<location>\d+)\s*\)\s*in\s+(?<type>vec[234])\s+(?<name>\w+)\s*;");
+        Require(inputs.Count == 1 && inputs[0].Groups["location"].Value == "0" && inputs[0].Groups["type"].Value == "vec3",
+            "L2 billboards expect exactly one vec3 quad-corner attribute at location 0.");
         Require(!Regex.IsMatch(vertex + fragment, @"\bset\s*=\s*1\b|\bpush_constant\b"),
             "Graphics may not declare reserved set1 or fragment push constants.");
+    }
+
+    [LumenFact]
+    public static void L1MaterialAndVertexLayoutsMatchTheDynamicQuadMesh()
+    {
+        // The L1 mesh carries exactly these three attributes; a mismatch silently drops the attribute.
+        string vertex = Read("L1ParticleQuad.vert.glsl");
+        string fragment = Read("L1ParticleQuad.frag.glsl");
+        MaterialLayout layout = ShaderMetadataParser.ExtractMaterialLayout(fragment, "L1ParticleQuad.frag");
+        Require(!layout.HasErrors, "Waylith rejected the L1 material metadata.");
+        Require(layout.UniformSize == 48, $"L1 material UBO must be 48 bytes; got {layout.UniformSize}.");
+        Require(layout.UniformSlots.Select(x => (x.Offset, x.PropertyName)).SequenceEqual(new[]
+        {
+            (0, "_LumenDraw"), (16, "_LumenDepth"), (32, "_LumenProjection")
+        }), "L1 material UBO offsets differ from the runtime packing.");
+        CheckOverrideSlots(layout, ("_LumenDraw", 0), ("_LumenDepth", 16), ("_LumenProjection", 32));
+        Require(layout.TextureSlots.Select(x => (x.Binding, x.PropertyName)).SequenceEqual(new[]
+        {
+            (1, "_LumenParticleTexture"), (2, "_LumenSceneDepth")
+        }), "L1 texture bindings differ from the material contract.");
+        Require(layout.StorageBufferSlots.Length == 0, "L1 quads are not instanced and declare no storage buffers.");
+        Require(!ShaderMetadataParser.ValidateStageInterface(vertex, fragment, "L1ParticleQuad.vert", "L1ParticleQuad.frag"),
+            "Waylith reports mismatched L1 vertex/fragment varyings.");
+        ShaderVertexInputLayout input = ShaderMetadataParser.ExtractVertexInputLayout(vertex, "L1ParticleQuad.vert");
+        Require(!input.HasErrors, "Waylith rejected the L1 vertex input layout.");
+        Require(input.Slots.Select(x => (x.location, x.semantic, x.required)).SequenceEqual(new[]
+        {
+            (0, VertexAttributeSemantic.Position, true),
+            (1, VertexAttributeSemantic.TexCoord0, true),
+            (2, VertexAttributeSemantic.Color, true)
+        }), "L1 vertex input must require Position/TexCoord0/Color at locations 0..2.");
     }
 
     [LumenFact]
@@ -156,17 +192,38 @@ public static class ParticleShaderTests
         Require(computeInstructions.Any(x => x[0] == 16 && x.Length >= 6 && x[2] == 17 && x[3] == 64 && x[4] == 1 && x[5] == 1),
             "SPIR-V workgroup must be LocalSize 64,1,1.");
         Require(fragment.Length > 20, "Fragment compiler returned no program.");
+        // The L1 quads and the depth-copy pass are separate entry points from the L2 billboards.
+        CompileFile("Particles/L1ParticleQuad.vert.glsl", RuntimeShaderStage.Vertex);
+        CompileFile("Particles/L1ParticleQuad.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("PostFx/RimLumenDepthCopy.frag.glsl", RuntimeShaderStage.Fragment);
         Console.WriteLine("[SPIR-V] compute strides=64,208,48; vertex strides=64,208,32; LocalSize=64,1,1");
     }
 
     private static void CheckUniforms(MaterialLayout layout)
     {
-        Require(layout.UniformSize == 80, "Material UBO must be 80 bytes.");
+        Require(layout.UniformSize == 96, "Material UBO must be 96 bytes.");
         Require(layout.UniformSlots.Select(x => (x.Offset, x.PropertyName)).SequenceEqual(new[]
         {
             (0, "_LumenDraw"), (16, "_LumenCameraRight"), (32, "_LumenCameraUp"),
-            (48, "_LumenProjection"), (64, "_LumenDepthUv")
+            (48, "_LumenProjection"), (64, "_LumenDepthUv"), (80, "_LumenVertical")
         }), "Material UBO offsets differ from runtime packing.");
+        CheckOverrideSlots(layout, ("_LumenDraw", 0), ("_LumenCameraRight", 16), ("_LumenCameraUp", 32),
+            ("_LumenProjection", 48), ("_LumenDepthUv", 64), ("_LumenVertical", 80));
+    }
+
+    // Per-draw vectors travel through DrawPropertyArena and only reach a uniform when the id the renderer uses
+    // (Shader.PropertyToID) resolves to the parsed slot; a renamed uniform would silently fall back to the
+    // material's stored defaults (all zero), which is exactly the state the arena path replaced.
+    private static void CheckOverrideSlots(MaterialLayout layout, params (string Name, int Offset)[] expected)
+    {
+        foreach ((string name, int offset) in expected)
+        {
+            int propertyId = Shader.PropertyToID(name);
+            Require(layout.TryGetUniformSlot(propertyId, out int index),
+                $"Material override '{name}' does not resolve to a uniform slot.");
+            Require(layout.UniformSlots[index].Offset == offset,
+                $"Material override '{name}' resolves to offset {layout.UniformSlots[index].Offset}, not {offset}.");
+        }
     }
 
     private static void CheckStruct<T>(string source, int expectedSize) where T : struct
@@ -186,19 +243,29 @@ public static class ParticleShaderTests
 
     private static byte[] Compile(string file, RuntimeShaderStage stage)
     {
-        string path = Path.Combine(ShaderDirectory(), file);
+        return CompileFile("Particles/" + file, stage, Path.Combine(ShaderDirectory(), file));
+    }
+
+    private static byte[] CompileFile(string shaderRelativePath, RuntimeShaderStage stage)
+    {
+        string path = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", shaderRelativePath));
+        return CompileFile(shaderRelativePath, stage, path);
+    }
+
+    private static byte[] CompileFile(string label, RuntimeShaderStage stage, string path)
+    {
         byte[] spirv;
         try
         {
-            spirv = RuntimeShaderCompiler.Compile(Read(file), path, "main", RuntimeShaderLanguage.Glsl, stage);
+            spirv = RuntimeShaderCompiler.Compile(ShaderSourceLoader.ReadShaderSource(path), path, "main", RuntimeShaderLanguage.Glsl, stage);
         }
         catch (Exception exception)
         {
             Console.Error.WriteLine(exception.ToString());
             throw;
         }
-        Require(spirv.Length >= 20 && BitConverter.ToUInt32(spirv) == 0x07230203u, $"{file}: invalid SPIR-V.");
-        Console.WriteLine($"[SLANG] {file}: {spirv.Length} bytes");
+        Require(spirv.Length >= 20 && BitConverter.ToUInt32(spirv) == 0x07230203u, $"{label}: invalid SPIR-V.");
+        Console.WriteLine($"[SLANG] {label}: {spirv.Length} bytes");
         return spirv;
     }
 

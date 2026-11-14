@@ -107,11 +107,11 @@ internal sealed class ProbeDrawResources
         device.UpdateDescriptorSets(new ReadOnlySpan<VkWriteDescriptorSet>(in write), default);
     }
 
-    internal unsafe void WriteDepth(int setIndex, in VkImageView view, VkSampler sampler)
+    internal unsafe void WriteDepth(int setIndex, in VkImageView view, VkSampler sampler, VkImageLayout layout)
     {
         VkDescriptorImageInfo info = new()
         {
-            Sampler = sampler, ImageView = view, ImageLayout = VkImageLayout.DepthStencilReadOnlyOptimal
+            Sampler = sampler, ImageView = view, ImageLayout = layout
         };
         VkWriteDescriptorSet write = new()
         {

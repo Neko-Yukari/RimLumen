@@ -1,57 +1,65 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using Brutal;
 using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Rendering;
+using Waylith;
+using Waylith.Graphics.Meshes;
 using Waylith.Rendering;
 using Waylith.Rendering.Compute;
-using Waylith.Rendering.PostFx;
+using Shader = Waylith.Rendering.Shader;
 
 namespace RimLumen.Core.ParticlesGpu;
 
-// All entry points belong to the render thread. A slot is touched only after
-// TryAcquireNextFrame has waited for its submission fence (RenderThread:249-253).
+// L2 GPU particles are one static quad Mesh drawn once per instance through MeshBatchRenderer. Every
+// emitter owns one Material per (instance, blend): the material UBO carries the per-frame draw flags and
+// camera axes, and the emitter/particle/curve buffers arrive as InstancedDrawInfo storage bindings.
+// Main-thread only: it builds Mesh/Shader/Material objects and never touches a command buffer.
 internal sealed class ParticleGpuDrawResources : IDisposable
 {
-    private readonly DeviceEx device;
-    private readonly VkDescriptorSetLayout frameLayout;
-    private readonly VkDescriptorSetLayout emptyLayout;
-    private readonly VkDescriptorSetLayout materialLayout;
-    private readonly VkPipelineLayout layout;
-    private readonly VkShaderModule vertex;
-    private readonly VkShaderModule fragment;
-    private readonly Dictionary<(VkRenderPass, VkSampleCountFlags, LumenBlendMode), VkPipeline> pipelines = new();
+    private static readonly int DrawPropertyId = Shader.PropertyToID("_LumenDraw");
+    private static readonly int CameraRightPropertyId = Shader.PropertyToID("_LumenCameraRight");
+    private static readonly int CameraUpPropertyId = Shader.PropertyToID("_LumenCameraUp");
+    private static readonly int ProjectionPropertyId = Shader.PropertyToID("_LumenProjection");
+    private static readonly int DepthUvPropertyId = Shader.PropertyToID("_LumenDepthUv");
+    private static readonly int VerticalPropertyId = Shader.PropertyToID("_LumenVertical");
+    private static readonly int TexturePropertyId = Shader.PropertyToID("_LumenParticleTexture");
+    private static readonly int SceneDepthPropertyId = Shader.PropertyToID("_LumenSceneDepth");
+    private static readonly int ParticlesPropertyId = Shader.PropertyToID("_LumenParticles");
+    private static readonly int EmittersPropertyId = Shader.PropertyToID("_LumenEmitters");
+    private static readonly int CurvesPropertyId = Shader.PropertyToID("_LumenCurves");
 
-    internal ParticleGpuDrawResources(in FrameContext frame)
+    private const int MaxActiveMaterials = 128;
+
+    private readonly Mesh quad;
+    private readonly ParticleMeshShaders shaders;
+    private readonly int retirementAge;
+    // Cached materials keep only static state (shader + textures); the emitter index is a per-draw
+    // DrawProperty, so two emitters sharing a texture and blend share one material.
+    private readonly Dictionary<(LumenBlendMode Blend, Texture Texture), CachedMaterial> materials = new();
+    private readonly HashSet<(LumenBlendMode Blend, Texture Texture)> frameKeys = new();
+    private readonly List<(LumenBlendMode Blend, Texture Texture)> retired = new();
+    private bool overflowLogged;
+    private bool disposed;
+
+    internal ParticleGpuDrawResources(int framesInFlight)
     {
-        device = frame.Device;
-        frameLayout = CreateLayout(device, new[] { Binding(0, VkDescriptorType.UniformBuffer, VkShaderStageFlags.VertexBit) });
-        emptyLayout = CreateLayout(device, Array.Empty<VkDescriptorSetLayoutBinding>());
-        materialLayout = CreateLayout(device, new[]
-        {
-            Binding(0, VkDescriptorType.UniformBuffer, VkShaderStageFlags.VertexBit | VkShaderStageFlags.FragmentBit),
-            Binding(1, VkDescriptorType.StorageBuffer, VkShaderStageFlags.VertexBit | VkShaderStageFlags.FragmentBit),
-            Binding(2, VkDescriptorType.StorageBuffer, VkShaderStageFlags.VertexBit | VkShaderStageFlags.FragmentBit),
-            Binding(3, VkDescriptorType.StorageBuffer, VkShaderStageFlags.VertexBit | VkShaderStageFlags.FragmentBit),
-            Binding(4, VkDescriptorType.CombinedImageSampler, VkShaderStageFlags.FragmentBit),
-            Binding(5, VkDescriptorType.CombinedImageSampler, VkShaderStageFlags.FragmentBit)
-        });
-        layout = device.CreatePipelineLayout(new[] { frameLayout, emptyLayout, materialLayout },
-            default(ReadOnlySpan<VkPushConstantRange>), device.VkAllocator);
-        vertex = PostFxPassHelpers.Compile(device, ShaderSourceLoader.ReadShaderSource("Particles/ParticleBillboard.vert.glsl"),
-            RuntimeShaderStage.Vertex, "RimLumen.ParticleBillboard.Vertex");
-        fragment = PostFxPassHelpers.Compile(device, ShaderSourceLoader.ReadShaderSource("Particles/ParticleBillboard.frag.glsl"),
-            RuntimeShaderStage.Fragment, "RimLumen.ParticleBillboard.Fragment");
-        LogHandle("VkPipelineLayout", $"{layout.VkHandle:X}", "ParticleDraw");
-        LogHandle("VkShaderModule", $"{vertex.VkHandle:X}", "ParticleVertex");
-        LogHandle("VkShaderModule", $"{fragment.VkHandle:X}", "ParticleFragment");
+        retirementAge = 2 * Math.Max(1, framesInFlight) + 2;
+        quad = CreateQuad();
+        // The occlusion test lives in the fragment shader, so the pipeline runs without a depth test.
+        shaders = ParticleMeshShaders.Create("RimLumen.L2", "Particles/ParticleBillboard.vert.glsl",
+            "Particles/ParticleBillboard.frag.glsl", depthTest: false);
     }
 
-    internal static void LogHandle(string type, string hex, string name) =>
+    // Handle attribution is only logged under -rimlumen-probe (RimLumenRenderHost.VerboseDiagnostics).
+    internal static void LogHandle(string type, string hex, string name)
+    {
+        if (!RimLumenRenderHost.VerboseDiagnostics) return;
         Verse.Log.Message($"[RimLumen] OwnedVkObject type={type} handle=0x{hex} name={name}");
+    }
 
     internal static VkDescriptorSetLayoutBinding Binding(int binding, VkDescriptorType type, VkShaderStageFlags stages) => new()
     {
@@ -65,113 +73,17 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         return result;
     }
 
-    internal static unsafe VkDescriptorPool CreatePool(DeviceEx device, int emitterCount)
+    // One compute set per frame: particle/emitter/field storage buffers, dispatched once per emitter.
+    internal static unsafe VkDescriptorPool CreateComputePool(DeviceEx device)
     {
-        int count = Math.Max(1, emitterCount);
-        VkDescriptorPoolSize* sizes = stackalloc VkDescriptorPoolSize[3];
-        sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageBuffer, DescriptorCount = count * 3 + 3 };
-        sizes[1] = new VkDescriptorPoolSize { Type = VkDescriptorType.UniformBuffer, DescriptorCount = count + 1 };
-        sizes[2] = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = count * 2 };
+        VkDescriptorPoolSize* sizes = stackalloc VkDescriptorPoolSize[1];
+        sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageBuffer, DescriptorCount = 3 };
         var result = device.CreateDescriptorPool(new VkDescriptorPoolCreateInfo
         {
-            MaxSets = count + 2, PoolSizeCount = 3, PoolSizes = sizes
+            MaxSets = 1, PoolSizeCount = 1, PoolSizes = sizes
         }, device.VkAllocator);
-        LogHandle("VkDescriptorPool", $"{result.VkHandle:X}", "ParticlePool");
+        LogHandle("VkDescriptorPool", $"{result.VkHandle:X}", "ParticleComputePool");
         return result;
-    }
-
-    internal unsafe void Draw(in LumenHdrDrawContext context, ParticleFrame snapshot,
-        ParticleGpuFrame resources, GpuComputeBuffer particles, Texture[] textures, bool[] texturePresent)
-    {
-        FrameContext frame = context.Frame;
-        VkDescriptorSet cameraSet = DescriptorSetWriter.AllocateDescriptorSet(device, resources.Pool, frameLayout);
-        LogHandle("VkDescriptorSet", $"{cameraSet.VkHandle:X}", "ParticleCamera");
-        Matrix4x4 viewProjection = context.ViewProjection;
-        resources.Camera.Upload(new ReadOnlySpan<Matrix4x4>(in viewProjection));
-        WriteBuffers(device, cameraSet, new[] { 0 }, new[] { resources.Camera }, VkDescriptorType.UniformBuffer);
-        var viewport = new VkViewport { Width = frame.Extent.Width, Height = frame.Extent.Height, MinDepth = 0, MaxDepth = 1 };
-        frame.CommandBuffer.SetViewport(0, new ReadOnlySpan<VkViewport>(in viewport));
-        var scissor = new VkRect2D(frame.Extent);
-        frame.CommandBuffer.SetScissor(0, new ReadOnlySpan<VkRect2D>(in scissor));
-        Matrix4x4.Invert(snapshot.Context.ViewMatrix, out Matrix4x4 inverseView);
-        // Host view matrices multiply column vectors: inverseView's columns are camera axes in world space.
-        Vector3 right = Vector3.Normalize(new Vector3(inverseView.M11, inverseView.M21, inverseView.M31));
-        Vector3 up = Vector3.Normalize(new Vector3(inverseView.M12, inverseView.M22, inverseView.M32));
-        Matrix4x4 projection = snapshot.Context.ProjectionMatrix;
-        RenderTexture? source = context.SceneColorDepthSource;
-        VkImageView depthView = default;
-        if (source is not null && !source.HasDepth) source = null;
-        if (source is not null)
-        {
-            // The HDR owner's subpass uses DepthStencilReadOnlyOptimal. Its tracked
-            // outer layout stays DepthStencilAttachmentOptimal until pass end.
-            depthView = source.DepthSampleView;
-            if (depthView.IsNull()) throw new InvalidOperationException("Scene depth has no depth-only sample view.");
-        }
-        VkImageView fallbackView = default;
-        VkImageLayout fallbackLayout = default;
-        if (source is null)
-        {
-            Texture.EnsureSampledReady(Texture2D.whiteTexture);
-            if (!GpuTextureService.TryGetSampledImageInfo(Texture2D.whiteTexture, out fallbackView, out fallbackLayout))
-                throw new InvalidOperationException("Procedural particle fallback has no native white texture.");
-        }
-        VkDescriptorImageInfo* images = stackalloc VkDescriptorImageInfo[2];
-        VkWriteDescriptorSet* writes = stackalloc VkWriteDescriptorSet[3];
-        for (int i = 0; i < snapshot.Emitters.Length; i++)
-        {
-            ParticleEmitterFrame emitter = snapshot.Emitters[i];
-            Texture texture = textures[i];
-            if (!GpuTextureService.TryGetSampledImageInfo(texture, out VkImageView textureView, out VkImageLayout textureLayout))
-                throw new InvalidOperationException($"Particle texture '{emitter.TextureKey}' has no resident native image.");
-            var uniforms = new DrawUniforms
-            {
-                Draw = new Vector4(i, texturePresent[i] ? 1 : 0, source is null ? 0 : 1,
-                    emitter.Blend == LumenBlendMode.Premultiplied ? 1 : 0),
-                CameraRight = new Vector4(right, 0), CameraUp = new Vector4(up, 0),
-                Projection = new Vector4(projection.M33, projection.M34, projection.M43, projection.M44),
-                DepthUv = new Vector4(1f / frame.Extent.Width, 1f / frame.Extent.Height, 0, 0)
-            };
-            resources.Materials.Upload(new ReadOnlySpan<DrawUniforms>(in uniforms), (long)i * resources.UniformStride);
-            VkDescriptorSet set = DescriptorSetWriter.AllocateDescriptorSet(device, resources.Pool, materialLayout);
-            LogHandle("VkDescriptorSet", $"{set.VkHandle:X}", "ParticleMaterial");
-            WriteBuffers(device, set, new[] { 1, 2, 3 }, new[] { particles, resources.Emitters, resources.Curves }, VkDescriptorType.StorageBuffer);
-            var uniformInfo = new VkDescriptorBufferInfo
-            {
-                Buffer = resources.Materials.Buffer, Offset = ByteSize.Of((long)i * resources.UniformStride), Range = ByteSize.Of(80)
-            };
-            images[0] = new VkDescriptorImageInfo { Sampler = ComputeDispatchQueue.BilinearClampSampler, ImageView = textureView, ImageLayout = textureLayout };
-            images[1] = new VkDescriptorImageInfo
-            {
-                Sampler = ComputeDispatchQueue.PointClampSampler,
-                ImageView = source is null ? fallbackView : depthView,
-                ImageLayout = source is null ? fallbackLayout : VkImageLayout.DepthStencilReadOnlyOptimal
-            };
-            writes[0] = new VkWriteDescriptorSet { DstSet = set, DstBinding = 0, DescriptorCount = 1, DescriptorType = VkDescriptorType.UniformBuffer, BufferInfo = &uniformInfo };
-            writes[1] = new VkWriteDescriptorSet { DstSet = set, DstBinding = 4, DescriptorCount = 1, DescriptorType = VkDescriptorType.CombinedImageSampler, ImageInfo = images };
-            writes[2] = new VkWriteDescriptorSet { DstSet = set, DstBinding = 5, DescriptorCount = 1, DescriptorType = VkDescriptorType.CombinedImageSampler, ImageInfo = images + 1 };
-            device.UpdateDescriptorSets(new ReadOnlySpan<VkWriteDescriptorSet>(writes, 3), default(ReadOnlySpan<VkCopyDescriptorSet>));
-            var key = (frame.RenderPass, frame.SampleCount, emitter.Blend);
-            if (!pipelines.TryGetValue(key, out VkPipeline pipeline))
-            {
-                BlendState blend = emitter.Blend switch
-                {
-                    LumenBlendMode.Additive => BlendState.Additive,
-                    LumenBlendMode.AlphaBlend => BlendState.Alpha,
-                    LumenBlendMode.Premultiplied => new BlendState(true, BlendFactor.One, BlendFactor.OneMinusSrcAlpha, BlendOp.Add,
-                        BlendFactor.One, BlendFactor.OneMinusSrcAlpha, BlendOp.Add),
-                    _ => throw new ArgumentOutOfRangeException(nameof(emitter.Blend))
-                };
-                pipeline = PostFxPassHelpers.CreateFullscreenPipeline(device, frame.RenderPass, frame.SampleCount,
-                    vertex, fragment, layout, blend, "RimLumen.Particles");
-                pipelines.Add(key, pipeline);
-                LogHandle("VkPipeline", $"{pipeline.VkHandle:X}", "ParticleDraw");
-            }
-            frame.CommandBuffer.BindPipeline(VkPipelineBindPoint.Graphics, pipeline);
-            frame.CommandBuffer.BindDescriptorSet(VkPipelineBindPoint.Graphics, layout, 0, cameraSet, default(Span<ByteSize32>));
-            frame.CommandBuffer.BindDescriptorSet(VkPipelineBindPoint.Graphics, layout, 2, set, default(Span<ByteSize32>));
-            frame.CommandBuffer.Draw(6, (int)emitter.Parameters.Slots.Y, 0, 0);
-        }
     }
 
     internal static unsafe void WriteBuffers(DeviceEx device, VkDescriptorSet set, int[] bindings,
@@ -190,47 +102,181 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         device.UpdateDescriptorSets(new ReadOnlySpan<VkWriteDescriptorSet>(writes, buffers.Length), default(ReadOnlySpan<VkCopyDescriptorSet>));
     }
 
-    // Caller has waited for the device or is retiring this entire resource set after its fences.
-    public void Dispose()
+    // Requires: main thread, after MeshDrawSubmission flushed this frame's uploads; `particles` and the
+    //           frame's emitter/curve buffers were written by this frame's enqueue.
+    // Ensures: appends one instanced draw per live emitter to the pass-0 list, carrying this frame's
+    //   _LumenDraw/_LumenCameraRight/_LumenCameraUp/_LumenProjection/_LumenDepthUv/_LumenVertical through the arena (never by
+    //   mutating the cached Material); drops draws after one Log.Error when the capture needs more than
+    //   MaxActiveMaterials distinct materials.
+    internal void AppendDraws(ParticleFrame snapshot, ParticleGpuFrame resources, GpuComputeBuffer particles,
+        Texture sceneDepth, Texture[] textures, bool[] texturePresent, List<FinalDrawItem> draws,
+        DrawItemFactory maker, DrawPropertyArena arena, int queueOrder, ulong frameIndex)
     {
-        foreach (VkPipeline pipeline in pipelines.Values) device.DestroyPipeline(pipeline, device.VkAllocator);
-        device.DestroyShaderModule(vertex, device.VkAllocator);
-        device.DestroyShaderModule(fragment, device.VkAllocator);
-        device.DestroyPipelineLayout(layout, device.VkAllocator);
-        device.DestroyDescriptorSetLayout(frameLayout, device.VkAllocator);
-        device.DestroyDescriptorSetLayout(emptyLayout, device.VkAllocator);
-        device.DestroyDescriptorSetLayout(materialLayout, device.VkAllocator);
+        if (disposed || snapshot.Emitters.Length == 0) return;
+        CameraBillboardBasis.Extract(snapshot.Context.ViewMatrix, out Vector3 right, out Vector3 up, out float yScaleRatio);
+        Matrix4x4 projection = snapshot.Context.ProjectionMatrix;
+        var depthUv = new Vector4(1f / snapshot.Context.ViewportWidth, 1f / snapshot.Context.ViewportHeight, 0, 0);
+        InstanceStorageBinding[] storage =
+        {
+            new(ParticlesPropertyId, particles),
+            new(EmittersPropertyId, resources.Emitters),
+            new(CurvesPropertyId, resources.Curves)
+        };
+        var cameraRight = new Vector4(right, 0);
+        var cameraUp = new Vector4(up, yScaleRatio);
+        var projectionPacked = new Vector4(projection.M33, projection.M34, projection.M43, projection.M44);
+        float verticalMode = CameraBillboardBasis.IsStraightTopDown2D(up, yScaleRatio) ? 2f : 1f;
+        float vanillaMoteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
+        RetireStale(frameIndex);
+        frameKeys.Clear();
+        for (int i = 0; i < snapshot.Emitters.Length; i++)
+        {
+            ParticleEmitterFrame emitter = snapshot.Emitters[i];
+            if (!emitter.IsVisibleOnMap(snapshot.Context.CurrentMapIndex)) continue;
+            int instances = (int)emitter.Parameters.Slots.Y;
+            if (instances <= 0) continue;
+            Texture texture = textures[i];
+            bool present = texturePresent[i];
+            Material? material = MaterialFor(emitter.Blend, present ? texture : Texture2D.whiteTexture, sceneDepth, frameIndex);
+            if (material is null) continue;
+            Span<DrawProperty> properties = arena.Allocate(6, out DrawPropertyRange range);
+            properties[0] = DrawProperty.Vector(DrawPropertyId, new Vector4(i, present ? 1f : 0f, 1f,
+                emitter.Blend == LumenBlendMode.AlphaBlend ? 0f : 1f));
+            properties[1] = DrawProperty.Vector(CameraRightPropertyId, cameraRight);
+            properties[2] = DrawProperty.Vector(CameraUpPropertyId, cameraUp);
+            properties[3] = DrawProperty.Vector(ProjectionPropertyId, projectionPacked);
+            properties[4] = DrawProperty.Vector(DepthUvPropertyId, depthUv);
+            properties[5] = DrawProperty.Vector(VerticalPropertyId, emitter.IsVertical3D
+                ? new Vector4(verticalMode, emitter.BaseY, vanillaMoteY, 0f) : Vector4.Zero);
+            InstancedDrawInfo instancing = InstancedDrawInfo.Direct(instances, storage);
+            var command = new MeshDrawCommand(quad, material, range, Matrix4x4.Identity, 0,
+                RimLumenRenderHost.LumenRenderPassId, instancing);
+            FinalDrawItem? draw = maker.TryMake(in command, arena, UnityEngine.Shader.GlobalKeywordKey, queueOrder + i);
+            if (draw is null) continue;
+            draws.Add(draw);
+        }
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct DrawUniforms
+    // Static state only: emitter index, camera vectors and depth UVs are per-draw DrawProperties.
+    private Material? MaterialFor(LumenBlendMode blend, Texture texture, Texture sceneDepth, ulong frameIndex)
     {
-        public Vector4 Draw, CameraRight, CameraUp, Projection, DepthUv;
+        var key = (blend, texture);
+        if (materials.TryGetValue(key, out CachedMaterial cached))
+        {
+            materials[key] = cached with { LastUsedFrame = frameIndex };
+            frameKeys.Add(key);
+            return cached.Material;
+        }
+        if (frameKeys.Count >= MaxActiveMaterials)
+        {
+            if (!overflowLogged)
+            {
+                overflowLogged = true;
+                Verse.Log.Error($"[RimLumen] L2 particles need more than {MaxActiveMaterials} distinct materials in one frame; the remaining emitters are not drawn.");
+            }
+            return null;
+        }
+        Shader shader = blend switch
+        {
+            LumenBlendMode.Additive => shaders.Additive,
+            LumenBlendMode.AlphaBlend => shaders.Alpha,
+            LumenBlendMode.Premultiplied => shaders.Premultiplied,
+            _ => throw new ArgumentOutOfRangeException(nameof(blend), blend, "Unknown L2 blend mode.")
+        };
+        var material = new Material(shader, $"RimLumen.L2.{blend}.{texture.Name}");
+        material.SetTexture(TexturePropertyId, texture);
+        // The proxy mirrors the current submission slot's R32_SFLOAT snapshot; its backing image follows
+        // target rebuilds, and the engine re-resolves the descriptor when the allocation changes.
+        material.SetTexture(SceneDepthPropertyId, sceneDepth);
+        materials[key] = new CachedMaterial(material, frameIndex);
+        frameKeys.Add(key);
+        return material;
     }
+
+    // Frame-safety: a capture's draws are consumed by at most FramesInFlight submitted frames, so a material
+    // unused for more than 2*FramesInFlight+2 capture indices cannot be referenced by an in-flight frame.
+    // Material.Dispose only unregisters the binding (Waylith Material.cs:1273-1280 → MaterialBindingCache),
+    // it frees no GPU object, so even a straggler reference would stay valid.
+    private void RetireStale(ulong frameIndex)
+    {
+        if (materials.Count == 0) return;
+        retired.Clear();
+        foreach (KeyValuePair<(LumenBlendMode Blend, Texture Texture), CachedMaterial> pair in materials)
+            if (frameIndex >= pair.Value.LastUsedFrame && frameIndex - pair.Value.LastUsedFrame > (ulong)retirementAge)
+                retired.Add(pair.Key);
+        foreach ((LumenBlendMode Blend, Texture Texture) key in retired)
+        {
+            materials[key].Material.Dispose();
+            materials.Remove(key);
+        }
+    }
+
+    private static Mesh CreateQuad()
+    {
+        Mesh mesh = new() { DebugName = "RimLumen.L2BillboardQuad" };
+        MeshDataArray data = Mesh.AllocateWritableMeshData(1);
+        bool applied = false;
+        try
+        {
+            MeshData writable = data[0];
+            writable.SetVertexBufferParams(4, new[]
+            {
+                new VertexAttribute(VertexAttributeSemantic.Position, VertexAttributeFormat.Float32, 3, 0, 0)
+            });
+            Span<Vector3> positions = writable.GetVertexData<Vector3>().AsSpan();
+            positions[0] = new Vector3(0f, 0f, 0f);
+            positions[1] = new Vector3(1f, 0f, 0f);
+            positions[2] = new Vector3(0f, 1f, 0f);
+            positions[3] = new Vector3(1f, 1f, 0f);
+            writable.SetIndexBufferParams(6, MeshIndexFormat.UInt32);
+            Span<uint> indices = writable.GetIndexData<uint>().AsSpan();
+            indices[0] = 0; indices[1] = 1; indices[2] = 2;
+            indices[3] = 1; indices[4] = 3; indices[5] = 2;
+            writable.subMeshCount = 1;
+            writable.SetSubMesh(0, new SubMesh(0, 6));
+            Mesh.ApplyAndDisposeWritableMeshData(data, mesh);
+            applied = true;
+        }
+        finally
+        {
+            if (!applied) data.Dispose();
+        }
+        return mesh;
+    }
+
+    // Requires: main thread after the render thread went idle (LumenGpuParticleEngine.DisposeGpu).
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true;
+        foreach (CachedMaterial cached in materials.Values) cached.Material.Dispose();
+        materials.Clear();
+        frameKeys.Clear();
+        retired.Clear();
+        quad.Dispose();
+    }
+
+    // Per-capture vector state is never stored here: see AppendDraws/DrawPropertyArena.
+    private readonly record struct CachedMaterial(Material Material, ulong LastUsedFrame);
 }
 
 internal sealed class ParticleGpuFrame : IDisposable
 {
     private readonly DeviceEx device;
     internal readonly VkDescriptorPool Pool;
-    internal readonly GpuComputeBuffer Emitters, Fields, Curves, Camera, Materials;
-    internal readonly int UniformStride;
+    internal readonly GpuComputeBuffer Emitters, Fields, Curves;
     internal readonly int EmitterCapacity, FieldCapacity;
 
-    internal ParticleGpuFrame(in FrameContext frame, int emitterCount, int fieldCount)
+    internal ParticleGpuFrame(EngineApplication app, int emitterCount, int fieldCount)
     {
-        device = frame.Device;
+        device = app.Device;
         EmitterCapacity = Math.Max(1, emitterCount);
         FieldCapacity = Math.Max(1, fieldCount);
-        int alignment = Math.Max(1, frame.GraphicsDevice.PhysicalDevice.GetProperties().Limits.MinUniformBufferOffsetAlignment);
-        UniformStride = ((80 + alignment - 1) / alignment) * alignment;
-        Pool = ParticleGpuDrawResources.CreatePool(device, EmitterCapacity);
-        Emitters = GpuComputeBuffer.Create(device, frame.GraphicsDevice.Allocator, "Lumen.Emitters", (long)EmitterCapacity * 208);
-        Fields = GpuComputeBuffer.Create(device, frame.GraphicsDevice.Allocator, "Lumen.Fields", (long)FieldCapacity * 48);
-        Curves = GpuComputeBuffer.Create(device, frame.GraphicsDevice.Allocator, "Lumen.Curves", (long)EmitterCapacity * 64 * 32);
-        Camera = GpuComputeBuffer.Create(device, frame.GraphicsDevice.Allocator, "Lumen.Camera", 64, VkBufferUsageFlags.UniformBufferBit);
-        Materials = GpuComputeBuffer.Create(device, frame.GraphicsDevice.Allocator, "Lumen.Materials", (long)EmitterCapacity * UniformStride, VkBufferUsageFlags.UniformBufferBit);
-        foreach (var buffer in new[] { Emitters, Fields, Curves, Camera, Materials })
+        Pool = ParticleGpuDrawResources.CreateComputePool(device);
+        Emitters = GpuComputeBuffer.Create(device, app.GraphicsDevice!.Allocator, "Lumen.Emitters", (long)EmitterCapacity * 208);
+        Fields = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Fields", (long)FieldCapacity * 48);
+        Curves = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Curves", (long)EmitterCapacity * 64 * 32);
+        foreach (var buffer in new[] { Emitters, Fields, Curves })
             ParticleGpuDrawResources.LogHandle("VkBuffer", $"{buffer.Buffer.VkHandle:X}", "ParticleFrame");
     }
 
@@ -250,6 +296,6 @@ internal sealed class ParticleGpuFrame : IDisposable
     public void Dispose()
     {
         device.DestroyDescriptorPool(Pool, device.VkAllocator);
-        Emitters.Dispose(); Fields.Dispose(); Curves.Dispose(); Camera.Dispose(); Materials.Dispose();
+        Emitters.Dispose(); Fields.Dispose(); Curves.Dispose();
     }
 }

@@ -18,7 +18,7 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         internal RenderTexture[] Up = Array.Empty<RenderTexture>();
         internal VkFramebuffer Framebuffer;
         internal VkImageView SceneDepth;
-        internal RenderTexture Bloom => Up.Length == 0 ? Down[0] : Up[0];
+        internal RenderTexture? Bloom => Down.Length == 0 ? null : (Up.Length == 0 ? Down[0] : Up[0]);
     }
 
     private readonly DeviceEx device = app.Device;
@@ -27,10 +27,12 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
     private VkFormat depthFormat;
     private int width;
     private int height;
+    private int bloomMipLevels = 5;
 
-    internal unsafe Slot Ensure(int index, RenderTexture scene)
+    internal unsafe Slot Ensure(int index, RenderTexture scene, int mipLevels = 5)
     {
-        if (Slots.Length == 0 || width != scene.Width || height != scene.Height || depthFormat != scene.DepthFormat)
+        mipLevels = Math.Clamp(mipLevels, 0, 7);
+        if (Slots.Length == 0 || width != scene.Width || height != scene.Height || depthFormat != scene.DepthFormat || bloomMipLevels != mipLevels)
         {
             // Rebuild notification normally retires these after the engine waits idle; also covers scene-only resize.
             device.WaitIdle();
@@ -38,26 +40,35 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
             width = scene.Width;
             height = scene.Height;
             depthFormat = scene.DepthFormat;
+            bloomMipLevels = mipLevels;
             RenderPass = CreateRenderPass(depthFormat);
-            Log.Message($"[RimLumen] OwnedVkObject type=VkRenderPass handle=0x{RenderPass.VkHandle:X} name=Hdr; ApiVersion={app.GraphicsDevice!.ApiVersion}; depthStore=Store; exit covers store write.");
-            MipSize[] sizes = BloomMipChain.Compute(width, height, 5, 8);
+            Owned($"[RimLumen] OwnedVkObject type=VkRenderPass handle=0x{RenderPass.VkHandle:X} name=Hdr; ApiVersion={app.GraphicsDevice!.ApiVersion}; depthStore=Store; exit covers store write.");
+            MipSize[] sizes = bloomMipLevels > 0 ? BloomMipChain.Compute(width, height, bloomMipLevels, 8) : Array.Empty<MipSize>();
             Slots = new Slot[app.RenderContext!.FramesInFlight];
-            for (int frame = 0; frame < Slots.Length; frame++)
+            try
             {
-                Slot slot = new()
+                for (int frame = 0; frame < Slots.Length; frame++)
                 {
-                    Color = Make(width, height, $"RimLumen.Hdr.{frame}"),
-                    DepthSnapshot = MakeDepth(width, height, depthFormat, $"RimLumen.DepthSnapshot.{frame}")
-                };
-                slot.Down = new RenderTexture[sizes.Length];
-                slot.Up = new RenderTexture[Math.Max(0, sizes.Length - 1)];
-                for (int level = 0; level < sizes.Length; level++)
-                {
-                    slot.Down[level] = Make(sizes[level].Width, sizes[level].Height, $"RimLumen.BloomDown.{frame}.{level}");
-                    if (level < slot.Up.Length)
-                        slot.Up[level] = Make(sizes[level].Width, sizes[level].Height, $"RimLumen.BloomUp.{frame}.{level}");
+                    // Published before any GPU object exists: a mid-allocation failure leaves every
+                    // already-created texture reachable by Dispose.
+                    Slot slot = new();
+                    Slots[frame] = slot;
+                    slot.Color = Make(width, height, $"RimLumen.Hdr.{frame}");
+                    slot.DepthSnapshot = MakeDepthSnapshot(width, height, $"RimLumen.DepthSnapshot.{frame}");
+                    slot.Down = new RenderTexture[sizes.Length];
+                    slot.Up = new RenderTexture[Math.Max(0, sizes.Length - 1)];
+                    for (int level = 0; level < sizes.Length; level++)
+                    {
+                        slot.Down[level] = Make(sizes[level].Width, sizes[level].Height, $"RimLumen.BloomDown.{frame}.{level}");
+                        if (level < slot.Up.Length)
+                            slot.Up[level] = Make(sizes[level].Width, sizes[level].Height, $"RimLumen.BloomUp.{frame}.{level}");
+                    }
                 }
-                Slots[frame] = slot;
+            }
+            catch
+            {
+                Dispose();
+                throw;
             }
         }
         Slot result = Slots[index];
@@ -71,32 +82,55 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
                 RenderPass = RenderPass, AttachmentCount = 2, Attachments = views,
                 Width = width, Height = height, Layers = 1
             }, device.VkAllocator);
-            Log.Message($"[RimLumen] OwnedVkObject type=VkFramebuffer handle=0x{result.Framebuffer.VkHandle:X} name=HdrSlot{index}; depthView=0x{scene.DepthView.VkHandle:X}");
+            Owned($"[RimLumen] OwnedVkObject type=VkFramebuffer handle=0x{result.Framebuffer.VkHandle:X} name=HdrSlot{index}; depthView=0x{scene.DepthView.VkHandle:X}");
         }
         return result;
+    }
+
+    // Handle attribution is only logged under -rimlumen-probe (RimLumenRenderHost.VerboseDiagnostics).
+    private static void Owned(string message)
+    {
+        if (!RimLumenRenderHost.VerboseDiagnostics) return;
+        Log.Message(message);
     }
 
     private static RenderTexture Make(int width, int height, string name)
     {
         RenderTexture result = new(width, height, VkFormat.R16G16B16A16SFloat, name: name);
-        result.Create();
-        Log.Message($"[RimLumen] OwnedVkObject type=VkImage handle=0x{result.Color.Image.VkHandle:X} name={name}");
-        Log.Message($"[RimLumen] OwnedVkObject type=VkImageView handle=0x{result.ColorView.VkHandle:X} name={name}");
-        Log.Message($"[RimLumen] OwnedVkObject type=VkSampler handle=0x{result.Sampler.VkHandle:X} name={name}");
-        return result;
+        try
+        {
+            result.Create();
+            Owned($"[RimLumen] OwnedVkObject type=VkImage handle=0x{result.Color.Image.VkHandle:X} name={name}");
+            Owned($"[RimLumen] OwnedVkObject type=VkImageView handle=0x{result.ColorView.VkHandle:X} name={name}");
+            Owned($"[RimLumen] OwnedVkObject type=VkSampler handle=0x{result.Sampler.VkHandle:X} name={name}");
+            return result;
+        }
+        catch
+        {
+            result.Dispose();
+            throw;
+        }
     }
 
-    private static RenderTexture MakeDepth(int width, int height, VkFormat format, string name)
+    private static RenderTexture MakeDepthSnapshot(int width, int height, string name)
     {
-        // No color allocation: RenderTexture exposes the copied depth through the existing contract.
-        RenderTexture result = new(width, height, VkFormat.Undefined, format, name: name);
-        result.Create();
-        Log.Message($"[RimLumen] OwnedVkObject type=VkImage handle=0x{result.Depth!.Image.VkHandle:X} name={name}");
-        Log.Message($"[RimLumen] OwnedVkObject type=VkImageView handle=0x{result.DepthView.VkHandle:X} name={name}.Attachment");
-        if (!result.DepthSampleView.Equals(result.DepthView))
-            Log.Message($"[RimLumen] OwnedVkObject type=VkImageView handle=0x{result.DepthSampleView.VkHandle:X} name={name}.Sample");
-        Log.Message($"[RimLumen] OwnedVkObject type=VkSampler handle=0x{result.Sampler.VkHandle:X} name={name}");
-        return result;
+        // The snapshot is a COLOR target: the depth copy pass writes raw depth into it as R32_SFLOAT,
+        // so it can be sampled through a regular Material texture slot instead of a depth aspect view.
+        RenderTexture result = new(width, height, colorFormat: VkFormat.R32SFloat,
+            filter: RenderTextureFilter.Point, wrap: RenderTextureWrap.Clamp, name: name);
+        try
+        {
+            result.Create();
+            Owned($"[RimLumen] OwnedVkObject type=VkImage handle=0x{result.Color.Image.VkHandle:X} name={name}");
+            Owned($"[RimLumen] OwnedVkObject type=VkImageView handle=0x{result.ColorView.VkHandle:X} name={name}");
+            Owned($"[RimLumen] OwnedVkObject type=VkSampler handle=0x{result.Sampler.VkHandle:X} name={name}");
+            return result;
+        }
+        catch
+        {
+            result.Dispose();
+            throw;
+        }
     }
 
     private unsafe VkRenderPass CreateRenderPass(VkFormat depth)
@@ -151,13 +185,14 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
 
     public void Dispose()
     {
-        foreach (Slot slot in Slots)
+        foreach (Slot? slot in Slots)
         {
+            if (slot is null) continue;
             if (!slot.Framebuffer.IsNull()) device.DestroyFramebuffer(slot.Framebuffer, device.VkAllocator);
-            slot.Color.Dispose();
-            slot.DepthSnapshot.Dispose();
-            foreach (RenderTexture texture in slot.Down) texture.Dispose();
-            foreach (RenderTexture texture in slot.Up) texture.Dispose();
+            slot.Color?.Dispose();
+            slot.DepthSnapshot?.Dispose();
+            foreach (RenderTexture? texture in slot.Down) texture?.Dispose();
+            foreach (RenderTexture? texture in slot.Up) texture?.Dispose();
         }
         Slots = Array.Empty<Slot>();
         if (!RenderPass.IsNull()) device.DestroyRenderPass(RenderPass, device.VkAllocator);

@@ -48,3 +48,6 @@ public interface IL1ParticleBatchSink
     // Ensures: submits one dynamic quad batch (4 vertices per particle, 6 indices per particle).
     void Submit(ReadOnlySpan<ParticleVertex> vertices, ReadOnlySpan<uint> indices, int liveParticleCount);
 }
+
+/// <summary>Contiguous index range in <see cref="CpuParticleSimulator"/> sharing one texture and blend mode.</summary>
+public readonly record struct L1SubBatch(string? TextureKey, RimLumen.Core.Contracts.LumenBlendMode BlendMode, int IndexStart, int IndexCount, float SoftParticleFadeDistance = 0.5f);

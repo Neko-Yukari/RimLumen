@@ -1,6 +1,8 @@
 .scratch/
 .cortexkit/
 .vs/
+Dist/
+graphify-out/
 **/bin/
 **/obj/
 1.7/Assemblies/*.dll

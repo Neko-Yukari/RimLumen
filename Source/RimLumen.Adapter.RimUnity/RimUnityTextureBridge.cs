@@ -27,11 +27,12 @@ public sealed class RimUnityTextureBridge
         AssetRecord record = catalog.Find(textureKey) ?? throw new InvalidDataException("Unknown texture: " + textureKey);
         if (record.type != "Texture2D") throw new InvalidDataException("Asset is not a Texture2D: " + textureKey);
         resolvedKeys.Add(textureKey);
-        if (EngineApplication.Instance?.GraphicsDevice is not null &&
-            LumenHostRegistry.GpuParticleEngine is LumenGpuParticleEngine engine)
+        if (EngineApplication.Instance?.GraphicsDevice is not null)
         {
             var texture = AssetLoader.LoadDirectory<global::RimUnity.Texture2D>(catalog.DataDirectory, record.path);
-            engine.RegisterTexture(textureKey, texture.CoreTexture);
+            RimLumen.Core.Assets.LumenTextureRegistry.Register(textureKey, texture.CoreTexture);
+            if (LumenHostRegistry.GpuParticleEngine is LumenGpuParticleEngine engine)
+                engine.RegisterTexture(textureKey, texture.CoreTexture);
         }
         return textureKey;
     }

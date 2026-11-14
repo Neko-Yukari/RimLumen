@@ -2,8 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using RimLumen.Core.Assets;
-using RimLumen.Core.Scene;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.ParticlesGpu;
+using RimLumen.Core.Scene;
 
 namespace RimLumen.Core.Tests.SceneAndLighting;
 
@@ -150,6 +151,68 @@ public static class LumenVfxServiceSuite
         VfxAssert.Check(LumenHostRegistry.TryResolveAsset(asset.EffectId, out var resolved) && ReferenceEquals(asset, resolved),
             "Bootstrap catalog is reachable through the host registry");
         catalog.Unregister(asset.EffectId);
+    }
+
+    [LumenFact]
+    public static void PlayReturnsInertHandleAndThrottlesPoolExhaustedWarningEveryTenSeconds()
+    {
+        GlowAssert.Equal(1_048_576, EmitterSlotAllocator.DefaultCapacity);
+
+        var asset = new EffectAsset
+        {
+            EffectId = "b3.pool_exhausted",
+            Nodes = new[]
+            {
+                new EffectNodeSpec
+                {
+                    Name = "lead_l1",
+                    Emitter = new EmitterSpec
+                    {
+                        Name = "l1", RateOverTime = 2f, MaxParticles = 16, Duration = 2f,
+                        StartLifetimeMin = 10f, StartLifetimeMax = 10f, PreferredTier = LumenParticleTier.L1_NativeCpu,
+                    },
+                },
+                new EffectNodeSpec
+                {
+                    Name = "gpu_burst",
+                    Emitter = new EmitterSpec
+                    {
+                        Name = "gpu", RateOverTime = 0f, MaxParticles = 150, Duration = 2f,
+                        StartLifetimeMin = 10f, StartLifetimeMax = 10f, PreferredTier = LumenParticleTier.L2_GpuCompute,
+                    },
+                },
+            },
+        };
+        LumenVfxService service = VfxTestData.Service(asset);
+        using var engine = new LumenGpuParticleEngine(capacity: 200);
+        service.GpuEngineProvider = () => engine;
+
+        long nowMs = 1_000;
+        var warnings = new List<string>();
+        service.ClockMsProvider = () => nowMs;
+        service.PoolExhaustedWarningSink = warnings.Add;
+
+        var request = new LumenPlayRequest { EffectId = asset.EffectId, OriginWorld = Vector3.Zero };
+        using ILumenEffectHandle first = service.Play(request);
+        VfxAssert.Check(first.IsAlive, "First allocation fits within 200 GPU slots");
+        GlowAssert.Equal(1, service.Simulator.ActiveEmitterCount);
+        GlowAssert.Equal(0, warnings.Count);
+
+        using ILumenEffectHandle second = service.Play(request);
+        VfxAssert.Check(!second.IsAlive, "Second play drops cleanly to an inert handle instead of throwing");
+        GlowAssert.Equal(1, service.Simulator.ActiveEmitterCount);
+        GlowAssert.Equal(1, service.LiveHandleCount);
+        GlowAssert.Equal(1, warnings.Count);
+
+        nowMs = 10_999;
+        using ILumenEffectHandle third = service.Play(request);
+        VfxAssert.Check(!third.IsAlive, "Still returns inert handle inside 10s cooldown");
+        GlowAssert.Equal(1, warnings.Count);
+
+        nowMs = 11_000;
+        using ILumenEffectHandle fourth = service.Play(request);
+        VfxAssert.Check(!fourth.IsAlive, "Still returns inert handle after 10s cooldown");
+        GlowAssert.Equal(2, warnings.Count);
     }
 
     private sealed class CountingBatchSink : IL1ParticleBatchSink

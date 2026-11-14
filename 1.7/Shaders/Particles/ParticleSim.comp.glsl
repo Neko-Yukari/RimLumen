@@ -200,6 +200,18 @@ void main()
                     particle.VelocityAndLifetime.xyz = (particle.VelocityAndLifetime.xyz + force * emitter.State.x)
                         * exp(-drag * emitter.State.x);
                     particle.PositionAndAge.xyz += particle.VelocityAndLifetime.xyz * emitter.State.x;
+                    if (sim.pad0 != 0u)
+                    {
+                        // KillBelowFloor: pad1 carries the floor height (float bits); expire descending particles below it.
+                        float floorY = uintBitsToFloat(sim.pad1);
+                        bool worldSpace = emitter.SizeCone.w > 0.5;
+                        float worldY = worldSpace ? particle.PositionAndAge.y
+                            : (emitter.World * vec4(particle.PositionAndAge.xyz, 1.0)).y;
+                        float worldVelY = worldSpace ? particle.VelocityAndLifetime.y
+                            : (emitter.World * vec4(particle.VelocityAndLifetime.xyz, 0.0)).y;
+                        if (worldY < floorY && worldVelY < 0.0)
+                            particle.SizeSeedEmitterFlags.w = 0.0;
+                    }
                 }
             }
             dead = particle.SizeSeedEmitterFlags.w < 0.5;

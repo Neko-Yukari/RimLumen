@@ -1,0 +1,49 @@
+{
+  "id": "crisp",
+  "name": "Crisp (锐利克制)",
+  "author": "RimLumen",
+  "description": "高起辉阈值、窄过渡膝宽与3级紧致泛光，只点亮最亮核心并保持地形与UI锐利清晰，适合高密度战斗。",
+  "runOnEmptyFrames": false,
+  "requiresSceneDepth": false,
+  "requiresMapLightField": false,
+  "bloomMipLevels": 3,
+  "compositeShader": "Composite.frag.glsl",
+  "options": [
+    {
+      "key": "bloomIntensity",
+      "label": "克制泛光强度 (Bloom intensity)",
+      "target": "bloomIntensity",
+      "default": 0.10,
+      "min": 0.0,
+      "max": 0.5,
+      "step": 0.01
+    },
+    {
+      "key": "bloomThreshold",
+      "label": "高起辉阈值 (Bloom threshold)",
+      "target": "bloomThreshold",
+      "default": 1.60,
+      "min": 0.8,
+      "max": 3.5,
+      "step": 0.05
+    },
+    {
+      "key": "bloomKnee",
+      "label": "收窄膝宽 (Bloom knee)",
+      "target": "bloomKnee",
+      "default": 0.20,
+      "min": 0.05,
+      "max": 1.0,
+      "step": 0.01
+    },
+    {
+      "key": "coreContrast",
+      "label": "核心锐利度 (Core crispness)",
+      "target": "packParam0",
+      "default": 0.35,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.02
+    }
+  ]
+}

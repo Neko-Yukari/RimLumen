@@ -46,10 +46,14 @@ public static class LumenSceneBootstrap
 }
 
 /// <summary>
-/// RimWorld entry point: runs the bootstrap when the game finishes loading assemblies.
+/// RimWorld entry point: ensures scene services are wired even if queried before <c>RimLumenStartup</c>.
+/// Native asset scanning runs once in <c>RimLumenStartup</c> after all subsystems are installed.
 /// </summary>
 [Verse.StaticConstructorOnStartup]
 public static class LumenSceneStartupHook
 {
-    static LumenSceneStartupHook() => LumenSceneBootstrap.EnsureInitialized();
+    static LumenSceneStartupHook()
+    {
+        LumenSceneBootstrap.EnsureInitialized();
+    }
 }

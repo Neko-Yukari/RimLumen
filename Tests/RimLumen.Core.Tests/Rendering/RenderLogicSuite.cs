@@ -1,4 +1,5 @@
 using System;
+using RimLumen.Core.Rendering;
 using RimLumen.Core.Rendering.Logic;
 
 namespace RimLumen.Core.Tests.Rendering;
@@ -70,6 +71,27 @@ public static class RenderLogicSuite
         Equal(HdrFrameMode.Render, HdrFrameGate.Decide(false, 7, false));
     }
 
+    // Background-only capture keeps compute advancing but skips the whole HDR chain (no clear, depth copy,
+    // bloom or composite): only a routed/appended draw or a direct-drawing probe contributor needs an HDR pass.
+    [LumenFact]
+    public static void BackgroundComputeOnlyFramesSkipHdrWork()
+    {
+        Equal(false, HdrFrameGate.ShouldRenderHdr(0, false));
+        Equal(true, HdrFrameGate.ShouldRenderHdr(1, false));
+        Equal(true, HdrFrameGate.ShouldRenderHdr(0, true));
+        var simulator = new RimLumen.Core.Scene.CpuParticleSimulator();
+        var service = new RimLumen.Core.Scene.LumenVfxService(new RimLumen.Core.Scene.CpuParticleSimulator());
+        var probe = new RimLumen.Core.Rendering.Probes.Contributors.SyntheticHdrQuadContributor(4f,
+            new(0.1f, 0.1f, 0.2f, 0.2f), new(0.3f, 0.3f, 0.2f, 0.2f));
+        Require(!RimLumenPipeline.HasDirectHdrContributor([simulator]), "L1 particles append mesh draws, not direct HDR draws.");
+        Require(!RimLumenPipeline.HasDirectHdrContributor([service]), "VFX service draws go through its appenders.");
+        using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
+        Require(!RimLumenPipeline.HasDirectHdrContributor([gpu]),
+            "L2 particles append mesh draws, not direct HDR draws.");
+        Require(RimLumenPipeline.HasDirectHdrContributor([probe]), "An armed probe contributor records its own HDR draws.");
+        probe.Dispose();
+    }
+
     [LumenFact]
     public static void PixelDiffCountsRgbChangesAndIgnoresAlpha()
     {
@@ -138,6 +160,11 @@ public static class RenderLogicSuite
         {
             throw new InvalidOperationException($"Expected {expected}; actual {actual}.");
         }
+    }
+
+    private static void Require(bool condition, string message)
+    {
+        if (!condition) throw new InvalidOperationException(message);
     }
 
     private static void EqualMips(MipSize[] expected, MipSize[] actual)

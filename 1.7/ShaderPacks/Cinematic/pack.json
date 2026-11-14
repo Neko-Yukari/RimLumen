@@ -1,0 +1,119 @@
+{
+  "id": "cinematic",
+  "name": "Cinematic (电影光丝 · 自适应)",
+  "author": "RimLumen",
+  "description": "多Pass横向变形光丝（Anamorphic Streaks）、6级柔和泛光与跨帧自适应曝光；空载零开销，与 RimIris / IsoRim 可叠加共存。",
+  "runOnEmptyFrames": false,
+  "requiresSceneDepth": false,
+  "requiresMapLightField": false,
+  "bloomMipLevels": 6,
+  "targets": [
+    { "name": "streakExtract", "format": "R16G16B16A16SFloat", "scale": 0.5, "filter": "Linear", "persistent": false },
+    { "name": "streakH", "format": "R16G16B16A16SFloat", "scale": 0.25, "filter": "Linear", "persistent": false },
+    { "name": "streakV", "format": "R16G16B16A16SFloat", "scale": 0.25, "filter": "Linear", "persistent": false },
+    { "name": "adapt", "format": "R16SFloat", "scale": 0.1, "filter": "Linear", "persistent": true }
+  ],
+  "passes": [
+    {
+      "name": "StreakExtract",
+      "shader": "StreakExtract.frag.glsl",
+      "output": "streakExtract",
+      "blend": "Opaque",
+      "inputs": [
+        { "binding": 0, "source": "hdr" }
+      ]
+    },
+    {
+      "name": "StreakBlurWide1",
+      "shader": "StreakBlur.frag.glsl",
+      "output": "streakH",
+      "blend": "Opaque",
+      "extraParams": [1.6, 0.0],
+      "inputs": [
+        { "binding": 0, "source": "streakExtract" }
+      ]
+    },
+    {
+      "name": "StreakBlurWide2",
+      "shader": "StreakBlur.frag.glsl",
+      "output": "streakV",
+      "blend": "Opaque",
+      "extraParams": [3.5, 0.0],
+      "inputs": [
+        { "binding": 0, "source": "streakH" }
+      ]
+    },
+    {
+      "name": "Adaptation",
+      "shader": "Adapt.frag.glsl",
+      "output": "adapt",
+      "blend": "Opaque",
+      "inputs": [
+        { "binding": 0, "source": "hdr" },
+        { "binding": 1, "source": "prev:adapt" }
+      ]
+    },
+    {
+      "name": "Composite",
+      "shader": "Composite.frag.glsl",
+      "output": "backbuffer",
+      "blend": "PremultipliedAlpha",
+      "inputs": [
+        { "binding": 0, "source": "hdr" },
+        { "binding": 1, "source": "bloom" },
+        { "binding": 2, "source": "scene" },
+        { "binding": 3, "source": "streakV" },
+        { "binding": 4, "source": "adapt" }
+      ]
+    }
+  ],
+  "options": [
+    {
+      "key": "bloomIntensity",
+      "label": "柔和泛光强度 (Bloom intensity)",
+      "target": "bloomIntensity",
+      "default": 0.22,
+      "min": 0.0,
+      "max": 0.8,
+      "step": 0.01
+    },
+    {
+      "key": "bloomScatter",
+      "label": "泛光扩散半径 (Bloom scatter)",
+      "target": "bloomScatter",
+      "default": 0.72,
+      "min": 0.2,
+      "max": 0.95,
+      "step": 0.01
+    },
+    {
+      "key": "streakStrength",
+      "label": "变形光丝强度 (Anamorphic streaks)",
+      "target": "packParam0",
+      "default": 0.45,
+      "min": 0.0,
+      "max": 1.5,
+      "step": 0.02,
+      "tooltip": "高亮火焰、激光与爆炸横向拉出的电影镜头光丝强度。"
+    },
+    {
+      "key": "adaptStrength",
+      "label": "自适应高光抑制 (Exposure adaptation)",
+      "target": "packParam1",
+      "default": 0.35,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.02,
+      "tooltip": "利用跨帧历史缓冲平滑抑制极端爆闪，减轻大片爆炸刺眼感。"
+    },
+    {
+      "key": "cinemaTint",
+      "label": "光丝冷暖色调 (Streak tint: 冷蓝 <-> 暖金)",
+      "target": "packParam2",
+      "default": -0.20,
+      "min": -1.0,
+      "max": 1.0,
+      "step": 0.02
+    }
+  ]
+}

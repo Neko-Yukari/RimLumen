@@ -1,0 +1,23 @@
+#ifndef RIMLUMEN_CINEMATIC_COMMON
+#define RIMLUMEN_CINEMATIC_COMMON
+
+layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
+{
+    mat4 InvViewProjection;
+    vec4 ScreenAndMapSize;
+    vec4 EnvParams;
+    vec4 BloomParams;
+    vec4 PackParam0;
+    vec4 PackParam1;
+    vec4 PackParam2;
+    vec4 PackParam3;
+} ubo;
+
+layout(push_constant) uniform Params { vec4 value; } pc;
+
+float luminance(vec3 c)
+{
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+#endif

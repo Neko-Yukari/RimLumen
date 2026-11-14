@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Rendering;
 
 namespace RimLumen.Core.ParticlesGpu;
 
@@ -19,6 +20,11 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
         public Matrix4x4 World;
         public bool Emitting = true;
         public float Intensity = 1f;
+        public bool Activated;
+        public bool RealTime;
+        public int MapIndex = -1;
+        public bool IsVertical3D;
+        public float BaseY;
         public double DrainRemaining;
         public InstanceState State;
     }
@@ -29,8 +35,9 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
     private int nextId;
     private bool disposed;
     private ParticleFrame? captured;
+    internal ParticleFrame? CapturedFrame => captured;
 
-    public LumenGpuParticleEngine(int capacity = 65536)
+    public LumenGpuParticleEngine(int capacity = EmitterSlotAllocator.DefaultCapacity)
     {
         if (capacity <= 0) throw new ArgumentOutOfRangeException(nameof(capacity));
         this.capacity = capacity;
@@ -69,6 +76,24 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
         return id;
     }
 
+    public int CreateInstance(EmitterSpec spec, Matrix4x4 initialWorldTransform, int mapIndex, bool realTime)
+    {
+        int id = CreateInstance(spec, initialWorldTransform);
+        Instance instance = instances[id];
+        instance.MapIndex = mapIndex;
+        instance.RealTime = realTime;
+        return id;
+    }
+
+    // Requires: main thread. Unknown ids are ignored.
+    // Ensures: the next capture carries the Vertical3D display flag and the floor height (the effect's play-origin Y).
+    internal void SetInstanceVerticalState(int instanceId, bool isVertical3D, float baseY)
+    {
+        if (!instances.TryGetValue(instanceId, out Instance? instance)) return;
+        instance.IsVertical3D = isVertical3D;
+        instance.BaseY = baseY;
+    }
+
     // Requires: main thread, id from this engine.
     // Ensures: next capture sees transform/emission/intensity changes.
     public void UpdateInstance(int instanceId, in Matrix4x4 worldTransform, bool emitting, float intensityMultiplier = 1f)
@@ -77,7 +102,11 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
         if (!instances.TryGetValue(instanceId, out Instance? instance)) return;
         instance.World = worldTransform;
         instance.Intensity = intensityMultiplier;
-        if (instance.State == InstanceState.Emitting) instance.Emitting = emitting;
+        if (instance.State == InstanceState.Emitting)
+        {
+            instance.Emitting = emitting;
+            instance.Activated |= emitting;
+        }
     }
 
     // Requires: main thread.
@@ -106,9 +135,13 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
         var clears = new List<EmitterSlotRange>();
         var removed = new List<int>();
         var fields = new List<GpuForceField>();
+        // Player-facing density setting; the default 1.0 leaves the emission budget (and probe counts) untouched.
+        float density = Math.Clamp(RimLumenRenderHost.ParticleDensityScale, 0.1f, 1.0f);
         foreach (Instance instance in instances.Values)
         {
-            if (instance.State == InstanceState.Draining) instance.DrainRemaining -= context.DeltaTime;
+            float dt = instance.RealTime && context.UnscaledDeltaTime > 0f ? context.UnscaledDeltaTime : context.DeltaTime;
+            instance.Activated |= instance.Emitting;
+            if (instance.State == InstanceState.Draining) instance.DrainRemaining -= dt;
             if (instance.State == InstanceState.Remove ||
                 (instance.State == InstanceState.Draining && instance.DrainRemaining <= 0))
             {
@@ -118,11 +151,13 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
                 continue;
             }
             EmitterSpec spec = instance.Spec;
-            int budget = instance.State == InstanceState.Emitting
-                ? Math.Min(instance.Slots.Capacity, instance.Scheduler.Advance(context.DeltaTime, instance.Emitting)) : 0;
+            int budget = instance.State == InstanceState.Emitting && instance.Activated && dt > 0f
+                ? Math.Min(instance.Slots.Capacity, instance.Scheduler.Advance(dt, instance.Emitting)) : 0;
+            if (density < 0.999f && budget > 0)
+                budget = Math.Min(instance.Slots.Capacity, (int)MathF.Ceiling(budget * density));
             // Spawns are simulated at the end of this step, so even a long final step
             // must retain the newly spawned particles for a complete maximum lifetime.
-            if (instance.State == InstanceState.Emitting && instance.Scheduler.Finished)
+            if (instance.State == InstanceState.Emitting && instance.Activated && instance.Scheduler.Finished)
             {
                 instance.State = InstanceState.Draining;
                 instance.DrainRemaining = spec.StartLifetimeMax;
@@ -150,9 +185,10 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
                 Flipbook = new Vector4(spec.FlipbookTilesX, spec.FlipbookTilesY, spec.FlipbookCycles, (float)spec.BillboardMode),
                 Appearance = new Vector4(spec.VelocityStretchFactor, spec.LengthScale, spec.HdrIntensity, spec.BloomWeight),
                 Tables = new Vector4(row, fieldOffset, spec.ForceFields.Length, instance.Id & 0x00ffffff),
-                State = new Vector4(context.DeltaTime, spec.SoftParticleFadeDistance, 0, instance.Intensity)
+                State = new Vector4(dt, spec.SoftParticleFadeDistance, 0, instance.Intensity)
             };
-            rows.Add(new ParticleEmitterFrame(instance.Id, parameters, instance.Curves, spec.TextureKey, spec.BlendMode));
+            rows.Add(new ParticleEmitterFrame(instance.Id, parameters, instance.Curves, spec.TextureKey, spec.BlendMode,
+                instance.MapIndex, instance.IsVertical3D, instance.BaseY, spec.KillBelowFloor));
         }
         foreach (int id in removed) instances.Remove(id);
         captured = new ParticleFrame(context, rows.ToArray(), fields.ToArray(), clears.ToArray());
@@ -170,7 +206,13 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
 }
 
 internal sealed record ParticleEmitterFrame(int InstanceId, GpuEmitterParams Parameters,
-    GpuCurveSample[] Curves, string? TextureKey, LumenBlendMode Blend);
+    GpuCurveSample[] Curves, string? TextureKey, LumenBlendMode Blend, int MapIndex = -1,
+    bool IsVertical3D = false, float BaseY = 0f, bool KillBelowFloor = false)
+{
+    // -1 on either side means unscoped (no map known), which keeps probe/offline frames drawing everything.
+    internal bool IsVisibleOnMap(int currentMapIndex) =>
+        MapIndex < 0 || currentMapIndex < 0 || MapIndex == currentMapIndex;
+}
 
 internal sealed record ParticleFrame(LumenCaptureContext Context, ParticleEmitterFrame[] Emitters,
     GpuForceField[] Fields, EmitterSlotRange[] Clears);

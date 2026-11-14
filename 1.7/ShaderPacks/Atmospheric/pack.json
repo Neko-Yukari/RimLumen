@@ -1,0 +1,109 @@
+{
+  "id": "atmospheric",
+  "name": "Atmospheric (荒野夜雾 · 体积光感)",
+  "author": "RimLumen",
+  "description": "利用地图屋顶/灯照场自动区分室内外与火把光照：野外夜晚压暗、地面流动薄雾与7级远距空气光散射；同时兼容原版俯视与 IsoRim 倾斜视角。",
+  "runOnEmptyFrames": true,
+  "requiresSceneDepth": true,
+  "requiresMapLightField": true,
+  "bloomMipLevels": 7,
+  "targets": [
+    { "name": "fogField", "format": "R16G16B16A16SFloat", "scale": 0.5, "filter": "Linear", "persistent": false },
+    { "name": "fogBlur", "format": "R16G16B16A16SFloat", "scale": 0.5, "filter": "Linear", "persistent": false }
+  ],
+  "passes": [
+    {
+      "name": "FogAndMask",
+      "shader": "FogPass.frag.glsl",
+      "output": "fogField",
+      "blend": "Opaque",
+      "inputs": [
+        { "binding": 0, "source": "scene" },
+        { "binding": 1, "source": "bloom" },
+        { "binding": 2, "source": "depth" },
+        { "binding": 3, "source": "mapLightField" }
+      ]
+    },
+    {
+      "name": "FogBlur",
+      "shader": "FogBlur.frag.glsl",
+      "output": "fogBlur",
+      "blend": "Opaque",
+      "inputs": [
+        { "binding": 0, "source": "fogField" }
+      ]
+    },
+    {
+      "name": "Composite",
+      "shader": "Composite.frag.glsl",
+      "output": "backbuffer",
+      "blend": "Opaque",
+      "inputs": [
+        { "binding": 0, "source": "hdr" },
+        { "binding": 1, "source": "bloom" },
+        { "binding": 2, "source": "scene" },
+        { "binding": 3, "source": "fogBlur" },
+        { "binding": 4, "source": "mapLightField" }
+      ]
+    }
+  ],
+  "options": [
+    {
+      "key": "bloomIntensity",
+      "label": "远距泛光强度 (Bloom intensity)",
+      "target": "bloomIntensity",
+      "default": 0.32,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01
+    },
+    {
+      "key": "bloomScatter",
+      "label": "光晕传播权重 (Bloom spread)",
+      "target": "bloomScatter",
+      "default": 0.82,
+      "min": 0.2,
+      "max": 0.95,
+      "step": 0.01,
+      "tooltip": "提高多级升采样权重，让火把与发光体光晕向外扩散得更远。"
+    },
+    {
+      "key": "nightDarkness",
+      "label": "野外夜暗强度 (Wilderness night darkness)",
+      "target": "packParam0",
+      "default": 0.55,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.02,
+      "tooltip": "仅在黄昏/黑夜对未照明的野外压深，自动保留室内房间与火把灯下亮度。"
+    },
+    {
+      "key": "fogDensity",
+      "label": "地面薄雾浓度 (Ground mist density)",
+      "target": "packParam1",
+      "default": 0.42,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.02
+    },
+    {
+      "key": "fogSpeed",
+      "label": "雾气飘动速度 (Mist drift speed)",
+      "target": "packParam2",
+      "default": 0.35,
+      "min": 0.0,
+      "max": 1.5,
+      "step": 0.05
+    },
+    {
+      "key": "lightScatter",
+      "label": "空气光散射 (Volumetric haze scatter)",
+      "target": "packParam3",
+      "default": 0.40,
+      "min": 0.0,
+      "max": 1.2,
+      "step": 0.02,
+      "tooltip": "让发光体照亮周围薄雾，营造局部空气体积散射感。"
+    }
+  ]
+}

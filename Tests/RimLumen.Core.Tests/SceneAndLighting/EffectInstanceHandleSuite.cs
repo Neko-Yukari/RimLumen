@@ -11,6 +11,36 @@ namespace RimLumen.Core.Tests.SceneAndLighting;
 public static class EffectInstanceHandleSuite
 {
     [LumenFact]
+    public static void FailedSecondNodeRollsBackTheFirstCpuEmitter()
+    {
+        var asset = new EffectAsset
+        {
+            EffectId = "rollback.nodes", Nodes = new[]
+            {
+                new EffectNodeSpec { Name = "cpu", Emitter = VfxTestData.Emitter(tier: LumenParticleTier.L1_NativeCpu) },
+                new EffectNodeSpec
+                {
+                    Name = "gpu",
+                    Emitter = new EmitterSpec
+                    {
+                        Name = "unsupported-mesh",
+                        MaxParticles = 4,
+                        Duration = 1f,
+                        BillboardMode = LumenBillboardMode.Mesh,
+                        PreferredTier = LumenParticleTier.L2_GpuCompute,
+                    },
+                },
+            },
+        };
+        var service = VfxTestData.Service(asset);
+        using var engine = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
+        service.GpuEngineProvider = () => engine;
+        GlowAssert.Throws<NotSupportedException>(() => service.Play(new LumenPlayRequest { EffectId = asset.EffectId }));
+        GlowAssert.Equal(0, service.Simulator.ActiveEmitterCount);
+        GlowAssert.Equal(0, service.LiveHandleCount);
+    }
+
+    [LumenFact]
     public static void TimelineCrossingsFireOnceAndProduceVisibleBursts()
     {
         var asset = new EffectAsset
@@ -116,7 +146,7 @@ public static class EffectInstanceHandleSuite
     }
 
     [LumenFact]
-    public static void ParamsScaleRealLightColourVerticesEmissionRateAndRootScale()
+    public static void ParamsScaleRealLightColourRgbVerticesEmissionRateAndRootScale()
     {
         var asset = new EffectAsset
         {
@@ -152,7 +182,7 @@ public static class EffectInstanceHandleSuite
         VfxAssert.Check(!handle.TryGetParam("missing", out _), "Missing param is not invented");
         VfxTestData.Step(service, 0.5f);
         GlowAssert.Equal(5, service.Simulator.LiveParticleCount);
-        GlowAssert.Equal(new Vector4(2f), service.Simulator.Vertices[0].Color);
+        GlowAssert.Equal(new Vector4(2f, 2f, 2f, 1f), service.Simulator.Vertices[0].Color);
         GlowAssert.Equal(new ColorInt(255, 128, 64, 255), sink.Registrations[^1].Color);
         GlowAssert.Equal(new Vector3(10f, 2f, 20f), handle.RootWorld.Translation);
         GlowAssert.Equal(new Vector3(6f, 0f, 0f), Vector3.TransformNormal(Vector3.UnitX, handle.RootWorld));

@@ -40,6 +40,8 @@ internal sealed partial class ProbeSession
     private bool savedScreenshotMode;
     private readonly Dictionary<Window, bool> windowVisibility = new();
     private float frozenTime;
+    private bool savedVanillaAdditiveBloom;
+    private string modRoot = string.Empty;
 
     private ProbeSession(ProbeOptions options) => this.options = options;
 
@@ -50,13 +52,31 @@ internal sealed partial class ProbeSession
 
     private void Start(string modRoot)
     {
+        this.modRoot = modRoot;
+        // Probes pause TickManager for deterministic scene capture but still need P2 particle workloads to advance.
+        RimLumenRenderHost.ForceUnscaledSimulationTime = true;
+        savedVanillaAdditiveBloom = RimLumenRenderHost.EnableVanillaAdditiveBloom;
         try
         {
             Directory.CreateDirectory(options.OutputDirectory);
             LumenSceneBootstrap.EnsureInitialized();
-            RuntimeHelpers.RunClassConstructor(typeof(LumenGpuParticlesBootstrap).TypeHandle);
-            RimLumenRenderHost.EnableVanillaAdditiveBloom = false;
+            LumenGpuParticlesBootstrap.EnsureInitialized();
             var device = app.GraphicsDevice ?? throw new InvalidOperationException("Probe requires a GraphicsDevice.");
+            if (options.BenchmarkOnly)
+            {
+                Log.Message($"[RimLumen] Benchmark session started; ValidationEnabled={device.ValidationEnabled}; VanillaBloom={RimLumenRenderHost.EnableVanillaAdditiveBloom}");
+                Find.TickManager.Pause();
+                Current.CameraDriver.enabled = false;
+                savedScreenshotMode = Find.UIRoot.screenshotMode.Active;
+                Find.UIRoot.screenshotMode.Active = true;
+                ScreenFader.SetColor(UnityEngine.Color.clear);
+                app.OnUpdate += PrepareDeterministicFrame;
+                PrepareDeterministicFrame();
+                Current.CameraDriver.StartCoroutine(RunBenchmarkSchedule());
+                return;
+            }
+            // P1-idle must observe the silent framework state (max|delta| == 0); the player's setting is restored in Finish.
+            RimLumenRenderHost.EnableVanillaAdditiveBloom = false;
             bool validation = device.ValidationEnabled && device.InstanceEnabledLayers.Contains("VK_LAYER_KHRONOS_validation");
             string layers = string.Join(",", device.InstanceEnabledLayers);
             Log.Message($"[RimLumen] ValidationEnabled={device.ValidationEnabled}; InstanceEnabledLayers={layers}");
@@ -111,7 +131,8 @@ internal sealed partial class ProbeSession
             app.FrameRenderer.RenderThreadFrameEnded -= RecordMapCounts;
             pipeline.MeasureContributors = false;
             app.OnUpdate -= SubmitCompatQuad;
-            RimLumenRenderHost.EnableVanillaAdditiveBloom = false;
+            RimLumenRenderHost.EnableVanillaAdditiveBloom = savedVanillaAdditiveBloom;
+            RimLumenRenderHost.ForceUnscaledSimulationTime = false;
             workload?.Stop(allowFadeOut: false);
             ssbo?.Disarm();
             synthetic?.Disarm();
@@ -123,7 +144,7 @@ internal sealed partial class ProbeSession
                 "Dynamic MeshDrawCommand supported; routed persistent FinalDrawItem copying has no public API.",
                 new Dictionary<string, double> { ["unsupportedPersistentDrawItems"] = pipeline.UnsupportedPersistentDraws }));
             foreach (string required in new[] { "T1a", "T1b", "T2", "T3", "T4", "P1-idle", "P1-active", "feature-order",
-                "P2-L2-10k", "P2-L2-50k", "P2-L1-Glower", "Compat-VanillaAdditive", "validation-layer" })
+                "P2-L2-10k", "P2-L2-50k", "P2-L1-Glower", "Compat-VanillaAdditive", "ShaderPack-RouteB", "ShaderPack-RouteB-fallback", "ShaderPack-BuiltIns", "validation-layer" })
                 if (!checks.Any(check => check.Id == required))
                     CheckFailed(required, new InvalidOperationException("Required dependent observation unavailable; see failed setup/capture check details."));
             bool passed = checks.Count > 0 && checks.All(check => check.Passed);
@@ -227,7 +248,7 @@ internal sealed partial class ProbeSession
                 ?? throw new InvalidOperationException("Could not create T1a output buffer.");
             source.Upload<uint>(input);
             destination.Upload<uint>(output);
-            ComputeKernel kernel = ComputeKernelCache.Load("RimLumenIdentity.comp.glsl", "main", new[]
+            ComputeKernel kernel = ComputeKernelCache.Load("Probes/RimLumenIdentity.comp.glsl", "main", new[]
             {
                 new ComputeBinding(0, ComputeBindingType.StorageBuffer),
                 new ComputeBinding(1, ComputeBindingType.StorageBuffer)

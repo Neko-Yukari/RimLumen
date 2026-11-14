@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Defs>
+
+  <!--
+    Optional demo buildings. Both are zero-cost, one-work-unit Joy buildings that only play a RimLumen
+    effect, and both are hidden unless RimLumen's "Enable demo joy buildings" setting is on:
+    DemoBuildingRegistry adds/removes their Designator_Build entries in DesignationCategoryDef "Joy" at
+    runtime, which is why canGenerateDefaultDesignator is false (vanilla's resolve must not add them).
+    Emitter geometry lives in RimLumenDemoEffects; see docs/api.md section 2 for the axes.
+  -->
+
+  <ThingDef ParentName="BuildingBase">
+    <defName>RimLumen_FireworkLauncher</defName>
+    <label>firework launcher</label>
+    <description>一个零成本的演示装置：每 3.2 秒向上发射一发烟花，金色、青色与品红色轮换。烟花严格跟随游戏时间，暂停时定格在半空。\n\nA zero-cost demo device: every 3.2 s it launches a firework that rises, bursts and cools to embers, cycling gold, cyan and magenta. The show follows the game clock, so it freezes mid-air while paused.</description>
+    <thingClass>Building</thingClass>
+    <rotatable>false</rotatable>
+    <tickerType>Normal</tickerType>
+    <designationCategory>Joy</designationCategory>
+    <canGenerateDefaultDesignator>false</canGenerateDefaultDesignator>
+    <passability>PassThroughOnly</passability>
+    <pathCost>30</pathCost>
+    <fillPercent>0.20</fillPercent>
+    <graphicData>
+      <texPath>RimLumen/Buildings/FireworkLauncher</texPath>
+      <graphicClass>Graphic_Single</graphicClass>
+    </graphicData>
+    <statBases>
+      <MaxHitPoints>120</MaxHitPoints>
+      <WorkToBuild>1</WorkToBuild>
+      <Flammability>0</Flammability>
+    </statBases>
+    <building>
+      <isEdifice>true</isEdifice>
+    </building>
+    <comps>
+      <li Class="RimLumen.Core.Demo.CompProperties_RimLumenDemoEmitter">
+        <kind>Firework</kind>
+      </li>
+    </comps>
+  </ThingDef>
+
+  <ThingDef ParentName="BuildingBase">
+    <defName>RimLumen_ParticleFountain</defName>
+    <label>particle fountain</label>
+    <description>一个零成本的演示装置：青色水柱从基座向上喷出、在重力下回落，底部带一层水雾与冷色点光。粒子严格跟随游戏时间，暂停时定格在半空。\n\nA zero-cost demo device: a cyan jet shoots up from the basin, arcs back down under gravity and settles into a mist, lit by a steady cool point light. The particles follow the game clock, so they freeze mid-air while paused.</description>
+    <thingClass>Building</thingClass>
+    <rotatable>false</rotatable>
+    <tickerType>Normal</tickerType>
+    <designationCategory>Joy</designationCategory>
+    <canGenerateDefaultDesignator>false</canGenerateDefaultDesignator>
+    <passability>PassThroughOnly</passability>
+    <pathCost>30</pathCost>
+    <fillPercent>0.20</fillPercent>
+    <graphicData>
+      <texPath>RimLumen/Buildings/ParticleFountain</texPath>
+      <graphicClass>Graphic_Single</graphicClass>
+    </graphicData>
+    <statBases>
+      <MaxHitPoints>120</MaxHitPoints>
+      <WorkToBuild>1</WorkToBuild>
+      <Flammability>0</Flammability>
+    </statBases>
+    <building>
+      <isEdifice>true</isEdifice>
+    </building>
+    <comps>
+      <li Class="RimLumen.Core.Demo.CompProperties_RimLumenDemoEmitter">
+        <kind>Fountain</kind>
+      </li>
+    </comps>
+  </ThingDef>
+
+</Defs>

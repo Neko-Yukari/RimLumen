@@ -5,32 +5,35 @@ using System.Threading;
 using Brutal;
 using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
+using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Rendering;
 using Waylith;
 using Waylith.Rendering;
 using Waylith.Rendering.Compute;
 
 namespace RimLumen.Core.ParticlesGpu;
 
-public sealed partial class LumenGpuParticleEngine
+public sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
 {
     private readonly Dictionary<string, Texture> registeredTextures = new(StringComparer.Ordinal);
     private readonly HashSet<string> warnedTextures = new(StringComparer.Ordinal);
     private readonly ParticleFrameQueue pendingFrames = new();
     private ParticleGpuDrawResources? drawResources;
     private GpuComputeBuffer? particles;
-    private List<ParticleGpuFrame>[] frameResources = Array.Empty<List<ParticleGpuFrame>>();
-    private ParticleGpuFrame? drawFrameResources;
-    private int frameResourceCursor;
+    // One prepared frame resource set per capture slot. Slot reuse waits 2*FramesInFlight+2 frames, so a
+    // submission that may still reference a set has been retired before the slot is rewritten.
+    private ParticleGpuFrame?[] frameSlots = Array.Empty<ParticleGpuFrame?>();
     private bool idleRequested;
     private EngineApplication? application;
     private readonly object lifecycleGate = new();
     private VkDescriptorSetLayout computeLayout;
     private ComputeKernel? kernel;
     private readonly HashSet<int> initializedInstances = new();
-    private ParticleQueuedFrame? recording;
 
     // Textures remain owned by the registrant; registration and removal are main-thread operations.
+    // This per-engine map stays authoritative for offline/unit-test isolation; EnqueuePreCompute then falls back to the
+    // shared LumenTextureRegistry (same one L1 resolves through) before the host ContentFinder.
     public void RegisterTexture(string key, Texture texture)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -45,8 +48,9 @@ public sealed partial class LumenGpuParticleEngine
         registeredTextures.Remove(key);
     }
 
-    // Requires: capture completed with active work.
-    // Ensures: queues simulation without particle readback.
+    // Requires: main thread; capture completed with active work.
+    // Ensures: prepares this frame's GPU resources (device objects, emitter/curve buffers, frame slot) and
+    //   queues the simulation without particle readback. Emitters-only: an idle engine touches no GPU state.
     public void EnqueuePreCompute(in LumenComputeContext context)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -63,7 +67,8 @@ public sealed partial class LumenGpuParticleEngine
             Texture? texture = null;
             if (!string.IsNullOrEmpty(key))
             {
-                if (!registeredTextures.TryGetValue(key, out texture)) texture = ResolveHostTexture(key);
+                if (!registeredTextures.TryGetValue(key, out texture) && !LumenTextureRegistry.TryGetRegistered(key, out texture))
+                    texture = ResolveHostTexture(key);
                 if (texture is not null)
                 {
                     Texture.EnsureSampledReady(texture);
@@ -80,10 +85,18 @@ public sealed partial class LumenGpuParticleEngine
             if (application is null)
             {
                 application = EngineApplication.Instance;
-                application.FrameRenderer.RenderThreadFrameStarting += ReleaseOnFrameStart;
-                application.FrameRenderer.RenderThreadFrameEnded += RetireFrame;
+                if (application is not null)
+                {
+                    application.FrameRenderer.RenderThreadFrameStarting += ReleaseOnFrameStart;
+                    application.FrameRenderer.RenderThreadFrameEnded += RetireFrame;
+                }
             }
-            pendingFrames.Enqueue(new ParticleQueuedFrame(snapshot, textures, present));
+            // The graphics device may not exist yet (headless/idle host): keep the captured work pending.
+            if (!EnsureGpu()) return;
+            // Only the frame slot is prepared here; emitter/curve contents are uploaded by the render
+            // thread when it records the simulation (first-frame markers and clear rows live there).
+            ParticleGpuFrame gpu = FrameSlot(snapshot);
+            pendingFrames.Enqueue(new ParticleQueuedFrame(snapshot, textures, present, gpu));
         }
     }
 
@@ -95,26 +108,29 @@ public sealed partial class LumenGpuParticleEngine
         Verse.Log.Warning($"[RimLumen] Particle texture '{key}' was not found; using the procedural particle shape.");
 
     // Requires: open command buffer outside render pass.
-    // Ensures: compute writes become visible to vertex/indirect consumers.
+    // Ensures: records the simulation for this frame and its compute->vertex barrier from the resources
+    //   prepared on the main thread.
     public void RecordBufferBarriers(in LumenBarrierContext context)
     {
-        if (!pendingFrames.TryTake(context.FrameIndex, out ParticleQueuedFrame? frame)) return;
-        frameResourceCursor = 0;
-        EnsureGpu(context.Frame);
-        RecordSimulation(context.Frame, frame!.Snapshot);
-        recording = frame;
+        if (!pendingFrames.TryTake(context.FrameIndex, out ParticleQueuedFrame? frame) || frame?.Gpu is null) return;
+        RecordSimulation(context.Frame, frame.Snapshot, frame.Gpu);
     }
 
-    private void EnsureGpu(in FrameContext frame)
+    // Requires: main thread with a live graphics device.
+    // Ensures: creates the device objects exactly once (particle buffer, quad mesh + materials, frame slots,
+    //   compute layout/kernel). Returns false when the host has no graphics device yet.
+    private bool EnsureGpu()
     {
-        if (particles is not null) return;
-        particles = GpuComputeBuffer.Create(frame.Device, frame.GraphicsDevice.Allocator,
+        if (particles is not null) return true;
+        EngineApplication? app = application;
+        if (app?.GraphicsDevice is null || app.RenderContext is null) return false;
+        DeviceEx device = app.Device;
+        particles = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator,
             "Lumen.Particles", (long)capacity * 64, VkBufferUsageFlags.TransferSrcBit, deviceLocal: true);
         ParticleGpuDrawResources.LogHandle("VkBuffer", $"{particles.Buffer.VkHandle:X}", "Particles");
-        drawResources = new ParticleGpuDrawResources(frame);
-        frameResources = new List<ParticleGpuFrame>[frame.RenderContext.FramesInFlight];
-        for (int i = 0; i < frameResources.Length; i++) frameResources[i] = new List<ParticleGpuFrame>();
-        computeLayout = ParticleGpuDrawResources.CreateLayout(frame.Device, new[]
+        drawResources = new ParticleGpuDrawResources(app.RenderContext.FramesInFlight);
+        frameSlots = new ParticleGpuFrame?[2 * app.RenderContext.FramesInFlight + 2];
+        computeLayout = ParticleGpuDrawResources.CreateLayout(device, new[]
         {
             ParticleGpuDrawResources.Binding(0, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
             ParticleGpuDrawResources.Binding(1, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
@@ -128,31 +144,30 @@ public sealed partial class LumenGpuParticleEngine
         }, 16);
         ParticleGpuDrawResources.LogHandle("VkPipeline", $"{kernel.Pipeline.VkHandle:X}", "ParticleCompute");
         ParticleGpuDrawResources.LogHandle("VkPipelineLayout", $"{kernel.PipelineLayout.VkHandle:X}", "ParticleCompute");
+        return true;
     }
 
-    private void RecordSimulation(in FrameContext frame, ParticleFrame snapshot)
+    // Requires: main thread, device resources exist.
+    // Ensures: returns the frame resource set for this capture index, growing or shrinking it in place.
+    private ParticleGpuFrame FrameSlot(ParticleFrame snapshot)
     {
-        int slot = frame.SubmissionFrameIndex;
-        List<ParticleGpuFrame> ringSlot = frameResources[slot];
         int requiredRows = snapshot.Emitters.Length + snapshot.Clears.Length;
-        ParticleGpuFrame resources;
-        if (frameResourceCursor == ringSlot.Count)
+        int index = (int)(snapshot.Context.FrameIndex % (ulong)frameSlots.Length);
+        ParticleGpuFrame? existing = frameSlots[index];
+        if (existing is not null && existing.EmitterCapacity >= requiredRows && existing.FieldCapacity >= snapshot.Fields.Length)
+            return existing;
+        if (existing is not null)
         {
-            resources = new ParticleGpuFrame(frame, requiredRows, snapshot.Fields.Length);
-            ringSlot.Add(resources);
+            existing.Dispose();
+            frameSlots[index] = null;
         }
-        else
-        {
-            resources = ringSlot[frameResourceCursor];
-            if (resources.EmitterCapacity < requiredRows || resources.FieldCapacity < snapshot.Fields.Length)
-            {
-                resources.Dispose();
-                resources = new ParticleGpuFrame(frame, requiredRows, snapshot.Fields.Length);
-                ringSlot[frameResourceCursor] = resources;
-            }
-        }
-        frameResourceCursor++;
-        drawFrameResources = resources;
+        var created = new ParticleGpuFrame(application!, requiredRows, snapshot.Fields.Length);
+        frameSlots[index] = created;
+        return created;
+    }
+
+    private void RecordSimulation(in FrameContext frame, ParticleFrame snapshot, ParticleGpuFrame resources)
+    {
         // Do not clear on CPU capture: frames may be dropped before recording, and
         // allocated ranges can already have a newer owner in a subsequent snapshot.
         var emitters = new ParticleEmitterFrame[snapshot.Emitters.Length + snapshot.Clears.Length];
@@ -186,14 +201,21 @@ public sealed partial class LumenGpuParticleEngine
             VkPipelineStageFlags.ComputeShaderBit, VkDependencyFlags.None, default(ReadOnlySpan<VkMemoryBarrier>),
             new ReadOnlySpan<VkBufferMemoryBarrier>(in entry), default(ReadOnlySpan<VkImageMemoryBarrier>));
         VkDescriptorSet set = DescriptorSetWriter.AllocateDescriptorSet(frame.Device, resources.Pool, computeLayout);
-        ParticleGpuDrawResources.LogHandle("VkDescriptorSet", $"{set.VkHandle:X}", "ParticleCompute");
+        if (RimLumenRenderHost.VerboseDiagnostics) ParticleGpuDrawResources.LogHandle("VkDescriptorSet", $"{set.VkHandle:X}", "ParticleCompute");
         ParticleGpuDrawResources.WriteBuffers(frame.Device, set, new[] { 0, 1, 2 },
             new[] { particles!, resources.Emitters, resources.Fields }, VkDescriptorType.StorageBuffer);
         frame.CommandBuffer.BindPipeline(VkPipelineBindPoint.Compute, kernel!.Pipeline);
         frame.CommandBuffer.BindDescriptorSet(VkPipelineBindPoint.Compute, kernel.PipelineLayout, 0, set, default(Span<ByteSize32>));
         for (int i = 0; i < snapshot.Emitters.Length; i++)
         {
-            var push = new GpuSimPushConstants { EmitterIndex = (uint)i, FrameSeed = unchecked((uint)snapshot.Context.FrameIndex) };
+            ParticleEmitterFrame emitterFrame = snapshot.Emitters[i];
+            // Padding0 = KillBelowFloor flag, Padding1 = floor height as float bits (the 16 B layout is fixed).
+            var push = new GpuSimPushConstants
+            {
+                EmitterIndex = (uint)i, FrameSeed = unchecked((uint)snapshot.Context.FrameIndex),
+                Padding0 = emitterFrame.KillBelowFloor ? 1u : 0u,
+                Padding1 = BitConverter.SingleToUInt32Bits(emitterFrame.BaseY),
+            };
             frame.CommandBuffer.PushConstants(kernel.PipelineLayout, VkShaderStageFlags.ComputeBit, 0,
                 MemoryMarshal.AsBytes(new ReadOnlySpan<GpuSimPushConstants>(in push)));
             frame.CommandBuffer.Dispatch(1, 1, 1);
@@ -210,24 +232,27 @@ public sealed partial class LumenGpuParticleEngine
         Buffer = particles!.Buffer, Offset = ByteSize.Zero, Size = particles.Size
     };
 
-    // Requires: inside compatible HDR render pass.
-    // Ensures: draws particle SSBO through instanced billboards.
+    // Ensures: no command-buffer work. MeshBatchRenderer records this frame's instanced draws from the
+    //   pass-0 list that AppendHdrDraws filled during Capture.
     public void RecordHdrDraws(in LumenHdrDrawContext context)
     {
-        ParticleQueuedFrame? frame = recording;
-        if (frame is null || frame.Snapshot.Emitters.Length == 0) return;
-        if (frame.Snapshot.Context.FrameIndex != context.FrameIndex)
-            throw new InvalidOperationException("HDR draw must follow simulation of the same captured frame.");
-        drawResources!.Draw(context, frame.Snapshot, drawFrameResources!,
-            particles!, frame.Textures, frame.TexturePresent);
-        recording = null;
+    }
+
+    // Requires: main thread, in RimLumenPipeline.Capture after the engine flushed mesh uploads.
+    // Ensures: appends one instanced billboard draw per live emitter.
+    void ILumenHdrDrawAppender.AppendHdrDraws(ulong frameIndex, List<FinalDrawItem> draws, DrawItemFactory maker,
+        DrawPropertyArena arena, int queueOrder, Texture sceneDepth)
+    {
+        if (drawResources is null || particles is null) return;
+        if (!pendingFrames.TryGet(frameIndex, out ParticleQueuedFrame? frame) || frame.Gpu is null) return;
+        drawResources.AppendDraws(frame.Snapshot, frame.Gpu, particles, sceneDepth, frame.Textures, frame.TexturePresent,
+            draws, maker, arena, queueOrder, frameIndex);
     }
 
     private void RetireFrame(RenderFrame frame)
     {
         ulong number = unchecked((ulong)frame.Timing.FrameNumber);
         pendingFrames.Retire(number);
-        if (recording?.Snapshot.Context.FrameIndex == number) recording = null;
     }
 
     private void ReleaseOnFrameStart()
@@ -250,12 +275,12 @@ public sealed partial class LumenGpuParticleEngine
 
     private void ReleaseGpu(Brutal.VulkanApi.Abstractions.DeviceEx device)
     {
-        foreach (List<ParticleGpuFrame> slot in frameResources)
-            foreach (ParticleGpuFrame frame in slot) frame.Dispose();
-        frameResources = Array.Empty<List<ParticleGpuFrame>>();
-        drawFrameResources = null;
-        drawResources?.Dispose(); drawResources = null;
-        particles?.Dispose(); particles = null;
+        foreach (ParticleGpuFrame? slot in frameSlots) slot?.Dispose();
+        frameSlots = Array.Empty<ParticleGpuFrame?>();
+        drawResources?.Dispose();
+        drawResources = null;
+        particles?.Dispose();
+        particles = null;
         if (!computeLayout.IsNull()) device.DestroyDescriptorSetLayout(computeLayout, device.VkAllocator);
         computeLayout = default;
         initializedInstances.Clear();

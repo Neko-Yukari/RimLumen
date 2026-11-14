@@ -6,7 +6,8 @@ using Waylith.Rendering;
 
 namespace RimLumen.Core.ParticlesGpu;
 
-internal sealed record ParticleQueuedFrame(ParticleFrame Snapshot, Texture[] Textures, bool[] TexturePresent);
+internal sealed record ParticleQueuedFrame(ParticleFrame Snapshot, Texture[] Textures, bool[] TexturePresent,
+    ParticleGpuFrame? Gpu = null);
 
 // Producer: capture thread. Consumer and retirement: render thread. Keys are
 // host Timing.FrameNumber, never the rotating SubmissionFrameIndex.
@@ -24,6 +25,10 @@ internal sealed class ParticleFrameQueue
 
     internal bool TryTake(ulong frameNumber, out ParticleQueuedFrame? frame) =>
         frames.TryRemove(frameNumber, out frame);
+
+    // Non-destructive lookup for the main-thread draw append that precedes the render-thread simulation.
+    internal bool TryGet(ulong frameNumber, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ParticleQueuedFrame? frame) =>
+        frames.TryGetValue(frameNumber, out frame);
 
     internal void Retire(ulong frameNumber) => frames.TryRemove(frameNumber, out _);
 

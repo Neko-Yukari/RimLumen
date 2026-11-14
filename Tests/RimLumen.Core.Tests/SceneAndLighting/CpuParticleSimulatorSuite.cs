@@ -354,7 +354,7 @@ public static class CpuParticleSimulatorSuite
             Check(circle.Position.Length() <= 3f && circle.Position.Y == 0f, "XZ disc radius/plane");
             var direction = simulator.LiveParticles[i + 512].Velocity;
             Close(1f, direction.Length());
-            Check(direction.Z >= 0.5f, "Cone half-angle <=60 degrees");
+            Check(direction.Y >= 0.5f, "Cone axis is +Y and half-angle <=60 degrees");
             var position = simulator.LiveParticles[i + 768].Position;
             Check(MathF.Abs(position.X) <= 1f && MathF.Abs(position.Y) <= 2f && MathF.Abs(position.Z) <= 3f, "Box bounds");
         }
@@ -371,7 +371,7 @@ public static class CpuParticleSimulatorSuite
         Vector(new Vector3(1f, -1f, 0f), simulator.Vertices[1].Position);
         Vector(new Vector3(1f, 1f, 0f), simulator.Vertices[2].Position);
         Vector(new Vector3(-1f, 1f, 0f), simulator.Vertices[3].Position);
-        Step(simulator, 0f, Matrix4x4.CreateRotationX(-MathF.PI / 2f));
+        Step(simulator, 0f, Matrix4x4.CreateRotationX(MathF.PI / 2f));
         Vector(new Vector3(-1f, 0f, -1f), simulator.Vertices[0].Position);
         Vector(new Vector3(1f, 0f, 1f), simulator.Vertices[2].Position);
     }
@@ -395,7 +395,7 @@ public static class CpuParticleSimulatorSuite
         Vector(new Vector3(-1f, -5f, 0f), simulator.Vertices[4].Position);
         Vector(new Vector3(1f, 5f, 0f), simulator.Vertices[6].Position);
         Vector(new Vector3(-1f, -1f, 0f), simulator.Vertices[8].Position);
-        Step(simulator, 0f, Matrix4x4.CreateRotationY(MathF.PI / 4f));
+        Step(simulator, 0f, Matrix4x4.CreateRotationY(-MathF.PI / 4f));
         Vector(new Vector3(-MathF.Sqrt(2f), 5f, 0f), simulator.Vertices[0].Position);
         Vector(new Vector3(0f, 5f, MathF.Sqrt(2f)), simulator.Vertices[1].Position);
         Vector(new Vector3(MathF.Sqrt(2f), 5f, 0f), simulator.Vertices[2].Position);
@@ -540,6 +540,310 @@ public static class CpuParticleSimulatorSuite
         Check(bytes == 0, $"Steady-state allocated {bytes} bytes");
     }
 
+    [LumenFact]
+    public static void HdrIntensityPreservesAlpha()
+    {
+        var sim = new CpuParticleSimulator();
+        int id = sim.AcquireEmitter(new EmitterSpec
+        {
+            Name = "hdr-alpha", StartColorLinear = new Vector4(1f, 2f, 3f, 0.4f), HdrIntensity = 4f,
+        }, Matrix4x4.Identity, false);
+        sim.SetEmitterParams(id, false, 1f, 2f);
+        sim.EmitBurst(id, 1);
+        Step(sim, 0f);
+        Check(sim.Vertices[0].Color == new Vector4(8f, 16f, 24f, 0.4f), "HDR scales RGB only, never coverage alpha");
+    }
+
+    [LumenFact]
+    public static void EmittersOnAnotherMapProduceNoVerticesOrSubBatches()
+    {
+        var sim = new CpuParticleSimulator();
+        var spec = new EmitterSpec { Name = "per-map", StartLifetimeMin = 10f, StartLifetimeMax = 10f };
+        int mapA = sim.AcquireEmitter(spec, Matrix4x4.Identity, false, mapIndex: 7);
+        int mapB = sim.AcquireEmitter(spec, Matrix4x4.Identity, false, mapIndex: 9);
+        sim.EmitBurst(mapA, 2);
+        sim.EmitBurst(mapB, 3);
+        Step(sim, 0f, mapIndex: 7);
+        Check(sim.LiveParticleCount == 5 && sim.Vertices.Length == 8, "Only map 7 reaches the vertex batch");
+        Check(sim.SubBatches.Count == 1 && sim.SubBatches[0].IndexCount == 12, "One 2-particle sub-batch");
+        Step(sim, 0f, mapIndex: 9);
+        Check(sim.LiveParticleCount == 5 && sim.Vertices.Length == 12, "Only map 9 reaches the vertex batch");
+        Step(sim, 0f, mapIndex: -1);
+        Check(sim.Vertices.Length == 20, "An unscoped frame draws every emitter");
+    }
+
+    [LumenFact]
+    public static void SquashedIsoRimCameraPreservesBillboardAndStretchedScreenRatio()
+    {
+        // IsoRim Waylith injects Scale(1, 0.003, 1) into worldToCameraMatrix at pitch=55, yaw=45.
+        const float squash = 0.003f;
+        float pitch = 55f * MathF.PI / 180f;
+        float yaw = 45f * MathF.PI / 180f;
+        Vector3 forward = Vector3.Normalize(new Vector3(
+            MathF.Cos(pitch) * MathF.Sin(yaw),
+            -MathF.Sin(pitch),
+            MathF.Cos(pitch) * MathF.Cos(yaw)));
+        Vector3 right = Vector3.Normalize(Vector3.Cross(Vector3.UnitY, forward));
+        Vector3 camUp = Vector3.Cross(forward, right);
+        // Column-vector rigid view: rows are R, U, -F; then Scale(1, squash, 1) multiplies column 1 by squash.
+        var rigidView = new Matrix4x4(
+            right.X, right.Y, right.Z, 0f,
+            camUp.X, camUp.Y, camUp.Z, 0f,
+            -forward.X, -forward.Y, -forward.Z, 0f,
+            0f, 0f, 0f, 1f);
+        var isoView = new Matrix4x4(
+            rigidView.M11, rigidView.M12 * squash, rigidView.M13, 0f,
+            rigidView.M21, rigidView.M22 * squash, rigidView.M23, 0f,
+            rigidView.M31, rigidView.M32 * squash, rigidView.M33, 0f,
+            0f, 0f, 0f, 1f);
+
+        var simulator = new CpuParticleSimulator();
+        int quadId = simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "iso-quad", StartSizeMin = 2f, StartSizeMax = 2f, StartLifetimeMin = 10f, StartLifetimeMax = 10f
+        }, Matrix4x4.Identity, false);
+        int stretchedId = simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "iso-streak", BillboardMode = LumenBillboardMode.StretchedVelocity,
+            StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 4f, StartSpeedMax = 4f,
+            VelocityStretchFactor = 0.25f, StartLifetimeMin = 10f, StartLifetimeMax = 10f
+        }, Matrix4x4.CreateRotationZ(-MathF.PI / 2f), false);
+        simulator.EmitBurst(quadId, 1);
+        simulator.EmitBurst(stretchedId, 1);
+        Step(simulator, 0f, isoView);
+
+        // Helper: transform world point by column-vector isoView (M * v = Transform(v, Transpose(M))).
+        Vector3 ToView(Vector3 w) => Vector3.Transform(w, Matrix4x4.Transpose(isoView));
+
+        Vector3 q0 = ToView(simulator.Vertices[0].Position);
+        Vector3 q1 = ToView(simulator.Vertices[1].Position);
+        Vector3 q2 = ToView(simulator.Vertices[2].Position);
+        float quadViewWidth = (q1 - q0).Length();
+        float quadViewHeight = (q2 - q1).Length();
+        Check(MathF.Abs(quadViewWidth - 2f) < 1e-3f && MathF.Abs(quadViewHeight - 2f) < 1e-3f
+            && MathF.Abs(q1.Z - q0.Z) < 1e-3f && MathF.Abs(q2.Z - q1.Z) < 1e-3f,
+            $"IsoRim quad collapsed or tilted in view space: width={quadViewWidth:F5}, height={quadViewHeight:F5}");
+
+        Vector3 s0 = ToView(simulator.Vertices[4].Position);
+        Vector3 s1 = ToView(simulator.Vertices[5].Position);
+        Vector3 s2 = ToView(simulator.Vertices[6].Position);
+        float streakViewWidth = (s1 - s0).Length();
+        float streakViewLength = (s2 - s1).Length();
+        Check(MathF.Abs(streakViewWidth - 2f) < 1e-3f && streakViewLength >= 3.9f
+            && MathF.Abs(s1.Z - s0.Z) < 1e-3f && MathF.Abs(s2.Z - s1.Z) < 1e-3f,
+            $"IsoRim stretched particle collapsed or tilted in view space: width={streakViewWidth:F5}, length={streakViewLength:F5}");
+    }
+
+    [LumenFact]
+    public static void Vertical3DUnderSquashedIsoRimCameraKeepsTrueHeightAndStretchDirection()
+    {
+        (Matrix4x4 isoView, Vector3 camRight, Vector3 camUp) = IsoRimView();
+        Vector3 ToView(Vector3 w) => Vector3.Transform(w, Matrix4x4.Transpose(isoView));
+        Vector3 Center(CpuParticleSimulator simulator, int firstVertex)
+            => (simulator.Vertices[firstVertex].Position + simulator.Vertices[firstVertex + 1].Position
+                + simulator.Vertices[firstVertex + 2].Position + simulator.Vertices[firstVertex + 3].Position) * 0.25f;
+
+        var simulator = new CpuParticleSimulator();
+        var quad = new EmitterSpec
+        {
+            Name = "iso-height", StartSizeMin = 2f, StartSizeMax = 2f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+        };
+        Matrix4x4 apex = Matrix4x4.CreateTranslation(0f, 4.8f, 0f);
+        int free = simulator.AcquireEmitter(quad, apex, false);
+        int ground = simulator.AcquireEmitter(quad, apex, false);
+        simulator.SetEmitterVerticalState(free, true, 0f);
+        simulator.EmitBurst(free, 1);
+        simulator.EmitBurst(ground, 1);
+        Step(simulator, 0f, isoView);
+        // Vertical3D: 4.8 of true height reaches the screen unsquashed. The legacy path keeps the 0.003 squash.
+        Check(MathF.Abs(ToView(Center(simulator, 0)).Y - 4.8f * camUp.Y) < 1e-3f,
+            $"Vertical3D height collapsed in view space: y={ToView(Center(simulator, 0)).Y:F5}, expected {4.8f * camUp.Y:F5}");
+        Check(MathF.Abs(ToView(Center(simulator, 4)).Y - 4.8f * 0.003f * camUp.Y) < 1e-3f,
+            "A non-Vertical3D emitter must keep the legacy squashed height");
+
+        // A 45-degree diagonal: the true screen direction must come from the unsquashed velocity.
+        var streak = new CpuParticleSimulator();
+        int streakId = streak.AcquireEmitter(new EmitterSpec
+        {
+            Name = "iso-diagonal", BillboardMode = LumenBillboardMode.StretchedVelocity, Shape = LumenShapeKind.Cone,
+            ConeAngleDegrees = 0f, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 4f, StartSpeedMax = 4f,
+            VelocityStretchFactor = 0.25f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+        }, Matrix4x4.CreateRotationZ(-MathF.PI / 4f) * apex, false);
+        streak.SetEmitterVerticalState(streakId, true, 0f);
+        streak.EmitBurst(streakId, 1);
+        Step(streak, 0f, isoView);
+        Vector3 velocity = Vector3.Normalize(new Vector3(1f, 1f, 0f)) * 4f;
+        Vector2 expected = Vector2.Normalize(new Vector2(Vector3.Dot(velocity, camRight), Vector3.Dot(velocity, camUp)));
+        Vector3 edge = ToView(streak.Vertices[2].Position) - ToView(streak.Vertices[1].Position);
+        Vector2 actual = Vector2.Normalize(new Vector2(edge.X, edge.Y));
+        Check(MathF.Abs(edge.Length() - 4f) < 1e-3f && MathF.Abs(edge.Z) < 1e-3f
+            && Vector2.Distance(expected, actual) < 1e-3f,
+            $"Vertical3D streak direction {actual} (length {edge.Length():F4}) differs from the true 3D projection {expected}");
+    }
+
+    [LumenFact]
+    public static void Vertical3DUnderStraightDownCameraProjectsHeightOntoScreenUp()
+    {
+        // Vanilla top-down camera: right = +X, screen-up = +Z, looking down -Y, no squash.
+        Matrix4x4 topDown = RigidView(Vector3.UnitX, Vector3.UnitZ, -Vector3.UnitY);
+        float moteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
+        var simulator = new CpuParticleSimulator();
+        var quad = new EmitterSpec
+        {
+            Name = "top-down-height", StartSizeMin = 2f, StartSizeMax = 2f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+        };
+        Matrix4x4 apex = Matrix4x4.CreateTranslation(3f, 4.8f, 7f);
+        int free = simulator.AcquireEmitter(quad, apex, false);
+        int ground = simulator.AcquireEmitter(quad, apex, false);
+        int streak = simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "top-down-streak", BillboardMode = LumenBillboardMode.StretchedVelocity, Shape = LumenShapeKind.Cone,
+            ConeAngleDegrees = 0f, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 4f, StartSpeedMax = 4f,
+            VelocityStretchFactor = 0.25f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+        }, apex, false);
+        simulator.SetEmitterVerticalState(free, true, 0f);
+        simulator.SetEmitterVerticalState(streak, true, 0f);
+        simulator.EmitBurst(free, 1);
+        simulator.EmitBurst(ground, 1);
+        simulator.EmitBurst(streak, 1);
+        Step(simulator, 0f, topDown);
+        Vector3 Center(int firstVertex)
+            => (simulator.Vertices[firstVertex].Position + simulator.Vertices[firstVertex + 1].Position
+                + simulator.Vertices[firstVertex + 2].Position + simulator.Vertices[firstVertex + 3].Position) * 0.25f;
+
+        // Group order is acquisition order: Vertical3D quad and legacy quad share a group (vertices 0..7), the streak follows.
+        Vector3 freeCenter = Center(0);
+        Close(3f, freeCenter.X);
+        Close(11.8f, freeCenter.Z);
+        Check(freeCenter.Y >= moteY - 1e-4f, $"Vertical3D must draw at or above the mote layer, y={freeCenter.Y}");
+        Vector(new Vector3(3f, 4.8f, 7f), Center(4));
+        Vector3 streakCenter = Center(8);
+        Close(11.8f, streakCenter.Z);
+        Vector(new Vector3(0f, 0f, 4f), simulator.Vertices[10].Position - simulator.Vertices[9].Position);
+    }
+
+    [LumenFact]
+    public static void Free3DEmittersStayOnTheLegacyPathUnderIsoRimAndTopDownCameras()
+    {
+        // RimUnity prefabs use Free3D with Unity-baked rotations and MoteOverhead-sized Y offsets: no display remap.
+        Matrix4x4 isoView = IsoRimView().View;
+        Matrix4x4 topDown = RigidView(Vector3.UnitX, Vector3.UnitZ, -Vector3.UnitY);
+        var simulator = new CpuParticleSimulator();
+        int id = simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "free3d-legacy", StartSizeMin = 2f, StartSizeMax = 2f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+        }, Matrix4x4.CreateTranslation(3f, 11f, 7f), false);
+        simulator.EmitBurst(id, 1);
+        Vector3 Center() => (simulator.Vertices[0].Position + simulator.Vertices[1].Position
+            + simulator.Vertices[2].Position + simulator.Vertices[3].Position) * 0.25f;
+        Step(simulator, 0f, topDown);
+        Vector(new Vector3(3f, 11f, 7f), Center());
+        Step(simulator, 0f, isoView);
+        Vector(new Vector3(3f, 11f, 7f), Center());
+    }
+
+    [LumenFact]
+    public static void KillBelowFloorExpiresOnlyDescendingParticlesBelowTheBaseHeight()
+    {
+        var falling = new EmitterSpec
+        {
+            Name = "falling", KillBelowFloor = true, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+            ForceFields = new[] { new ForceFieldSpec(ForceFieldKind.GravityDrag, new Vector3(0f, -1f, 0f), Vector3.Zero, 0f, 10f) },
+        };
+        var simulator = new CpuParticleSimulator();
+        // y = 0.5, no initial speed: after 0.5 s it is at 0.5 - 2.5 = -2 and descending.
+        int expires = simulator.AcquireEmitter(falling, Matrix4x4.CreateTranslation(0f, 0.5f, 0f), false);
+        int ignoresFlag = simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "no-flag", StartLifetimeMin = 10f, StartLifetimeMax = 10f, ForceFields = falling.ForceFields,
+        }, Matrix4x4.CreateTranslation(0f, 0.5f, 0f), false);
+        int local = simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "falling-local", KillBelowFloor = true, WorldSpaceSimulation = false,
+            StartLifetimeMin = 10f, StartLifetimeMax = 10f, ForceFields = falling.ForceFields,
+        }, Matrix4x4.CreateTranslation(0f, 0.5f, 0f), false);
+        // Spawned exactly at the floor and rising, and below the floor but rising: both survive.
+        var rising = new EmitterSpec
+        {
+            Name = "rising", KillBelowFloor = true, Shape = LumenShapeKind.Cone, ConeAngleDegrees = 0f,
+            StartSpeedMin = 4f, StartSpeedMax = 4f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+        };
+        int atFloor = simulator.AcquireEmitter(rising, Matrix4x4.CreateTranslation(0f, 0f, 0f), false);
+        // Starts at -3 and rises to -1 within the step: still below the floor, but not descending.
+        int belowFloor = simulator.AcquireEmitter(rising, Matrix4x4.CreateTranslation(0f, -3f, 0f), false);
+        foreach (int id in new[] { expires, ignoresFlag, local, atFloor, belowFloor })
+        {
+            simulator.SetEmitterVerticalState(id, true, 0f);
+            simulator.EmitBurst(id, 1);
+        }
+        Check(simulator.LiveParticleCount == 5, "Five particles before the step");
+        Step(simulator, 0.5f);
+        Check(simulator.GetLiveParticleCount(expires) == 0, "A descending world-space particle below the floor expires");
+        Check(simulator.GetLiveParticleCount(local) == 0, "A descending local-space particle below the floor expires");
+        Check(simulator.GetLiveParticleCount(ignoresFlag) == 1, "Emitters without KillBelowFloor keep falling");
+        Check(simulator.GetLiveParticleCount(atFloor) == 1, "A rising particle spawned at the floor survives");
+        Check(simulator.GetLiveParticleCount(belowFloor) == 1, "A rising particle below the floor survives");
+        Check(simulator.LiveParticleCount == 3, "Expired particles are reclaimed from the live count");
+    }
+
+    [LumenFact]
+    public static void EffectHandleUsesPlayOriginHeightAsTheFloor()
+    {
+        var asset = new EffectAsset
+        {
+            EffectId = "kill-below-floor-origin",
+            Nodes = new[]
+            {
+                new EffectNodeSpec
+                {
+                    Name = "drop", SpacePlane = LumenSpacePlane.Vertical3D, LocalPosition = new Vector3(0f, 0.5f, 0f),
+                    Emitter = new EmitterSpec
+                    {
+                        Name = "drop", PreferredTier = LumenParticleTier.L1_NativeCpu, KillBelowFloor = true,
+                        Duration = 1f, Bursts = new[] { (0f, 1) }, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+                        ForceFields = new[] { new ForceFieldSpec(ForceFieldKind.GravityDrag, new Vector3(0f, -1f, 0f), Vector3.Zero, 0f, 10f) },
+                    },
+                },
+            },
+        };
+        LumenVfxService service = VfxTestData.Service(asset);
+        using ILumenEffectHandle handle = service.Play(new LumenPlayRequest
+        {
+            EffectId = asset.EffectId, OriginWorld = new Vector3(0f, 5f, 0f),
+        });
+        VfxTestData.Step(service, 0.1f);
+        Check(service.Simulator.LiveParticleCount == 1, "The drop spawns 0.5 above the play origin");
+        // At 5.5 it falls to y = 3.0 within 0.5 s: below the origin height 5, above world zero.
+        VfxTestData.Step(service, 0.5f);
+        Check(service.Simulator.LiveParticleCount == 0, "The play origin height is the floor of KillBelowFloor emitters");
+    }
+
+    // IsoRim Waylith: pitch 55, yaw 45, world Y squashed by 0.003 inside the view matrix.
+    private static (Matrix4x4 View, Vector3 Right, Vector3 Up) IsoRimView()
+    {
+        const float squash = 0.003f;
+        float pitch = 55f * MathF.PI / 180f;
+        float yaw = 45f * MathF.PI / 180f;
+        Vector3 forward = Vector3.Normalize(new Vector3(
+            MathF.Cos(pitch) * MathF.Sin(yaw), -MathF.Sin(pitch), MathF.Cos(pitch) * MathF.Cos(yaw)));
+        Vector3 right = Vector3.Normalize(Vector3.Cross(Vector3.UnitY, forward));
+        Vector3 up = Vector3.Cross(forward, right);
+        Matrix4x4 rigid = RigidView(right, up, forward);
+        var view = new Matrix4x4(
+            rigid.M11, rigid.M12 * squash, rigid.M13, 0f,
+            rigid.M21, rigid.M22 * squash, rigid.M23, 0f,
+            rigid.M31, rigid.M32 * squash, rigid.M33, 0f,
+            0f, 0f, 0f, 1f);
+        return (view, right, up);
+    }
+
+    // Column-vector rigid view whose rows are right, up and -forward.
+    private static Matrix4x4 RigidView(Vector3 right, Vector3 up, Vector3 forward) => new(
+        right.X, right.Y, right.Z, 0f,
+        up.X, up.Y, up.Z, 0f,
+        -forward.X, -forward.Y, -forward.Z, 0f,
+        0f, 0f, 0f, 1f);
+
     private sealed class BatchSink : IL1ParticleBatchSink
     {
         public int Calls, Particles, Vertices, Indices;
@@ -549,10 +853,11 @@ public static class CpuParticleSimulatorSuite
         }
     }
 
-    private static void Step(CpuParticleSimulator simulator, float dt, Matrix4x4? view = null)
+    private static void Step(CpuParticleSimulator simulator, float dt, Matrix4x4? view = null, int mapIndex = -1)
     {
         simulator.CaptureMainThread(new LumenCaptureContext
         {
+            CurrentMapIndex = mapIndex,
             FrameIndex = 0, DeltaTime = dt, ViewportWidth = 100, ViewportHeight = 100,
             ViewMatrix = view ?? Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
         });

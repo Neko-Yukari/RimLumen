@@ -19,6 +19,7 @@ public readonly struct LumenPlayRequest
     public float RotationDegrees { get; init; }
     public LumenFollowProvider? Follow { get; init; }
     public string? InitialState { get; init; }
+    public bool RealTime { get; init; }
 }
 
 public interface ILumenEffectHandle : IDisposable

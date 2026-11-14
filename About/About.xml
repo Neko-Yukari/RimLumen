@@ -6,5 +6,37 @@
   <supportedVersions>
     <li>1.7</li>
   </supportedVersions>
-  <description>Native HDR VFX asset and GPU compute particle sub-engine for RimWorld 1.7 (Waylith / Vulkan).</description>
+  <description>【中文】
+RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可编程光影包与 GPU 粒子框架，随游戏暂停与倍速同步推进。
+
+模组作者：
+- 原生 RGBA16F HDR 渲染与 0–7 级可配 Bloom 泛光
+- 声明式多 Pass 光影包（ShaderPacks）：支持自定义中间渲染目标、持久化历史缓冲、场景深度与地图光场（mapLightField）采样、实时参数滑杆与热重载隔离
+- L2 Vulkan Compute 粒子（实例化绘制、点吸引子 / 旋涡 / 3D 旋度湍流 / 重力阻尼）与 L1 CPU 粒子（自定义贴图、Flipbook 序列帧、速度拉伸）
+- 深度感知软粒子（Soft Particles）与随节点移动的动态 GlowGrid 点光
+- Vertical3D 真 3D 垂直空间模式：朝天 3D 物理模拟，自动适配原版 2D 俯视与 IsoRim Waylith 等 3D 视角
+- 三种原生接入（XML LumenEffectDef、Data/RimLumen/*.lumen.json、C# RimLumenApi）与可选 Chezhou.RimUnity 桥接
+
+玩家：
+- 装上即用：自动增强原版与第三方模组的加色发光特效，内置 5 档即切风格（Standard / Atmospheric / Cinematic / Vibrant / Crisp），并支持扩展光影包
+- 设置页支持光影包实时调参、热重载、逐像素可关闭的原版发光增强开关、粒子密度调节（10%–100%）与可选娱乐演示建筑（烟花发射器与粒子喷泉）
+
+（兼容说明：基于 Waylith 公开渲染管线扩展，不使用 Harmony 补丁并内置渲染异常熔断机制。）
+
+【English】
+RimLumen is an HDR VFX, programmable ShaderPack, and GPU particle framework for RimWorld 1.7 (Waylith / Vulkan), synchronized with game pause and speed multipliers.
+
+Modders:
+- Native RGBA16F HDR rendering with a configurable 0–7 mip bloom chain
+- Declarative multi-pass ShaderPacks: custom intermediate targets, persistent history buffers, scene depth and mapLightField sampling, live parameter sliders, and isolated hot-reload error handling
+- L2 Vulkan Compute particles (instanced rendering, point attractors, vortex, 3D curl turbulence, gravity/drag) and L1 CPU particles (custom textures, flipbooks, velocity stretch)
+- Depth-aware soft particles and moving dynamic GlowGrid point lights
+- Vertical3D true-3D space mode: skyward 3D physics with automatic projection for vanilla 2D and 3D camera mods such as IsoRim Waylith
+- Three entry points (XML LumenEffectDef, Data/RimLumen/*.lumen.json, C# RimLumenApi) plus an optional Chezhou.RimUnity bridge
+
+Players:
+- Plug and play: automatically enhances vanilla and third-party additive glow effects, with 5 built-in ShaderPacks (Standard, Atmospheric, Cinematic, Vibrant, Crisp) and support for custom packs
+- Mod Settings includes live ShaderPack sliders, hot reload, a clean pixel-identical toggle for vanilla additive glow, a Particle Density slider (10%–100%), and optional Demo Joy Buildings (Firework Launcher and Particle Fountain)
+
+(Compatibility note: built on Waylith's public render-graph APIs with zero Harmony patches and an automatic rendering fail-safe.)</description>
 </ModMetaData>

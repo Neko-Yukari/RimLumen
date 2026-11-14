@@ -7,6 +7,16 @@
     <OutDir>$(OutputPath)</OutDir>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(RimLumenShipRelease)' == 'true'">
+    <DefineConstants>$(DefineConstants);RIMLUMEN_SHIP_RELEASE</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(RimLumenShipRelease)' == 'true'">
+    <Compile Remove="Rendering\Probes\**" />
+    <Compile Remove="Showcase\**" />
+    <Compile Remove="Rendering\Logic\ProbeOptions.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <Reference Include="Assembly-CSharp">
       <HintPath>$(GameRoot)/Assembly-CSharp.dll</HintPath>

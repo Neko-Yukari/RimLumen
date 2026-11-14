@@ -8,6 +8,9 @@ public enum LumenSpacePlane : byte
     GroundXZ = 0,
     HeightVertical90 = 1,
     Free3D = 2,
+    // Identity rotation like Free3D, but the emitter simulates in true 3D (+Y up) and its display is adapted to the
+    // active camera: un-squashed under IsoRim, an oblique +Z projection under a straight-down 2D camera.
+    Vertical3D = 3,
 }
 
 public enum LumenBlendMode : byte
@@ -117,6 +120,8 @@ public sealed class EmitterSpec
     public float LengthScale { get; init; } = 1f;
     public float SoftParticleFadeDistance { get; init; } = 0.5f;
     public float HdrIntensity { get; init; } = 1f;
+    // Expires a particle that is descending (world vy < 0) below the effect's play-origin height.
+    public bool KillBelowFloor { get; init; }
     public float BloomWeight { get; init; } = 1f;
     public LumenParticleTier PreferredTier { get; init; } = LumenParticleTier.L2_GpuCompute;
 }

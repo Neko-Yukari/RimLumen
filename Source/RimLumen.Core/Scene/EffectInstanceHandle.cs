@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Numerics;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Lighting;
+using RimLumen.Core.ParticlesGpu;
 
 namespace RimLumen.Core.Scene;
 
@@ -55,29 +56,44 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         origin = request.OriginWorld;
         rotation = request.TargetWorld is Vector3 target
             ? SpacePlaneTransform.ComputeFacingDegrees(origin, target) : request.RotationDegrees;
-        RefreshTransforms();
-        engine = owner.GpuEngineProvider?.Invoke();
-        driver = owner.GlowerDriverProvider?.Invoke(request.MapIndex);
-        for (int i = 0; i < asset.Nodes.Length; i++)
+        // A throwing backend call (e.g. an L2 slot that no longer fits) must not leak the emitters
+        // already acquired by earlier nodes: Dispose below releases every id assigned so far.
+        try
         {
-            var node = asset.Nodes[i];
-            if (node.Emitter is not { } spec) continue;
-            looping |= spec.Looping;
-            nodeEmitting[i] = request.InitialState is null || node.Name == request.InitialState;
-            if (spec.PreferredTier == LumenParticleTier.L2_GpuCompute && engine is not null)
+            RefreshTransforms();
+            engine = owner.GpuEngineProvider?.Invoke();
+            driver = owner.GlowerDriverProvider?.Invoke(request.MapIndex);
+            for (int i = 0; i < asset.Nodes.Length; i++)
             {
-                gpuIds[i] = engine.CreateInstance(spec, nodeWorldMatrices[i]);
-                if (!nodeEmitting[i]) engine.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], false);
+                var node = asset.Nodes[i];
+                if (node.Emitter is not { } spec) continue;
+                looping |= spec.Looping;
+                nodeEmitting[i] = request.InitialState is null || node.Name == request.InitialState;
+                if (spec.PreferredTier == LumenParticleTier.L2_GpuCompute && engine is not null)
+                {
+                    gpuIds[i] = engine.CreateInstance(spec, nodeWorldMatrices[i], request.MapIndex, request.RealTime);
+                    if (!nodeEmitting[i]) engine.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], false);
+                }
+                else
+                {
+                    cpuIds[i] = owner.Simulator.AcquireEmitter(spec, nodeWorldMatrices[i], emitting: true, rateMultiplier: 1f, realTime: request.RealTime, mapIndex: request.MapIndex);
+                    if (!nodeEmitting[i]) owner.Simulator.SetEmitterParams(cpuIds[i], false, 1f, 1f);
+                }
+                PushVerticalState(i);
             }
-            else
-            {
-                cpuIds[i] = owner.Simulator.AcquireEmitter(spec, nodeWorldMatrices[i], emitting: true, rateMultiplier: 1f);
-                if (!nodeEmitting[i]) owner.Simulator.SetEmitterParams(cpuIds[i], false, 1f, 1f);
-            }
+        }
+        catch
+        {
+            Dispose();
+            throw;
         }
     }
 
     public string EffectId => asset.EffectId;
+
+    // Ensures: true when the play request asked for real-time (unscaled) simulation: the handle and its L1
+    //          emitters keep advancing while the game is paused or running at another speed.
+    public bool RealTime => request.RealTime;
 
     // Ensures: true until the handle is stopped immediately/disposed, or until a fade-out stop has
     //          released every emitter and every light.
@@ -153,7 +169,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             }
             if (gpuIds[i] >= 0)
             {
-                engine!.DestroyInstance(gpuIds[i], immediate: !allowFadeOut);
+                engine?.DestroyInstance(gpuIds[i], immediate: !allowFadeOut);
                 gpuIds[i] = -1;
             }
         }
@@ -215,6 +231,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         float intensity = parameters["intensity"];
         for (int i = 0; i < asset.Nodes.Length; i++)
         {
+            PushVerticalState(i);
             if (cpuIds[i] >= 0)
             {
                 owner.Simulator.SetEmitterTransform(cpuIds[i], nodeWorldMatrices[i]);
@@ -226,6 +243,15 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         }
         UpdateLights(intensity);
         FinishDrain();
+    }
+
+    // Ensures: the node's L1/L2 emitter knows whether it is Vertical3D and the effect's current play-origin height
+    //          (the display baseline and the KillBelowFloor floor); follows a moving origin every frame.
+    private void PushVerticalState(int index)
+    {
+        bool isVertical3D = asset.Nodes[index].SpacePlane == LumenSpacePlane.Vertical3D;
+        if (cpuIds[index] >= 0) owner.Simulator.SetEmitterVerticalState(cpuIds[index], isVertical3D, origin.Y);
+        if (gpuIds[index] >= 0) (engine as LumenGpuParticleEngine)?.SetInstanceVerticalState(gpuIds[index], isVertical3D, origin.Y);
     }
 
     private void RefreshTransforms()
@@ -288,7 +314,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     {
         for (int i = 0; i < lightIds.Length; i++)
         {
-            if (lightIds[i] >= 0) driver!.Remove(lightIds[i]);
+            if (lightIds[i] >= 0) driver?.Remove(lightIds[i]);
             lightIds[i] = -1;
         }
     }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Lighting;
+using RimLumen.Core.ParticlesGpu;
 
 namespace RimLumen.Core.Scene;
 
@@ -14,9 +15,13 @@ namespace RimLumen.Core.Scene;
 /// </summary>
 public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
 {
-    private readonly List<EffectInstanceHandle> handles = new();
+    public const long PoolExhaustedWarningCooldownMs = 10_000;
 
-    private sealed class InertHandle : ILumenEffectHandle
+    private readonly List<EffectInstanceHandle> handles = new();
+    private bool hasWarnedPoolExhausted;
+    private long lastPoolExhaustedWarningMs;
+
+    internal sealed class InertHandle : ILumenEffectHandle
     {
         public static readonly InertHandle Instance = new();
         public bool IsAlive => false;
@@ -44,6 +49,9 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     // Ensures: per-map glower resolver, read on every Play and every frame. Default resolves through
     //          LumenMapLightingRegistry.TryResolve, which treats a negative index as "most recent map".
     public Func<int, MapGlowerDriver?>? GlowerDriverProvider { get; set; }
+
+    internal Func<long> ClockMsProvider { get; set; } = static () => Environment.TickCount64;
+    internal Action<string> PoolExhaustedWarningSink { get; set; } = static message => Verse.Log.Warning(message);
 
     // Ensures: always "LumenVfxService".
     public string Name => "LumenVfxService";
@@ -87,21 +95,43 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     {
         if (!LumenHostRegistry.TryResolveAsset(request.EffectId, out var asset) || asset is null)
             return InertHandle.Instance;
-        var handle = new EffectInstanceHandle(this, asset, request);
-        handles.Add(handle);
-        return handle;
+        try
+        {
+            var handle = new EffectInstanceHandle(this, asset, request);
+            handles.Add(handle);
+            return handle;
+        }
+        catch (ParticlePoolExhaustedException)
+        {
+            WarnPoolExhausted(request.EffectId);
+            return InertHandle.Instance;
+        }
+    }
+
+    private void WarnPoolExhausted(string effectId)
+    {
+        long now = ClockMsProvider();
+        if (hasWarnedPoolExhausted && now - lastPoolExhaustedWarningMs < PoolExhaustedWarningCooldownMs)
+            return;
+        hasWarnedPoolExhausted = true;
+        lastPoolExhaustedWarningMs = now;
+        PoolExhaustedWarningSink(
+            $"[RimLumen] GPU particle slot pool is full; skipping '{effectId}' until active particles expire (throttled to once per 10s).");
     }
 
     // Ensures: true while any live handle is alive; false once every handle is dead (zero draws).
     public bool HasActiveWork => LiveHandleCount != 0;
 
     // Requires: main thread, called before CpuParticleSimulator.CaptureMainThread in the same frame.
-    // Ensures: advances every live handle by context.DeltaTime and drops dead handles.
+    // Ensures: advances every live handle by context.DeltaTime (real-time handles by UnscaledDeltaTime when it is
+    //          positive) and drops dead handles.
     public void CaptureMainThread(in LumenCaptureContext context)
     {
         for (int i = handles.Count - 1; i >= 0; i--)
         {
-            handles[i].Advance(context.DeltaTime);
+            var handle = handles[i];
+            float dt = handle.RealTime && context.UnscaledDeltaTime > 0f ? context.UnscaledDeltaTime : context.DeltaTime;
+            handle.Advance(dt);
             if (!handles[i].IsAlive) handles.RemoveAt(i);
         }
     }

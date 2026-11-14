@@ -122,8 +122,12 @@ public sealed class SyntheticHdrQuadContributor : ILumenFrameContributor, IDispo
 
         // Submission slot reuse follows the engine fence, unlike a capture-ordinal modulo after skipped frames.
         int setIndex = frame.SubmissionFrameIndex;
-        VkImageView view = scene.DepthSampleView;
-        soft.WriteDepth(setIndex, in view, Waylith.Rendering.Compute.ComputeDispatchQueue.PointClampSampler);
+        // HDR passes see the R32_SFLOAT depth snapshot (a color target) instead of the scene's depth aspect.
+        VkImageView depthView = scene.HasDepth ? scene.DepthSampleView : scene.ColorView;
+        VkImageLayout depthLayout = scene.HasDepth
+            ? VkImageLayout.DepthStencilReadOnlyOptimal
+            : VkImageLayout.ShaderReadOnlyOptimal;
+        soft.WriteDepth(setIndex, in depthView, Waylith.Rendering.Compute.ComputeDispatchQueue.PointClampSampler, depthLayout);
         push.Rect = new Vector4(softQuad.X, softQuad.Y, softQuad.Width, softQuad.Height);
         push.Color = new Vector4(0.15f, 0.45f, 1.4f, 0.75f);
         soft.Bind(in frame, setIndex);
