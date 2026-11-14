@@ -35,9 +35,9 @@
 
 `Vertical3D` 的 `baseY` 是播放原点（`LumenPlayRequest.OriginWorld.Y`）的高度；节点 `LocalPosition.Y` 是相对该原点的高度（例如烟花爆点 `4.8`）。`GroundXZ`、`HeightVertical90`、`Free3D` 的行为保持不变。
 
-### 地面接触过期（`EmitterSpec.KillBelowFloor`）
+### 地面接触过期（`EmitterSpec.KillBelowFloor` / `killBelowFloor`）
 
-`KillBelowFloor`（默认 `false`）目前只能在 C# 的 `EmitterSpec` 上设置，`.lumen.json` 与 XML `LumenEffectDef` 暂无对应字段。为 `true` 时，粒子在世界高度低于播放原点高度 `baseY` **且**世界速度 `Y < 0`（正在下落）的那一帧过期并被回收；在地面以下但仍上升、或恰在地面上刚发射的粒子不受影响。L1（CPU）与 L2（GPU compute）行为一致，与空间平面无关，局部空间模拟的发射器按其世界矩阵换算后判定。
+`killBelowFloor`（默认 `false`）在 C# `EmitterSpec.KillBelowFloor`、`.lumen.json` 发射器对象以及 XML `LumenEffectDef` 的 `<emitter>` 中均可设置。为 `true` 时，粒子在世界高度低于播放原点高度 `baseY` **且**世界速度 `Y < 0`（正在下落）的那一帧过期并被回收；在地面以下但仍上升、或恰在地面上刚发射的粒子不受影响。L1（CPU）与 L2（GPU compute）行为一致，与空间平面无关，局部空间模拟的发射器按其世界矩阵换算后判定。
 
 > 提示：所有发射形状中，`Cone`（圆锥）的默认主喷射轴是局部 `+Y`。想让粒子沿真实高度向上喷出并落回，请给节点设 `Vertical3D`，把世界空间重力设为 `(0, -1, 0)`，需要落地即消失时再设 `KillBelowFloor`。若仍想让粒子在俯视屏幕里朝屏幕上方（`+Z`）喷出（旧写法，显示不随相机适配），可用 `HeightVertical90` 并把重力设为 `(0, 0, -1)`。
 
@@ -125,7 +125,8 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
         "lengthScale": 1,
         "softParticleFadeDistance": 0.5,
         "hdrIntensity": 1,
-        "bloomWeight": 1
+        "bloomWeight": 1,
+        "killBelowFloor": false
       },
       "pointLight": {
         "glowRadius": 5,
@@ -182,6 +183,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
           <startSizeMin>0.15</startSizeMin>
           <startSizeMax>0.3</startSizeMax>
           <hdrIntensity>5</hdrIntensity>
+          <killBelowFloor>false</killBelowFloor>
           <shape>Cone</shape>
           <coneAngleDegrees>22</coneAngleDegrees>
           <forceFields>

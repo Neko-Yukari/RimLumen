@@ -100,6 +100,7 @@ public sealed class LumenEffectDef : Def
             HdrIntensity = xml.hdrIntensity,
             BloomWeight = xml.bloomWeight,
             PreferredTier = xml.preferredTier,
+            KillBelowFloor = xml.killBelowFloor,
         };
         return emitter;
     }
@@ -258,6 +259,7 @@ public sealed class LumenEmitterXml
     public int flipbookTilesY = 1;
     public float flipbookCycles = 1f;
     public bool worldSpaceSimulation = true;
+    public bool killBelowFloor = false;
     public List<LumenCurveKeyXml>? sizeOverLifetime;
     public List<LumenGradientStopXml>? colorOverLifetime;
     public List<LumenForceFieldXml>? forceFields;
@@ -578,7 +580,7 @@ public static class LumenJsonAssetLoader
         "startColorLinear", "sizeOverLifetime", "colorOverLifetime", "forceFields", "textureKey",
         "flipbookTilesX", "flipbookTilesY", "flipbookCycles", "blendMode", "billboardMode",
         "velocityStretchFactor", "lengthScale", "softParticleFadeDistance", "hdrIntensity", "bloomWeight",
-        "preferredTier",
+        "preferredTier", "killBelowFloor",
     };
 
     private static readonly string[] PointLightProperties =
@@ -679,6 +681,7 @@ public static class LumenJsonAssetLoader
             HdrIntensity = scope.Float("hdrIntensity", 1f),
             BloomWeight = scope.Float("bloomWeight", 1f),
             PreferredTier = scope.Enum("preferredTier", LumenParticleTier.L2_GpuCompute),
+            KillBelowFloor = scope.Bool("killBelowFloor", false),
         };
     }
 

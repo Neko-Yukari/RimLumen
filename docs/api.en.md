@@ -35,9 +35,9 @@ RimWorld 1.7 uses a 2.5D orthographic/perspective top-down view with the followi
 
 `Vertical3D`'s `baseY` is the height of the play origin (`LumenPlayRequest.OriginWorld.Y`); a node's `LocalPosition.Y` is relative to that origin (for example, `4.8` for a firework burst apex). `GroundXZ`, `HeightVertical90`, and `Free3D` behave unchanged.
 
-### Ground-Contact Expiration (`EmitterSpec.KillBelowFloor`)
+### Ground-Contact Expiration (`EmitterSpec.KillBelowFloor` / `killBelowFloor`)
 
-`KillBelowFloor` (default `false`) can currently only be set on `EmitterSpec` in C#; `.lumen.json` and XML `LumenEffectDef` do not expose this field yet. When `true`, a particle expires and is reclaimed on the frame its world height drops below the play origin height `baseY` **and** its world velocity `Y < 0` (descending). Particles still rising below floor height or freshly spawned right on the floor are unaffected. L1 (CPU) and L2 (GPU compute) behave identically regardless of space plane; local-space emitters are evaluated after applying their world matrix.
+`killBelowFloor` (default `false`) can be set on `EmitterSpec.KillBelowFloor` in C#, inside `.lumen.json` emitter objects, and under `<emitter>` in XML `LumenEffectDef`. When `true`, a particle expires and is reclaimed on the frame its world height drops below the play origin height `baseY` **and** its world velocity `Y < 0` (descending). Particles still rising below floor height or freshly spawned right on the floor are unaffected. L1 (CPU) and L2 (GPU compute) behave identically regardless of space plane; local-space emitters are evaluated after applying their world matrix.
 
 > Tip: Across all emitter shapes, `Cone` defaults its primary emission axis to local `+Y`. To make particles shoot skyward in real altitude and fall back down, set the node to `Vertical3D`, set world-space gravity to `(0, -1, 0)` (or desired magnitude), and enable `KillBelowFloor` if they should vanish on impact. If you specifically want legacy screen-upward (`+Z`) projection without camera adaptation, use `HeightVertical90` with gravity `(0, 0, -1)`.
 
@@ -125,7 +125,8 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
         "lengthScale": 1,
         "softParticleFadeDistance": 0.5,
         "hdrIntensity": 1,
-        "bloomWeight": 1
+        "bloomWeight": 1,
+        "killBelowFloor": false
       },
       "pointLight": {
         "glowRadius": 5,
@@ -182,6 +183,7 @@ You can define `RimLumen.Core.Assets.LumenEffectDef` in any mod's `Defs/**/*.xml
           <startSizeMin>0.15</startSizeMin>
           <startSizeMax>0.3</startSizeMax>
           <hdrIntensity>5</hdrIntensity>
+          <killBelowFloor>false</killBelowFloor>
           <shape>Cone</shape>
           <coneAngleDegrees>22</coneAngleDegrees>
           <forceFields>

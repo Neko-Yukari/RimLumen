@@ -31,6 +31,7 @@ public static class NativePipelineSuite
         NativeTestData.Close(8f, emitter.RateOverTime, "rateOverTime");
         NativeTestData.Check(emitter.Shape == LumenShapeKind.Point, "Shape default");
         NativeTestData.Check(emitter.PreferredTier == LumenParticleTier.L2_GpuCompute, "Tier default");
+        NativeTestData.Check(!emitter.KillBelowFloor, "killBelowFloor defaults to false");
         NativeTestData.Check(emitter.TextureKey is null && emitter.FlipbookTilesX == 1 && emitter.FlipbookTilesY == 1, "Texture/flipbook defaults");
         NativeTestData.Check(emitter.Bursts.Length == 0 && emitter.ForceFields.Length == 0, "No bursts or force fields by default");
         NativeTestData.Close(1f, CurveEvaluator.Evaluate(emitter.SizeOverLifetime, 0.37f), "Default size curve");
@@ -91,6 +92,7 @@ public static class NativePipelineSuite
         NativeTestData.Close(3f, emitter.HdrIntensity, "hdrIntensity");
         NativeTestData.Close(0.5f, emitter.BloomWeight, "bloomWeight");
         NativeTestData.Check(emitter.PreferredTier == LumenParticleTier.L1_NativeCpu, "preferredTier");
+        NativeTestData.Check(emitter.KillBelowFloor, "killBelowFloor");
 
         PointLightSpec light = node.PointLight ?? throw new InvalidOperationException("Point light missing");
         NativeTestData.Close(6f, light.GlowRadius, "glowRadius");
@@ -308,6 +310,7 @@ public static class NativePipelineSuite
                         flipbookTilesY = 2,
                         flipbookCycles = 2f,
                         worldSpaceSimulation = false,
+                        killBelowFloor = true,
                         sizeOverLifetime = new List<LumenCurveKeyXml> { new() { time = 0f, value = 1f }, new() { time = 1f, value = 0.5f } },
                         colorOverLifetime = new List<LumenGradientStopXml>
                         {
@@ -355,6 +358,7 @@ public static class NativePipelineSuite
         NativeTestData.Check(emitter.TextureKey == "Effects/Flame" && emitter.FlipbookTilesX == 2 && emitter.FlipbookCycles == 2f, "texture/flipbook");
         NativeTestData.Check(emitter.BlendMode == LumenBlendMode.Premultiplied && emitter.BillboardMode == LumenBillboardMode.StretchedVelocity, "blend/billboard");
         NativeTestData.Check(!emitter.WorldSpaceSimulation && emitter.LengthScale == 1.5f, "local space/length scale");
+        NativeTestData.Check(emitter.KillBelowFloor, "XML killBelowFloor");
 
         PointLightSpec light = node.PointLight ?? throw new InvalidOperationException("Point light missing");
         NativeTestData.Close(6f, light.GlowRadius, "glowRadius");
@@ -639,6 +643,7 @@ public static class NativePipelineSuite
         NativeTestData.Check(xml.FlipbookTilesX == json.FlipbookTilesX && xml.FlipbookTilesY == json.FlipbookTilesY, "flipbook grid default");
         NativeTestData.Close(json.FlipbookCycles, xml.FlipbookCycles, "flipbookCycles default");
         NativeTestData.Check(xml.WorldSpaceSimulation == json.WorldSpaceSimulation, "worldSpaceSimulation default");
+        NativeTestData.Check(xml.KillBelowFloor == json.KillBelowFloor, "killBelowFloor default");
         NativeTestData.Close(fromJson.DefaultDuration, fromXml.DefaultDuration, "defaultDuration");
     }
 
@@ -692,7 +697,8 @@ public static class NativePipelineSuite
             "softParticleFadeDistance": 0.25,
             "hdrIntensity": 3,
             "bloomWeight": 0.5,
-            "preferredTier": "L1_NativeCpu"
+            "preferredTier": "L1_NativeCpu",
+            "killBelowFloor": true
           },
           "pointLight": { "glowRadius": 6, "overlightRadius": 1.5, "colorRgb": [1, 0.5, 0.25], "intensity": 2 }
         },
