@@ -6,10 +6,11 @@
 
 ## 一、快速接入方式
 
-按是否需要写 C# 代码，可以选以下三种方式之一：
+按接入需求，可以选以下三种方式之一：
 
-1. **纯数据定义（不需要引用 DLL）**：在你的模组 `About/About.xml` 中把 `NekoYukari.RimLumen` 加入 `modDependencies` / `loadAfter`，然后写 XML `LumenEffectDef` 或 `.lumen.json` 特效文件。
+1. **纯数据特效定义（不需要引用 DLL）**：在你的模组 `About/About.xml` 中把 `NekoYukari.RimLumen` 加入 `modDependencies` / `loadAfter`，然后编写 XML `LumenEffectDef` 或 `.lumen.json` 特效文件。
 2. **C# 调用播放（只读名称或动态造特效）**：在你的 C# 项目引用 `RimLumen.Core.dll`（位于本模组 `1.7/Assemblies/RimLumen.Core.dll`），通过 `RimLumen.Core.Api.RimLumenApi` 播放或注册特效。
+3. **可编程光影包（ShaderPacks，不需要引用 DLL）**：在模组 `1.7/ShaderPacks/<PackFolder>/` 下编写 `pack.json` 与 GLSL `#version 450` 片段着色器，声明自定义后处理 Pass、渲染目标、历史缓冲与玩家实时滑杆。
 
 ---
 
@@ -334,3 +335,430 @@ RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled
 - **保留在原 RimUnity 播放器混播（`L0_ExternalCpu`）**：节点启用了 `trails`、`subEmitters`（含子发射器依赖）、`collision`、`trigger`、`renderMode.Mesh`、线性 `velocityOverLifetime`、`rotationOverLifetime`、变化曲线 `forceOverLifetime`、非 `1` 的 `lights.ratio`、概率脉冲，或使用了核心暂未建模的形状（如非零底面半径圆锥、球壳、圆环、网格形状或局部形状偏移）。
 
 上层调用 `RimLumenApi.Play` 时无需感知背后走哪一路，同一个 `ILumenEffectHandle` 会同时接管两端生命周期。
+
+---
+
+## 九、可编程光影包开发规范（ShaderPacks）
+
+RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩家只需放置 `pack.json` 与 GLSL `#version 450` 片段着色器，无需编写 C# 代码即可扩展全屏后处理、替换 Bloom 算法、读取场景深度与地图光场，并在模组设置中暴露实时调节滑杆。
+
+### 1. 目录结构、扫描顺序与覆盖规则
+
+每个光影包是一个独立子目录，至少包含一份 `pack.json` 清单文件：
+
+```text
+1.7/ShaderPacks/
+  MyShaderPack/
+    pack.json
+    Composite.frag.glsl
+    Common.glslinc
+```
+
+#### 扫描根目录与覆盖优先级
+
+`ShaderPackCatalog` 只扫描每个根目录下的**直接子目录**（按目录名不区分大小写排序），并检查其中是否存在 `pack.json`。加载顺序从低到高如下，后加载的包按不区分大小写的 `id` 覆盖先前的同名包（首次出现的 `id` 保留其在列表中的排序位置）：
+
+1. **内置基线**：`StandardEntry`（`id` 为 `"default"`，对应 `ShaderPackSpec.Default`，无磁盘 `pack.json`）。
+2. **RimLumen 内置包**：`<RimLumen>/1.7/ShaderPacks/`，随后 `<RimLumen>/ShaderPacks/`（来源标记为 `内置`）。
+3. **已启用模组包**：按 `LoadedModManager.RunningMods` 模组加载顺序，依次扫描每个模组的 `<ModRoot>/1.7/ShaderPacks/`，随后 `<ModRoot>/ShaderPacks/`（来源标记为 `模组: <ModName>`）。
+4. **玩家本地目录**：`Config/RimLumen/ShaderPacks/`（由游戏 `GenFilePaths.ConfigFolderPath` 解析，来源标记为 `本地`）。本地包优先级最高，适合玩家微调或开发者热重载调试。
+
+> 注意：`"default"` 是内置 `Standard` 基线的保留 ID。任何 `pack.json` 将 `id` 设为 `"default"`（不区分大小写）都会在加载阶段被拒绝并标记错误。
+
+#### 路径安全与发布打包限制
+
+- **相对路径约束**：`pack.json` 中的所有着色器路径（`compositeShader`、`bloomPrefilterShader`、`bloomDownShader`、`bloomUpShader` 与 `passes[].shader`）必须是相对于包目录的路径，禁止绝对路径或 `..` 上级目录穿越。
+- **物理路径校验**：加载器会对包根目录与解析后的着色器路径执行 `ResolveLinkTarget`（最多解析 32 跳），拒绝任何指向包目录外部的符号链接或 Windows Junction；包目录自身通过 Junction 挂载（例如开发期的 `Mods/RimLumen`）仍可正常通过校验。
+- **发行打包门禁**：`Tools/pack-release.ps1` 会校验 `1.7/ShaderPacks/` 下所有文件扩展名，仅允许 `.json`、`.glsl` 与 `.glslinc`。
+
+---
+
+### 2. `pack.json` 完整结构与字段默认值
+
+`pack.json` 解析器忽略属性名大小写，支持 `//` / `/* */` 注释与尾逗号。
+
+```json
+{
+  "id": "my_night_glow",
+  "name": "My Night Glow",
+  "author": "Author",
+  "description": "可选说明文本",
+  "runOnEmptyFrames": true,
+  "requiresSceneDepth": true,
+  "requiresMapLightField": true,
+  "bloomMipLevels": 5,
+  "compositeShader": null,
+  "bloomPrefilterShader": null,
+  "bloomDownShader": null,
+  "bloomUpShader": null,
+  "targets": [
+    {
+      "name": "halfFog",
+      "format": "R16G16B16A16SFloat",
+      "scale": 0.5,
+      "filter": "Linear",
+      "persistent": false
+    }
+  ],
+  "passes": [
+    {
+      "name": "FogPass",
+      "shader": "FogPass.frag.glsl",
+      "output": "halfFog",
+      "blend": "Opaque",
+      "extraParams": [1.0, 0.0],
+      "inputs": [
+        { "binding": 0, "source": "scene" },
+        { "binding": 1, "source": "depth" },
+        { "binding": 2, "source": "mapLightField" }
+      ]
+    },
+    {
+      "name": "Composite",
+      "shader": "Composite.frag.glsl",
+      "output": "backbuffer",
+      "blend": "Opaque",
+      "inputs": [
+        { "binding": 0, "source": "hdr" },
+        { "binding": 1, "source": "bloom" },
+        { "binding": 2, "source": "scene" },
+        { "binding": 3, "source": "halfFog" }
+      ]
+    }
+  ],
+  "options": [
+    {
+      "key": "fogStrength",
+      "label": "夜雾强度 (Fog strength)",
+      "target": "packParam0",
+      "default": 0.5,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.02,
+      "tooltip": "调节地面薄雾浓度。"
+    }
+  ]
+}
+```
+
+#### 根级字段
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | `string` | 文件夹名 | 包唯一标识（大小写不敏感）；不可为 `"default"`。 |
+| `name` | `string` | `id` | 在设置下拉菜单与参数标题栏显示的名称。 |
+| `author` | `string` | `"Unknown"` | 作者名称。 |
+| `description` | `string` | `""` | 包功能说明，显示在设置摘要区。 |
+| `runOnEmptyFrames` | `bool` | `false` | 为 `true` 时，即使当前帧没有任何 HDR 粒子或原版加色重画也强制执行管线；环境压暗、迷雾、全局调色类包应设为 `true`。 |
+| `requiresSceneDepth` | `bool` | `false` | 为 `true` 时，空帧也强制将场景深度拷贝到 `depth` 纹理（有 HDR 绘制的帧会自动提供场景深度）。 |
+| `requiresMapLightField` | `bool` | `false` | 为 `true` 时，维护并上传当前地图的 `mapLightField` RGBA8 纹理。 |
+| `bloomMipLevels` | `int` | `5` | 内置 Bloom 金字塔级数，合法范围 `[0, 7]`；设为 `0` 完全关闭内置 Bloom。 |
+| `compositeShader` | `string?` | `null` | 默认合成片段着色器；当 `passes` 为空或最后一个 Pass 未填写 `shader` 时使用，均为空则回退内置 `RimLumenComposite.frag.glsl`。 |
+| `bloomPrefilterShader` | `string?` | `null` | 替换内置 Bloom 预过滤着色器（`RimLumenBloomPrefilter.frag.glsl`）。 |
+| `bloomDownShader` | `string?` | `null` | 替换内置 Bloom 降采样着色器（`RimLumenBloomDown.frag.glsl`）。 |
+| `bloomUpShader` | `string?` | `null` | 替换内置 Bloom 升采样着色器（`RimLumenBloomUp.frag.glsl`）。 |
+| `targets` | `Target[]` | `[]` | 自定义离屏渲染目标声明。 |
+| `passes` | `Pass[]` | `[]` | 自定义 Render Graph Pass 列表；为空时仅运行内置 Bloom 与合成着色器。 |
+| `options` | `Option[]` | `[]` | 模组设置页中的实时滑杆定义。 |
+
+#### `targets[]` 渲染目标字段
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `name` | `string` | 必填 | 目标名称；不可与保留源名重复，不可用 `prev:` 开头，同包内大小写不敏感唯一。 |
+| `format` | `string` | `"R16G16B16A16SFloat"` | 可选 `"R16G16B16A16SFloat"`、`"R8G8B8A8UNorm"`、`"R16SFloat"`。 |
+| `scale` | `float` | `1.0` | 相对场景目标宽高比例，合法范围 `(0.05, 1.0]`；像素尺寸为 `max(1, round(sceneDim * scale))`。 |
+| `filter` | `string` | `"Linear"` | 采样滤波：`"Linear"`（双线性）或 `"Point"`（最近邻）；寻址固定为 `ClampToEdge`。 |
+| `persistent` | `bool` | `false` | 为 `true` 时分配长度为 `max(2, FramesInFlight)` 的跨帧环形缓冲（普通目标为 `FramesInFlight`），首帧与重建后自动清零为 `(0, 0, 0, 0)`，允许通过 `prev:<name>` 采样上一渲染帧结果。 |
+
+#### `passes[]` 渲染通道字段
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `name` | `string` | 必填 | Pass 名称（非空）。 |
+| `shader` | `string?` | `null` | 片段着色器相对路径。所有离屏 Pass 必填；仅末尾 `backbuffer` Pass 可省略（此时使用 `compositeShader` 或 `RimLumenComposite.frag.glsl`）。 |
+| `output` | `string` | 必填 | 输出目标：已声明的 `targets[].name` 或 `"backbuffer"`。 |
+| `blend` | `string` | `"Opaque"` | 混合模式：`"Opaque"`、`"PremultipliedAlpha"`（`One / OneMinusSrcAlpha`）或 `"Additive"`（RGB `One / One`，A `Zero / One`）。 |
+| `extraParams` | `float[]` | `[0, 0]` | 最多 2 个浮点数，分别传入 `pc.value.z` 与 `pc.value.w`（超过 2 个会报错）。注意：末尾 Pass 省略 `shader` 时不传递 `extraParams`。 |
+| `inputs` | `Input[]` | `[]` | 输入绑定 `{ "binding": 0..15 (不含 5), "source": "<name>" }`。 |
+
+#### `options[]` 实时选项字段与滑杆机制
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `key` | `string` | 必填 | 选项键（同包内唯一），持久化保存键为 `<packId>:<key>`。 |
+| `label` | `string` | `key` | 设置界面的显示名称。 |
+| `target` | `string` | 必填 | 绑定的 UBO 槽位（同包内唯一）：`bloomIntensity`、`bloomThreshold`、`bloomKnee`、`bloomScatter`、`packParam0`..`packParam15`。 |
+| `default` | `float` | `0.0` | 默认值（加载时自动截断到 `[min, max]`）。 |
+| `min` | `float` | `0.0` | 最小值（有限数且 `min <= max`）。 |
+| `max` | `float` | `1.0` | 最大值（有限数）。 |
+| `step` | `float` | `0.0` | 步进（`>= 0`）；`> 0` 时按 `min + round((val - min) / step) * step` 对齐。 |
+| `tooltip` | `string?` | `null` | 悬停提示文本。 |
+
+切换光影包时，`ShaderPackCatalog.ApplyOptionsToRuntime` 先将 4 个 Bloom 参数恢复为基线值（`bloomIntensity = 0.16`、`bloomThreshold = 1.0`、`bloomKnee = 0.5`、`bloomScatter = 0.65`），将 `packParam0..15` 全部清零，再写入本包选项并通过 `ShaderPackRuntimeParams.SetAll` 在锁内一次原子提交。玩家在设置页拖动滑杆时只更新内存中的 UBO 数值，**不会重建 Vulkan 管线或离屏纹理**。
+
+---
+
+### 3. Render Graph 校验规则与运行时隔离
+
+#### 静态 DAG 校验规则（`ShaderPackGraphValidator`）
+
+1. **保留源名**：`hdr`、`bloom`、`scene`、`depth`、`mapLightField`、`backbuffer` 为保留源名，不可作为自定义 `targets[].name`，也不能用 `prev:` 作为自定义目标前缀。
+2. **末尾唯一 `backbuffer`**：若 `passes` 非空，仅最后一个 Pass 必须输出到 `"backbuffer"`；其余所有离屏 Pass 必须输出到已声明的 `targets[].name`，且必须使用 `"blend": "Opaque"` 与非空 `shader`。
+3. **禁止采样 `backbuffer`**：任何 Pass 的 `inputs[].source` 均不能填 `"backbuffer"`。
+4. **无前向引用与无同帧自读**：采样普通 `target` 时，必须有排在当前 Pass 之前的 Pass 已向其写入；禁止在同一 Pass 中既写 `X` 又直接以 `X` 作为输入。
+5. **历史目标要求**：仅声明了 `"persistent": true` 的目标 `X` 才允许通过 `"prev:X"` 采样上一帧写入的槽位。
+6. **绑定槽位约束**：`inputs[].binding` 必须位于 `[0, 15]`，且不得占用保留 UBO 槽位 `5`，同一 Pass 内不可重复。
+
+#### 空帧 Bloom 跳过规则
+
+即使 `runOnEmptyFrames` 为 `true`，当满足以下任一条件时，运行时仍会跳过内置 Bloom 降采样与升采样链，并将 `bloom` 输入源绑定为 1×1 全黑占位纹理 `black1x1`：
+
+- `bloomMipLevels == 0`；
+- 当前帧没有任何 HDR 绘制（`!hasHdrDraws`），**且**包未设置 `bloomPrefilterShader`、`bloomDownShader`、`bloomUpShader` 中的任意一个路径。
+
+需要基于 `scene` / `depth` / `mapLightField` 在空帧计算自定义 Bloom 散射时，请至少指定一个自定义 Bloom 着色器（如 `bloomPrefilterShader`）并启用 `runOnEmptyFrames: true`。
+
+#### 两级错误隔离
+
+- **扫描与校验期隔离**：`pack.json` 语法错、路径越界、使用保留 ID `"default"` 或图校验不通过时，错误仅保存在该条目的 `LoadError` 中（菜单显示 `[损坏]` 且不可选），不会波及同目录或其它模组的光影包；`FindOrDefault` 会自动回退到内置 `default` 包。
+- **编译与录制期隔离**：调用热重载或切包时，`RimLumenRenderHost.ReloadShaderPack` 会先用 Slang 预编译所有自定义 `.frag.glsl`；编译失败则保留当前生效包并在 `LastShaderPackError` 记录详情。若非 `default` 包在渲染线程录制阶段抛异常，运行时立即记录 `LastShaderPackError` 并在主线程自动切回 `default` 包，**不会触发全局管线熔断（`FailSafeTripped`）**。
+
+---
+
+### 4. GLSL `#version 450` 着色器契约
+
+#### 内置采样源与占位纹理
+
+| 源名称 | 格式与滤波 | 未激活时的占位纹理 | 说明 |
+| --- | --- | --- | --- |
+| `hdr` | `R16G16B16A16SFloat` / `Linear` | — | 线性 HDR 粒子与发光绘制层（A 为遮罩/不透明度）。 |
+| `bloom` | `R16G16B16A16SFloat` / `Linear` | `black1x1`（`R8G8B8A8UNorm` 全 0） | 内置多级 Bloom 金字塔输出。 |
+| `scene` | 场景主色彩格式 / `Linear` | — | Waylith 渲染的地图、角色与建筑主场景画面。 |
+| `depth` | `R32SFloat` / `Point` | `depth1x1`（`R32SFloat`，值为 `1.0`） | 由场景深度拷贝得到的线性可读颜色快照。 |
+| `mapLightField` | `R8G8B8A8UNorm` / `Linear` | `black1x1`（全 0） | 尺寸为 `mapSizeX x mapSizeZ` 的全图屋顶/光照/封闭度/迷雾场。 |
+
+#### 默认输入绑定（未使用 `passes` 自定义绑定时）
+
+- **默认合成阶段**（`passes` 为空，或末尾 Pass 省略 `shader` 且 `inputs` 为空；`passes` 为空时固定使用 `PremultipliedAlpha` 混合）：
+  - `binding = 0`：`hdr`
+  - `binding = 1`：`bloom`
+  - `binding = 2`：`scene`
+  - `binding = 3`：`depth`
+  - `binding = 4`：`mapLightField`
+- **自定义 `bloomPrefilterShader`**：
+  - `binding = 0`：`hdr`、`binding = 2`：`scene`、`binding = 3`：`depth`、`binding = 4`：`mapLightField`（注意：**没有 `binding = 1`**，请勿声明）。
+- **自定义 `bloomDownShader`**：
+  - `binding = 0`：上一级降采样纹理、`binding = 4`：`mapLightField`。
+- **自定义 `bloomUpShader`**：
+  - `binding = 0`：更低分辨率升采样输入、`binding = 1`：同级降采样纹理、`binding = 4`：`mapLightField`。
+
+> 混合与 Alpha 提示：`passes` 为空时默认合成 Pass 固定使用 `PremultipliedAlpha` 混合到 Backbuffer。若你的合成着色器直接输出最终全屏图像（如含调色、雾效），请输出 `vec4(finalRgb, 1.0)` 或使用显式 `passes` 并设 `"blend": "Opaque"`；若只想把 HDR 粒子与 Bloom 叠加到场景之上，则输出 `vec4(mappedHdr, hdr.a)`。
+
+#### 固定顶点接口与 `#include`
+
+全屏三角形由引擎提供，片段着色器只需声明：
+
+```glsl
+#version 450
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 outColor;
+```
+
+同一光影包内可使用相对路径 `#include "Common.glslinc"` 复用公共函数与 UBO 声明。
+
+#### Uniform Buffer（`set = 0, binding = 5`，176 字节 `std140`）
+
+```glsl
+layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
+{
+    mat4 InvViewProjection; // 偏移   0 (64 B): ViewProjection 逆矩阵（Row-Major 存储）
+    vec4 ScreenAndMapSize;  // 偏移  64 (16 B): (1.0/sceneW, 1.0/sceneH, mapSizeX, mapSizeZ)
+    vec4 EnvParams;         // 偏移  80 (16 B): (elapsedTime, skyGlow, zoomRootSize, flags)
+    vec4 BloomParams;       // 偏移  96 (16 B): (bloomIntensity, bloomThreshold, bloomKnee, bloomScatter)
+    vec4 PackParam0;        // 偏移 112 (16 B): (packParam0,  packParam1,  packParam2,  packParam3)
+    vec4 PackParam1;        // 偏移 128 (16 B): (packParam4,  packParam5,  packParam6,  packParam7)
+    vec4 PackParam2;        // 偏移 144 (16 B): (packParam8,  packParam9,  packParam10, packParam11)
+    vec4 PackParam3;        // 偏移 160 (16 B): (packParam12, packParam13, packParam14, packParam15)
+} ubo;
+```
+
+- **参数映射注意**：`options[].target` 指定的 `packParam0..3` 依次填入 `ubo.PackParam0.xyzw`，`packParam4..7` 填入 `ubo.PackParam1.xyzw`，以此类推。因此 `target` 为 `"packParam1"` 时在 GLSL 中应读取 `ubo.PackParam0.y`，而非 `ubo.PackParam1.x`。
+- **`EnvParams.w` 状态位掩码**：着色器中使用 `uint flags = uint(ubo.EnvParams.w + 0.5);` 解包：
+  - `1u`（bit 0）：`hasHdrDraws`（存在活动 HDR 绘制或直接 HDR 贡献者）
+  - `2u`（bit 1）：`hasSceneDepth`（`depth` 绑定真实场景深度而非 `depth1x1`）
+  - `4u`（bit 2）：`hasMapLightField`（`mapLightField` 已就绪且绑定真实地图光场）
+  - `8u`（bit 3）：`isPaused`（游戏是否处于暂停状态）
+
+#### Push Constant（16 字节 `vec4`）
+
+```glsl
+layout(push_constant) uniform Params { vec4 value; } pc;
+```
+
+| 所在 Pass | `pc.value.x` | `pc.value.y` | `pc.value.z` | `pc.value.w` |
+| --- | --- | --- | --- | --- |
+| 自定义 Pass（含带 `shader` 的末尾 Pass） | `1.0 / outputWidth` | `1.0 / outputHeight` | `extraParams[0]` | `extraParams[1]` |
+| 默认合成 Pass（`passes` 为空或末尾无 `shader`） | `bloomIntensity` | `0.0` | `1.0 / sceneWidth` | `1.0 / sceneHeight` |
+| `bloomPrefilter` / `bloomDown` | `1.0 / inputWidth` | `1.0 / inputHeight` | `bloomThreshold` | `bloomKnee` |
+| `bloomUp` | `1.0 / lowMipWidth` | `1.0 / lowMipHeight` | `bloomScatter` | `0.0` |
+
+#### Reverse-Z 深度与地面坐标反投影
+
+Waylith 采用 Reverse-Z 深度：近平面为 `1.0`，空背景/远平面为 `0.0`；深度未激活时的 `depth1x1` 占位纹理值为 `1.0`。区分真实 3D 几何体（例如 IsoRim 墙体）与平铺地面/天空背景可使用：
+
+```glsl
+float depth = texture(depthImage, uv).r;
+float is3DGeom = step(0.0001, min(depth, 1.0 - depth));
+```
+
+使用 `ubo.InvViewProjection` 从屏幕 `uv` 重建世界地面（`y = 0`）坐标与地图光场 UV（同时兼容原版俯视与 IsoRim 倾斜视角）：
+
+```glsl
+vec2 ndc = uv * 2.0 - 1.0;
+vec4 nearW = ubo.InvViewProjection * vec4(ndc, 0.0, 1.0);
+vec4 farW  = ubo.InvViewProjection * vec4(ndc, 1.0, 1.0);
+vec3 nearP = nearW.xyz / nearW.w;
+vec3 farP  = farW.xyz / farW.w;
+float span = farP.y - nearP.y;
+float t = clamp(-nearP.y / (abs(span) < 1e-6 ? 1e-6 : span), 0.0, 1.0);
+vec3 world = mix(nearP, farP, t);
+vec2 fieldUv = world.xz / max(ubo.ScreenAndMapSize.zw, vec2(1.0));
+bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fieldUv.y <= 1.0;
+```
+
+#### `mapLightField` 四通道编码规范
+
+`mapLightField` 在地图加载与区域网格重建（`SectionLayer` 增量更新）时按需同步到 GPU，每像素对应一个地图格，归一化 `[0.0, 1.0]` 通道语义如下：
+
+| 通道 | 含义 | 编码规则（`MapLightFieldEncoder`） |
+| --- | --- | --- |
+| `R` | 屋顶（`Roof`） | 有屋顶为 `1.0`（`255`），无屋顶为 `0.0`（`0`）。 |
+| `G` | 地表光亮（`GroundGlow`） | 若 `glowGrid.VisualGlowAt` 的 `a == 1`（日光直射露天地格），直接编码为 `1.0`（`255`）；否则取 `min(0.5, (max(r, g, b) / 255.0) * 3.6)`（人工光源上限 `0.5`，借此区分日光与火把）。 |
+| `B` | 封闭度（`Enclosure`） | 无屋顶为 `0.0`（`0`）；有屋顶且房间使用室外温度（半开放棚/门廊）为 `~0.502`（`128/255`）；完全封闭室内为 `1.0`（`255`）。 |
+| `A` | 战争迷雾（`FogOfWar`） | 未探索迷雾格为 `1.0`（`255`），已探索格为 `0.0`（`0`）。 |
+
+#### 内置光影包参考
+
+| 包 ID | Pass / 目标数 | `runOnEmptyFrames` | `requiresSceneDepth` | `requiresMapLightField` | `bloomMipLevels` | 典型技术参考文件 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `default` | 内置合成 / 0 | `false` | `false` | `false` | `5` | `1.7/Shaders/PostFx/RimLumenComposite.frag.glsl` |
+| `atmospheric` | 3 Pass / 2 目标 | `true` | `true` | `true` | `7` | `1.7/ShaderPacks/Atmospheric/` |
+| `cinematic` | 5 Pass / 4 目标（含持久化 `adapt`） | `false` | `false` | `false` | `6` | `1.7/ShaderPacks/Cinematic/` |
+| `crisp` | 单自定义合成 / 0 | `false` | `false` | `false` | `3` | `1.7/ShaderPacks/Crisp/` |
+| `vibrant` | 单自定义合成 / 0 | `false` | `false` | `false` | `6` | `1.7/ShaderPacks/Vibrant/` |
+
+---
+
+### 5. 最小可运行光影包示例
+
+将以下两个文件放入 `Config/RimLumen/ShaderPacks/WarmNight/`（或模组的 `1.7/ShaderPacks/WarmNight/`），即可在游戏内设置页切换并热重载。
+
+`pack.json`：
+
+```json
+{
+  "id": "warm_night",
+  "name": "Warm Night (示例夜暗)",
+  "author": "YourName",
+  "description": "保留室内与火把附近亮度，仅在夜晚压暗未照明野外，并叠加 HDR 与 Bloom。",
+  "runOnEmptyFrames": true,
+  "requiresSceneDepth": false,
+  "requiresMapLightField": true,
+  "bloomMipLevels": 5,
+  "passes": [
+    {
+      "name": "Composite",
+      "shader": "Composite.frag.glsl",
+      "output": "backbuffer",
+      "blend": "Opaque",
+      "inputs": [
+        { "binding": 0, "source": "hdr" },
+        { "binding": 1, "source": "bloom" },
+        { "binding": 2, "source": "scene" },
+        { "binding": 3, "source": "mapLightField" }
+      ]
+    }
+  ],
+  "options": [
+    {
+      "key": "nightDarkness",
+      "label": "野外夜暗强度 (Night darkness)",
+      "target": "packParam0",
+      "default": 0.45,
+      "min": 0.0,
+      "max": 0.85,
+      "step": 0.05
+    }
+  ]
+}
+```
+
+`Composite.frag.glsl`：
+
+```glsl
+#version 450
+
+layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
+{
+    mat4 InvViewProjection;
+    vec4 ScreenAndMapSize;
+    vec4 EnvParams;
+    vec4 BloomParams;
+    vec4 PackParam0;
+    vec4 PackParam1;
+    vec4 PackParam2;
+    vec4 PackParam3;
+} ubo;
+
+layout(set = 0, binding = 0) uniform sampler2D hdrImage;
+layout(set = 0, binding = 1) uniform sampler2D bloomImage;
+layout(set = 0, binding = 2) uniform sampler2D sceneImage;
+layout(set = 0, binding = 3) uniform sampler2D mapLightField;
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 outColor;
+
+vec3 unproject(vec2 ndc, float z)
+{
+    vec4 p = ubo.InvViewProjection * vec4(ndc, z, 1.0);
+    return p.xyz / p.w;
+}
+
+void main()
+{
+    vec3 scene = texture(sceneImage, uv).rgb;
+    vec4 hdr = texture(hdrImage, uv);
+    vec3 bloom = texture(bloomImage, uv).rgb * ubo.BloomParams.x;
+
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec3 nearP = unproject(ndc, 0.0);
+    vec3 farP = unproject(ndc, 1.0);
+    float span = farP.y - nearP.y;
+    float t = clamp(-nearP.y / (abs(span) < 1e-6 ? 1e-6 : span), 0.0, 1.0);
+    vec3 world = mix(nearP, farP, t);
+
+    vec2 fieldUv = world.xz / max(ubo.ScreenAndMapSize.zw, vec2(1.0));
+    bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fieldUv.y <= 1.0;
+    uint flags = uint(ubo.EnvParams.w + 0.5);
+
+    float darkness = 0.0;
+    if ((flags & 4u) != 0u && insideMap)
+    {
+        vec4 field = texture(mapLightField, fieldUv);
+        float outdoor = 1.0 - smoothstep(0.25, 0.90, max(field.r * 0.55, field.b));
+        float litProtect = smoothstep(0.04, 0.45, field.g);
+        float night = smoothstep(0.88, 0.22, clamp(ubo.EnvParams.y, 0.0, 1.0));
+        darkness = night * outdoor * (1.0 - litProtect) * (1.0 - field.a) * clamp(ubo.PackParam0.x, 0.0, 0.9);
+    }
+
+    vec3 base = scene * mix(vec3(1.0), vec3(0.76, 0.86, 1.06), darkness) * (1.0 - darkness * 0.65);
+    vec3 hdrAccum = hdr.rgb + bloom;
+    float peak = max(hdrAccum.r, max(hdrAccum.g, hdrAccum.b));
+    float shoulder = max(peak - 1.0, 0.0);
+    float desat = shoulder / (shoulder + 4.0);
+    vec3 hue = hdrAccum / max(peak, 0.00001);
+    vec3 mappedHdr = mix(hue, vec3(1.0), desat) * (1.0 - exp(-peak));
+
+    outColor = vec4(base * (1.0 - hdr.a) + mappedHdr, 1.0);
+}
+```
