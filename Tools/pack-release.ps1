@@ -131,6 +131,9 @@ foreach ($relative in @(
         '1.7/Compat/RimUnity/Assemblies/RimLumen.Adapter.RimUnity.dll')) {
     Copy-ToPackage $relative
 }
+if (Test-Path -LiteralPath (Join-Path $RepoRoot 'About/PublishedFileId.txt') -PathType Leaf) {
+    Copy-ToPackage 'About/PublishedFileId.txt'
+}
 
 # Build a stripped Core DLL (without Probes/, Showcase/, ProbeOptions) into a temp dir so dev 1.7/Assemblies stays test-ready.
 if (-not (Test-Path -LiteralPath $DotnetExe)) {
