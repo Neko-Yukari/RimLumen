@@ -234,6 +234,15 @@ foreach ($file in $packed) {
     if ($relative.Replace('\', '/') -match '^1\.7/Shaders/PostFx/RimLumen(?:Probe|Identity)') {
         $failures.Add("probe shader must not ship in PostFx: $relative")
     }
+    if ($file.Extension -eq '.xml') {
+        try {
+            $xmlDoc = [System.Xml.XmlDocument]::new()
+            $xmlDoc.Load($file.FullName)
+        }
+        catch {
+            $failures.Add("invalid XML ($($_.Exception.Message)): $relative")
+        }
+    }
 }
 
 $packedCoreDll = Join-Path $outFull '1.7/Assemblies/RimLumen.Core.dll'

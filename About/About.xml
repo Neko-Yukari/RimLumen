@@ -44,7 +44,7 @@ Players:
 
 Recommended Companions:
 - RimUnity (bridge Unity-exported effects into RimLumen HDR/GPU): https://steamcommunity.com/sharedfiles/filedetails/?id=3819570122
-- IsoRim Waylith (3D camera view, natively supported by RimLumen Vertical3D & soft particles): https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
+- IsoRim Waylith (3D camera view, natively supported by RimLumen Vertical3D and soft particles): https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
 
 (Compatibility note: built on Waylith's public render-graph APIs with zero Harmony patches and an automatic rendering fail-safe.)</description>
 </ModMetaData>
