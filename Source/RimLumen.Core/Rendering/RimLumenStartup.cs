@@ -1,8 +1,6 @@
 using System;
 using System.Linq;
 #if !RIMLUMEN_SHIP_RELEASE
-using RimLumen.Core.Rendering.Logic;
-using RimLumen.Core.Rendering.Probes;
 using RimLumen.Core.Showcase;
 #endif
 using Verse;
@@ -25,11 +23,7 @@ internal static class RimLumenStartup
         }
         string root = self.RootDir;
 #if !RIMLUMEN_SHIP_RELEASE
-        // Command line first: VerboseDiagnostics must be set before Install creates the first Vulkan objects,
-        // otherwise their OwnedVkObject attribution lines would be skipped under -rimlumen-probe.
         string[] commandLineArgs = Environment.GetCommandLineArgs();
-        bool hasProbeOptions = ProbeOptionsParser.TryParse(commandLineArgs, out ProbeOptions? options);
-        if (hasProbeOptions && !options!.BenchmarkOnly) RimLumenRenderHost.VerboseDiagnostics = true;
 #endif
         try
         {
@@ -39,35 +33,30 @@ internal static class RimLumenStartup
             int loaded = RimLumen.Core.Assets.LumenModAssetScanner.ScanRunningMods(RimLumen.Core.Scene.LumenSceneBootstrap.Catalog);
             Log.Message($"[RimLumen] Installed: pass={RimLumenRenderHost.LumenRenderPassId}, layer=15, nativeAssets={loaded}, vanillaGlow={RimLumenRenderHost.EnableVanillaAdditiveBloom}");
         }
-#if !RIMLUMEN_SHIP_RELEASE
-        catch (Exception ex) when (!hasProbeOptions)
-#else
         catch (Exception ex)
-#endif
         {
             Log.Error($"[RimLumen] Startup fail-safe tripped; disabling RimLumen for this session: {ex}");
             RimLumenRenderHost.TripFailSafe();
             return;
         }
 #if !RIMLUMEN_SHIP_RELEASE
-        if (hasProbeOptions)
+        if (ShowcaseBenchmarkSession.TryParseOutputPath(commandLineArgs, out string benchmarkJsonPath))
         {
             EngineApplication app = EngineApplication.Instance;
             int settleFrames = 0;
-            void Update()
+            void UpdateBenchmark()
             {
                 if (Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || LongEventHandler.ShouldWaitForEvent)
-                {
-                    settleFrames = 0;
                     return;
-                }
+                // Let two frames render on the loaded map before the measured ladder starts.
                 if (settleFrames++ < 2) return;
-                app.OnUpdate -= Update;
-                ProbeSession.Run(root, options!);
+                app.OnUpdate -= UpdateBenchmark;
+                ShowcaseBenchmarkSession.Run(Find.CurrentMap, benchmarkJsonPath);
             }
-            app.OnUpdate += Update;
+            app.OnUpdate += UpdateBenchmark;
+            return;
         }
-        else if (ShowcaseOptionsParser.TryParse(commandLineArgs, out ShowcaseOptions showcaseOptions))
+        if (ShowcaseOptionsParser.TryParse(commandLineArgs, out ShowcaseOptions showcaseOptions))
         {
             EngineApplication app = EngineApplication.Instance;
             void UpdateShowcase()

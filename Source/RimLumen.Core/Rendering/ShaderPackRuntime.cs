@@ -58,6 +58,9 @@ internal sealed class ShaderPackRuntime : IDisposable
     private readonly PostEffectPass[] bloomUp;
     private readonly PostEffectPass[] customOffscreenPasses;
     private readonly InlinePostEffectPass backbufferPass;
+    // Spec-derived facts the per-frame record paths branch on.
+    private readonly bool hasCustomBloomShader;
+    private readonly bool finalPassUsesBuiltInComposite;
     private readonly Dictionary<string, CustomTargetAllocation> customTargets = new(StringComparer.OrdinalIgnoreCase);
 
     private RenderTexture? black1x1;
@@ -69,18 +72,18 @@ internal sealed class ShaderPackRuntime : IDisposable
     private ulong lastRenderedPersistentOrdinal;
     private bool disposed;
 
-    // Probe-visible counters: prove the offscreen graph and the inline composite actually recorded.
-    internal long OffscreenRecords;
-    internal long BloomRecords;
-    internal long CompositeRecords;
-
     internal ShaderPackRuntime(EngineApplication app, ShaderPackSpec spec)
     {
         this.app = app;
         Spec = spec;
         framesInFlight = Math.Max(1, app.RenderContext?.FramesInFlight ?? 3);
 
-        int mipLevels = Math.Clamp(spec.BloomMipLevels, 0, 7);
+        hasCustomBloomShader = NullIfBlank(spec.BloomPrefilterShaderPath) is not null
+            || NullIfBlank(spec.BloomDownShaderPath) is not null
+            || NullIfBlank(spec.BloomUpShaderPath) is not null;
+        finalPassUsesBuiltInComposite = spec.Passes.Count > 0 && NullIfBlank(spec.Passes[^1].FragmentShaderPath) is null;
+
+        int mipLevels = spec.BloomMipLevels;
         bloomDown = new PostEffectPass[mipLevels];
         bloomUp = new PostEffectPass[Math.Max(0, mipLevels - 1)];
         customOffscreenPasses = Array.Empty<PostEffectPass>();
@@ -193,11 +196,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         EnsurePlaceholdersAndTargets(ctx.CommandBuffer, scene.Width, scene.Height);
 
         RenderTexture depthTex = hasSceneDepth ? slot.DepthSnapshot : depth1x1!;
-        bool skipBuiltInBloom = Spec.BloomMipLevels == 0
-            || (!hasHdrDraws
-                && NullIfBlank(Spec.BloomPrefilterShaderPath) is null
-                && NullIfBlank(Spec.BloomDownShaderPath) is null
-                && NullIfBlank(Spec.BloomUpShaderPath) is null);
+        bool skipBuiltInBloom = Spec.BloomMipLevels == 0 || (!hasHdrDraws && !hasCustomBloomShader);
 
         if (!skipBuiltInBloom && slot.Down.Length > 0)
         {
@@ -210,7 +209,6 @@ internal sealed class ShaderPackRuntime : IDisposable
             bloomDown[0].SetPushConstants(in p0);
             bloomDown[0].Output = slot.Down[0];
             bloomDown[0].Record(in ctx, null);
-            BloomRecords++;
 
             RenderTexture prev = slot.Down[0];
             for (int i = 1; i < slot.Down.Length; i++)
@@ -222,7 +220,6 @@ internal sealed class ShaderPackRuntime : IDisposable
                 bloomDown[i].SetPushConstants(in pi);
                 bloomDown[i].Output = slot.Down[i];
                 bloomDown[i].Record(in ctx, null);
-                BloomRecords++;
                 prev = slot.Down[i];
             }
 
@@ -237,7 +234,6 @@ internal sealed class ShaderPackRuntime : IDisposable
                 bloomUp[i].SetPushConstants(in pu);
                 bloomUp[i].Output = slot.Up[i];
                 bloomUp[i].Record(in ctx, null);
-                BloomRecords++;
                 input = slot.Up[i];
             }
         }
@@ -259,7 +255,6 @@ internal sealed class ShaderPackRuntime : IDisposable
             pass.SetPushConstants(in pc);
             pass.Output = output;
             pass.Record(in ctx, null);
-            OffscreenRecords++;
         }
 
         lastRenderedPersistentOrdinal = writeOrdinal;
@@ -275,11 +270,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         bool hasSceneDepth)
     {
         RenderTexture depthTex = hasSceneDepth ? slot.DepthSnapshot : depth1x1!;
-        bool skipBuiltInBloom = Spec.BloomMipLevels == 0
-            || (!hasHdrDraws
-                && NullIfBlank(Spec.BloomPrefilterShaderPath) is null
-                && NullIfBlank(Spec.BloomDownShaderPath) is null
-                && NullIfBlank(Spec.BloomUpShaderPath) is null);
+        bool skipBuiltInBloom = Spec.BloomMipLevels == 0 || (!hasHdrDraws && !hasCustomBloomShader);
         RenderTexture bloomTex = skipBuiltInBloom || slot.Bloom is null ? black1x1! : slot.Bloom;
 
         if (Spec.Passes.Count == 0)
@@ -293,12 +284,11 @@ internal sealed class ShaderPackRuntime : IDisposable
             var pc = new Vector4(uniforms.BloomParams.X, 0f, 1f / scene.Width, 1f / scene.Height);
             backbufferPass.SetPushConstants(in pc);
             backbufferPass.RecordInline(in ctx, ctx.RenderPass, ctx.SampleCount);
-            CompositeRecords++;
             return;
         }
 
         ShaderPackPassSpec finalSpec = Spec.Passes[^1];
-        if (NullIfBlank(finalSpec.FragmentShaderPath) is null && finalSpec.Inputs.Count == 0)
+        if (finalPassUsesBuiltInComposite && finalSpec.Inputs.Count == 0)
         {
             backbufferPass.SetInput(0, slot.Color);
             backbufferPass.SetInput(1, bloomTex);
@@ -314,12 +304,11 @@ internal sealed class ShaderPackRuntime : IDisposable
             }
         }
         backbufferPass.SetUniforms(in uniforms);
-        Vector4 finalPc = NullIfBlank(finalSpec.FragmentShaderPath) is null
+        Vector4 finalPc = finalPassUsesBuiltInComposite
             ? new Vector4(uniforms.BloomParams.X, 0f, 1f / scene.Width, 1f / scene.Height)
             : new Vector4(1f / scene.Width, 1f / scene.Height, finalSpec.ExtraParams.X, finalSpec.ExtraParams.Y);
         backbufferPass.SetPushConstants(in finalPc);
         backbufferPass.RecordInline(in ctx, ctx.RenderPass, ctx.SampleCount);
-        CompositeRecords++;
     }
 
     internal void InvalidateOffscreen()
@@ -333,17 +322,6 @@ internal sealed class ShaderPackRuntime : IDisposable
     internal void InvalidateInline()
     {
         backbufferPass?.Invalidate();
-    }
-
-    // Probe/self-check only: the ring texture the graph last wrote for a custom target.
-    internal RenderTexture? TryGetTargetTexture(string name, int submissionIndex)
-    {
-        if (!customTargets.TryGetValue(name, out CustomTargetAllocation? alloc) || alloc.Ring.Length == 0)
-            return null;
-        int index = alloc.Spec.Persistent
-            ? (int)(lastRenderedPersistentOrdinal % (ulong)alloc.Ring.Length)
-            : submissionIndex % alloc.Ring.Length;
-        return alloc.Ring[index];
     }
 
     private void EnsurePlaceholdersAndTargets(CommandBuffer cmd, int sceneWidth, int sceneHeight)
@@ -545,9 +523,6 @@ internal sealed class ShaderPackRuntime : IDisposable
         try
         {
             tex.Create();
-            Owned("VkImage", tex.Color.Image.VkHandle, name);
-            Owned("VkImageView", tex.ColorView.VkHandle, name);
-            Owned("VkSampler", tex.Sampler.VkHandle, name);
             return tex;
         }
         catch
@@ -555,12 +530,6 @@ internal sealed class ShaderPackRuntime : IDisposable
             tex.Dispose();
             throw;
         }
-    }
-
-    private static void Owned(string type, long handle, string name)
-    {
-        if (!RimLumenRenderHost.VerboseDiagnostics) return;
-        Log.Message($"[RimLumen] OwnedVkObject type={type} handle=0x{handle:X} name={name}");
     }
 
     private static string? NullIfBlank(string? value)

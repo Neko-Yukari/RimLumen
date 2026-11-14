@@ -20,7 +20,7 @@ public static class MapGlowerDriverSuite
         int id = driver.Add(new PointLightSpec(5f, 1f, Vector3.One));
         GlowAssert.Equal(true, id >= 0);
         GlowAssert.Equal(1, driver.TrackedLightCount);
-        GlowAssert.Equal(0, driver.ActiveLightCount);
+        GlowAssert.Equal(0, sink.LiveHandles.Count);
         GlowAssert.Equal(0, sink.Registrations.Count);
 
         for (int frame = 0; frame < 600; frame++)
@@ -28,12 +28,9 @@ public static class MapGlowerDriverSuite
             driver.Update(id, new IntVec3(3, 0, 7), frame / 60f, 1f);
         }
 
-        GlowAssert.Equal(1, driver.ActiveLightCount);
-        GlowAssert.Equal(1, driver.RegisterCallCount);
-        GlowAssert.Equal(0, driver.DeregisterCallCount);
+        GlowAssert.Equal(1, sink.LiveHandles.Count);
         GlowAssert.Equal(1, sink.Registrations.Count);
         GlowAssert.Equal(0, sink.DeregisterCount);
-        GlowAssert.Equal(1, sink.LiveHandles.Count);
         GlowAssert.Equal("R", string.Concat(sink.Events));
     }
 
@@ -49,14 +46,14 @@ public static class MapGlowerDriverSuite
         driver.Update(id, cell, 2f, 1.005f);
         driver.Update(id, cell, 3f, 0.995f);
         GlowAssert.Equal(new ColorInt(128, 128, 128, 255), sink.Registrations[0].Color);
-        GlowAssert.Equal(1, driver.RegisterCallCount);
-        GlowAssert.Equal(0, driver.DeregisterCallCount);
+        GlowAssert.Equal(1, sink.Registrations.Count);
+        GlowAssert.Equal(0, sink.DeregisterCount);
         GlowAssert.Equal("R", string.Concat(sink.Events));
 
         driver.Update(id, cell, 4f, 1.04f);
         GlowAssert.Equal(new ColorInt(132, 132, 132, 255), sink.Registrations[1].Color);
-        GlowAssert.Equal(2, driver.RegisterCallCount);
-        GlowAssert.Equal(1, driver.DeregisterCallCount);
+        GlowAssert.Equal(2, sink.Registrations.Count);
+        GlowAssert.Equal(1, sink.DeregisterCount);
         GlowAssert.Equal(1, sink.LiveHandles.Count);
         GlowAssert.Equal("RDR", string.Concat(sink.Events));
     }
@@ -83,8 +80,8 @@ public static class MapGlowerDriverSuite
         driver.Update(negative, new IntVec3(0, 0, 0), 0f, 1f);
         GlowAssert.Equal(0f, sink.Registrations[2].Radius);
         GlowAssert.Equal(0f, sink.Registrations[2].OverlightRadius);
-        GlowAssert.Equal(3, driver.RegisterCallCount);
-        GlowAssert.Equal(0, driver.DeregisterCallCount);
+        GlowAssert.Equal(3, sink.Registrations.Count);
+        GlowAssert.Equal(0, sink.DeregisterCount);
     }
 
     [LumenFact]
@@ -97,7 +94,6 @@ public static class MapGlowerDriverSuite
         driver.Update(id, cell, 0f, 0.001f);
         driver.Update(id, cell, 1f, 0.005f);
         GlowAssert.Equal(new ColorInt(0, 0, 0, 255), sink.Registrations[0].Color);
-        GlowAssert.Equal(1, driver.ActiveLightCount);
         GlowAssert.Equal(1, sink.LiveHandles.Count);
         GlowAssert.Equal(1, sink.Registrations.Count);
         GlowAssert.Equal(0, sink.DeregisterCount);
@@ -109,14 +105,12 @@ public static class MapGlowerDriverSuite
         GlowAssert.Equal(1, sink.DeregisterCount);
         driver.Update(id, cell, 3f, 0.001f);
         GlowAssert.Equal(new ColorInt(0, 0, 0, 255), sink.Registrations[2].Color);
-        GlowAssert.Equal(1, driver.ActiveLightCount);
         GlowAssert.Equal(1, sink.LiveHandles.Count);
         GlowAssert.Equal("RDRDR", string.Concat(sink.Events));
 
         driver.Update(id, cell, 4f, 0f);
         driver.Update(id, cell, 5f, -0.001f);
         GlowAssert.Equal(1, driver.TrackedLightCount);
-        GlowAssert.Equal(0, driver.ActiveLightCount);
         GlowAssert.Equal(0, sink.LiveHandles.Count);
         GlowAssert.Equal(3, sink.Registrations.Count);
         GlowAssert.Equal(3, sink.DeregisterCount);
@@ -131,24 +125,23 @@ public static class MapGlowerDriverSuite
         int id = driver.Add(new PointLightSpec(5f, 1f, Vector3.One));
         var cell = new IntVec3(3, 0, 7);
         driver.Update(id, cell, 0f, 0f);
-        GlowAssert.Equal(0, driver.RegisterCallCount);
+        GlowAssert.Equal(0, sink.Registrations.Count);
         driver.Update(id, cell, 1f, 1f);
         driver.Update(id, cell, 2f, -0.1f);
         driver.Update(id, cell, 3f, -1f);
         driver.Update(id, cell, 4f, 0f);
         GlowAssert.Equal(1, driver.TrackedLightCount);
-        GlowAssert.Equal(0, driver.ActiveLightCount);
         GlowAssert.Equal(0, sink.LiveHandles.Count);
         GlowAssert.Equal("RD", string.Concat(sink.Events));
 
         driver.Update(id, cell, 5f, 1f);
-        GlowAssert.Equal(1, driver.ActiveLightCount);
-        GlowAssert.Equal(2, driver.RegisterCallCount);
-        GlowAssert.Equal(1, driver.DeregisterCallCount);
+        GlowAssert.Equal(1, sink.LiveHandles.Count);
+        GlowAssert.Equal(2, sink.Registrations.Count);
+        GlowAssert.Equal(1, sink.DeregisterCount);
         GlowAssert.Equal("RDR", string.Concat(sink.Events));
         driver.Dispose();
         GlowAssert.Equal(0, sink.LiveHandles.Count);
-        GlowAssert.Equal(driver.RegisterCallCount, driver.DeregisterCallCount);
+        GlowAssert.Equal(sink.Registrations.Count, sink.DeregisterCount);
     }
 
     [LumenFact]
@@ -175,8 +168,8 @@ public static class MapGlowerDriverSuite
         GlowAssert.Equal(new ColorInt(255, 255, 255, 255), sink.Registrations[2].Color);
         driver.Update(id, cell, 0f, 0.5f);
         GlowAssert.Equal("RDRDRD", string.Concat(sink.Events));
-        GlowAssert.Equal(3, driver.RegisterCallCount);
-        GlowAssert.Equal(3, driver.DeregisterCallCount);
+        GlowAssert.Equal(3, sink.Registrations.Count);
+        GlowAssert.Equal(3, sink.DeregisterCount);
         GlowAssert.Equal(1, driver.TrackedLightCount);
         GlowAssert.Equal(0, sink.LiveHandles.Count);
 
@@ -195,14 +188,14 @@ public static class MapGlowerDriverSuite
         driver.Update(id, MapGlowerDriver.CellFromWorld(new Vector3(3.1f, 0f, 7.1f)), 0f, 1f);
         driver.Update(id, MapGlowerDriver.CellFromWorld(new Vector3(3.49f, 0.49f, 7.49f)), 1f, 1f);
         GlowAssert.Equal("R", string.Concat(sink.Events));
-        GlowAssert.Equal(1, driver.RegisterCallCount);
-        GlowAssert.Equal(0, driver.DeregisterCallCount);
+        GlowAssert.Equal(1, sink.Registrations.Count);
+        GlowAssert.Equal(0, sink.DeregisterCount);
 
         driver.Update(id, MapGlowerDriver.CellFromWorld(new Vector3(4f, 0f, 7.1f)), 2f, 1f);
         GlowAssert.Equal(new IntVec3(4, 0, 7), sink.Registrations[1].Cell);
         GlowAssert.Equal("RDR", string.Concat(sink.Events));
-        GlowAssert.Equal(2, driver.RegisterCallCount);
-        GlowAssert.Equal(1, driver.DeregisterCallCount);
+        GlowAssert.Equal(2, sink.Registrations.Count);
+        GlowAssert.Equal(1, sink.DeregisterCount);
     }
 
     [LumenFact]
@@ -240,7 +233,7 @@ public static class MapGlowerDriverSuite
         driver.Update(-1, cell, 1f, 1f);
         driver.Remove(-1);
         GlowAssert.Equal(1, driver.TrackedLightCount);
-        GlowAssert.Equal(1, driver.ActiveLightCount);
+        GlowAssert.Equal(1, sink.LiveHandles.Count);
         GlowAssert.Equal("RRD", string.Concat(sink.Events));
 
         int added = driver.Add(spec);
@@ -250,7 +243,7 @@ public static class MapGlowerDriverSuite
         GlowAssert.Equal(true, dormant >= 0 && dormant != added && dormant != survivor);
         driver.Update(dormant, cell, 1f, 0f);
         GlowAssert.Equal(3, driver.TrackedLightCount);
-        GlowAssert.Equal(2, driver.ActiveLightCount);
+        GlowAssert.Equal(2, sink.LiveHandles.Count);
         driver.Dispose();
         driver.Dispose();
         driver.Remove(survivor);
@@ -258,10 +251,7 @@ public static class MapGlowerDriverSuite
         GlowAssert.Throws<ObjectDisposedException>(() => driver.Add(spec));
         GlowAssert.Equal(true, driver.IsDisposed);
         GlowAssert.Equal(0, driver.TrackedLightCount);
-        GlowAssert.Equal(0, driver.ActiveLightCount);
         GlowAssert.Equal(0, sink.LiveHandles.Count);
-        GlowAssert.Equal(3, driver.RegisterCallCount);
-        GlowAssert.Equal(3, driver.DeregisterCallCount);
         GlowAssert.Equal(3, sink.Registrations.Count);
         GlowAssert.Equal(3, sink.DeregisterCount);
         GlowAssert.Equal("RRDRDD", string.Concat(sink.Events));

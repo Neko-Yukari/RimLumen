@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Threading;
 using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
 using Brutal.Numerics;
@@ -16,14 +15,11 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
 {
     private readonly RimLumenPipeline owner;
     private readonly HdrPass pass;
-    internal long ActiveFrames;
-    internal long Clears;
-    internal long RoutedDrawItems;
 
     internal RimLumenPreBackbufferFeature(RimLumenPipeline owner)
     {
         this.owner = owner;
-        pass = new HdrPass(this, owner);
+        pass = new HdrPass(owner);
         Passes = new IRenderPass[] { pass };
     }
 
@@ -33,7 +29,7 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
     {
         if (RimLumenRenderHost.FailSafeTripped) return;
         try { owner.BeginCapture(in timing); }
-        catch (Exception ex) when (!RimLumenRenderHost.VerboseDiagnostics) { owner.TripRenderFailSafe(ex); }
+        catch (Exception ex) { owner.TripRenderFailSafe(ex); }
     }
 
     public object? CaptureFrame(in FrameTiming timing)
@@ -41,7 +37,7 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
         if (!RimLumenRenderHost.FailSafeTripped)
         {
             try { return owner.Capture(in timing); }
-            catch (Exception ex) when (!RimLumenRenderHost.VerboseDiagnostics) { owner.TripRenderFailSafe(ex); }
+            catch (Exception ex) { owner.TripRenderFailSafe(ex); }
         }
         owner.Captured = null;
         return null;
@@ -52,7 +48,6 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
 
     private sealed class HdrPass : IRenderPass
     {
-        private readonly RimLumenPreBackbufferFeature feature;
         private readonly RimLumenPipeline owner;
         private readonly MeshBatchRenderer renderer;
         private readonly PostEffectPass depthCopy = new("RimLumenDepthCopy", "PostFx/RimLumenDepthCopy.frag.glsl", new[] { 0 });
@@ -60,9 +55,8 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
         private bool labelOpen;
         private bool renderPassOpen;
 
-        internal HdrPass(RimLumenPreBackbufferFeature feature, RimLumenPipeline owner)
+        internal HdrPass(RimLumenPipeline owner)
         {
-            this.feature = feature;
             this.owner = owner;
             renderer = new MeshBatchRenderer(owner.App.GraphicsDevice!, owner.App.RenderContext!);
         }
@@ -85,7 +79,7 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
                 }
                 RecordHdr(in ctx, payload);
             }
-            catch (Exception ex) when (!RimLumenRenderHost.VerboseDiagnostics)
+            catch (Exception ex)
             {
                 owner.TripRenderFailSafe(ex);
             }
@@ -97,7 +91,12 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
                     if (renderPassOpen) ctx.CommandBuffer.EndRenderPass();
                     if (labelOpen) ctx.CommandBuffer.EndDebugLabel();
                 }
-                catch (Exception) { }
+                catch (Exception ex)
+                {
+                    // Closing a half-recorded pass must not mask the original failure; report it from the main thread.
+                    owner.App.FrameRenderer.RenderToMainThread.Enqueue(() =>
+                        Verse.Log.Error($"[RimLumen] Closing the failed HDR record left the command buffer unbalanced: {ex}"));
+                }
                 renderPassOpen = false;
                 labelOpen = false;
             }
@@ -155,8 +154,7 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
             if (payload.Mesh.Draws.Count > 0)
             {
                 renderer.InvalidateCommandBufferBindings();
-                renderer.RecordPass(in frame, payload.Mesh, PassId,
-                    diagnosticPrefix: RimLumenRenderHost.VerboseDiagnostics ? "RimLumenHdr" : null);
+                renderer.RecordPass(in frame, payload.Mesh, PassId);
             }
             frame.CommandBuffer.EndRenderPass();
             renderPassOpen = false;
@@ -172,23 +170,14 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
             catch (Exception ex)
             {
                 if (RimLumenRenderHost.ShouldRevertPackOnFailure(packSpec))
-                {
                     RimLumenRenderHost.ReportRuntimePackFailure(packSpec, ex);
-                    return;
-                }
-                if (RimLumenRenderHost.ShouldTripFailSafeOnFailure(packSpec))
-                {
+                else
                     owner.TripRenderFailSafe(ex);
-                    return;
-                }
-                throw;
+                return;
             }
             frame.CommandBuffer.EndDebugLabel();
             labelOpen = false;
-            Interlocked.Increment(ref feature.ActiveFrames);
-            Interlocked.Increment(ref feature.Clears);
-            Interlocked.Add(ref feature.RoutedDrawItems, payload.Mesh.Draws.Count);
-            owner.Recorded(ctx.SubmissionFrameIndex);
+            owner.Recorded();
         }
 
         public void OnRenderTargetRebuilt(IRenderTarget target)

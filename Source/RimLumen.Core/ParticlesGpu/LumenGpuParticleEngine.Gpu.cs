@@ -16,7 +16,6 @@ namespace RimLumen.Core.ParticlesGpu;
 
 public sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
 {
-    private readonly Dictionary<string, Texture> registeredTextures = new(StringComparer.Ordinal);
     private readonly HashSet<string> warnedTextures = new(StringComparer.Ordinal);
     private readonly ParticleFrameQueue pendingFrames = new();
     private ParticleGpuDrawResources? drawResources;
@@ -30,23 +29,6 @@ public sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
     private VkDescriptorSetLayout computeLayout;
     private ComputeKernel? kernel;
     private readonly HashSet<int> initializedInstances = new();
-
-    // Textures remain owned by the registrant; registration and removal are main-thread operations.
-    // This per-engine map stays authoritative for offline/unit-test isolation; EnqueuePreCompute then falls back to the
-    // shared LumenTextureRegistry (same one L1 resolves through) before the host ContentFinder.
-    public void RegisterTexture(string key, Texture texture)
-    {
-        ObjectDisposedException.ThrowIf(disposed, this);
-        ArgumentException.ThrowIfNullOrEmpty(key);
-        ArgumentNullException.ThrowIfNull(texture);
-        registeredTextures[key] = texture;
-    }
-
-    public void UnregisterTexture(string key)
-    {
-        ObjectDisposedException.ThrowIf(disposed, this);
-        registeredTextures.Remove(key);
-    }
 
     // Requires: main thread; capture completed with active work.
     // Ensures: prepares this frame's GPU resources (device objects, emitter/curve buffers, frame slot) and
@@ -67,7 +49,7 @@ public sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             Texture? texture = null;
             if (!string.IsNullOrEmpty(key))
             {
-                if (!registeredTextures.TryGetValue(key, out texture) && !LumenTextureRegistry.TryGetRegistered(key, out texture))
+                if (!LumenTextureRegistry.TryGetRegistered(key, out texture))
                     texture = ResolveHostTexture(key);
                 if (texture is not null)
                 {
@@ -127,7 +109,6 @@ public sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         DeviceEx device = app.Device;
         particles = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator,
             "Lumen.Particles", (long)capacity * 64, VkBufferUsageFlags.TransferSrcBit, deviceLocal: true);
-        ParticleGpuDrawResources.LogHandle("VkBuffer", $"{particles.Buffer.VkHandle:X}", "Particles");
         drawResources = new ParticleGpuDrawResources(app.RenderContext.FramesInFlight);
         frameSlots = new ParticleGpuFrame?[2 * app.RenderContext.FramesInFlight + 2];
         computeLayout = ParticleGpuDrawResources.CreateLayout(device, new[]
@@ -142,8 +123,6 @@ public sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             new ComputeBinding(1, ComputeBindingType.StorageBuffer),
             new ComputeBinding(2, ComputeBindingType.StorageBuffer)
         }, 16);
-        ParticleGpuDrawResources.LogHandle("VkPipeline", $"{kernel.Pipeline.VkHandle:X}", "ParticleCompute");
-        ParticleGpuDrawResources.LogHandle("VkPipelineLayout", $"{kernel.PipelineLayout.VkHandle:X}", "ParticleCompute");
         return true;
     }
 
@@ -201,7 +180,6 @@ public sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             VkPipelineStageFlags.ComputeShaderBit, VkDependencyFlags.None, default(ReadOnlySpan<VkMemoryBarrier>),
             new ReadOnlySpan<VkBufferMemoryBarrier>(in entry), default(ReadOnlySpan<VkImageMemoryBarrier>));
         VkDescriptorSet set = DescriptorSetWriter.AllocateDescriptorSet(frame.Device, resources.Pool, computeLayout);
-        if (RimLumenRenderHost.VerboseDiagnostics) ParticleGpuDrawResources.LogHandle("VkDescriptorSet", $"{set.VkHandle:X}", "ParticleCompute");
         ParticleGpuDrawResources.WriteBuffers(frame.Device, set, new[] { 0, 1, 2 },
             new[] { particles!, resources.Emitters, resources.Fields }, VkDescriptorType.StorageBuffer);
         frame.CommandBuffer.BindPipeline(VkPipelineBindPoint.Compute, kernel!.Pipeline);
@@ -286,49 +264,6 @@ public sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         initializedInstances.Clear();
     }
 
-    // Probe-only synchronous readback. Never called by the normal simulation path.
-    internal int CountLiveParticles()
-    {
-        var app = EngineApplication.Instance;
-        app.WaitForRenderThreadIdle();
-        int live = 0;
-        app.GraphicsDevice!.WaitIdleAndRun(() =>
-        {
-            if (particles is null) return;
-            var staging = GpuComputeBuffer.Create(app.Device, app.GraphicsDevice.Allocator,
-                "RimLumen.ParticleProbeReadback", (long)capacity * 64, readback: true);
-            ParticleGpuDrawResources.LogHandle("VkBuffer", $"{staging.Buffer.VkHandle:X}", "ParticleProbeReadback");
-            try
-            {
-                app.GraphicsDevice.ExecuteOneShot(cmd =>
-                {
-                    var barrier = ParticleBarrier(VkAccessFlags.ShaderWriteBit, VkAccessFlags.TransferReadBit);
-                    cmd.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit, VkPipelineStageFlags.TransferBit,
-                        VkDependencyFlags.None, default(ReadOnlySpan<VkMemoryBarrier>),
-                        new ReadOnlySpan<VkBufferMemoryBarrier>(in barrier), default(ReadOnlySpan<VkImageMemoryBarrier>));
-                    var copy = new VkBufferCopy { Size = particles.Size };
-                    cmd.CopyBuffer(particles.Buffer, staging.Buffer, new ReadOnlySpan<VkBufferCopy>(in copy));
-                    var host = new VkBufferMemoryBarrier
-                    {
-                        Buffer = staging.Buffer, Size = staging.Size, SrcQueueFamilyIndex = -1, DstQueueFamilyIndex = -1,
-                        SrcAccessMask = VkAccessFlags.TransferWriteBit, DstAccessMask = VkAccessFlags.HostReadBit
-                    };
-                    cmd.PipelineBarrier(VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.HostBit,
-                        VkDependencyFlags.None, default(ReadOnlySpan<VkMemoryBarrier>),
-                        new ReadOnlySpan<VkBufferMemoryBarrier>(in host), default(ReadOnlySpan<VkImageMemoryBarrier>));
-                });
-                var data = new GpuParticle[capacity];
-                staging.Read(MemoryMarshal.AsBytes(data.AsSpan()));
-                // Unallocated slots are undefined. Inspect only the engine's allocated ranges.
-                foreach (Instance instance in instances.Values)
-                    for (int i = instance.Slots.Offset; i < instance.Slots.Offset + instance.Slots.Capacity; i++)
-                        if (data[i].SizeSeedEmitterFlags.W > 0.5f) live++;
-            }
-            finally { staging.DisposeNow(); }
-        });
-        return live;
-    }
-
     private void DisposeGpu()
     {
         if (particles is not null)
@@ -345,6 +280,5 @@ public sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             application = null;
         }
         pendingFrames.Clear();
-        registeredTextures.Clear();
     }
 }

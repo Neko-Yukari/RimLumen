@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
-using System.Threading;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Scene;
@@ -51,11 +50,8 @@ internal sealed class L1ParticleBatchRenderer : IL1ParticleBatchSink, IDisposabl
     private Vector4 depthParams = new(0.3f, 1000f, 1f, 1f);
     private Vector4 projectionPacked = new(1f, 0f, 0f, 1f);
     private ulong stagedFrameIndex = ulong.MaxValue;
-    private int stagedVertexCount;
     private bool overflowLogged;
     private bool disposed;
-    private long verticesRecorded;
-    private int drawsRecorded;
 
     // Requires: main thread; sceneDepth (the depth proxy) is bound per frame by the pipeline before the
     //           HDR pass records. framesInFlight is the engine's swapchain depth.
@@ -67,10 +63,6 @@ internal sealed class L1ParticleBatchRenderer : IL1ParticleBatchSink, IDisposabl
         retirementAge = 2 * Math.Max(1, framesInFlight) + 2;
         mesh.MarkDynamic();
     }
-
-    // Counters read by the probe session; monotonically increasing.
-    internal long VerticesRecorded => Interlocked.Read(ref verticesRecorded);
-    internal int DrawsRecorded => Volatile.Read(ref drawsRecorded);
 
     // Requires: main thread, after the simulator's CaptureMainThread for frameIndex (= (ulong)timing.FrameNumber).
     // Ensures: replaces the dynamic mesh with this frame's quads (vertices.Length == 4n, indices.Length == 6n,
@@ -86,7 +78,6 @@ internal sealed class L1ParticleBatchRenderer : IL1ParticleBatchSink, IDisposabl
             depthParams = depth;
             projectionPacked = projection;
             staged.Clear();
-            stagedVertexCount = 0;
             stagedFrameIndex = frameIndex;
             if (vertices.IsEmpty || indices.IsEmpty) return;
 
@@ -121,7 +112,6 @@ internal sealed class L1ParticleBatchRenderer : IL1ParticleBatchSink, IDisposabl
                 // the main thread right before this frame's draw snapshot is captured.
                 Mesh.ApplyAndDisposeWritableMeshData(data, mesh);
                 applied = true;
-                stagedVertexCount = vertices.Length;
             }
             finally
             {
@@ -149,14 +139,12 @@ internal sealed class L1ParticleBatchRenderer : IL1ParticleBatchSink, IDisposabl
             if (stagedFrameIndex != frameIndex)
             {
                 staged.Clear();
-                stagedVertexCount = 0;
                 return;
             }
             shaders ??= ParticleMeshShaders.Create("RimLumen.L1", "Particles/L1ParticleQuad.vert.glsl",
                 "Particles/L1ParticleQuad.frag.glsl", depthTest: true);
             RetireStale(frameIndex);
             frameKeys.Clear();
-            int recorded = 0;
             for (int i = 0; i < staged.Count; i++)
             {
                 StagedBatch batch = staged[i];
@@ -173,11 +161,7 @@ internal sealed class L1ParticleBatchRenderer : IL1ParticleBatchSink, IDisposabl
                 FinalDrawItem? draw = maker.TryMake(in command, arena, UnityEngine.Shader.GlobalKeywordKey, queueOrder + i);
                 if (draw is null) continue;
                 draws.Add(draw);
-                recorded++;
             }
-            if (recorded == 0) return;
-            Interlocked.Add(ref verticesRecorded, stagedVertexCount);
-            Interlocked.Add(ref drawsRecorded, recorded);
         }
     }
 

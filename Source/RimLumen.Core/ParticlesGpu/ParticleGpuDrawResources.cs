@@ -54,13 +54,6 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             "Particles/ParticleBillboard.frag.glsl", depthTest: false);
     }
 
-    // Handle attribution is only logged under -rimlumen-probe (RimLumenRenderHost.VerboseDiagnostics).
-    internal static void LogHandle(string type, string hex, string name)
-    {
-        if (!RimLumenRenderHost.VerboseDiagnostics) return;
-        Verse.Log.Message($"[RimLumen] OwnedVkObject type={type} handle=0x{hex} name={name}");
-    }
-
     internal static VkDescriptorSetLayoutBinding Binding(int binding, VkDescriptorType type, VkShaderStageFlags stages) => new()
     {
         Binding = binding, DescriptorCount = 1, DescriptorType = type, StageFlags = stages
@@ -68,9 +61,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
 
     internal static VkDescriptorSetLayout CreateLayout(DeviceEx device, VkDescriptorSetLayoutBinding[] bindings)
     {
-        var result = device.CreateDescriptorSetLayout(new DescriptorSetLayoutEx.CreateInfo { Bindings = bindings }, device.VkAllocator);
-        LogHandle("VkDescriptorSetLayout", $"{result.VkHandle:X}", "ParticleLayout");
-        return result;
+        return device.CreateDescriptorSetLayout(new DescriptorSetLayoutEx.CreateInfo { Bindings = bindings }, device.VkAllocator);
     }
 
     // One compute set per frame: particle/emitter/field storage buffers, dispatched once per emitter.
@@ -78,12 +69,10 @@ internal sealed class ParticleGpuDrawResources : IDisposable
     {
         VkDescriptorPoolSize* sizes = stackalloc VkDescriptorPoolSize[1];
         sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageBuffer, DescriptorCount = 3 };
-        var result = device.CreateDescriptorPool(new VkDescriptorPoolCreateInfo
+        return device.CreateDescriptorPool(new VkDescriptorPoolCreateInfo
         {
             MaxSets = 1, PoolSizeCount = 1, PoolSizes = sizes
         }, device.VkAllocator);
-        LogHandle("VkDescriptorPool", $"{result.VkHandle:X}", "ParticleComputePool");
-        return result;
     }
 
     internal static unsafe void WriteBuffers(DeviceEx device, VkDescriptorSet set, int[] bindings,
@@ -276,8 +265,6 @@ internal sealed class ParticleGpuFrame : IDisposable
         Emitters = GpuComputeBuffer.Create(device, app.GraphicsDevice!.Allocator, "Lumen.Emitters", (long)EmitterCapacity * 208);
         Fields = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Fields", (long)FieldCapacity * 48);
         Curves = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Curves", (long)EmitterCapacity * 64 * 32);
-        foreach (var buffer in new[] { Emitters, Fields, Curves })
-            ParticleGpuDrawResources.LogHandle("VkBuffer", $"{buffer.Buffer.VkHandle:X}", "ParticleFrame");
     }
 
     internal void Upload(ParticleFrame frame)

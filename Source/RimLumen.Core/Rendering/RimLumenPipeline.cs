@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using RimLumen.Core.Lighting;
 using RimLumen.Core.Scene;
 using RimLumen.Core.Compat;
@@ -30,13 +29,6 @@ internal sealed class RimLumenPipeline : IDisposable
     internal bool IsDisposed => disposed;
     internal PipelineFrame? Captured;
     internal L1ParticleBatchRenderer L1Renderer { get; private set; } = null!;
-    internal bool MeasureContributors;
-    internal readonly Dictionary<string, List<double>> ContributorMilliseconds = new();
-    internal long CompatCapturedItems;
-    internal long CompatOptedOut;
-    internal long CompatUnresolvedDef;
-    internal int UnsupportedPersistentDraws { get; private set; }
-    internal int LastRenderedSlot { get; private set; } = -1;
     private ulong captureIndex;
     private CameraView view;
     private Vector4 depthParams;
@@ -100,7 +92,7 @@ internal sealed class RimLumenPipeline : IDisposable
         catch (Exception ex) { Log.Error($"[RimLumen] MapLightField release after fail-safe failed: {ex}"); }
     });
 
-    // Requires: only from `catch ... when (!RimLumenRenderHost.VerboseDiagnostics)`, so -rimlumen-probe stays fail-loud; any thread.
+    // Ensures: any thread; only the call that actually trips the fail-safe logs.
     internal void TripRenderFailSafe(Exception ex)
     {
         if (!RimLumenRenderHost.TripFailSafe()) return;
@@ -134,14 +126,10 @@ internal sealed class RimLumenPipeline : IDisposable
         }
         MapLightFieldCollector.BeginCapture(App, Find.CurrentMap);
         // Gameplay effects follow the game clock: dt = 0 while paused (frozen in mid-air, still rendered every frame),
-        // scaled by TickRateMultiplier (1x/2x/3x). Probes force the unscaled clock because they pause TickManager.
+        // scaled by TickRateMultiplier (1x/2x/3x).
         float unscaledDt = MathF.Max(0f, timing.DeltaTime);
-        float simDt = unscaledDt;
-        if (!RimLumenRenderHost.ForceUnscaledSimulationTime)
-        {
-            TickManager? tickManager = Current.Game.tickManager;
-            simDt = tickManager != null && tickManager.Paused ? 0f : unscaledDt * (tickManager?.TickRateMultiplier ?? 1f);
-        }
+        TickManager? tickManager = Current.Game.tickManager;
+        float simDt = tickManager != null && tickManager.Paused ? 0f : unscaledDt * (tickManager?.TickRateMultiplier ?? 1f);
         view = CameraViewFactory.GetView(camera);
         depthParams = new Vector4(camera.nearClipPlane, camera.farClipPlane, camera.orthographic ? 1f : 0f, 1f);
         contributors = LumenHostRegistry.GetContributorsSnapshot().Where(contributor => contributor.HasActiveWork).ToArray();
@@ -159,15 +147,8 @@ internal sealed class RimLumenPipeline : IDisposable
         var compute = new LumenComputeContext { FrameIndex = captureIndex, DeltaTime = simDt, UnscaledDeltaTime = unscaledDt };
         foreach (ILumenFrameContributor contributor in contributors)
         {
-            long start = MeasureContributors ? Stopwatch.GetTimestamp() : 0;
             contributor.CaptureMainThread(in capture);
             contributor.EnqueuePreCompute(in compute);
-            if (MeasureContributors)
-            {
-                if (!ContributorMilliseconds.TryGetValue(contributor.Name, out var samples))
-                    ContributorMilliseconds.Add(contributor.Name, samples = new List<double>());
-                samples.Add(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
-            }
             if (ReferenceEquals(contributor, LumenSceneBootstrap.Simulator))
             {
                 Matrix4x4 proj = view.Projection;
@@ -201,14 +182,12 @@ internal sealed class RimLumenPipeline : IDisposable
                     if (keep)
                     {
                         ShaderDef? def = DefDatabase<ShaderDef>.GetNamedSilentFail(candidate.Binding.Shader.Key);
-                        LumenEmissiveModExtension? extension = def?.GetModExtension<LumenEmissiveModExtension>();
-                        if (extension == null) CompatUnresolvedDef++;
-                        else if (!extension.EnableHdrBloom) { CompatOptedOut++; keep = false; }
+                        if (def?.GetModExtension<LumenEmissiveModExtension>() is { EnableHdrBloom: false }) keep = false;
                     }
                     FinalDrawItem.Return(candidate);
                     if (!keep) continue;
                 }
-                catch (Exception ex) when (!RimLumenRenderHost.VerboseDiagnostics)
+                catch (Exception ex)
                 {
                     // Native RimLumen effects keep rendering; only the third-party/vanilla glow enhancement is dropped.
                     Log.Error($"[RimLumen] Vanilla additive compatibility fail-safe tripped; disabling vanilla glow enhancement: {ex}");
@@ -227,15 +206,11 @@ internal sealed class RimLumenPipeline : IDisposable
                 FinalDrawItem.Return(draw);
                 throw new InvalidOperationException("RimLumen routed materials must not write shared scene depth.");
             }
-            if (snapshot.Commands[i].PassId != RimLumenRenderHost.LumenRenderPassId) CompatCapturedItems++;
             draws.Add(draw);
         }
         int unsupported = snapshot.PersistentSources.Sum(source => source.DrawItemsReadOnly.Count(draw => draw.PassId == RimLumenRenderHost.LumenRenderPassId));
         if (unsupported > 0)
-        {
-            UnsupportedPersistentDraws += unsupported;
             Log.Error($"[RimLumen] Unsupported routed persistent draws: {unsupported}. Public-only copy is unavailable; submit dynamic MeshDrawCommand instead.");
-        }
         // Particles were staged on the main thread in BeginCapture and their mesh upload was just drained
         // by CaptureFlushedSnapshot, so they join this frame's sorted pass-0 list instead of recording
         // their own command-buffer work inside the HDR pass.
@@ -247,7 +222,7 @@ internal sealed class RimLumenPipeline : IDisposable
 
         ShaderPackSpec activePack = RimLumenRenderHost.ActiveShaderPack;
         bool runOnEmptyFrames = activePack.RunOnEmptyFrames;
-        if (HdrFrameGate.Decide(contributors.Length > 0, draws.Count, false, runOnEmptyFrames) == HdrFrameMode.Skip)
+        if (HdrFrameGate.Decide(contributors.Length > 0, draws.Count, runOnEmptyFrames) == HdrFrameMode.Skip)
         {
             mesh.Dispose();
             RimLumenRenderHost.SetFrameCapabilities(false, false);
@@ -293,11 +268,7 @@ internal sealed class RimLumenPipeline : IDisposable
         => frameContributors.Any(contributor => contributor is not CpuParticleSimulator
             and not LumenVfxService and not ILumenHdrDrawAppender);
 
-    internal void Recorded(int slot)
-    {
-        LastRenderedSlot = slot;
-        RimLumenRenderHost.SetFrameCapabilities(true, true);
-    }
+    internal void Recorded() => RimLumenRenderHost.SetFrameCapabilities(true, true);
 
     private void Quiesce()
     {

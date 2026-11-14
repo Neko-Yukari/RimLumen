@@ -26,25 +26,6 @@ public static class LumenTextureRegistry
         }
     }
 
-    // Ensures: removes any explicit registration for key; returns true when removed.
-    public static bool Unregister(string key)
-    {
-        lock (Sync)
-        {
-            return registered.Remove(key);
-        }
-    }
-
-    // Ensures: clears explicit registrations and missing-texture warning cache (for isolated tests).
-    public static void Clear()
-    {
-        lock (Sync)
-        {
-            registered.Clear();
-            warnedMissing.Clear();
-        }
-    }
-
     // Ensures: looks up only explicitly registered textures without touching host ContentFinder (safe offline).
     public static bool TryGetRegistered(string key, out Texture? texture)
     {

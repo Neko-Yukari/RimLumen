@@ -17,9 +17,6 @@ public sealed class MapGlowerDriver : IDisposable
     private readonly IGlowGridSink sink;
     private readonly Dictionary<int, Light> lights = new();
     private int nextId;
-    private int activeLightCount;
-    private int registerCallCount;
-    private int deregisterCallCount;
     private bool isDisposed;
 
     private sealed class Light
@@ -41,17 +38,8 @@ public sealed class MapGlowerDriver : IDisposable
     // Requires: sink is non-null.
     public MapGlowerDriver(IGlowGridSink sink) => this.sink = sink;
 
-    // Ensures: number of lights that currently have a live glower registration.
-    public int ActiveLightCount => activeLightCount;
-
     // Ensures: number of lights tracked by this driver, registered or not.
     public int TrackedLightCount => lights.Count;
-
-    // Ensures: cumulative IGlowGridSink.Register calls made by this driver (dedup evidence).
-    public int RegisterCallCount => registerCallCount;
-
-    // Ensures: cumulative IGlowGridSink.Deregister calls made by this driver (leak evidence).
-    public int DeregisterCallCount => deregisterCallCount;
 
     // Ensures: true after Dispose.
     public bool IsDisposed => isDisposed;
@@ -104,10 +92,8 @@ public sealed class MapGlowerDriver : IDisposable
         }
 
         Deregister(light);
-        registerCallCount++;
         light.Handle = sink.Register(snapshot.Cell, snapshot.Radius, snapshot.Color, snapshot.OverlightRadius);
         light.Registered = snapshot;
-        activeLightCount++;
     }
 
     // Ensures: deregisters the light when registered, then stops tracking it. Unknown ids are ignored.
@@ -141,10 +127,8 @@ public sealed class MapGlowerDriver : IDisposable
         {
             return;
         }
-        deregisterCallCount++;
         sink.Deregister(handle);
         light.Handle = null;
-        activeLightCount--;
     }
 
     private static float QuantizeRadius(float radius) =>

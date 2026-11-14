@@ -3,6 +3,7 @@
 param(
     [string]$RimWorldDir = 'E:\SteamLibrary\steamapps\common\RimWorld',
     [string]$CaptureAndQuit = '',
+    [string]$Benchmark = '',
     [switch]$NoBuild,
     [switch]$Detach,
     [switch]$CleanupJunction,
@@ -15,7 +16,9 @@ $OutputEncoding = [Console]::OutputEncoding
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $junction = Join-Path $RimWorldDir 'Mods/RimLumen'
-$profile = Join-Path $env:LOCALAPPDATA 'Temp/opencode/rimlumen-showcase-profile'
+# Benchmark runs keep their own save-data folder so interactive showcase sessions (dev mode, mod settings) cannot skew them.
+$profileName = if ($Benchmark) { 'rimlumen-bench-profile' } else { 'rimlumen-showcase-profile' }
+$profile = Join-Path $env:LOCALAPPDATA "Temp/opencode/$profileName"
 
 function Get-RimWorldProcess {
     @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^RimWorld(?:Win64)?$' })
@@ -47,6 +50,10 @@ if ($CleanupJunction) {
 
 if ($CaptureAndQuit -and $Detach) {
     throw '-CaptureAndQuit and -Detach are mutually exclusive.'
+}
+
+if ($Benchmark -and ($CaptureAndQuit -or $Detach)) {
+    throw '-Benchmark cannot be combined with -CaptureAndQuit or -Detach.'
 }
 
 $rimWorldExe = Join-Path $RimWorldDir 'RimWorld.exe'
@@ -99,7 +106,45 @@ try {
     $start.WorkingDirectory = $RimWorldDir
     $start.UseShellExecute = $false
 
-    if ($CaptureAndQuit) {
+    if ($Benchmark) {
+        $resolvedJson = [IO.Path]::GetFullPath($Benchmark)
+        $jsonDir = Split-Path -Parent $resolvedJson
+        if ($jsonDir) {
+            New-Item -ItemType Directory -Path $jsonDir -Force | Out-Null
+        }
+        if (Test-Path -LiteralPath $resolvedJson) {
+            Remove-Item -LiteralPath $resolvedJson -Force
+        }
+
+        $start.CreateNoWindow = $true
+        foreach ($arg in @(
+            '-NoWindow',
+            '-NoCrashDialog',
+            '-quicktest',
+            '-WindowSize=1920,1080',
+            '-ResetVulkanFallback',
+            "-savedatafolder=$profile",
+            "-rimlumen-showcase-bench=$resolvedJson"
+        )) {
+            $start.ArgumentList.Add($arg)
+        }
+
+        $process = [Diagnostics.Process]::Start($start)
+        Write-Host "Started headless RimWorld showcase benchmark PID=$($process.Id); timeout=${TimeoutSeconds}s"
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $process.Kill($true)
+            $process.WaitForExit()
+            throw "RimWorld showcase benchmark timed out after ${TimeoutSeconds}s; process tree killed."
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "RimWorld showcase benchmark exited with code $($process.ExitCode)"
+        }
+        if (-not (Test-Path -LiteralPath $resolvedJson -PathType Leaf) -or (Get-Item -LiteralPath $resolvedJson).Length -le 0) {
+            throw "Showcase benchmark JSON was not created or is empty: $resolvedJson"
+        }
+        Write-Host "SHOWCASE BENCH OK: $resolvedJson ($((Get-Item -LiteralPath $resolvedJson).Length) bytes)"
+    }
+    elseif ($CaptureAndQuit) {
         $resolvedPng = [IO.Path]::GetFullPath($CaptureAndQuit)
         $pngDir = Split-Path -Parent $resolvedPng
         if ($pngDir) {

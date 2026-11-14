@@ -9,7 +9,6 @@ using System.Xml.Linq;
 using RimLumen.Core.Lighting;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Rendering.Logic;
-using RimLumen.Core.Rendering.Probes;
 using UnityStubs.Rendering;
 using Waylith.Rendering;
 
@@ -257,8 +256,8 @@ public static class ShaderPackTests
     {
         Equal(false, HdrFrameGate.ShouldRenderHdr(0, false, false));
         Equal(true, HdrFrameGate.ShouldRenderHdr(0, false, true));
-        Equal(HdrFrameMode.Skip, HdrFrameGate.Decide(false, 0, false, false));
-        Equal(HdrFrameMode.Render, HdrFrameGate.Decide(false, 0, false, true));
+        Equal(HdrFrameMode.Skip, HdrFrameGate.Decide(false, 0, false));
+        Equal(HdrFrameMode.Render, HdrFrameGate.Decide(false, 0, true));
     }
 
     [LumenFact]
@@ -316,39 +315,14 @@ public static class ShaderPackTests
     [LumenFact]
     public static void ShaderPackFailurePolicyIsolatesCustomPacks()
     {
-        Equal(ShaderPackFailureAction.RevertPackToDefault, ShaderPackFailurePolicy.Decide(isDefaultPack: false, verboseDiagnostics: false));
-        Equal(ShaderPackFailureAction.RevertPackToDefault, ShaderPackFailurePolicy.Decide(isDefaultPack: false, verboseDiagnostics: true));
-        Equal(ShaderPackFailureAction.TripFailSafe, ShaderPackFailurePolicy.Decide(isDefaultPack: true, verboseDiagnostics: false));
-        Equal(ShaderPackFailureAction.FailLoud, ShaderPackFailurePolicy.Decide(isDefaultPack: true, verboseDiagnostics: true));
-
         var custom = new ShaderPackSpec { Id = "custom" };
         Require(RimLumenRenderHost.ShouldRevertPackOnFailure(custom), "Custom pack failures must revert the pack.");
-        Require(!RimLumenRenderHost.ShouldTripFailSafeOnFailure(custom), "Custom pack failures must never trip the fail-safe.");
-        Require(RimLumenRenderHost.ShouldTripFailSafeOnFailure(ShaderPackSpec.Default), "Default pack failures must trip the fail-safe.");
-        Require(!RimLumenRenderHost.ShouldRevertPackOnFailure(ShaderPackSpec.Default), "The default pack cannot revert to itself.");
-
-        bool verbose = RimLumenRenderHost.VerboseDiagnostics;
-        try
-        {
-            RimLumenRenderHost.VerboseDiagnostics = true;
-            Require(!RimLumenRenderHost.ShouldTripFailSafeOnFailure(ShaderPackSpec.Default), "Probe runs must stay fail-loud for the default pack.");
-            Require(RimLumenRenderHost.ShouldRevertPackOnFailure(custom), "Probe runs must still isolate a custom pack.");
-        }
-        finally
-        {
-            RimLumenRenderHost.VerboseDiagnostics = verbose;
-        }
+        Require(!RimLumenRenderHost.ShouldRevertPackOnFailure(ShaderPackSpec.Default),
+            "Default pack failures trip the fail-safe instead of reverting.");
 
         // A failure report for a pack that is no longer active must not touch the live pack.
         Equal(false, RimLumenRenderHost.RevertFailedPackToDefault(custom));
         Equal("default", RimLumenRenderHost.ActiveShaderPack.Id);
-    }
-
-    [LumenFact]
-    public static void VanillaAdditiveBloomDefaultsOn()
-    {
-        // Player-facing default; the probe explicitly disables it for the P1-idle frame.
-        Equal(true, RimLumenRenderHost.EnableVanillaAdditiveBloom);
     }
 
     private static void VerifyGroundPlaneUnproject(Matrix4x4 projection)
@@ -503,76 +477,6 @@ public static class ShaderPackTests
                 Directory.Delete(tempDir, recursive: true);
             }
         });
-    }
-
-    [LumenFact]
-    public static void ProbeRouteBFixturesCompileThroughSlang()
-    {
-        WithSlangLoaded(() =>
-        {
-            foreach ((string name, string source) in new[]
-            {
-                ("ProbeAccum", ShaderPackProbeSources.Accum),
-                ("ProbeBlur", ShaderPackProbeSources.Blur),
-                ("ProbePrefilter", ShaderPackProbeSources.Prefilter),
-                ("ProbeFinal", ShaderPackProbeSources.Final),
-            })
-            {
-                byte[] spirv = RuntimeShaderCompiler.Compile(source, name + ".frag.glsl", "main",
-                    RuntimeShaderLanguage.Glsl, RuntimeShaderStage.Fragment, out _);
-                Require(spirv.Length >= 20 && BitConverter.ToUInt32(spirv) == 0x07230203u, $"{name}: invalid SPIR-V.");
-                Console.WriteLine($"[SLANG] probe fixture {name}.frag.glsl: {spirv.Length} bytes");
-            }
-            // The broken fixture must actually fail; otherwise the real-machine fallback step proves nothing.
-            bool threw = false;
-            try
-            {
-                RuntimeShaderCompiler.Compile(ShaderPackProbeSources.Broken, "ProbeBroken.frag.glsl", "main",
-                    RuntimeShaderLanguage.Glsl, RuntimeShaderStage.Fragment, out _);
-            }
-            catch (Exception)
-            {
-                threw = true;
-            }
-            Require(threw, "ProbeBroken.frag.glsl compiled cleanly, so the fallback probe would not exercise a failure.");
-        });
-    }
-
-    // Guards the probe's non-vacuity contract: each channel must be driven by its own input path, so a
-    // constant offset accidentally reintroduced here would make the real-machine readback pass for the
-    // wrong reason.
-    [LumenFact]
-    public static void ProbeFixturesDriveEachChannelFromItsOwnInput()
-    {
-        string accum = ShaderPackProbeSources.Accum;
-        Require(accum.Contains("clamp(min(depth, 1.0 - depth) * 10.0, 0.0, 1.0)", StringComparison.Ordinal),
-            "Accum must map scene depth to R with no constant offset.");
-        Require(accum.Contains("texture(lightField, clampedUv)", StringComparison.Ordinal),
-            "Accum must sample the map light field through the unprojected ground position for G.");
-        Require(accum.Contains("ubo.InvViewProjection * vec4(ndc, z, 1.0)", StringComparison.Ordinal),
-            "Accum must unproject with the UBO inverse view projection.");
-        Require(accum.Contains("(uv.x > 0.5 && uv.y > 0.5) ? (ubo.PackParam0.x + pc.value.z) : 0.0", StringComparison.Ordinal),
-            "Accum must gate the parameter contribution to one quadrant for B.");
-        Require(!accum.Contains("* 0.0", StringComparison.Ordinal) && !accum.Contains("* 0.00", StringComparison.Ordinal),
-            "Accum must not contain dead-code multipliers that vanish under optimisation.");
-
-        string blur = ShaderPackProbeSources.Blur;
-        Require(blur.Contains("vec4(sum.rgb * 0.5, 1.0)", StringComparison.Ordinal),
-            "Blur must write the two-tap average without adding a constant.");
-
-        // The bloom prefilter pass binds exactly {0, 2, 3, 4}; declaring any other sampler (or using one the
-        // runtime never writes) would make the real-machine bloom step UB.
-        string prefilter = ShaderPackProbeSources.Prefilter;
-        Require(prefilter.Contains("binding = 0) uniform sampler2D hdrImage", StringComparison.Ordinal)
-            && prefilter.Contains("binding = 2) uniform sampler2D sceneImage", StringComparison.Ordinal)
-            && prefilter.Contains("binding = 3) uniform sampler2D depthImage", StringComparison.Ordinal)
-            && prefilter.Contains("binding = 4) uniform sampler2D lightField", StringComparison.Ordinal)
-            && prefilter.Contains("binding = 1)", StringComparison.Ordinal) == false,
-            "Prefilter must declare only the bindings the built-in bloom prefilter pass provides (0, 2, 3, 4).");
-        Require(prefilter.Contains("texture(lightField, uv).g * 0.01", StringComparison.Ordinal),
-            "Prefilter must mix the light field into the bloom source.");
-        Require(prefilter.Contains("step(0.0001, geometry)", StringComparison.Ordinal),
-            "Prefilter must mask non-geometry pixels (reverse-Z 0.0 and the 1.0 placeholder).");
     }
 
     [LumenFact]

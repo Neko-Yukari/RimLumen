@@ -135,7 +135,7 @@ if (Test-Path -LiteralPath (Join-Path $RepoRoot 'About/PublishedFileId.txt') -Pa
     Copy-ToPackage 'About/PublishedFileId.txt'
 }
 
-# Build a stripped Core DLL (without Probes/, Showcase/, ProbeOptions) into a temp dir so dev 1.7/Assemblies stays test-ready.
+# Build a stripped Core DLL (without Showcase/) into a temp dir so dev 1.7/Assemblies stays test-ready.
 if (-not (Test-Path -LiteralPath $DotnetExe)) {
     throw "Portable .NET 10 SDK not found at: $DotnetExe"
 }
@@ -225,17 +225,13 @@ $packed = @(Get-ChildItem -LiteralPath $outFull -File -Recurse)
 foreach ($file in $packed) {
     $relative = Get-RelativePath $outFull $file.FullName
     $forbidden = ($file.Extension -in @('.cs', '.pdb', '.sln', '.csproj')) -or
-        ($file.Name -like '*.deps.json') -or
-        ($relative -match 'Probes')
+        ($file.Name -like '*.deps.json')
     if ($forbidden) {
         $failures.Add("forbidden file in package: $relative")
     }
     if (($relative.Replace('\', '/') -like '1.7/ShaderPacks/*') -and
         ($file.Extension -notin @('.json', '.glsl', '.glslinc'))) {
         $failures.Add("unexpected file type in 1.7/ShaderPacks (allowed: .json .glsl .glslinc): $relative")
-    }
-    if ($relative.Replace('\', '/') -match '^1\.7/Shaders/PostFx/RimLumen(?:Probe|Identity)') {
-        $failures.Add("probe shader must not ship in PostFx: $relative")
     }
     if ($file.Extension -eq '.xml') {
         try {
@@ -260,9 +256,7 @@ if (Test-Path -LiteralPath $packedCoreDll -PathType Leaf) {
                 $td = $mdReader.GetTypeDefinition($handle)
                 $ns = $mdReader.GetString($td.Namespace)
                 $name = $mdReader.GetString($td.Name)
-                if ($ns -like 'RimLumen.Core.Rendering.Probes*' -or
-                    $ns -like 'RimLumen.Core.Showcase*' -or
-                    ($ns -eq 'RimLumen.Core.Rendering.Logic' -and $name -like 'ProbeOptions*')) {
+                if ($ns -like 'RimLumen.Core.Showcase*') {
                     $failures.Add("dev/test type must not ship in release DLL: $ns.$name")
                 }
             }

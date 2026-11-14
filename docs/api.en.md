@@ -242,7 +242,7 @@ using RimLumen.Core.Contracts;
 
 bool ready = RimLumenApi.IsReady;
 LumenCapabilities caps = RimLumenApi.Capabilities;
-// caps.IsHdrActive / IsSceneDepthAvailable / IsGpuComputeAvailable / ValidationClean / MaxGpuParticlesPerFrame
+// caps.IsHdrActive / IsSceneDepthAvailable / IsGpuComputeAvailable / MaxGpuParticlesPerFrame
 
 RimLumenApi.RegisterEffect(myEffectAsset); // Registers or replaces an asset with the same EffectId
 bool exists = RimLumenApi.TryGetEffect("Author.MyMod:Spells/Fireball", out EffectAsset? asset);

@@ -84,17 +84,17 @@ public static class RimLumenApiSuite
         try
         {
             var settings = new RimLumenSettings { EnhanceVanillaAdditiveGlow = false, ParticleDensityScale = 0.05f };
-            settings.ApplyToRuntime();
+            settings.ApplyScalarsToRuntime();
             NativeTestData.Check(!RimLumenRenderHost.EnableVanillaAdditiveBloom, "Glow toggle reaches the render host");
             NativeTestData.Close(0.1f, RimLumenRenderHost.ParticleDensityScale, "Density clamps up to 0.1");
 
             settings.ParticleDensityScale = 4f;
-            settings.ApplyToRuntime();
+            settings.ApplyScalarsToRuntime();
             NativeTestData.Close(1f, RimLumenRenderHost.ParticleDensityScale, "Density clamps down to 1.0");
 
             settings.EnhanceVanillaAdditiveGlow = true;
             settings.ParticleDensityScale = 0.6f;
-            settings.ApplyToRuntime();
+            settings.ApplyScalarsToRuntime();
             NativeTestData.Check(RimLumenRenderHost.EnableVanillaAdditiveBloom, "Glow toggle turns back on");
             NativeTestData.Close(0.6f, RimLumenRenderHost.ParticleDensityScale, "Density passes through inside the range");
         }

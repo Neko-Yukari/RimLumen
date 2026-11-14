@@ -138,7 +138,7 @@ pwsh -NoProfile -File Tools/pack-release.ps1 -SkipTests
 pwsh -NoProfile -File Tools/launch-showcase.ps1       # 启动六站演示场景 / launch the 6-station showcase
 ```
 
-`pack-release.ps1` 只输出可上传内容：`About/`、`LoadFolders.xml`、`README.md`、`docs/api.md`、剥离调试探针与展示脚手架后的两个 dll（无 pdb）、`1.7/Defs`、`1.7/Textures`、`1.7/ShaderPacks`、`1.7/Shaders/Particles` 与 `PostFx`；不含源码、测试、探针着色器；结束时自检并打印文件数与字节数。
+`pack-release.ps1` 只输出可上传内容：`About/`、`LoadFolders.xml`、`README.md`、`docs/api.md`、剥离展示脚手架后的两个 dll（无 pdb）、`1.7/Defs`、`1.7/Textures`、`1.7/ShaderPacks`、`1.7/Shaders/Particles` 与 `PostFx`；不含源码、测试；结束时自检并打印文件数与字节数。
 `launch-showcase.ps1` 会在已有 RimWorld 进程时拒绝启动。
 
 策划与定稿决策见 `docs/02-plan.md`、`docs/03-decisions.md`（源码仓库内，不随 Workshop 包发布）。

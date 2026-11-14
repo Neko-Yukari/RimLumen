@@ -59,15 +59,14 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     // Ensures: IsHdrActive and IsSceneDepthAvailable report whether an HDR pass owner has installed
     //          Simulator.BatchSink (the sink is only offered inside RimLumenVfxPass, which has RGBA16F
     //          colour plus read-only scene depth); IsGpuComputeAvailable reports whether the L2 resolver
-    //          yields an engine; MaxGpuParticlesPerFrame is 4096 with an engine and 0 without;
-    //          ValidationClean stays false until the render pipeline reports validation telemetry.
+    //          yields an engine; MaxGpuParticlesPerFrame is 4096 with an engine and 0 without.
     public LumenCapabilities Capabilities
     {
         get
         {
             bool hdr = Simulator.BatchSink is not null;
             bool gpu = GpuEngineProvider?.Invoke() is not null;
-            return new LumenCapabilities(hdr, hdr, gpu, false, gpu ? 4096 : 0);
+            return new LumenCapabilities(hdr, hdr, gpu, gpu ? 4096 : 0);
         }
     }
 

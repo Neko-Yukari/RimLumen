@@ -32,7 +32,6 @@ public static class RimLumenApi
                 host.IsHdrActive || active.IsHdrActive,
                 host.IsSceneDepthAvailable || active.IsSceneDepthAvailable,
                 host.IsGpuComputeAvailable || active.IsGpuComputeAvailable,
-                host.ValidationClean || active.ValidationClean,
                 Math.Max(host.MaxGpuParticlesPerFrame, active.MaxGpuParticlesPerFrame));
         }
     }

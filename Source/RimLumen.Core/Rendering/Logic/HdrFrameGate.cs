@@ -19,18 +19,19 @@ public static class HdrFrameGate
         => runOnEmptyFrames || ShouldRenderHdr(routedDrawCount, hasDirectHdrContributor);
 
     // Requires: routedDrawCount >= 0.
-    // Ensures: Skip iff !anyContributorActive && routedDrawCount == 0 && !probeForcesActive; else Render.
-    public static HdrFrameMode Decide(bool anyContributorActive, int routedDrawCount, bool probeForcesActive)
+    // Ensures: Skip iff !anyContributorActive && routedDrawCount == 0; else Render.
+    public static HdrFrameMode Decide(bool anyContributorActive, int routedDrawCount)
     {
-        return anyContributorActive || routedDrawCount > 0 || probeForcesActive
+        return anyContributorActive || routedDrawCount > 0
             ? HdrFrameMode.Render
             : HdrFrameMode.Skip;
     }
 
-    public static HdrFrameMode Decide(bool anyContributorActive, int routedDrawCount, bool probeForcesActive, bool runOnEmptyFrames)
+    // Ensures: Render when runOnEmptyFrames, else the two-argument decision.
+    public static HdrFrameMode Decide(bool anyContributorActive, int routedDrawCount, bool runOnEmptyFrames)
     {
         return runOnEmptyFrames
             ? HdrFrameMode.Render
-            : Decide(anyContributorActive, routedDrawCount, probeForcesActive);
+            : Decide(anyContributorActive, routedDrawCount);
     }
 }

@@ -745,11 +745,8 @@ public sealed class LumenShowcaseMapComponent : MapComponent, IDisposable
 
         // Same clock as the particle contributors: frozen while the game is paused, scaled by 1x/2x/3x otherwise.
         float dt = MathF.Max(0f, MathF.Min(0.1f, UnityEngine.Time.unscaledDeltaTime));
-        if (!RimLumenRenderHost.ForceUnscaledSimulationTime)
-        {
-            TickManager? tickManager = Current.Game?.tickManager;
-            dt = tickManager != null && tickManager.Paused ? 0f : dt * (tickManager?.TickRateMultiplier ?? 1f);
-        }
+        TickManager? tickManager = Current.Game?.tickManager;
+        dt = tickManager != null && tickManager.Paused ? 0f : dt * (tickManager?.TickRateMultiplier ?? 1f);
         state.OrbitTheta = (state.OrbitTheta + 1.6f * dt) % (MathF.PI * 2f);
         state.PulseTime += dt;
 

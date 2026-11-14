@@ -24,8 +24,6 @@ internal static class MapLightFieldCollector
     private static int mapSizeX;
     private static int mapSizeZ;
     private static MapLightFieldGpuTexture? gpuTexture;
-    // Probe-visible: number of CPU->GPU RGBA8 uploads recorded (proves the collector reached the GPU path).
-    internal static long GpuUploads;
 
     // Main thread only.
     internal static void BeginCapture(EngineApplication app, Map? map)
@@ -109,7 +107,6 @@ internal static class MapLightFieldCollector
         }
 
         tex.RecordUpload(ctx.CommandBuffer, slot, copiedGen);
-        Interlocked.Increment(ref GpuUploads);
     }
 
     internal static bool TryGetDescriptor(out VkImageView view, out VkSampler sampler, out int width, out int height)
@@ -145,11 +142,7 @@ internal static class MapLightFieldCollector
         if (gpuTexture is null)
             return;
         if (!waitIdle)
-        {
-            if (RimLumenRenderHost.VerboseDiagnostics)
-                Log.Message($"[RimLumen] MapLightField texture {gpuTexture.Width}x{gpuTexture.Height} kept allocated: render thread not idle at release.");
             return;
-        }
         app?.WaitForRenderThreadIdle();
         app?.GraphicsDevice?.Device.WaitIdle();
         gpuTexture.Dispose();
@@ -172,11 +165,9 @@ internal static class MapLightFieldCollector
 
         for (int z = clipped.minZ; z <= clipped.maxZ; z++)
         {
-            if ((uint)z >= (uint)mapSizeZ) continue;
             int rowOffset = z * mapSizeX;
             for (int x = clipped.minX; x <= clipped.maxX; x++)
             {
-                if ((uint)x >= (uint)mapSizeX) continue;
                 int idx = rowOffset + x;
                 bool roofed = map.roofGrid.Roofed(idx);
                 Color32 glow = map.glowGrid.VisualGlowAt(idx);
@@ -236,7 +227,6 @@ internal static class MapLightFieldCollector
             };
             imageAlloc = allocator.AllocateImageChecked("RimLumen.MapLightField", in imageCreateInfo, in imageAllocInfo);
             GpuMemoryTracker.Add(GpuMemoryCategory.GameTexture, in imageAlloc, null, "RimLumen.MapLightField");
-            Owned("VkImage", imageAlloc.Image.VkHandle, "RimLumen.MapLightField");
 
             var viewCreateInfo = new VkImageViewCreateInfo
             {
@@ -260,7 +250,6 @@ internal static class MapLightFieldCollector
                 },
             };
             View = device.CreateImageView(in viewCreateInfo, device.VkAllocator);
-            Owned("VkImageView", View.VkHandle, "RimLumen.MapLightField");
 
             var samplerCreateInfo = new VkSamplerCreateInfo
             {
@@ -275,7 +264,6 @@ internal static class MapLightFieldCollector
                 BorderColor = VkBorderColor.FloatOpaqueBlack,
             };
             Sampler = device.CreateSampler(in samplerCreateInfo, device.VkAllocator);
-            Owned("VkSampler", Sampler.VkHandle, "RimLumen.MapLightField");
 
             stagingBuffers = new BufferAllocationInfo[framesInFlight];
             var stagingCreateInfo = new VkBufferCreateInfo
@@ -296,7 +284,6 @@ internal static class MapLightFieldCollector
                 string label = $"RimLumen.MapLightField.Staging[{i}]";
                 stagingBuffers[i] = allocator.AllocateBufferChecked(label, in stagingCreateInfo, in stagingAllocInfo);
                 GpuMemoryTracker.Add(GpuMemoryCategory.Staging, in stagingBuffers[i], "Staging/Texture", label);
-                Owned("VkBuffer", stagingBuffers[i].VkBuffer.VkHandle, label);
             }
         }
 
@@ -389,12 +376,6 @@ internal static class MapLightFieldCollector
 
             currentLayout = VkImageLayout.ShaderReadOnlyOptimal;
             uploadedGeneration = generation;
-        }
-
-        private static void Owned(string type, long handle, string name)
-        {
-            if (!RimLumenRenderHost.VerboseDiagnostics) return;
-            Verse.Log.Message($"[RimLumen] OwnedVkObject type={type} handle=0x{handle:X} name={name}");
         }
 
         public void Dispose()

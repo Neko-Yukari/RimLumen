@@ -60,17 +60,10 @@ public static class ShaderPackCatalog
 
     public static string? TryGetLocalUserPacksDirectory()
     {
-        try
-        {
-            string configDir = GenFilePaths.ConfigFolderPath;
-            if (string.IsNullOrWhiteSpace(configDir))
-                return null;
-            return Path.Combine(configDir, "RimLumen", "ShaderPacks");
-        }
-        catch
-        {
+        string configDir = GenFilePaths.ConfigFolderPath;
+        if (string.IsNullOrWhiteSpace(configDir))
             return null;
-        }
+        return Path.Combine(configDir, "RimLumen", "ShaderPacks");
     }
 
     public static IReadOnlyList<ShaderPackEntry> ScanRoots(IEnumerable<(string RootPath, string SourceLabel)> roots)
@@ -94,7 +87,7 @@ public static class ShaderPackCatalog
             }
             catch (Exception ex)
             {
-                TryLogWarning($"[RimLumen] Failed to enumerate shader pack directory '{rootPath}': {ex.Message}");
+                RimLumenRenderHost.LogWarning($"[RimLumen] Failed to enumerate shader pack directory '{rootPath}': {ex.Message}");
                 continue;
             }
 
@@ -176,29 +169,22 @@ public static class ShaderPackCatalog
     private static IReadOnlyList<ShaderPackEntry> ScanLiveSources()
     {
         var roots = new List<(string, string)>();
-        try
+        List<ModContentPack> mods = LoadedModManager.RunningMods.ToList();
+        ModContentPack? self = mods.FirstOrDefault(m =>
+            string.Equals(m.PackageIdPlayerFacing, "NekoYukari.RimLumen", StringComparison.OrdinalIgnoreCase));
+        if (self is not null)
         {
-            List<ModContentPack> mods = LoadedModManager.RunningMods?.ToList() ?? new List<ModContentPack>();
-            ModContentPack? self = mods.FirstOrDefault(m =>
-                string.Equals(m.PackageIdPlayerFacing, "NekoYukari.RimLumen", StringComparison.OrdinalIgnoreCase));
-            if (self is not null)
-            {
-                roots.Add((Path.Combine(self.RootDir, "1.7", "ShaderPacks"), "内置"));
-                roots.Add((Path.Combine(self.RootDir, "ShaderPacks"), "内置"));
-            }
-
-            foreach (ModContentPack mod in mods)
-            {
-                if (ReferenceEquals(mod, self))
-                    continue;
-                string label = string.IsNullOrWhiteSpace(mod.Name) ? mod.PackageIdPlayerFacing : mod.Name;
-                roots.Add((Path.Combine(mod.RootDir, "1.7", "ShaderPacks"), $"模组: {label}"));
-                roots.Add((Path.Combine(mod.RootDir, "ShaderPacks"), $"模组: {label}"));
-            }
+            roots.Add((Path.Combine(self.RootDir, "1.7", "ShaderPacks"), "内置"));
+            roots.Add((Path.Combine(self.RootDir, "ShaderPacks"), "内置"));
         }
-        catch
+
+        foreach (ModContentPack mod in mods)
         {
-            // Headless / offline test environments have no LoadedModManager state.
+            if (ReferenceEquals(mod, self))
+                continue;
+            string label = string.IsNullOrWhiteSpace(mod.Name) ? mod.PackageIdPlayerFacing : mod.Name;
+            roots.Add((Path.Combine(mod.RootDir, "1.7", "ShaderPacks"), $"模组: {label}"));
+            roots.Add((Path.Combine(mod.RootDir, "ShaderPacks"), $"模组: {label}"));
         }
 
         string? localDir = TryGetLocalUserPacksDirectory();
@@ -222,7 +208,7 @@ public static class ShaderPackCatalog
         }
         catch (Exception ex)
         {
-            TryLogWarning($"[RimLumen] Failed to load shader pack '{packDir}': {ex.Message}");
+            RimLumenRenderHost.LogWarning($"[RimLumen] Failed to load shader pack '{packDir}': {ex.Message}");
             return new ShaderPackEntry(
                 $"invalid:{folderName}",
                 folderName,
@@ -234,11 +220,5 @@ public static class ShaderPackCatalog
                 Array.Empty<ShaderPackOptionDefinition>(),
                 ex.Message);
         }
-    }
-
-    private static void TryLogWarning(string message)
-    {
-        try { Log.Warning(message); }
-        catch { }
     }
 }

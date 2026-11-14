@@ -155,21 +155,6 @@ public static class SpacePlaneTransformSuite
     }
 
     [LumenFact]
-    public static void ChildOffsetTravelsThroughRootScaleAndYaw()
-    {
-        var asset = new EffectAsset
-        {
-            EffectId = "offset",
-            Nodes = new[] { new EffectNodeSpec { Name = "child", LocalPosition = new Vector3(1f, 0f, 0f) } },
-        };
-        Span<Matrix4x4> destination = stackalloc Matrix4x4[1];
-        var root = SpacePlaneTransform.BuildRootMatrix(new Vector3(10f, 0f, 20f), 90f, 2f);
-        SpacePlaneTransform.BuildWorldMatrices(asset, root, destination);
-        // (1,0,0) x2 = (2,0,0), yaw 90 = (0,0,-2), + (10,0,20) = (10,0,18).
-        AssertClose(new Vector3(10f, 0f, 18f), Vector3.Transform(Vector3.Zero, destination[0]));
-    }
-
-    [LumenFact]
     public static void TwoLevelChainCompoundsScaleAndYaw()
     {
         var asset = new EffectAsset

@@ -11,5 +11,4 @@ public readonly record struct LumenCapabilities(
     bool IsHdrActive,
     bool IsSceneDepthAvailable,
     bool IsGpuComputeAvailable,
-    bool ValidationClean,
     int MaxGpuParticlesPerFrame);

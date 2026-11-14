@@ -20,10 +20,6 @@ public static class RimLumenRenderHost
 
     public static float ParticleDensityScale { get; set; } = 1.0f;
 
-    public static bool VerboseDiagnostics { get; set; } = false;
-
-    internal static bool ForceUnscaledSimulationTime { get; set; } = false;
-
     public static ShaderPackSpec ActiveShaderPack { get; private set; } = ShaderPackSpec.Default;
 
     public static string? LastShaderPackError { get; private set; }
@@ -35,11 +31,7 @@ public static class RimLumenRenderHost
     internal static bool IsDefaultShaderPack(ShaderPackSpec spec) => ReferenceEquals(spec, ShaderPackSpec.Default);
 
     // A custom pack is data, not RimLumen itself: its failures revert the pack instead of detaching the pipeline.
-    internal static bool ShouldRevertPackOnFailure(ShaderPackSpec spec)
-        => ShaderPackFailurePolicy.Decide(IsDefaultShaderPack(spec), VerboseDiagnostics) == ShaderPackFailureAction.RevertPackToDefault;
-
-    internal static bool ShouldTripFailSafeOnFailure(ShaderPackSpec spec)
-        => ShaderPackFailurePolicy.Decide(IsDefaultShaderPack(spec), VerboseDiagnostics) == ShaderPackFailureAction.TripFailSafe;
+    internal static bool ShouldRevertPackOnFailure(ShaderPackSpec spec) => !IsDefaultShaderPack(spec);
 
     private static int failSafeTripped;
 
@@ -61,7 +53,7 @@ public static class RimLumenRenderHost
         Capabilities = Capabilities with { IsHdrActive = hdr, IsSceneDepthAvailable = depth };
     }
 
-    // Ensures: all-false / 0 until Install succeeds; updated by the pipeline (e.g. ValidationClean from probe runs).
+    // Ensures: all-false / 0 until Install succeeds; updated by the pipeline while it records.
     public static LumenCapabilities Capabilities { get; private set; }
 
     // Ensures: the passId registered via RenderPassRegistry.Register("RimLumenHdr"); 0 before Install.
@@ -85,7 +77,7 @@ public static class RimLumenRenderHost
         LumenRenderPassId = passId;
         Pipeline = new RimLumenPipeline(EngineApplication.Instance);
         Pipeline.Attach();
-        Capabilities = new LumenCapabilities(false, false, true, false, 0);
+        Capabilities = new LumenCapabilities(false, false, true, 0);
     }
 
     // Requires: main thread.
@@ -127,21 +119,21 @@ public static class RimLumenRenderHost
             RimLumenPipeline? pipeline = Pipeline;
             if (pipeline is null)
             {
-                TryLogError($"[RimLumen] ShaderPack reload failed; no pipeline is installed: {ex.Message}");
+                LogError($"[RimLumen] ShaderPack reload failed; no pipeline is installed: {ex.Message}");
             }
             else if (pipeline.IsDisposed)
             {
                 // A disposed pipeline owns no GPU objects to swap and cannot record; installing a runtime here
                 // would leak the new allocations and log a misleading "fallback installed" message.
-                TryLogError($"[RimLumen] ShaderPack reload failed; pipeline already disposed, nothing to install: {ex.Message}");
+                LogError($"[RimLumen] ShaderPack reload failed; pipeline already disposed, nothing to install: {ex.Message}");
             }
             else if (pipeline.HasShaderPackRuntime)
             {
-                TryLogError($"[RimLumen] ShaderPack reload failed; keeping active pack '{ActiveShaderPack.Id}': {ex.Message}");
+                LogError($"[RimLumen] ShaderPack reload failed; keeping active pack '{ActiveShaderPack.Id}': {ex.Message}");
             }
             else
             {
-                TryLogError($"[RimLumen] ShaderPack reload failed and no runtime was live; installing the built-in default pack: {ex.Message}");
+                LogError($"[RimLumen] ShaderPack reload failed and no runtime was live; installing the built-in default pack: {ex.Message}");
                 try
                 {
                     pipeline.App.WaitForRenderThreadIdle();
@@ -161,7 +153,7 @@ public static class RimLumenRenderHost
                 catch (Exception fallbackError)
                 {
                     LastShaderPackError += Environment.NewLine + "Fallback also failed: " + fallbackError;
-                    TryLogError($"[RimLumen] Default ShaderPack could not be installed; detaching RimLumen features: {fallbackError}");
+                    LogError($"[RimLumen] Default ShaderPack could not be installed; detaching RimLumen features: {fallbackError}");
                     TripFailSafe();
                 }
             }
@@ -178,7 +170,7 @@ public static class RimLumenRenderHost
             return;
         pipeline.App.FrameRenderer.RenderToMainThread.Enqueue(() =>
         {
-            TryLogError($"[RimLumen] ShaderPack '{failedSpec.Id}' failed while recording; reverting to the built-in default pack: {ex}");
+            LogError($"[RimLumen] ShaderPack '{failedSpec.Id}' failed while recording; reverting to the built-in default pack: {ex}");
             RevertFailedPackToDefault(failedSpec);
         });
     }
@@ -214,7 +206,7 @@ public static class RimLumenRenderHost
         {
             LastShaderPackError = (LastShaderPackError is null ? string.Empty : LastShaderPackError + Environment.NewLine)
                 + "Fallback to the default pack failed: " + ex;
-            TryLogError($"[RimLumen] Default ShaderPack could not be installed; detaching RimLumen features: {ex}");
+            LogError($"[RimLumen] Default ShaderPack could not be installed; detaching RimLumen features: {ex}");
             TripFailSafe();
             return false;
         }
@@ -249,15 +241,14 @@ public static class RimLumenRenderHost
             paths.Add(path);
     }
 
-    private static void TryLogError(string message)
+    // Verse.Log needs a live host: offline callers (no EngineApplication yet) skip the message instead of raising.
+    internal static void LogWarning(string message) => PostLog(Verse.Log.Warning, message);
+
+    internal static void LogError(string message) => PostLog(Verse.Log.Error, message);
+
+    private static void PostLog(Action<string> write, string message)
     {
-        try
-        {
-            if (EngineApplication.Instance != null)
-                Verse.Log.Error(message);
-        }
-        catch
-        {
-        }
+        if (EngineApplication.Instance is null) return;
+        write(message);
     }
 }

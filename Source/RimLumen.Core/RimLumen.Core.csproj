@@ -12,9 +12,7 @@
   </PropertyGroup>
 
   <ItemGroup Condition="'$(RimLumenShipRelease)' == 'true'">
-    <Compile Remove="Rendering\Probes\**" />
     <Compile Remove="Showcase\**" />
-    <Compile Remove="Rendering\Logic\ProbeOptions.cs" />
   </ItemGroup>
 
   <ItemGroup>

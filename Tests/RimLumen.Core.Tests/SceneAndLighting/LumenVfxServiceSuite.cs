@@ -108,15 +108,15 @@ public static class LumenVfxServiceSuite
     }
 
     [LumenFact]
-    public static void CapabilitiesReflectInstalledBackendsWithoutClaimingValidation()
+    public static void CapabilitiesReflectInstalledBackends()
     {
         var simulator = new CpuParticleSimulator();
         var service = new LumenVfxService(simulator) { GpuEngineProvider = () => null };
         GlowAssert.Equal("LumenVfxService", service.Name);
-        GlowAssert.Equal(new LumenCapabilities(false, false, false, false, 0), service.Capabilities);
+        GlowAssert.Equal(new LumenCapabilities(false, false, false, 0), service.Capabilities);
         simulator.BatchSink = new CountingBatchSink();
         service.GpuEngineProvider = () => new SpyGpuEngine();
-        GlowAssert.Equal(new LumenCapabilities(true, true, true, false, 4096), service.Capabilities);
+        GlowAssert.Equal(new LumenCapabilities(true, true, true, 4096), service.Capabilities);
         service.EnqueuePreCompute(default);
         service.RecordBufferBarriers(default);
         service.RecordHdrDraws(default);

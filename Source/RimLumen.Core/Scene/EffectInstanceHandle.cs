@@ -38,7 +38,6 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private float playbackTime;
     private float fadeTime;
     private Matrix4x4 rootWorld;
-    private int eventFireCount;
 
     internal EffectInstanceHandle(LumenVfxService owner, EffectAsset asset, in LumenPlayRequest request)
     {
@@ -121,12 +120,9 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     // Ensures: point lights currently registered on a MapGlowerDriver.
     public int LightCount => driver is { IsDisposed: false } ? CountBindings(lightIds) : 0;
 
-    // Ensures: number of timeline events fired so far (automatic crossings plus manual Trigger hits).
-    public int TimelineEventFireCount => eventFireCount;
-
     // Requires: eventOrStateName is non-empty.
-    // Ensures: for every TimelineEventSpec whose EventName matches: fires it immediately (counts it and
-    //          emits one burst on TargetNodeIndex's emitter when that node has one: Burst[0].Count if
+    // Ensures: for every TimelineEventSpec whose EventName matches: fires it immediately (emits one
+    //          burst on TargetNodeIndex's emitter when that node has one: Burst[0].Count if
     //          the emitter declares bursts, else round(RateOverTime), clamped to [0, MaxParticles]).
     //          For every node whose Name matches: activates that node's emitter and emits the same burst.
     //          Unmatched names are a no-op (WotF may trigger animator states RimLumen does not own).
@@ -267,7 +263,6 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
 
     private void FireEvent(TimelineEventSpec timelineEvent)
     {
-        eventFireCount++;
         int node = timelineEvent.TargetNodeIndex;
         if (node >= 0 && node < asset.Nodes.Length) BurstNode(node, activate: false);
     }

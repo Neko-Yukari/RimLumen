@@ -4,7 +4,6 @@ using Brutal.VulkanApi.Abstractions;
 using RimLumen.Core.Rendering.Logic;
 using Waylith;
 using Waylith.Rendering;
-using Verse;
 
 namespace RimLumen.Core.Rendering;
 
@@ -31,7 +30,6 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
 
     internal unsafe Slot Ensure(int index, RenderTexture scene, int mipLevels = 5)
     {
-        mipLevels = Math.Clamp(mipLevels, 0, 7);
         if (Slots.Length == 0 || width != scene.Width || height != scene.Height || depthFormat != scene.DepthFormat || bloomMipLevels != mipLevels)
         {
             // Rebuild notification normally retires these after the engine waits idle; also covers scene-only resize.
@@ -42,7 +40,6 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
             depthFormat = scene.DepthFormat;
             bloomMipLevels = mipLevels;
             RenderPass = CreateRenderPass(depthFormat);
-            Owned($"[RimLumen] OwnedVkObject type=VkRenderPass handle=0x{RenderPass.VkHandle:X} name=Hdr; ApiVersion={app.GraphicsDevice!.ApiVersion}; depthStore=Store; exit covers store write.");
             MipSize[] sizes = bloomMipLevels > 0 ? BloomMipChain.Compute(width, height, bloomMipLevels, 8) : Array.Empty<MipSize>();
             Slots = new Slot[app.RenderContext!.FramesInFlight];
             try
@@ -82,16 +79,8 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
                 RenderPass = RenderPass, AttachmentCount = 2, Attachments = views,
                 Width = width, Height = height, Layers = 1
             }, device.VkAllocator);
-            Owned($"[RimLumen] OwnedVkObject type=VkFramebuffer handle=0x{result.Framebuffer.VkHandle:X} name=HdrSlot{index}; depthView=0x{scene.DepthView.VkHandle:X}");
         }
         return result;
-    }
-
-    // Handle attribution is only logged under -rimlumen-probe (RimLumenRenderHost.VerboseDiagnostics).
-    private static void Owned(string message)
-    {
-        if (!RimLumenRenderHost.VerboseDiagnostics) return;
-        Log.Message(message);
     }
 
     private static RenderTexture Make(int width, int height, string name)
@@ -100,9 +89,6 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         try
         {
             result.Create();
-            Owned($"[RimLumen] OwnedVkObject type=VkImage handle=0x{result.Color.Image.VkHandle:X} name={name}");
-            Owned($"[RimLumen] OwnedVkObject type=VkImageView handle=0x{result.ColorView.VkHandle:X} name={name}");
-            Owned($"[RimLumen] OwnedVkObject type=VkSampler handle=0x{result.Sampler.VkHandle:X} name={name}");
             return result;
         }
         catch
@@ -121,9 +107,6 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         try
         {
             result.Create();
-            Owned($"[RimLumen] OwnedVkObject type=VkImage handle=0x{result.Color.Image.VkHandle:X} name={name}");
-            Owned($"[RimLumen] OwnedVkObject type=VkImageView handle=0x{result.ColorView.VkHandle:X} name={name}");
-            Owned($"[RimLumen] OwnedVkObject type=VkSampler handle=0x{result.Sampler.VkHandle:X} name={name}");
             return result;
         }
         catch

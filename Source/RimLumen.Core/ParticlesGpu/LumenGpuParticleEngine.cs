@@ -135,7 +135,7 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
         var clears = new List<EmitterSlotRange>();
         var removed = new List<int>();
         var fields = new List<GpuForceField>();
-        // Player-facing density setting; the default 1.0 leaves the emission budget (and probe counts) untouched.
+        // Player-facing density setting; the default 1.0 leaves the emission budget untouched.
         float density = Math.Clamp(RimLumenRenderHost.ParticleDensityScale, 0.1f, 1.0f);
         foreach (Instance instance in instances.Values)
         {
@@ -209,7 +209,7 @@ internal sealed record ParticleEmitterFrame(int InstanceId, GpuEmitterParams Par
     GpuCurveSample[] Curves, string? TextureKey, LumenBlendMode Blend, int MapIndex = -1,
     bool IsVertical3D = false, float BaseY = 0f, bool KillBelowFloor = false)
 {
-    // -1 on either side means unscoped (no map known), which keeps probe/offline frames drawing everything.
+    // -1 on either side means unscoped (no map known), which keeps offline frames drawing everything.
     internal bool IsVisibleOnMap(int currentMapIndex) =>
         MapIndex < 0 || currentMapIndex < 0 || MapIndex == currentMapIndex;
 }

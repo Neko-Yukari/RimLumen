@@ -226,14 +226,14 @@ public static class DemoBuildingsSuite
             VfxAssert.Check(!settings.EnableDemoBuildings, "demo buildings default to off");
 
             settings.EnableDemoBuildings = true;
-            settings.ApplyToRuntime();
-            VfxAssert.Check(RimLumenRenderHost.EnableVanillaAdditiveBloom, "ApplyToRuntime still applies the glow toggle");
+            settings.ApplyScalarsToRuntime();
+            VfxAssert.Check(RimLumenRenderHost.EnableVanillaAdditiveBloom, "ApplyScalarsToRuntime still applies the glow toggle");
 
             VfxAssert.Check(!DemoBuildingRegistry.SyncWithSettings(true), "Sync reports no Joy category before defs load");
             VfxAssert.Check(!DemoBuildingRegistry.SyncWithSettings(false), "Sync stays false before defs load");
 
             settings.EnableDemoBuildings = false;
-            settings.ApplyToRuntime();
+            settings.ApplyScalarsToRuntime();
         }
         finally
         {

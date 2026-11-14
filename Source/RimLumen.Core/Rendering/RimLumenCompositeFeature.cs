@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Threading;
 using Brutal.Numerics;
 using Brutal.VulkanApi.Abstractions;
 using Waylith.Graphics;
@@ -12,12 +11,11 @@ internal sealed class RimLumenCompositeFeature : IRenderFeature
 {
     private readonly RimLumenPipeline owner;
     private readonly InlinePass pass;
-    internal long Draws;
 
     internal RimLumenCompositeFeature(RimLumenPipeline owner)
     {
         this.owner = owner;
-        pass = new InlinePass(this, owner);
+        pass = new InlinePass(owner);
         Passes = new IRenderPass[] { pass };
     }
 
@@ -32,7 +30,7 @@ internal sealed class RimLumenCompositeFeature : IRenderFeature
     public void OnRenderTargetRebuilt(IRenderTarget target) => owner.ShaderPack.InvalidateInline();
     internal void Dispose() { }
 
-    private sealed class InlinePass(RimLumenCompositeFeature feature, RimLumenPipeline owner) : IRenderPass
+    private sealed class InlinePass(RimLumenPipeline owner) : IRenderPass
     {
         public byte PassId => RimLumenRenderHost.LumenRenderPassId;
         public PassAttachment? Attachment => null;
@@ -58,25 +56,17 @@ internal sealed class RimLumenCompositeFeature : IRenderFeature
                     catch (Exception ex)
                     {
                         if (RimLumenRenderHost.ShouldRevertPackOnFailure(packSpec))
-                        {
                             RimLumenRenderHost.ReportRuntimePackFailure(packSpec, ex);
-                            return;
-                        }
-                        if (RimLumenRenderHost.ShouldTripFailSafeOnFailure(packSpec))
-                        {
+                        else
                             owner.TripRenderFailSafe(ex);
-                            return;
-                        }
-                        throw;
                     }
                 }
                 finally
                 {
                     ctx.CommandBuffer.EndDebugLabel();
                 }
-                Interlocked.Increment(ref feature.Draws);
             }
-            catch (Exception ex) when (!RimLumenRenderHost.VerboseDiagnostics) { owner.TripRenderFailSafe(ex); }
+            catch (Exception ex) { owner.TripRenderFailSafe(ex); }
         }
         public void OnRenderTargetRebuilt(IRenderTarget target) => owner.ShaderPack.InvalidateInline();
 

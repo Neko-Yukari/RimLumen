@@ -4,7 +4,6 @@ using System.IO;
 using System.IO.Compression;
 using System.Text;
 using RimLumen.Core.Contracts;
-using RimLumen.Core.ParticlesGpu;
 using RimUnity.Assets;
 using RimUnity.Serialization;
 using Waylith;
@@ -31,8 +30,6 @@ public sealed class RimUnityTextureBridge
         {
             var texture = AssetLoader.LoadDirectory<global::RimUnity.Texture2D>(catalog.DataDirectory, record.path);
             RimLumen.Core.Assets.LumenTextureRegistry.Register(textureKey, texture.CoreTexture);
-            if (LumenHostRegistry.GpuParticleEngine is LumenGpuParticleEngine engine)
-                engine.RegisterTexture(textureKey, texture.CoreTexture);
         }
         return textureKey;
     }

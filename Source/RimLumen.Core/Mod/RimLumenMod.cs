@@ -39,13 +39,19 @@ public sealed class RimLumenSettings : ModSettings
             ApplyToRuntime();
     }
 
-    // Ensures: pushes current settings and runtime parameters to RimLumenRenderHost; reloads the
-    //          active ShaderPack pipeline only when the selected pack id changed (or forced).
-    public void ApplyToRuntime(bool forceReloadPack = false)
+    // Ensures: pushes the scalar settings (glow toggle, density, demo buildings) to the host; never touches shader packs.
+    internal void ApplyScalarsToRuntime()
     {
         RimLumenRenderHost.EnableVanillaAdditiveBloom = EnhanceVanillaAdditiveGlow;
         RimLumenRenderHost.ParticleDensityScale = Mathf.Clamp(ParticleDensityScale, 0.1f, 1.0f);
         DemoBuildingRegistry.SyncWithSettings(EnableDemoBuildings);
+    }
+
+    // Ensures: pushes current settings and runtime parameters to RimLumenRenderHost; reloads the
+    //          active ShaderPack pipeline only when the selected pack id changed (or forced).
+    public void ApplyToRuntime(bool forceReloadPack = false)
+    {
+        ApplyScalarsToRuntime();
 
         IReadOnlyList<ShaderPackEntry> packs = ShaderPackCatalog.GetAvailablePacks(rescan: forceReloadPack);
         ShaderPackEntry entry = ShaderPackCatalog.FindOrDefault(SelectedShaderPackId, packs);
@@ -100,6 +106,9 @@ public sealed class RimLumenMod : Verse.Mod
     {
         IReadOnlyList<ShaderPackEntry> packs = ShaderPackCatalog.GetAvailablePacks();
         ShaderPackEntry activeEntry = ShaderPackCatalog.FindOrDefault(Settings.SelectedShaderPackId, packs);
+        bool glowBefore = Settings.EnhanceVanillaAdditiveGlow;
+        float densityBefore = Settings.ParticleDensityScale;
+        bool demoBefore = Settings.EnableDemoBuildings;
 
         Rect viewRect = new(0f, 0f, inRect.width - 20f, Mathf.Max(inRect.height, lastContentHeight));
         Widgets.BeginScrollView(inRect, ref scrollPosition, viewRect);
@@ -125,6 +134,9 @@ public sealed class RimLumenMod : Verse.Mod
             ref Settings.EnableDemoBuildings,
             "开启后，「娱乐」建造菜单会多出两座零成本演示建筑：烟花发射器与粒子喷泉。\n" +
             "Adds two zero-cost demo buildings to the Recreation build menu: a firework launcher and a particle fountain.");
+        bool settingsChanged = Settings.EnhanceVanillaAdditiveGlow != glowBefore
+            || Settings.ParticleDensityScale != densityBefore
+            || Settings.EnableDemoBuildings != demoBefore;
 
         listing.GapLine(12f);
 
@@ -155,7 +167,7 @@ public sealed class RimLumenMod : Verse.Mod
             listing.Label($"光影包参数调节 ({activeEntry.Name})");
             listing.Gap(4f);
             foreach (ShaderPackOptionDefinition option in activeEntry.Options)
-                DrawOptionSlider(listing, activeEntry, option);
+                settingsChanged |= DrawOptionSlider(listing, activeEntry, option);
         }
 
         listing.GapLine(12f);
@@ -166,8 +178,9 @@ public sealed class RimLumenMod : Verse.Mod
         lastContentHeight = listing.CurHeight + 24f;
         Widgets.EndScrollView();
 
-        // Sync scalar toggles and live pack sliders every frame without rebuilding pipelines.
-        Settings.ApplyToRuntime();
+        // Push only what the player actually changed; a pipeline rebuild stays tied to the pack id.
+        if (settingsChanged)
+            Settings.ApplyToRuntime();
     }
 
     private static void DrawShaderPackSelector(Listing_Standard listing, IReadOnlyList<ShaderPackEntry> packs, ShaderPackEntry activeEntry)
@@ -212,7 +225,10 @@ public sealed class RimLumenMod : Verse.Mod
         if (Widgets.ButtonText(new Rect(row.x, row.y, w, row.height), "热重载光影包 (Reload)"))
             Settings.ApplyToRuntime(forceReloadPack: true);
         if (Widgets.ButtonText(new Rect(row.x + w + gap, row.y, w, row.height), "重新扫描目录 (Rescan)"))
+        {
             ShaderPackCatalog.GetAvailablePacks(rescan: true);
+            Settings.ApplyToRuntime();
+        }
         if (Widgets.ButtonText(new Rect(row.x + (w + gap) * 2f, row.y, w, row.height), "重置本包参数 (Reset Pack)"))
         {
             Settings.ResetPackOverrides(activeEntry.Id);
@@ -244,7 +260,7 @@ public sealed class RimLumenMod : Verse.Mod
         GUI.color = prev;
     }
 
-    private static void DrawOptionSlider(Listing_Standard listing, ShaderPackEntry entry, ShaderPackOptionDefinition option)
+    private static bool DrawOptionSlider(Listing_Standard listing, ShaderPackEntry entry, ShaderPackOptionDefinition option)
     {
         float current = ShaderPackCatalog.GetOptionValue(entry, option, Settings.PackParamOverrides);
         if (!string.IsNullOrWhiteSpace(option.Tooltip))
@@ -260,9 +276,11 @@ public sealed class RimLumenMod : Verse.Mod
 
         float next = listing.Slider(current, option.MinValue, option.MaxValue);
         float snapped = ShaderPackCatalog.SnapAndClamp(next, option);
-        if (Mathf.Abs(snapped - current) > 1e-5f)
+        bool changed = Mathf.Abs(snapped - current) > 1e-5f;
+        if (changed)
             Settings.PackParamOverrides[ShaderPackCatalog.MakeOverrideKey(entry.Id, option.Key)] = snapped;
         listing.Gap(2f);
+        return changed;
     }
 
     private static string TrimSingleLine(string text, int maxChars)

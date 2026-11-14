@@ -19,9 +19,6 @@ public sealed class LumenMapLightingComponent : MapComponent, IDisposable
     // Requires: map is non-null. Uses a VerseGlowGridSink over map.glowGrid.
     public LumenMapLightingComponent(Map map) : base(map) => driver = new MapGlowerDriver(new VerseGlowGridSink(map));
 
-    // Requires: map and sink are non-null. Injection seam for tests and alternate backends.
-    public LumenMapLightingComponent(Map map, IGlowGridSink sink) : base(map) => driver = new MapGlowerDriver(sink);
-
     public MapGlowerDriver Driver => driver;
 
     // Ensures: publishes this map's driver in LumenMapLightingRegistry (idempotent).
