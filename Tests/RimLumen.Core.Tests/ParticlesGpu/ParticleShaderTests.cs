@@ -196,6 +196,10 @@ public static class ParticleShaderTests
         CompileFile("Particles/L1ParticleQuad.vert.glsl", RuntimeShaderStage.Vertex);
         CompileFile("Particles/L1ParticleQuad.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenDepthCopy.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("PostFx/RimLumenBloomPrefilter.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("PostFx/RimLumenBloomDown.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("PostFx/RimLumenBloomUp.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("PostFx/RimLumenComposite.frag.glsl", RuntimeShaderStage.Fragment);
         Console.WriteLine("[SPIR-V] compute strides=64,208,48,4; vertex strides=64,208,32; LocalSize=64,1,1");
     }
 

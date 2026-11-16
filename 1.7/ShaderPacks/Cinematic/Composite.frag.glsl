@@ -12,6 +12,7 @@ layout(location = 0) out vec4 outColor;
 void main()
 {
     vec4 hdr = texture(hdrImage, uv);
+    hdr.rgb = sanitizeHdr(hdr.rgb);
     vec3 bloom = texture(bloomImage, uv).rgb * ubo.BloomParams.x;
     vec3 streak = texture(streakImage, uv).rgb;
 

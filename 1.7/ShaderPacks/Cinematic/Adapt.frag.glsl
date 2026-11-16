@@ -8,11 +8,13 @@ layout(location = 0) out vec4 outColor;
 
 void main()
 {
-    vec3 center = texture(hdrImage, vec2(0.5)).rgb;
-    vec3 sampleA = texture(hdrImage, vec2(0.35, 0.35)).rgb;
-    vec3 sampleB = texture(hdrImage, vec2(0.65, 0.65)).rgb;
+    vec3 center = sanitizeHdr(texture(hdrImage, vec2(0.5)).rgb);
+    vec3 sampleA = sanitizeHdr(texture(hdrImage, vec2(0.35, 0.35)).rgb);
+    vec3 sampleB = sanitizeHdr(texture(hdrImage, vec2(0.65, 0.65)).rgb);
     float current = max(luminance(center), max(luminance(sampleA), luminance(sampleB)));
+    // A history poisoned by an earlier bad frame restarts from the current value instead of staying broken.
     float previous = texture(prevAdapt, uv).r;
+    if (isnan(previous) || isinf(previous)) previous = current;
     float adapted = mix(previous, current, 0.08);
-    outColor = vec4(adapted, 0.0, 0.0, 1.0);
+    outColor = vec4(clamp(adapted, 0.0, 1024.0), 0.0, 0.0, 1.0);
 }

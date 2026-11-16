@@ -672,6 +672,8 @@ If your pack needs custom Bloom scattering on empty frames (e.g., from `scene`, 
 
 > Blend & alpha note: When `passes` is empty, the composite pass is hardcoded to `PremultipliedAlpha` blending onto the backbuffer. If your composite outputs the full scene (e.g., color grading or fog), output `vec4(finalRgb, 1.0)` or use an explicit `passes` entry with `"blend": "Opaque"`. If you only want to layer HDR particles and bloom over the untouched scene, output `vec4(mappedHdr, hdr.a)`.
 
+> Numeric safety note: `hdr` is `RGBA16F`; heavy additive overlap can overflow to `Inf`, some drivers can also produce `NaN`, and drivers handle both inconsistently. Any pass that reads `hdr` directly (custom prefilter, composite, luminance statistics), and especially one that writes a `persistent` history target, should zero `NaN`/`Inf` and cap the value first; otherwise one bad pixel spreads through blurs or stays in the history buffer. See `sanitizeHdr` in the built-in `Cinematic/Common.glslinc`.
+
 #### Fixed Vertex Interface and `#include`
 
 The engine supplies the fullscreen triangle; fragment shaders declare:

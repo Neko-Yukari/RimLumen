@@ -19,10 +19,18 @@ layout(set = 0, binding = 4) uniform sampler2D mapLightField;
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 outColor;
 
+// Half-float overflow and driver NaN handling differ across GPUs; zero NaN/Inf and cap the rest.
+vec3 sanitizeHdr(vec3 c)
+{
+    if (any(isnan(c)) || any(isinf(c))) return vec3(0.0);
+    return clamp(c, vec3(0.0), vec3(1024.0));
+}
+
 void main()
 {
     vec4 scene = texture(sceneImage, uv);
     vec4 hdr = texture(hdrImage, uv);
+    hdr.rgb = sanitizeHdr(hdr.rgb);
     vec3 bloom = texture(bloomImage, uv).rgb;
     vec4 fogData = texture(fogBlurImage, uv);
 
