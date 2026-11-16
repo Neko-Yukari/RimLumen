@@ -12,7 +12,7 @@ layout(std140, set = 2, binding = 0) uniform MaterialUniforms
     vec4 _LumenDepthUv;    // gl_FragCoord.xy * xy + zw -> depth texture UV
     vec4 _LumenVertical;   // Vertical3D display: x mode (0 legacy, 1 un-squash for 3D/IsoRim, 2 oblique for straight-down 2D), y baseY, z vanilla MoteOverhead altitude, w 0
     vec4 _LumenMaterialTint;
-    vec4 _LumenColor;       // x: Linear material, y: resolved sRGB texture
+    vec4 _LumenColor;       // x: Linear material, y: resolved sRGB texture, z: Linear blending
 } material;
 
 // Waylith derives the material (set 2) descriptor layout from the FRAGMENT source only, so the

@@ -169,6 +169,7 @@ Copy-FilesToPackage 'Languages'
 Copy-FilesToPackage '1.7/Defs'
 Copy-FilesToPackage '1.7/Textures'
 Copy-FilesToPackage '1.7/ShaderPacks'
+Copy-FilesToPackage '1.7/Shaders/RimLumen'
 Copy-FilesToPackage '1.7/Shaders/Particles'
 Copy-FilesToPackage '1.7/Shaders/PostFx'
 
@@ -184,6 +185,7 @@ foreach ($required in @(
         'docs/api.md',
         'Languages/English/Keyed/RimLumen.xml',
         'Languages/ChineseSimplified/Keyed/RimLumen.xml',
+        '1.7/Shaders/RimLumen/RimLumenColorSpace.glsl',
         '1.7/Assemblies/RimLumen.Core.dll',
         '1.7/Compat/RimUnity/Assemblies/RimLumen.Adapter.RimUnity.dll')) {
     if (-not (Test-Path -LiteralPath (Join-Path $outFull $required) -PathType Leaf)) {

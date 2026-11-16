@@ -3,6 +3,13 @@ using Waylith.Rendering;
 
 namespace RimLumen.Core.Contracts;
 
+// Native HDR-layer blending, independent of an emitter's material calculation space.
+public enum LumenColorBlendSpace : byte
+{
+    Legacy = 0,
+    Linear = 1,
+}
+
 /// <summary>Main-thread value snapshot passed to contributors before compute is enqueued.
 /// Managed context, not a packed GPU buffer ABI; do not upload its memory verbatim. World distances are map
 /// cells, +Y is up. Camera matrices retain Waylith/Unity column-vector semantics despite their Numerics
@@ -13,6 +20,9 @@ public readonly struct LumenCaptureContext
     public LumenCaptureContext() { }
     /// <summary>RimWorld Map.uniqueID, never the index in Find.Maps; -1 means no current map/filter.</summary>
     public int CurrentMapIndex { get; init; } = -1;
+    /// <summary>Pre-update frame latch, not the mutable requested setting. Convert straight stored
+    /// RGB to this space before premultiplication; retain this value with the captured frame.</summary>
+    public LumenColorBlendSpace ColorBlendSpace { get; init; }
     /// <summary>Monotonic host FrameTiming.FrameNumber identifying the captured frame, not the rotating
     /// FrameContext.SubmissionFrameIndex resource slot. Use this identity to pair capture and recording.</summary>
     public required ulong FrameIndex { get; init; }
@@ -65,6 +75,9 @@ public readonly struct LumenHdrDrawContext
     public LumenHdrDrawContext() { }
     /// <summary>RimWorld Map.uniqueID, never the index in Find.Maps; -1 means no current map/filter.</summary>
     public int CurrentMapIndex { get; init; } = -1;
+    /// <summary>The same immutable space as capture. Draws use the shared host shader helper on
+    /// straight stored RGB before premultiplication, never reread a host setting during recording.</summary>
+    public LumenColorBlendSpace ColorBlendSpace { get; init; }
     public required FrameContext Frame { get; init; }
     /// <summary>Monotonic host FrameTiming.FrameNumber identifying the captured frame, not the rotating
     /// FrameContext.SubmissionFrameIndex resource slot. Use this identity to pair capture and recording.</summary>

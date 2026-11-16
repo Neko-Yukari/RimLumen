@@ -12,6 +12,7 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
     internal sealed class Slot
     {
         internal RenderTexture Color = null!;
+        internal RenderTexture? StoredColor;
         // Vanilla/third-party additive copies: bloom and pack input only, never part of the composite core term.
         internal RenderTexture Glow = null!;
         internal RenderTexture DepthSnapshot = null!;
@@ -87,6 +88,11 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         }
         return result;
     }
+
+    // Requires: Ensure initialized this submission slot for the current scene dimensions.
+    // Ensures: lazily owns one full-size RGBA16F output in the slot, retired with the other slot targets.
+    internal RenderTexture EnsureStoredColor(int index)
+        => Slots[index].StoredColor ??= Make(width, height, $"RimLumen.StoredColor.{index}");
 
     private unsafe VkFramebuffer CreateFramebuffer(RenderTexture color, VkImageView sceneDepth)
     {
@@ -196,6 +202,7 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
             if (slot is null) continue;
             DestroyFramebuffers(slot);
             slot.Color?.Dispose();
+            slot.StoredColor?.Dispose();
             slot.Glow?.Dispose();
             slot.DepthSnapshot?.Dispose();
             slot.SceneSnapshot?.Dispose();

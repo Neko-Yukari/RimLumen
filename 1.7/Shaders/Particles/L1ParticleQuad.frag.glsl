@@ -14,7 +14,7 @@ layout(std140, set = 2, binding = 0) uniform LumenL1Uniforms
     // Actual capture projection coefficients (M33, M34, M43, M44).
     vec4 _LumenProjection;
     vec4 _LumenMaterialTint;
-    vec4 _LumenColor; // x: Linear material, y: resolved sRGB texture
+    vec4 _LumenColor; // x: Linear material, y: resolved sRGB texture, z: Linear blending
 } lumen;
 layout(set = 2, binding = 1) uniform sampler2D _LumenParticleTexture; // @default = white
 layout(set = 2, binding = 2) uniform sampler2D _LumenSceneDepth; // @default = white
@@ -51,6 +51,7 @@ void main()
     }
     if (c.a <= 0.0)
         discard;
+    c = lumenColorForBlendSpace(c, lumen._LumenColor.z > 0.5);
     if (lumen._LumenDraw.y > 0.5)
         c.rgb *= c.a;
     outColor = c;

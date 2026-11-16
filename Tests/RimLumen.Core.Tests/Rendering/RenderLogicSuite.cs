@@ -9,6 +9,31 @@ namespace RimLumen.Core.Tests.Rendering;
 public static class RenderLogicSuite
 {
     [LumenFact]
+    public static void BlendSpaceRequestIsLatchedAndRejectsUndefinedValues()
+    {
+        LumenColorBlendSpace original = RimLumenRenderHost.ColorBlendSpace;
+        LumenColorBlendSpace originalFrame = RimLumenRenderHost.CurrentFrameColorBlendSpace;
+        try
+        {
+            RimLumenRenderHost.ColorBlendSpace = LumenColorBlendSpace.Legacy;
+            RimLumenRenderHost.LatchColorBlendSpace();
+            RimLumenRenderHost.ColorBlendSpace = LumenColorBlendSpace.Linear;
+            Equal(LumenColorBlendSpace.Legacy, RimLumenRenderHost.CurrentFrameColorBlendSpace);
+            ThrowsOutOfRange(() => RimLumenRenderHost.ColorBlendSpace = (LumenColorBlendSpace)255);
+            Equal(LumenColorBlendSpace.Linear, RimLumenRenderHost.ColorBlendSpace);
+            Equal(LumenColorBlendSpace.Legacy, RimLumenRenderHost.CurrentFrameColorBlendSpace);
+            RimLumenRenderHost.LatchColorBlendSpace();
+            Equal(LumenColorBlendSpace.Linear, RimLumenRenderHost.CurrentFrameColorBlendSpace);
+        }
+        finally
+        {
+            RimLumenRenderHost.ColorBlendSpace = originalFrame;
+            RimLumenRenderHost.LatchColorBlendSpace();
+            RimLumenRenderHost.ColorBlendSpace = original;
+        }
+    }
+
+    [LumenFact]
     public static void CaptureFeatureIsInsertedBeforeMap()
     {
         Equal(2, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["ComputeRenderFeature", "WorldRenderFeature", "MapRenderFeature", "PostFxFeature"]));

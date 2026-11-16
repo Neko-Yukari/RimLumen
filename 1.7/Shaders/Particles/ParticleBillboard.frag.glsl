@@ -42,6 +42,7 @@ void main()
     }
     if (color.a <= 0.0)
         discard;
+    color = lumenColorForBlendSpace(color, material._LumenColor.z > 0.5);
     // Additive blends with One/One, so its rgb must be premultiplied (the alternative SrcAlpha factor is not used).
     if (material._LumenDraw.w > 0.5)
         color.rgb *= color.a;

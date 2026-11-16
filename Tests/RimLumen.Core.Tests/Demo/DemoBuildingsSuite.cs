@@ -220,14 +220,17 @@ public static class DemoBuildingsSuite
     {
         bool originalGlow = RimLumenRenderHost.EnableVanillaAdditiveBloom;
         float originalDensity = RimLumenRenderHost.ParticleDensityScale;
+        LumenColorBlendSpace originalBlendSpace = RimLumenRenderHost.ColorBlendSpace;
         try
         {
             var settings = new RimLumenSettings();
             VfxAssert.Check(!settings.EnableDemoBuildings, "demo buildings default to off");
 
             settings.EnableDemoBuildings = true;
+            settings.ColorBlendSpace = LumenColorBlendSpace.Linear;
             settings.ApplyScalarsToRuntime();
             VfxAssert.Check(RimLumenRenderHost.EnableVanillaAdditiveBloom, "ApplyScalarsToRuntime still applies the glow toggle");
+            VfxAssert.Check(RimLumenRenderHost.ColorBlendSpace == LumenColorBlendSpace.Linear, "ApplyScalarsToRuntime requests linear blending");
 
             VfxAssert.Check(!DemoBuildingRegistry.SyncWithSettings(true), "Sync reports no Joy category before defs load");
             VfxAssert.Check(!DemoBuildingRegistry.SyncWithSettings(false), "Sync stays false before defs load");
@@ -239,6 +242,7 @@ public static class DemoBuildingsSuite
         {
             RimLumenRenderHost.EnableVanillaAdditiveBloom = originalGlow;
             RimLumenRenderHost.ParticleDensityScale = originalDensity;
+            RimLumenRenderHost.ColorBlendSpace = originalBlendSpace;
         }
     }
 

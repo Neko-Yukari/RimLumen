@@ -88,6 +88,30 @@ public static class ParticleShaderTests
     }
 
     [LumenFact]
+    public static void PhaseBConvertsStraightParticleColorAndEncodesAccumulation()
+    {
+        string l1 = Read("L1ParticleQuad.frag.glsl"), l2 = Read("ParticleBillboard.frag.glsl");
+        int l1Convert = l1.IndexOf("c = lumenColorForBlendSpace(c, lumen._LumenColor.z > 0.5)", StringComparison.Ordinal);
+        int l2Convert = l2.IndexOf("color = lumenColorForBlendSpace(color, material._LumenColor.z > 0.5)", StringComparison.Ordinal);
+        Require(l1Convert >= 0 && l1Convert < l1.IndexOf("c.rgb *= c.a", StringComparison.Ordinal)
+            && l2Convert >= 0 && l2Convert < l2.IndexOf("color.rgb *= color.a", StringComparison.Ordinal),
+            "Both shaders must decode straight stored colour before premultiplication.");
+        string encode = ShaderSourceLoader.ReadShaderSource(Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "PostFx", "RimLumenEncodeStored.frag.glsl")));
+        Require(encode.Contains("vec4(lumenEncodeStored(color.rgb), color.a)", StringComparison.Ordinal),
+            "The accumulated linear layer must be encoded with alpha preserved.");
+        string root = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Source", "RimLumen.Core"));
+        string pipeline = File.ReadAllText(Path.Combine(root, "Rendering", "RimLumenPipeline.cs"));
+        string chain = File.ReadAllText(Path.Combine(root, "Rendering", "RimLumenMapChain.cs"));
+        string gpu = File.ReadAllText(Path.Combine(root, "ParticlesGpu", "ParticleGpuDrawResources.cs"));
+        Require(pipeline.Contains("colorBlendSpace = RimLumenRenderHost.CurrentFrameColorBlendSpace", StringComparison.Ordinal)
+            && pipeline.Contains("ColorBlendSpace = colorBlendSpace", StringComparison.Ordinal)
+            && pipeline.Contains("earlyWork, colorBlendSpace)", StringComparison.Ordinal)
+            && chain.Contains("ColorBlendSpace = payload.ColorBlendSpace", StringComparison.Ordinal)
+            && gpu.Contains("snapshot.Context.ColorBlendSpace == LumenColorBlendSpace.Linear", StringComparison.Ordinal),
+            "Capture, draw context, and GPU properties must carry the same frame latch.");
+    }
+
+    [LumenFact]
     public static void P2A4aFlipbookStartsAtTopRow()
     {
         string vertex = Read("ParticleBillboard.vert.glsl");
@@ -381,6 +405,7 @@ public static class ParticleShaderTests
         CompileFile("Particles/L1ParticleQuad.vert.glsl", RuntimeShaderStage.Vertex);
         CompileFile("Particles/L1ParticleQuad.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenDepthCopy.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("PostFx/RimLumenEncodeStored.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomPrefilter.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomDown.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomUp.frag.glsl", RuntimeShaderStage.Fragment);

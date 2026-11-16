@@ -446,6 +446,23 @@ All three events are raised on the main thread from the per-frame advance, in th
 
 ---
 
+### 4. Native HDR Blend Space and Extension Draws
+
+`LumenColorBlendSpace : byte` offers `Legacy = 0` (default) and `Linear = 1` for native HDR-layer blending, independently of an emitter's material `ColorSpace`. `RimLumenRenderHost.ColorBlendSpace` is the requested setting; read-only `CurrentFrameColorBlendSpace` is the frame latch. It is initialized at installation and captured each frame in `EngineApplication.PrePollEvents` (584), before input, `OnUpdate` (715), and `BeginMainThreadFrame` (730). A setting changed during Update takes effect on the next frame.
+
+Main-thread layer 15 and explicit HDR-pass producers must read only the frame latch, never the requested setting for a draw. Contributors use `LumenCaptureContext.ColorBlendSpace`, copy it into immutable frame data, and use `LumenHdrDrawContext.ColorBlendSpace` during recording; rendering never reads mutable settings. Built-in L1 / L2 target the HDR pass directly; there are currently no built-in layer 15 producers, and Showcase's original reference quads remain on layer 0.
+
+After the host registers its shader root, external GLSL can include `RimLumen/RimLumenColorSpace.glsl`. It provides D / E as `lumenDecodeStored(vec3)` / `lumenEncodeStored(vec3)`, and `lumenColorForBlendSpace(vec4 storedColor, bool linearBlendSpace)` converts **straight** Stored RGB to the layer space without changing alpha. Call the helper before any blend-mode premultiplication; never decode already-premultiplied RGB:
+
+```glsl
+#include "RimLumen/RimLumenColorSpace.glsl"
+// storedColor is straight RGBA from material calculation; linearBlendSpace comes from this frame's latch.
+vec4 layerColor = lumenColorForBlendSpace(storedColor, linearBlendSpace);
+if (premultipliedBlend) layerColor.rgb *= layerColor.a;
+```
+
+Linear mode decodes straight material RGB before alpha / hardware blending; the host encodes the accumulated native HDR layer once before the group 0 ShaderPack DAG. AlphaBlend and Premultiplied follow the same rule, and alpha remains coverage. Equality with Legacy holds only for alpha 1 over an empty layer: for `c=0.5, a=0.5` over an empty layer, Legacy gives `0.25` and Linear approximately `0.36078`. These are formula results, not measured pixels. Pack `hdr`, `glow`, and `scene` remain Stored; vanilla glow and late groups 1–3 are unchanged. When Linear conversion is needed, one extra full-resolution RGBA16F image per submission slot is allocated lazily and retained safely until target retirement.
+
 ## 7. Texture Registry and Compatibility Notes
 
 ### 1. Custom Particle Textures (`LumenTextureRegistry`)

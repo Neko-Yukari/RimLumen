@@ -446,6 +446,23 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 
 ---
 
+### 4. 原生 HDR 混合空间与扩展绘制
+
+`LumenColorBlendSpace : byte` 提供 `Legacy = 0`（默认）和 `Linear = 1`，控制原生 HDR 层的混合，与发射器的 `ColorSpace` 材质计算相互独立。`RimLumenRenderHost.ColorBlendSpace` 是请求设置；只读的 `CurrentFrameColorBlendSpace` 是当前帧锁存值。安装时初始化锁存值，每帧在 `EngineApplication.PrePollEvents`（584）采集，早于输入、`OnUpdate`（715）和 `BeginMainThreadFrame`（730）。Update 中的设置修改从下一帧生效。
+
+主线程 layer 15 或显式 HDR pass 绘制的生产者只能读取当前帧锁存值，不能读取请求设置作为绘制值。贡献者使用 `LumenCaptureContext.ColorBlendSpace`，将其复制进不可变帧数据，并在录制时使用 `LumenHdrDrawContext.ColorBlendSpace`；渲染线程不读取可变设置。内置 L1 / L2 直接进入 HDR pass；当前没有内置 layer 15 生产者，Showcase 原有参考面片保持 layer 0。
+
+外部 GLSL 在宿主注册着色器根目录后可包含 `RimLumen/RimLumenColorSpace.glsl`。其中 `lumenDecodeStored(vec3)` / `lumenEncodeStored(vec3)` 提供 D / E，`lumenColorForBlendSpace(vec4 storedColor, bool linearBlendSpace)` 转换**未预乘**的 Stored RGB，保留 alpha。须先调用辅助函数，再按混合模式预乘；不得解码已经预乘的 RGB：
+
+```glsl
+#include "RimLumen/RimLumenColorSpace.glsl"
+// storedColor 是材质计算得到的直通 RGBA；linearBlendSpace 来自本帧锁存值。
+vec4 layerColor = lumenColorForBlendSpace(storedColor, linearBlendSpace);
+if (premultipliedBlend) layerColor.rgb *= layerColor.a;
+```
+
+Linear 模式先对直通材质 RGB 解码，再进行 alpha / 硬件混合；宿主在 group 0 的 ShaderPack DAG 前对累积的原生 HDR 层编码一次。AlphaBlend 与 Premultiplied 遵循同一规则，alpha 始终表示覆盖度。只有 alpha 为 1 且目标层为空时与 Legacy 相等：例如空层上 `c=0.5, a=0.5`，Legacy 得 `0.25`，Linear 约为 `0.36078`；这是公式示例，并非实测像素。光影包的 `hdr`、`glow` 和 `scene` 仍为 Stored；原版 glow 和晚组 1～3 不变。需要 Linear 转换时，每个提交槽位按需额外分配一张全分辨率 RGBA16F 图像，并安全保留至目标退役。
+
 ## 七、贴图注册与兼容注意事项
 
 ### 1. 自定义粒子贴图（`LumenTextureRegistry`）

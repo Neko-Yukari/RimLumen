@@ -156,6 +156,7 @@ internal sealed class ShaderPackRuntime : IDisposable
     internal void RecordOffscreen(
         in FrameContext ctx,
         HdrTargets.Slot slot,
+        RenderTexture hdrSource,
         RenderTexture scene,
         in ShaderPackUniforms uniforms,
         bool hasHdrDraws,
@@ -169,7 +170,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         bool skipBuiltInBloom = plan.BloomMipLevels == 0 || (!hasHdrDraws && !plan.HasCustomBloomShader);
 
         if (!skipBuiltInBloom && slot.Down.Length > 0)
-            RecordBloom(in ctx, slot, in uniforms, bloomDown, bloomUp, slot.Color, glowTex, scene, depthTex);
+            RecordBloom(in ctx, slot, in uniforms, bloomDown, bloomUp, hdrSource, glowTex, scene, depthTex);
 
         RenderTexture bloomTex = skipBuiltInBloom || slot.Bloom is null ? black1x1! : slot.Bloom;
         ulong writeOrdinal = persistentFrameOrdinal;
@@ -180,7 +181,7 @@ internal sealed class ShaderPackRuntime : IDisposable
             PostEffectPass pass = customOffscreenPasses[i];
             foreach (PlannedInput input in passSpec.Inputs)
             {
-                BindInputSource(pass, input, slot, glowTex, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, writeOrdinal);
+                BindInputSource(pass, input, hdrSource, glowTex, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, writeOrdinal);
             }
             pass.SetUniforms(in uniforms);
             RenderTexture output = ResolveWriteTarget(passSpec.OutputTargetIndex, ctx.SubmissionFrameIndex, writeOrdinal);
@@ -245,6 +246,7 @@ internal sealed class ShaderPackRuntime : IDisposable
     internal void RecordComposite(
         in FrameContext ctx,
         HdrTargets.Slot slot,
+        RenderTexture hdrSource,
         RenderTexture scene,
         in ShaderPackUniforms uniforms,
         bool hasHdrDraws,
@@ -259,7 +261,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         PlannedPass finalSpec = plan.Passes[^1];
         foreach (PlannedInput input in finalSpec.Inputs)
         {
-            BindInputSource(compositePass, input, slot, glowTex, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
+            BindInputSource(compositePass, input, hdrSource, glowTex, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
         }
         compositePass.SetUniforms(in uniforms);
         Vector4 finalPc = finalSpec.UsesBuiltInComposite
@@ -415,7 +417,7 @@ internal sealed class ShaderPackRuntime : IDisposable
     private void BindInputSource(
         PostEffectPass pass,
         PlannedInput input,
-        HdrTargets.Slot slot,
+        RenderTexture hdrSource,
         RenderTexture glowTex,
         RenderTexture bloomTex,
         RenderTexture scene,
@@ -425,7 +427,7 @@ internal sealed class ShaderPackRuntime : IDisposable
     {
         switch (input.Kind)
         {
-            case InputKind.Hdr: pass.SetInput(input.Binding, slot.Color); return;
+            case InputKind.Hdr: pass.SetInput(input.Binding, hdrSource); return;
             case InputKind.Glow: pass.SetInput(input.Binding, glowTex); return;
             case InputKind.Bloom: pass.SetInput(input.Binding, bloomTex); return;
             case InputKind.Scene: pass.SetInput(input.Binding, scene); return;

@@ -135,7 +135,7 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
     //   _LumenDepth through the arena (never by mutating the cached Material); drops the remaining sub-batches
     //   after one Log.Error when the capture needs more than MaxActiveTextureSlots distinct materials.
     internal void AppendDraws(List<FinalDrawItem> draws, DrawItemFactory maker, DrawPropertyArena arena, int queueOrder,
-        ulong frameIndex)
+        ulong frameIndex, LumenColorBlendSpace colorBlendSpace)
     {
         lock (gate)
         {
@@ -162,7 +162,8 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
                 properties[2] = DrawProperty.Vector(ProjectionPropertyId, projectionPacked);
                 properties[3] = DrawProperty.Vector(TintPropertyId, batch.MaterialTint);
                 properties[4] = DrawProperty.Vector(ColorPropertyId,
-                    new Vector4(batch.ColorSpace == LumenColorSpace.Linear ? 1f : 0f, batch.TextureSrgb ? 1f : 0f, 0f, 0f));
+                    new Vector4(batch.ColorSpace == LumenColorSpace.Linear ? 1f : 0f, batch.TextureSrgb ? 1f : 0f,
+                        colorBlendSpace == LumenColorBlendSpace.Linear ? 1f : 0f, 0f));
                 var command = new MeshDrawCommand(mesh, material, range, Matrix4x4.Identity, i,
                     RimLumenRenderHost.LumenRenderPassId);
                 FinalDrawItem? draw = maker.TryMake(in command, arena, UnityEngine.Shader.GlobalKeywordKey, queueOrder + i);

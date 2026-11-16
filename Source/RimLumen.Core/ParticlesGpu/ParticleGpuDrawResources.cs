@@ -136,7 +136,8 @@ internal sealed class ParticleGpuDrawResources : IDisposable
                 ? new Vector4(verticalMode, emitter.BaseY, vanillaMoteY, 0f) : Vector4.Zero);
             properties[6] = DrawProperty.Vector(TintPropertyId, emitter.MaterialTint);
             properties[7] = DrawProperty.Vector(ColorPropertyId,
-                new Vector4(emitter.ColorSpace == LumenColorSpace.Linear ? 1f : 0f, textureSrgb[i] ? 1f : 0f, 0f, 0f));
+                new Vector4(emitter.ColorSpace == LumenColorSpace.Linear ? 1f : 0f, textureSrgb[i] ? 1f : 0f,
+                    snapshot.Context.ColorBlendSpace == LumenColorBlendSpace.Linear ? 1f : 0f, 0f));
             InstancedDrawInfo instancing = resources.DrawInstances(i, instances);
             var command = new MeshDrawCommand(quad, material, range, Matrix4x4.Identity, 0,
                 RimLumenRenderHost.LumenRenderPassId, instancing);
