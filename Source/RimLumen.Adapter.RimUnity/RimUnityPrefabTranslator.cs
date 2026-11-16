@@ -64,8 +64,8 @@ public sealed class RimUnityPrefabTranslator
             nodes[i] = new EffectNodeSpec
             {
                 Name = source.name ?? source.id, ParentIndex = parent,
-                // Unity's local quaternion already contains the quad pitch. Free3D adds no second 90-degree rotation.
-                SpacePlane = LumenSpacePlane.Free3D,
+                // Unity's local quaternion already contains the quad pitch; GroundXZ adds no second rotation.
+                SpacePlane = LumenSpacePlane.GroundXZ,
                 LocalPosition = new Vector3(source.position[0], source.position[1], source.position[2]),
                 LocalRotation = new Quaternion(source.rotation[0], source.rotation[1], source.rotation[2], source.rotation[3]),
                 LocalScale = new Vector3(source.scale[0], source.scale[1], source.scale[2]),

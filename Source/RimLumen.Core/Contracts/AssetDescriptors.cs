@@ -5,11 +5,11 @@ namespace RimLumen.Core.Contracts;
 
 public enum LumenSpacePlane : byte
 {
+    // The node's LocalRotation verbatim; the display is not adapted to the camera.
     GroundXZ = 0,
-    HeightVertical90 = 1,
-    Free3D = 2,
-    // Identity rotation like Free3D, but the emitter simulates in true 3D (+Y up) and its display is adapted to the
+    // Same node matrix as GroundXZ, but the emitter simulates in true 3D (+Y up) and its display is adapted to the
     // active camera: un-squashed under IsoRim, an oblique +Z projection under a straight-down 2D camera.
+    // The value stays 3: integer-encoded assets and tools outside this repository use it.
     Vertical3D = 3,
 }
 
@@ -132,7 +132,26 @@ public readonly record struct PointLightSpec(
     Vector3 ColorRgb,
     ScalarCurve? IntensityOverTime = null);
 
-public readonly record struct TimelineEventSpec(float TimeSeconds, string EventName, int TargetNodeIndex = -1);
+// TimeSeconds is measured from the entry of State (null = the asset's initial state). Notify raises
+// ILumenEffectHandle.Notify(EventName) when the event fires.
+public readonly record struct TimelineEventSpec(
+    float TimeSeconds,
+    string EventName,
+    int TargetNodeIndex = -1,
+    string? State = null,
+    bool Notify = false);
+
+// One named playback segment. Nodes lists node names (every node with that name belongs to the state);
+// Duration null = EffectAsset.DefaultDuration. A Loop state never ends on its own and Duration is its
+// timeline-event cycle; otherwise the state ends after Duration and enters Next, or finishes the effect.
+public sealed class EffectStateSpec
+{
+    public required string Name { get; init; }
+    public string[] Nodes { get; init; } = Array.Empty<string>();
+    public float? Duration { get; init; }
+    public bool Loop { get; init; }
+    public string? Next { get; init; }
+}
 
 public sealed class EffectNodeSpec
 {
@@ -152,6 +171,15 @@ public sealed class EffectAsset
     public float DefaultDuration { get; init; } = 2f;
     public EffectNodeSpec[] Nodes { get; init; } = Array.Empty<EffectNodeSpec>();
     public TimelineEventSpec[] TimelineEvents { get; init; } = Array.Empty<TimelineEventSpec>();
+
+    // Empty = one implicit unnamed state holding every node, Duration = DefaultDuration, Loop = any emitter Looping.
+    public EffectStateSpec[] States { get; init; } = Array.Empty<EffectStateSpec>();
+
+    // Null = States[0]. Both must be null when States is empty.
+    public string? InitialState { get; init; }
+
+    // State entered by ILumenEffectHandle.Stop(true); null = stop drains at once.
+    public string? StopState { get; init; }
 }
 
 public interface ILumenAssetProvider

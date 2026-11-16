@@ -35,13 +35,47 @@ public sealed class RimUnityHybridVfxService : ILumenVfxService
         }
     }
 
-    private sealed class CompositeHandle(ILumenEffectHandle native, ILumenEffectHandle external) : ILumenEffectHandle
+    private sealed class CompositeHandle : ILumenEffectHandle
     {
-        public bool IsAlive => native.IsAlive || external.IsAlive;
-        public void Trigger(string eventOrStateName)
+        private readonly ILumenEffectHandle native;
+        private readonly ILumenEffectHandle external;
+        private bool finished;
+
+        public CompositeHandle(ILumenEffectHandle native, ILumenEffectHandle external)
         {
-            try { native.Trigger(eventOrStateName); }
-            finally { external.Trigger(eventOrStateName); }
+            this.native = native;
+            this.external = external;
+            native.Finished += OnPartFinished;
+            external.Finished += OnPartFinished;
+        }
+
+        public bool IsAlive => native.IsAlive || external.IsAlive;
+
+        // Notify and StateChanged come from the native handle, which owns timeline events and states.
+        public event Action<string>? Notify
+        {
+            add => native.Notify += value;
+            remove => native.Notify -= value;
+        }
+
+        public event Action<string>? StateChanged
+        {
+            add => native.StateChanged += value;
+            remove => native.StateChanged -= value;
+        }
+
+        // Ensures: raised once, when the second of the two parts has finished.
+        public event Action? Finished;
+
+        public void Trigger(string name)
+        {
+            try { native.Trigger(name); }
+            finally { external.Trigger(name); }
+        }
+        public void GoTo(string stateName)
+        {
+            try { native.GoTo(stateName); }
+            finally { external.GoTo(stateName); }
         }
         public void SetParam(string name, float value)
         {
@@ -57,6 +91,13 @@ public sealed class RimUnityHybridVfxService : ILumenVfxService
         {
             try { native.Dispose(); }
             finally { external.Dispose(); }
+        }
+
+        private void OnPartFinished()
+        {
+            if (finished || native.IsAlive || external.IsAlive) return;
+            finished = true;
+            Finished?.Invoke();
         }
     }
 }

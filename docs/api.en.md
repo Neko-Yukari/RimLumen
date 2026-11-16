@@ -28,18 +28,16 @@ RimWorld 1.7 uses a 2.5D orthographic/perspective top-down view with the followi
 
 | Enum Value | Numeric Value | Rotation Behavior | Typical Usage |
 | --- | --- | --- | --- |
-| `GroundXZ` | `0` | Identity matrix, no extra pitch rotation | Ground sigils, ground halos, horizontal shockwaves |
-| `HeightVertical90` | `1` | Rotates local direction by `+90°` around the X axis, mapping local `+Y` to world `+Z` (screen up); **does not affect `LocalPosition.Y` height offset** | Legacy upward jets, vertical fire columns, screen-upward bursts |
-| `Free3D` | `2` | Preserves the node's own 3D `LocalRotation` verbatim; no camera adaptation at render time | Arbitrary 3D-oriented child emitters (such as RimUnity-imported assets) |
-| `Vertical3D` | `3` | Uses identity rotation like `Free3D`, so local `+Y` is world `+Y`; simulates in true 3D, with **render-only** camera adaptation: under IsoRim (where Y is squashed), height above `baseY` is divided by the squash factor to restore true altitude; under the vanilla straight-down 2D camera, height is projected upward onto `+Z` with draw height `max(baseY, MoteOverhead)`; `StretchedVelocity` uses true 3D velocity | Fireworks, fountains, and other effects that launch truly skyward and fall back to the ground |
+| `GroundXZ` | `0` | Uses the node's own `LocalRotation` verbatim with no extra pitch rotation; no camera adaptation at render time | Ground sigils, ground halos, horizontal shockwaves, arbitrary 3D-oriented child emitters (such as RimUnity-imported assets) |
+| `Vertical3D` | `3` | Same node matrix as `GroundXZ`, so local `+Y` is world `+Y`; simulates in true 3D, with **render-only** camera adaptation: under IsoRim (where Y is squashed), height above `baseY` is divided by the squash factor to restore true altitude; under the vanilla straight-down 2D camera, height is projected upward onto `+Z` with draw height `max(baseY, MoteOverhead)`; `StretchedVelocity` uses true 3D velocity | Fireworks, fountains, and other effects that launch truly skyward and fall back to the ground |
 
-`Vertical3D`'s `baseY` is the height of the play origin (`LumenPlayRequest.OriginWorld.Y`); a node's `LocalPosition.Y` is relative to that origin (for example, `4.8` for a firework burst apex). `GroundXZ`, `HeightVertical90`, and `Free3D` behave unchanged.
+`Vertical3D`'s `baseY` is the height of the play origin (`LumenPlayRequest.OriginWorld.Y`); a node's `LocalPosition.Y` is relative to that origin (for example, `4.8` for a firework burst apex). `GroundXZ` display is unaffected. The numeric values `1` and `2` are no longer valid and fail at parse time.
 
 ### Ground-Contact Expiration (`EmitterSpec.KillBelowFloor` / `killBelowFloor`)
 
 `killBelowFloor` (default `false`) can be set on `EmitterSpec.KillBelowFloor` in C#, inside `.lumen.json` emitter objects, and under `<emitter>` in XML `LumenEffectDef`. When `true`, a particle expires and is reclaimed on the frame its world height drops below the play origin height `baseY` **and** its world velocity `Y < 0` (descending). Particles still rising below floor height or freshly spawned right on the floor are unaffected. L1 (CPU) and L2 (GPU compute) behave identically regardless of space plane; local-space emitters are evaluated after applying their world matrix.
 
-> Tip: Across all emitter shapes, `Cone` defaults its primary emission axis to local `+Y`. To make particles shoot skyward in real altitude and fall back down, set the node to `Vertical3D`, set world-space gravity to `(0, -1, 0)` (or desired magnitude), and enable `KillBelowFloor` if they should vanish on impact. If you specifically want legacy screen-upward (`+Z`) projection without camera adaptation, use `HeightVertical90` with gravity `(0, 0, -1)`.
+> Tip: Across all emitter shapes, `Cone` defaults its primary emission axis to local `+Y`. To make particles shoot skyward in real altitude and fall back down, set the node to `Vertical3D`, set world-space gravity to `(0, -1, 0)` (or desired magnitude), and enable `KillBelowFloor` if they should vanish on impact.
 
 ### 3. Game Time Synchronization
 
@@ -138,8 +136,11 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
     }
   ],
   "timelineEvents": [
-    { "time": 0.5, "eventName": "explode", "targetNodeIndex": 0 }
-  ]
+    { "time": 0.5, "eventName": "explode", "targetNodeIndex": 0, "state": null, "notify": false }
+  ],
+  "states": [],
+  "initialState": null,
+  "stopState": null
 }
 ```
 
@@ -150,6 +151,107 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
 - **Curves (`sizeOverLifetime` / `intensityOverTime`)**: Supports three forms—a single number (constant), an array `[[time, value], ...]` (non-decreasing `time`), or an object `{ "keys": [...], "multiplier": 1 }`. Keyframes may optionally include tangents `[time, value, inTangent, outTangent]`.
 - **Gradients (`colorOverLifetime`)**: Supports a stop array `[[time, [r,g,b,a]], ...]` or an object `{ "stops": [{ "time": 0, "rgbaLinear": [r,g,b,a] }] }`, also requiring non-decreasing `time`.
 - **`pointLight`**: JSON supports `colorRgb` or `colorLinear` (both use linear RGB components); radius keys are `glowRadius` and `overlightRadius` (in map cells).
+- **`timelineEvents` / `states` / `initialState` / `stopState`**: see the next section, "State Machine".
+
+### 4. State Machine (`states`)
+
+An effect is made of named states, and exactly one state plays at a time. A state can advance on its own when its duration elapses or be switched from C#, and it can report key moments back to C#.
+
+**Without `states`**, the whole effect is one implicit state that holds every node and lasts `defaultDuration`. If any emitter is `looping: true`, that state loops until `Stop`; otherwise new emission stops when the duration elapses, and the handle dies and raises `Finished` once its particles and lights are gone. The implicit state has no name and raises no `StateChanged`.
+
+**`states[]` fields**:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `name` | required | State name, unique within the asset |
+| `nodes` | `[]` | Names of the nodes that emit in this state; every node with that name belongs to it. A node may belong to several states or to none |
+| `duration` | `defaultDuration` | State length in seconds (`>= 0`) |
+| `loop` | `false` | When `true` the state never ends on its own, and `duration` is its timeline-event cycle |
+| `next` | `null` | State entered when a non-loop state ends; `null` ends the effect. Cannot be combined with `loop` |
+
+**Root fields**: `initialState` is the state entered on play, defaulting to `states[0]`; `LumenPlayRequest.InitialState` overrides it for a single play. `stopState` is the outro entered by `Stop(true)`; it must end on its own (no `loop`, no `next`). Without it, `Stop(true)` starts fading out at once.
+
+**Entering a state** (the initial state, `next`, `GoTo`, including `GoTo` of the current state, which re-enters it):
+
+1. The state clock resets to zero and `StateChanged(name)` is raised once.
+2. Every node of the state restarts its own emission schedule: `bursts` times, the emitter `duration` and `rateOverTime` all count from the moment of entry. L1 (CPU) and L2 (GPU) behave identically.
+3. Every other node stops new emission; its live particles finish their lifetime and its point light fades out over `0.25s`.
+
+States switch on frame boundaries: on the frame a switch happens, emitters simulate the whole frame under the new state. A frame that crosses several states walks through each of them and their events in order.
+
+**`timelineEvents[]` and states**:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `time` | required | Seconds after the owning state is entered |
+| `eventName` | required | Event name, used by `Trigger` and `Notify` |
+| `targetNodeIndex` | `-1` | When not `-1`, emits one pulse on that node: `bursts[0].count`, or the rounded `rateOverTime` without `bursts` |
+| `state` | `initialState` | Owning state; the event fires on its time only while that state plays |
+| `notify` | `false` | When `true`, firing raises `ILumenEffectHandle.Notify(eventName)` |
+
+A loop state fires its events again every `duration` cycle, and events with `time >= duration` never fire on the timer; a loop state with `duration` `0` fires them once. In a non-loop state an event at exactly `duration` still fires.
+
+**Load-time validation** (`.lumen.json` and XML fail at parse time; a C# `EffectAsset` throws `InvalidDataException` from `Play`): an empty or duplicate state name; a `nodes` entry naming no node; a negative or non-finite duration; `loop` together with `next`; `next`, `initialState`, `stopState` or an event `state` naming an unknown state; a `stopState` that loops or has `next`; zero-duration states that cycle through `next`; `initialState`, `stopState` or an event `state` without `states`.
+
+#### Example: a tornado that spawns, sustains and collapses
+
+```json
+{
+  "effectId": "Tornado",
+  "nodes": [
+    { "name": "funnel", "spacePlane": "Vertical3D", "emitter": {
+        "maxParticles": 2048, "duration": 2, "looping": true, "rateOverTime": 600,
+        "shape": "Cone", "coneAngleDegrees": 8, "startLifetime": 1.6, "startSpeed": 4,
+        "forceFields": [ { "kind": "Vortex", "centerOrAxis": [0, 1, 0], "parameters": [1.5, 2, 0], "radius": 3, "strength": 6 } ] } },
+    { "name": "debris", "spacePlane": "Vertical3D", "emitter": {
+        "maxParticles": 256, "duration": 2, "looping": true, "rateOverTime": 40,
+        "shape": "CircleXZ", "shapeExtents": 2, "startLifetime": 1.2, "startSpeed": 2 } },
+    { "name": "dust", "emitter": {
+        "maxParticles": 512, "duration": 0.5, "bursts": [[0, 300]],
+        "shape": "CircleXZ", "shapeExtents": 2.5, "startLifetime": 1.0, "startSpeed": 1 } },
+    { "name": "collapse", "spacePlane": "Vertical3D", "emitter": {
+        "maxParticles": 512, "duration": 0.5, "bursts": [[0, 400]],
+        "shape": "Sphere", "startLifetime": 1.0, "startSpeed": 6 } }
+  ],
+  "states": [
+    { "name": "spawn", "nodes": ["dust", "funnel"], "duration": 1.5, "next": "sustain" },
+    { "name": "sustain", "nodes": ["funnel", "debris"], "duration": 2, "loop": true },
+    { "name": "collapse", "nodes": ["collapse"], "duration": 1.2 }
+  ],
+  "initialState": "spawn",
+  "stopState": "collapse",
+  "timelineEvents": [
+    { "time": 1.0, "eventName": "touchdown", "state": "spawn", "notify": true },
+    { "time": 0.5, "eventName": "gust", "state": "sustain", "targetNodeIndex": 1 },
+    { "time": 0.3, "eventName": "impact", "state": "collapse", "notify": true }
+  ]
+}
+```
+
+```csharp
+ILumenEffectHandle tornado = RimLumenApi.PlayAtCell("Author.MyMod:Tornado", map, cell);
+tornado.Notify += name =>
+{
+    if (name == "touchdown") StartDamagingCells();   // the funnel touches down 1.0 s into spawn
+    if (name == "impact") ScatterDebris();           // debris lands 0.3 s into collapse
+};
+tornado.Finished += StopDamagingCells;
+// ...when the storm ends:
+tornado.Stop();                                      // enters collapse, fades out after its 1.2 s
+```
+
+Step by step:
+
+| Time | State | What happens |
+| --- | --- | --- |
+| `0` | `spawn` | `StateChanged("spawn")`; `dust` bursts 300 particles, `funnel` starts emitting, `debris` does not emit |
+| `1.0` | `spawn` | `touchdown` raises `Notify("touchdown")` |
+| `1.5` | `sustain` | Duration elapsed, enter `next`: `StateChanged("sustain")`; `funnel` and `debris` restart their schedules, `dust` stops new emission |
+| `2.0`, `4.0`, ... | `sustain` | 0.5 s into each 2 s cycle, `gust` pulses 40 particles on `debris` |
+| `Stop()` called | `collapse` | `StateChanged("collapse")`; `collapse` bursts 400 particles, funnel and debris stop new emission; `GoTo` is ignored from now on |
+| `Stop` + `0.3 s` | `collapse` | `Notify("impact")` |
+| `Stop` + `1.2 s` | fading | New emission stops, lights fade, particles finish their lifetime |
+| Last particle gone | ended | `IsAlive == false`, `Finished` is raised |
 
 ---
 
@@ -160,7 +262,7 @@ You can define `RimLumen.Core.Assets.LumenEffectDef` in any mod's `Defs/**/*.xml
 1. **ID**: Uses `<defName>`, registering both the bare short name and `<packageId>:<defName>`.
 2. **Node fields**: Adds `<heightOffset>` (added to `localPosition.y`), `localScale` is a single float scalar, and `localRotation` quaternion is omitted (use `<localYawDegrees>`).
 3. **Point light keys**: Uses `<radiusCells>` (matching JSON `glowRadius`), `<overlightRadius>`, `<colorLinear>` (RimWorld `Color` syntax `(r, g, b, a)`), `<intensity>`, and `<intensityOverTime>` (`<keys>` made of `<li><time>..</time><value>..</value></li>`).
-4. **Current limitation**: XML Def does not expose `timelineEvents` (use `.lumen.json` or C# `EffectAsset` for multi-stage timeline events).
+4. **List fields**: `<states>`, `<timelineEvents>` and a state's `<nodes>` are `<li>` lists; state fields are `<name>`, `<nodes>`, `<duration>`, `<loop>`, `<next>`, event fields are `<time>`, `<eventName>`, `<targetNodeIndex>`, `<state>`, `<notify>`; the root also takes `<defaultDuration>`, `<initialState>` and `<stopState>`. Meanings and defaults match the "State Machine" section above.
 
 ```xml
 <Defs>
@@ -169,7 +271,7 @@ You can define `RimLumen.Core.Assets.LumenEffectDef` in any mod's `Defs/**/*.xml
     <nodes>
       <li>
         <name>sparks</name>
-        <spacePlane>HeightVertical90</spacePlane>
+        <spacePlane>Vertical3D</spacePlane>
         <heightOffset>0.3</heightOffset>
         <emitter>
           <preferredTier>L2_GpuCompute</preferredTier>
@@ -189,7 +291,7 @@ You can define `RimLumen.Core.Assets.LumenEffectDef` in any mod's `Defs/**/*.xml
           <forceFields>
             <li>
               <kind>GravityDrag</kind>
-              <centerOrAxis>(0, 0, -1)</centerOrAxis>
+              <centerOrAxis>(0, -1, 0)</centerOrAxis>
               <parameters>(0.6, 0, 0)</parameters>
               <strength>8</strength>
             </li>
@@ -202,6 +304,13 @@ You can define `RimLumen.Core.Assets.LumenEffectDef` in any mod's `Defs/**/*.xml
         </pointLight>
       </li>
     </nodes>
+    <timelineEvents>
+      <li>
+        <time>0.75</time>
+        <eventName>peak</eventName>
+        <notify>true</notify>
+      </li>
+    </timelineEvents>
   </RimLumen.Core.Assets.LumenEffectDef>
 </Defs>
 ```
@@ -290,7 +399,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
         yaw = pawn.Rotation.AsAngle;
         return true;
     },
-    InitialState = "charge", // When non-null, only nodes whose Name == "charge" emit initially; others wait for Trigger
+    InitialState = "charge", // Overrides the asset's initialState; Play throws ArgumentException for a state the asset does not declare
     RealTime = false,
 });
 ```
@@ -301,11 +410,17 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 
 | Member | Behavior & Notes |
 | --- | --- |
-| `bool IsAlive` | `true` while playing or fading/draining; becomes `false` once `L1_NativeCpu` particles and point lights are cleaned up. **Note**: `L2_GpuCompute` particles do not gate this. After `Stop(true)` the handle stops tracking them at once and the engine lets airborne L2 particles finish their lifetime, so an effect with only L2 nodes and no point lights reports `IsAlive == false` immediately after `Stop(true)`. |
-| `void Trigger(string eventOrStateName)` | Fires matching `TimelineEventSpec` entries and activates matching nodes. **Note**: `L1_NativeCpu` nodes also emit a pulse of `Bursts[0].Count` (or rounded `RateOverTime`); `L2_GpuCompute` nodes only enable emission without an extra one-shot burst on `Trigger`. |
+| `bool IsAlive` | `true` while playing or fading/draining; becomes `false` once all particles and point lights are cleaned up. |
+| `void Trigger(string name)` | Fires every timeline event with that name now, whatever its state and time (target-node pulse, `Notify`), and restarts the emission schedule of every node with that name until the next state entry decides again; the current state is unchanged. Unmatched names do nothing; no effect after fading out or death. L1 and L2 behave identically. |
+| `void GoTo(string stateName)` | Enters that state now (going to the current state restarts it). Throws `ArgumentException` for a state the asset does not declare; no effect after `Stop(true)`, while fading out, or once dead. |
+| `event Action<string> Notify` | Raised with the event name when a timeline event with `notify: true` fires (on its time or through `Trigger`). |
+| `event Action<string> StateChanged` | Raised with the state name each time a declared state is entered, including the initial state. |
+| `event Action Finished` | Raised once when `IsAlive` becomes `false`, for any reason (played out, `Stop`, `Dispose`). |
 | `void SetParam(string name, float value)` | Updates runtime scalar parameters. Three built-in names take effect immediately: `intensity` (scales particle and light brightness), `rate` (scales L1 emission rate), and `scale` (multiplies root scale). Other names are stored without affecting simulation. |
-| `void Stop(bool allowFadeOut = true)` | When `true`, immediately stops new emission, fades active point lights over `0.25s`, and lets live particles finish their lifetime before reclamation. When `false`, immediately destroys all particles and lights. |
+| `void Stop(bool allowFadeOut = true)` | When `true`: if the asset has a `stopState`, enters it and plays it to its end; then stops new emission, fades point lights over `0.25s`, and lets live particles finish their lifetime before reclamation. Without a `stopState` the fade starts at once. When `false`, immediately destroys all particles and lights. Repeated calls do nothing. |
 | `void Dispose()` | Equivalent to `Stop(false)`, idempotent. Always dispose long-lived handles in `Thing.DeSpawn` or when a map is destroyed. |
+
+All three events are raised on the main thread from the per-frame advance, in the order they happened, so calling `GoTo` or `Stop` from a handler never re-enters the playback that raised it: the call takes effect at once (the nodes of the state being left stop new emission on that same frame), and the events it causes are raised on the next frame. After `Stop(false)` or `Dispose`, `Finished` is raised on the next frame. RimUnity compatibility playback (`L0_ExternalCpu`) has no states or timeline events: `Notify` and `StateChanged` come only from the native RimLumen part, and `Finished` is raised once both parts have ended.
 
 ---
 

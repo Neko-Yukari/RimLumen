@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Numerics;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Rendering;
+using RimLumen.Core.Scene;
 
 namespace RimLumen.Core.ParticlesGpu;
 
@@ -26,6 +27,7 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
         public bool IsVertical3D;
         public float BaseY;
         public double DrainRemaining;
+        public int PendingBurst;
         public InstanceState State;
     }
 
@@ -133,8 +135,28 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
         instance.Emitting = false;
     }
 
+    public void RestartInstance(int instanceId)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (!instances.TryGetValue(instanceId, out Instance? instance) || instance.State != InstanceState.Emitting) return;
+        instance.Scheduler.Restart();
+        instance.Emitting = true;
+        instance.Activated = true;
+    }
+
+    public bool IsInstanceAlive(int instanceId) => !disposed && instances.ContainsKey(instanceId);
+
+    public void EmitBurst(int instanceId, int count)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (!instances.TryGetValue(instanceId, out Instance? instance) || instance.State != InstanceState.Emitting) return;
+        instance.PendingBurst = (int)Math.Min((long)instance.PendingBurst + Math.Max(0, count), instance.Slots.Capacity);
+    }
+
     // Requires: main thread capture.
-    // Ensures: freezes frame inputs and advances drain/emission state.
+    // Ensures: freezes frame inputs and advances drain/emission state. A non-looping instance whose schedule has
+    //          run out keeps its slots and only simulates its live particles until DestroyInstance, so
+    //          RestartInstance can run it again (the owner, EffectInstanceHandle, always destroys it at its end).
     public void CaptureMainThread(in LumenCaptureContext context)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -151,7 +173,12 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
         {
             float dt = instance.RealTime && context.UnscaledDeltaTime > 0f ? context.UnscaledDeltaTime : context.DeltaTime;
             instance.Activated |= instance.Emitting;
-            if (instance.State == InstanceState.Draining) instance.DrainRemaining -= dt;
+            if (instance.State == InstanceState.Draining)
+            {
+                instance.DrainRemaining -= dt;
+                // A pulse accepted before DestroyInstance spawns now, so the drain lasts its full lifetime from now.
+                if (instance.PendingBurst > 0) instance.DrainRemaining = Math.Max(instance.DrainRemaining, instance.Spec.StartLifetimeMax);
+            }
             if (instance.State == InstanceState.Remove ||
                 (instance.State == InstanceState.Draining && instance.DrainRemaining <= 0))
             {
@@ -163,13 +190,8 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
             EmitterSpec spec = instance.Spec;
             int budget = instance.State == InstanceState.Emitting && instance.Activated && dt > 0f
                 ? Math.Min(instance.Slots.Capacity, instance.Scheduler.Advance(dt, instance.Emitting, density)) : 0;
-            // Spawns are simulated at the end of this step, so even a long final step
-            // must retain the newly spawned particles for a complete maximum lifetime.
-            if (instance.State == InstanceState.Emitting && instance.Activated && instance.Scheduler.Finished)
-            {
-                instance.State = InstanceState.Draining;
-                instance.DrainRemaining = spec.StartLifetimeMax;
-            }
+            budget = Math.Min(instance.Slots.Capacity, budget + ParticleEmissionBudget.ScaleBurst(instance.PendingBurst, density));
+            instance.PendingBurst = 0;
             int row = rows.Count;
             int fieldOffset = fields.Count;
             foreach (ForceFieldSpec field in spec.ForceFields)

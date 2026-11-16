@@ -125,6 +125,8 @@ internal static class IntegrationTests
 
         var lightningRequest = new LumenPlayRequest { EffectId = "Effects/Lightning" };
         var lightning = LumenHostRegistry.VfxService!.Play(lightningRequest);
+        int lightningFinished = 0;
+        lightning.Finished += () => lightningFinished++;
         Check.Equal(1, spy.Plays, "Lightning delegates L0 to external");
         Check.Equal(6, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), "external report L0 count");
         var lightningInstance = recording.Last as EffectInstanceHandle ?? throw new InvalidOperationException("Lightning inner handle is not native.");
@@ -139,8 +141,11 @@ internal static class IntegrationTests
         lightning.Stop(true);
         Check.Equal(1, spy.LastHandle.Stops, "Stop forwarded");
         Check.True(spy.LastHandle.LastAllowFadeOut, "Stop arg forwarded");
+        Step(1f / 60f, 1);
+        Check.Equal(1, lightningFinished, "composite Finished once both parts ended");
         lightning.Dispose();
         Check.Equal(1, spy.LastHandle.Disposes, "Dispose forwarded");
+        Check.Equal(1, lightningFinished, "composite Finished raised exactly once");
 
         int beforeLinger = spy.Plays;
         var linger = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { EffectId = "Effects/Linger" });
@@ -234,9 +239,20 @@ internal static class IntegrationTests
         public int Triggers, Params, Stops, Disposes;
         public bool LastAllowFadeOut;
         public bool IsAlive { get; private set; } = true;
-        public void Trigger(string eventOrStateName) => Triggers++;
+        public void Trigger(string name) => Triggers++;
+        public void GoTo(string stateName) { }
         public void SetParam(string name, float value) => Params++;
-        public void Stop(bool allowFadeOut = true) { Stops++; LastAllowFadeOut = allowFadeOut; IsAlive = false; }
-        public void Dispose() { Disposes++; IsAlive = false; }
+        public void Stop(bool allowFadeOut = true) { Stops++; LastAllowFadeOut = allowFadeOut; End(); }
+        public void Dispose() { Disposes++; End(); }
+        public event Action<string>? Notify { add { } remove { } }
+        public event Action<string>? StateChanged { add { } remove { } }
+        public event Action? Finished;
+
+        private void End()
+        {
+            if (!IsAlive) return;
+            IsAlive = false;
+            Finished?.Invoke();
+        }
     }
 }

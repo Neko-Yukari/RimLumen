@@ -160,6 +160,18 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         }
     }
 
+    // Ensures: the emitter emits again from the start of its schedule: its clock, rate remainder and time-0 burst
+    //          reset exactly as on AcquireEmitter, so burst times and Duration count from now. Live particles keep
+    //          their age. Same semantics as ILumenGpuParticleEngine.RestartInstance. Unknown or released ids are ignored.
+    public void RestartEmitter(int emitterId)
+    {
+        if (!emitters.TryGetValue(emitterId, out var emitter) || emitter.State == EmissionState.Draining) return;
+        emitter.Time = 0d;
+        emitter.RateRemainder = 0d;
+        emitter.Started = false;
+        emitter.State = EmissionState.Emitting;
+    }
+
     // Ensures: live particle count owned by this emitter; 0 for unknown ids.
     public int GetLiveParticleCount(int emitterId)
         => emitters.TryGetValue(emitterId, out var emitter) ? emitter.LiveCount : 0;
@@ -187,8 +199,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     //          RimLumenRenderHost.ParticleDensityScale < 1 thins rate/burst spawns (1.0 stays bit-exact).
     // Ensures: a Looping emitter wraps its time at Duration and keeps emitting. A non-looping emitter
     //          accumulates its own emission clock, advanced only while it is Emitting, and stops emitting
-    //          once that clock reaches Duration, so an emitter activated later (Trigger on a node that
-    //          started paused) still gets a full Duration window instead of dying before it runs.
+    //          once that clock reaches Duration, so an emitter activated later (a node that started paused)
+    //          still gets a full Duration window instead of dying before it runs. A spent emitter pauses and
+    //          stays acquired until ReleaseEmitter, so RestartEmitter can run it again.
     //          Burst times are emission-local for a non-looping emitter. Particles already spawned always
     //          finish their own lifetime.
     public void CaptureMainThread(in LumenCaptureContext context)
@@ -227,7 +240,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                         Spawn(id, emitter, (int)Math.Min(crossings * ParticleEmissionBudget.ScaleBurst(burst.Count, density), spec.MaxParticles));
                 }
             }
-            if (limited && end >= spec.Duration) emitter.State = EmissionState.Draining;
+            if (limited && end >= spec.Duration) emitter.State = EmissionState.Paused;
             if (emitterDt > 0f) emitter.Started = true;
         }
         for (int i = 0; i < existingCount; i++)

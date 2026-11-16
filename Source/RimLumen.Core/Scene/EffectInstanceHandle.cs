@@ -9,46 +9,62 @@ namespace RimLumen.Core.Scene;
 
 /// <summary>
 /// Runtime instance of one played <see cref="EffectAsset"/>: owns the per-node world transforms, the
-/// emitter bindings (L1 or L2), the point-light bindings and the timeline playback.
+/// emitter bindings (L1 or L2), the point-light bindings and the state-machine playback.
 /// Created by <see cref="LumenVfxService.Play"/>; advanced once per frame by the service.
-/// Time starts at 0 on creation (Play does not simulate); node matrices and emitter bindings are
-/// established in the constructor, so a caller can inspect them before the first frame.
+/// Time starts at 0 on creation (Play does not simulate); node matrices, emitter bindings and the initial
+/// state are established in the constructor, so a caller can inspect them before the first frame.
 /// </summary>
 public sealed class EffectInstanceHandle : ILumenEffectHandle
 {
     private enum PlaybackState { Playing, Draining, Dead }
+    private enum EventKind : byte { Notify, StateChanged, Finished }
     private readonly LumenVfxService owner;
     private readonly EffectAsset asset;
+    private readonly EffectStateGraph graph;
     private readonly LumenPlayRequest request;
     private readonly Matrix4x4[] nodeWorldMatrices;
     private readonly int[] cpuIds;
     private readonly int[] gpuIds;
     private readonly int[] lightIds;
-    private readonly bool[] nodeEmitting;
+    private readonly bool[] nodeActive;
+    // PlaybackTime of the node's last (re)start: the origin of its light's IntensityOverTime curve.
+    private readonly float[] nodeActivatedAt;
+    // PlaybackTime the node stopped emitting: the origin of its light's LightFadeSeconds fade.
+    private readonly float[] nodeDeactivatedAt;
     private readonly ILumenGpuParticleEngine? engine;
-    private readonly bool looping;
+    private readonly Queue<(EventKind Kind, string? Name)> pendingEvents = new();
     private readonly Dictionary<string, float> parameters = new(StringComparer.Ordinal)
     {
         ["intensity"] = 1f, ["rate"] = 1f, ["scale"] = 1f,
     };
     private MapGlowerDriver? driver;
     private PlaybackState state;
+    private int currentState = -1;
+    private double stateTime;
+    private bool stateEntryPending;
+    private bool stopRequested;
     private Vector3 origin;
     private float rotation;
     private float playbackTime;
-    private float fadeTime;
     private Matrix4x4 rootWorld;
 
+    // Requires: request.InitialState is null or names a state the asset declares.
     internal EffectInstanceHandle(LumenVfxService owner, EffectAsset asset, in LumenPlayRequest request)
     {
         this.owner = owner;
         this.asset = asset;
         this.request = request;
+        graph = EffectStateGraph.For(asset, $"effect '{asset.EffectId}'");
+        int initial = graph.InitialIndex;
+        if (request.InitialState is { } initialState && (initial = graph.IndexOf(initialState)) < 0)
+            throw new ArgumentException($"Effect '{asset.EffectId}' declares no state '{initialState}'.", nameof(request));
         nodeWorldMatrices = new Matrix4x4[asset.Nodes.Length];
         cpuIds = new int[asset.Nodes.Length];
         gpuIds = new int[asset.Nodes.Length];
         lightIds = new int[asset.Nodes.Length];
-        nodeEmitting = new bool[asset.Nodes.Length];
+        nodeActive = new bool[asset.Nodes.Length];
+        nodeActivatedAt = new float[asset.Nodes.Length];
+        nodeDeactivatedAt = new float[asset.Nodes.Length];
         Array.Fill(cpuIds, -1);
         Array.Fill(gpuIds, -1);
         Array.Fill(lightIds, -1);
@@ -62,24 +78,22 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             RefreshTransforms();
             engine = owner.GpuEngineProvider?.Invoke();
             driver = owner.GlowerDriverProvider?.Invoke(request.MapIndex);
+            bool[] initialNodes = graph.States[initial].NodeMask;
             for (int i = 0; i < asset.Nodes.Length; i++)
             {
-                var node = asset.Nodes[i];
-                if (node.Emitter is not { } spec) continue;
-                looping |= spec.Looping;
-                nodeEmitting[i] = request.InitialState is null || node.Name == request.InitialState;
+                if (asset.Nodes[i].Emitter is not { } spec) continue;
                 if (spec.PreferredTier == LumenParticleTier.L2_GpuCompute && engine is not null)
                 {
                     gpuIds[i] = engine.CreateInstance(spec, nodeWorldMatrices[i], request.MapIndex, request.RealTime);
-                    if (!nodeEmitting[i]) engine.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], false);
+                    if (!initialNodes[i]) engine.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], false);
                 }
                 else
                 {
-                    cpuIds[i] = owner.Simulator.AcquireEmitter(spec, nodeWorldMatrices[i], emitting: true, rateMultiplier: 1f, realTime: request.RealTime, mapIndex: request.MapIndex);
-                    if (!nodeEmitting[i]) owner.Simulator.SetEmitterParams(cpuIds[i], false, 1f, 1f);
+                    cpuIds[i] = owner.Simulator.AcquireEmitter(spec, nodeWorldMatrices[i], emitting: initialNodes[i], rateMultiplier: 1f, realTime: request.RealTime, mapIndex: request.MapIndex);
                 }
                 PushVerticalState(i);
             }
+            EnterState(initial);
         }
         catch
         {
@@ -94,11 +108,12 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     //          emitters keep advancing while the game is paused or running at another speed.
     public bool RealTime => request.RealTime;
 
-    // Ensures: true until the handle is stopped immediately/disposed, or until a fade-out stop has
-    //          released every emitter and every light.
+    // Ensures: true until the handle is stopped immediately/disposed, or until the effect has ended (its last
+    //          state finished, or Stop(true) ran) and every emitter and every light has been released.
     public bool IsAlive => state != PlaybackState.Dead;
 
-    // Ensures: false after Stop(true) (no new particles/lights) and after any immediate stop.
+    // Ensures: true while a state plays (including the stop state after Stop(true)); false once the effect
+    //          drains its last particles and lights, and after any immediate stop.
     public bool IsEmitting => state == PlaybackState.Playing;
 
     // Ensures: seconds since creation, advanced by the per-frame delta; never wrapped.
@@ -120,21 +135,38 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     // Ensures: point lights currently registered on a MapGlowerDriver.
     public int LightCount => driver is { IsDisposed: false } ? CountBindings(lightIds) : 0;
 
-    // Requires: eventOrStateName is non-empty.
-    // Ensures: for every TimelineEventSpec whose EventName matches: fires it immediately (emits one
-    //          burst on TargetNodeIndex's emitter when that node has one: Burst[0].Count if
-    //          the emitter declares bursts, else round(RateOverTime), clamped to [0, MaxParticles]).
-    //          For every node whose Name matches: activates that node's emitter and emits the same burst.
-    //          Unmatched names are a no-op (WotF may trigger animator states RimLumen does not own).
-    //          L2 emitters are only activated: ILumenGpuParticleEngine exposes no burst entry point.
-    //          Safe no-op once the handle is dead.
-    public void Trigger(string eventOrStateName)
+    public event Action<string>? Notify;
+    public event Action<string>? StateChanged;
+    public event Action? Finished;
+
+    // Ensures: true while lifecycle events wait to be raised (e.g. Finished after Stop(false) or Dispose).
+    internal bool HasPendingEvents => pendingEvents.Count != 0;
+    internal int PendingEventCount => pendingEvents.Count;
+
+    // Requires: name is non-empty.
+    // Ensures: while a state plays: every TimelineEventSpec whose EventName equals name fires now, whatever its
+    //          state and time (FireEvent), and every node whose Name equals name restarts its emission as on state
+    //          entry; it keeps emitting until the next state entry decides again. The current state and its clock
+    //          are unchanged. Unmatched names are a no-op (WotF may trigger animator states RimLumen does not own).
+    //          No-op once the effect drains or is dead.
+    public void Trigger(string name)
     {
-        if (!IsEmitting) return;
+        if (state != PlaybackState.Playing) return;
         foreach (var timelineEvent in asset.TimelineEvents)
-            if (timelineEvent.EventName == eventOrStateName) FireEvent(timelineEvent);
+            if (timelineEvent.EventName == name) FireEvent(timelineEvent);
         for (int i = 0; i < asset.Nodes.Length; i++)
-            if (asset.Nodes[i].Name == eventOrStateName) BurstNode(i, activate: true);
+            if (asset.Nodes[i].Name == name) RestartNode(i);
+    }
+
+    // Requires: stateName names a state the asset declares (throws ArgumentException otherwise, even when dead).
+    // Ensures: while a state plays and Stop(true) has not been called: enters stateName now (EnterState), also when it
+    //          is the current state, which restarts it. No-op once Stop(true) was called, while draining, or dead.
+    public void GoTo(string stateName)
+    {
+        int index = graph.IndexOf(stateName);
+        if (index < 0)
+            throw new ArgumentException($"Effect '{asset.EffectId}' declares no state '{stateName}'.", nameof(stateName));
+        if (state == PlaybackState.Playing && !stopRequested) EnterState(index);
     }
 
     // Requires: name is non-empty; value is finite.
@@ -146,31 +178,25 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         if (IsAlive) parameters[name] = value;
     }
 
-    // Ensures: allowFadeOut == true stops new emission immediately, fades the point lights out over
-    //          EffectInstanceHandle.LightFadeSeconds, and lets live particles finish; the handle becomes
-    //          dead once nothing is left. allowFadeOut == false tears down emitters and lights now.
-    //          L1 emitters gate handle death on their own drained particle count. ILumenGpuParticleEngine
-    //          exposes no per-instance liveness, so an L2 emitter is handed to DestroyInstance(id, false)
-    //          and stops being tracked at once: the engine owns the GPU-side drain.
+    // Ensures: allowFadeOut == true: when the asset declares a StopState, enters it (unless it is already the
+    //          current state) and lets it play to its end, ignoring later GoTo calls; the effect then drains.
+    //          Without a StopState the effect drains at once. Draining stops new emission, fades the point lights
+    //          out over LightFadeSeconds and lets live particles finish; the handle becomes dead once nothing is
+    //          left: an L1 emitter once its live particle count reaches 0, an L2 emitter once
+    //          ILumenGpuParticleEngine.IsInstanceAlive turns false after DestroyInstance(id, false).
+    //          allowFadeOut == false tears down emitters and lights now, also while draining. Repeated calls are no-ops.
     public void Stop(bool allowFadeOut = true)
     {
-        if (!IsAlive || (allowFadeOut && state == PlaybackState.Draining)) return;
-        state = allowFadeOut ? PlaybackState.Draining : PlaybackState.Dead;
-        for (int i = 0; i < asset.Nodes.Length; i++)
+        if (state == PlaybackState.Dead) return;
+        if (!allowFadeOut)
         {
-            if (cpuIds[i] >= 0)
-            {
-                owner.Simulator.ReleaseEmitter(cpuIds[i], immediate: !allowFadeOut);
-                if (!allowFadeOut || owner.Simulator.GetLiveParticleCount(cpuIds[i]) == 0) cpuIds[i] = -1;
-            }
-            if (gpuIds[i] >= 0)
-            {
-                engine?.DestroyInstance(gpuIds[i], immediate: !allowFadeOut);
-                gpuIds[i] = -1;
-            }
+            Teardown();
+            return;
         }
-        if (!allowFadeOut) RemoveLights();
-        FinishDrain();
+        if (state == PlaybackState.Draining || stopRequested) return;
+        stopRequested = true;
+        if (graph.StopIndex < 0) BeginDrain();
+        else if (currentState != graph.StopIndex) EnterState(graph.StopIndex);
     }
 
     // Ensures: equivalent to Stop(false); idempotent.
@@ -179,7 +205,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     // Ensures: exposes a value stored by SetParam, including the three built-in names.
     public bool TryGetParam(string name, out float value) => parameters.TryGetValue(name, out value);
 
-    // Ensures: seconds over which Stop(true) fades point lights to zero before removing them.
+    // Ensures: seconds over which a light fades to zero after its node stops emitting (state exit or drain).
     public const float LightFadeSeconds = 0.25f;
 
     // Requires: called once per frame by LumenVfxService.CaptureMainThread on the main thread.
@@ -187,58 +213,179 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     //   1. playbackTime += deltaTime; when a Follow provider exists it refreshes origin/rotation, and a
     //      provider that yields false keeps the last known transform (detach = freeze, never snap back).
     //   2. node world matrices are recomposed (SpacePlaneTransform.BuildWorldMatrices).
-    //   3. timeline events whose TimeSeconds lies in (previousPlaybackTime, playbackTime] fire once each;
-    //      a looping asset (any emitter with Looping) rewinds them so the next cycle fires them again.
+    //   3. the state clock advances by deltaTime (AdvanceStates): timeline events fire, and a state that
+    //      reaches its Duration enters its Next or finishes the effect, possibly several times in one frame.
     //   4. every emitter binding is pushed to its backend (SetEmitterTransform/SetEmitterParams or
     //      UpdateInstance), every light binding calls MapGlowerDriver.Update with this frame's cell.
     //      The map driver is bound once, at the first frame that resolves one while the handle emits, and
     //      then kept for the handle's life: an effect belongs to the map it was played on, so a later
     //      registration (another map, or a reload of the same one) must not steal its lights. A bound
     //      driver that has been disposed means the map is gone, and the handle calls Stop(false).
-    //   5. a fade-out stop that has finished (all emitters released, lights removed) marks the handle dead.
+    //   5. a drain that has finished (all emitters released, lights removed) marks the handle dead.
+    //   Notify, StateChanged and Finished are only queued here; LumenVfxService raises them (RaiseEvents) after it
+    //   has advanced every handle. A dead handle does nothing.
     internal void Advance(float deltaTime)
     {
-        if (!IsAlive) return;
-        float previousTime = playbackTime;
-        playbackTime += deltaTime;
-        RefreshTransforms();
-        if (IsEmitting)
+        if (state != PlaybackState.Dead)
         {
-            foreach (var timelineEvent in asset.TimelineEvents)
+            playbackTime += deltaTime;
+            RefreshTransforms();
+            if (state == PlaybackState.Playing) AdvanceStates(deltaTime);
+            float intensity = parameters["intensity"];
+            for (int i = 0; i < asset.Nodes.Length; i++)
             {
-                if (looping && asset.DefaultDuration > 0f)
+                PushVerticalState(i);
+                bool emitting = state == PlaybackState.Playing && nodeActive[i];
+                if (cpuIds[i] >= 0)
                 {
-                    if (timelineEvent.TimeSeconds < 0f || timelineEvent.TimeSeconds > asset.DefaultDuration) continue;
-                    double cycle = Math.Max(0d, Math.Floor(((double)previousTime - timelineEvent.TimeSeconds) / asset.DefaultDuration) + 1d);
-                    for (double time = timelineEvent.TimeSeconds + cycle * asset.DefaultDuration;
-                         time <= playbackTime; time += asset.DefaultDuration)
-                        FireEvent(timelineEvent);
+                    owner.Simulator.SetEmitterTransform(cpuIds[i], nodeWorldMatrices[i]);
+                    owner.Simulator.SetEmitterParams(cpuIds[i], emitting, parameters["rate"], intensity);
+                    if (state == PlaybackState.Draining && owner.Simulator.GetLiveParticleCount(cpuIds[i]) == 0) cpuIds[i] = -1;
                 }
-                else if (previousTime < timelineEvent.TimeSeconds && timelineEvent.TimeSeconds <= playbackTime)
+                if (gpuIds[i] >= 0)
                 {
-                    FireEvent(timelineEvent);
+                    if (state == PlaybackState.Draining && !engine!.IsInstanceAlive(gpuIds[i])) gpuIds[i] = -1;
+                    else engine!.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], emitting, intensity);
                 }
             }
+            UpdateLights(intensity);
+            FinishDrain();
         }
-        else
+    }
+
+    // Requires: main thread; count <= PendingEventCount.
+    // Ensures: raises the oldest count queued Notify / StateChanged / Finished events in the order they happened.
+    //          Events their handlers queue stay queued for a later call.
+    internal void RaiseEvents(int count)
+    {
+        for (; count > 0; count--)
         {
-            fadeTime += deltaTime;
+            var pending = pendingEvents.Dequeue();
+            switch (pending.Kind)
+            {
+                case EventKind.Notify: Notify?.Invoke(pending.Name!); break;
+                case EventKind.StateChanged: StateChanged?.Invoke(pending.Name!); break;
+                default: Finished?.Invoke(); break;
+            }
         }
-        float intensity = parameters["intensity"];
+    }
+
+    // Ensures: the clock of the current state advances by deltaTime. Events whose time lies in (start, end] of
+    //          the state-local clock fire (FireEvent) in time order; the first advance after entry also fires the
+    //          events at time 0. A Loop state with Duration > 0 repeats its events every Duration (events with
+    //          TimeSeconds >= Duration never fire on the timer); a Loop state with Duration 0 fires them once.
+    //          A non-Loop state ends when its clock reaches Duration (events at exactly Duration still fire) and
+    //          the remaining time carries into Next; with no Next, or after Stop(true), the effect drains.
+    private void AdvanceStates(float deltaTime)
+    {
+        double remaining = deltaTime;
+        while (state == PlaybackState.Playing)
+        {
+            var current = graph.States[currentState];
+            double start = stateTime;
+            double end = start + remaining;
+            double stop = current.Loop ? end : Math.Min(end, current.Duration);
+            FireStateEvents(current, start, stop, stateEntryPending);
+            stateEntryPending = false;
+            stateTime = stop;
+            if (current.Loop || end < current.Duration) return;
+            remaining = end - current.Duration;
+            if (stopRequested || current.Next < 0) BeginDrain();
+            else EnterState(current.Next);
+        }
+    }
+
+    private void FireStateEvents(EffectStateGraph.State current, double start, double stop, bool includeStart)
+    {
+        if (current.Events.Length == 0) return;
+        if (current.Loop && current.Duration > 0d)
+        {
+            for (long cycle = (long)Math.Floor(start / current.Duration); cycle * current.Duration <= stop; cycle++)
+            {
+                foreach (var timelineEvent in current.Events)
+                {
+                    if (timelineEvent.TimeSeconds >= current.Duration) break;
+                    double time = cycle * current.Duration + timelineEvent.TimeSeconds;
+                    if ((time > start || (includeStart && time == start)) && time <= stop) FireEvent(timelineEvent);
+                }
+            }
+            return;
+        }
+        foreach (var timelineEvent in current.Events)
+        {
+            double time = timelineEvent.TimeSeconds;
+            if ((time > start || (includeStart && time == start)) && time <= stop) FireEvent(timelineEvent);
+        }
+    }
+
+    // Ensures: the state clock restarts at 0; every node of the state restarts its emission (RestartNode), every
+    //          other node stops emitting while its live particles finish and its light fades; StateChanged(name) is
+    //          queued for a declared state.
+    private void EnterState(int index)
+    {
+        currentState = index;
+        stateTime = 0d;
+        stateEntryPending = true;
+        var entered = graph.States[index];
         for (int i = 0; i < asset.Nodes.Length; i++)
         {
-            PushVerticalState(i);
+            if (entered.NodeMask[i]) RestartNode(i);
+            else DeactivateNode(i);
+        }
+        if (entered.Name is { } name) pendingEvents.Enqueue((EventKind.StateChanged, name));
+    }
+
+    // Ensures: the node emits again from the start of its own schedule (burst times, Duration and rate measured
+    //          from now) on L1 and L2 alike, and its light curve restarts.
+    private void RestartNode(int index)
+    {
+        nodeActive[index] = true;
+        nodeActivatedAt[index] = playbackTime;
+        if (cpuIds[index] >= 0) owner.Simulator.RestartEmitter(cpuIds[index]);
+        if (gpuIds[index] >= 0) engine!.RestartInstance(gpuIds[index]);
+    }
+
+    // Ensures: the node's backend stops emitting now, so a switch made from an event handler (after this frame's
+    //          push) does not leave the old state's emitters running through this frame's capture.
+    private void DeactivateNode(int index)
+    {
+        if (!nodeActive[index]) return;
+        nodeActive[index] = false;
+        nodeDeactivatedAt[index] = playbackTime;
+        if (cpuIds[index] >= 0) owner.Simulator.SetEmitterParams(cpuIds[index], false, parameters["rate"], parameters["intensity"]);
+        if (gpuIds[index] >= 0) engine!.UpdateInstance(gpuIds[index], nodeWorldMatrices[index], false, parameters["intensity"]);
+    }
+
+    private void BeginDrain()
+    {
+        state = PlaybackState.Draining;
+        currentState = -1;
+        for (int i = 0; i < asset.Nodes.Length; i++)
+        {
+            DeactivateNode(i);
             if (cpuIds[i] >= 0)
             {
-                owner.Simulator.SetEmitterTransform(cpuIds[i], nodeWorldMatrices[i]);
-                owner.Simulator.SetEmitterParams(cpuIds[i], IsEmitting && nodeEmitting[i], parameters["rate"], intensity);
-                if (!IsEmitting && owner.Simulator.GetLiveParticleCount(cpuIds[i]) == 0) cpuIds[i] = -1;
+                owner.Simulator.ReleaseEmitter(cpuIds[i], immediate: false);
+                if (owner.Simulator.GetLiveParticleCount(cpuIds[i]) == 0) cpuIds[i] = -1;
             }
-            if (gpuIds[i] >= 0)
-                engine!.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], IsEmitting && nodeEmitting[i], intensity);
+            if (gpuIds[i] >= 0) engine!.DestroyInstance(gpuIds[i], immediate: false);
         }
-        UpdateLights(intensity);
         FinishDrain();
+    }
+
+    private void Teardown()
+    {
+        state = PlaybackState.Dead;
+        currentState = -1;
+        for (int i = 0; i < asset.Nodes.Length; i++)
+        {
+            if (cpuIds[i] >= 0) owner.Simulator.ReleaseEmitter(cpuIds[i], immediate: true);
+            if (gpuIds[i] >= 0) engine?.DestroyInstance(gpuIds[i], immediate: true);
+            cpuIds[i] = -1;
+            gpuIds[i] = -1;
+        }
+        RemoveLights();
+        pendingEvents.Enqueue((EventKind.Finished, null));
     }
 
     // Ensures: the node's L1/L2 emitter knows whether it is Vertical3D and the effect's current play-origin height
@@ -261,26 +408,25 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         SpacePlaneTransform.BuildWorldMatrices(asset, rootWorld, nodeWorldMatrices);
     }
 
+    // Ensures: emits one pulse on TargetNodeIndex's emitter when that node has one (Bursts[0].Count if the
+    //          emitter declares bursts, else round(RateOverTime), clamped to [0, MaxParticles]) through
+    //          CpuParticleSimulator.EmitBurst or ILumenGpuParticleEngine.EmitBurst, without changing whether the
+    //          node emits; queues Notify(EventName) when the event has Notify.
     private void FireEvent(TimelineEventSpec timelineEvent)
     {
         int node = timelineEvent.TargetNodeIndex;
-        if (node >= 0 && node < asset.Nodes.Length) BurstNode(node, activate: false);
-    }
-
-    private void BurstNode(int index, bool activate)
-    {
-        if (asset.Nodes[index].Emitter is not { } spec) return;
-        if (activate || gpuIds[index] >= 0) nodeEmitting[index] = true;
-        if (cpuIds[index] >= 0)
+        if (node >= 0 && node < asset.Nodes.Length && asset.Nodes[node].Emitter is { } spec)
         {
-            owner.Simulator.SetEmitterTransform(cpuIds[index], nodeWorldMatrices[index]);
-            owner.Simulator.SetEmitterParams(cpuIds[index], nodeEmitting[index], parameters["rate"], parameters["intensity"]);
             int count = spec.Bursts.Length > 0 ? Math.Clamp(spec.Bursts[0].Count, 0, spec.MaxParticles)
                 : (int)Math.Clamp(MathF.Round(spec.RateOverTime), 0f, spec.MaxParticles);
-            owner.Simulator.EmitBurst(cpuIds[index], count);
+            if (cpuIds[node] >= 0)
+            {
+                owner.Simulator.SetEmitterTransform(cpuIds[node], nodeWorldMatrices[node]);
+                owner.Simulator.EmitBurst(cpuIds[node], count);
+            }
+            if (gpuIds[node] >= 0) engine!.EmitBurst(gpuIds[node], count);
         }
-        if (gpuIds[index] >= 0)
-            engine!.UpdateInstance(gpuIds[index], nodeWorldMatrices[index], true, parameters["intensity"]);
+        if (timelineEvent.Notify) pendingEvents.Enqueue((EventKind.Notify, timelineEvent.EventName));
     }
 
     private void UpdateLights(float intensity)
@@ -293,16 +439,22 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             Stop(false);
             return;
         }
-        float fadeMultiplier = IsEmitting ? 1f : Math.Clamp(1f - fadeTime / LightFadeSeconds, 0f, 1f);
         for (int i = 0; i < asset.Nodes.Length; i++)
         {
-            if (IsEmitting && lightIds[i] < 0 && asset.Nodes[i].PointLight is { } spec)
-                lightIds[i] = driver.Add(spec);
-            if (lightIds[i] >= 0)
-                driver.Update(lightIds[i], MapGlowerDriver.CellFromWorld(nodeWorldMatrices[i].Translation),
-                    playbackTime, intensity * fadeMultiplier);
+            if (asset.Nodes[i].PointLight is not { } spec) continue;
+            bool lit = IsEmitting && nodeActive[i];
+            if (lit && lightIds[i] < 0) lightIds[i] = driver.Add(spec);
+            if (lightIds[i] < 0) continue;
+            float fade = lit ? 1f : Math.Clamp(1f - (playbackTime - nodeDeactivatedAt[i]) / LightFadeSeconds, 0f, 1f);
+            if (fade == 0f)
+            {
+                driver.Remove(lightIds[i]);
+                lightIds[i] = -1;
+                continue;
+            }
+            driver.Update(lightIds[i], MapGlowerDriver.CellFromWorld(nodeWorldMatrices[i].Translation),
+                playbackTime - nodeActivatedAt[i], intensity * fade);
         }
-        if (!IsEmitting && fadeMultiplier == 0f) RemoveLights();
     }
 
     private void RemoveLights()
@@ -317,7 +469,10 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private void FinishDrain()
     {
         if (state == PlaybackState.Draining && CpuEmitterCount == 0 && GpuEmitterCount == 0 && LightCount == 0)
+        {
             state = PlaybackState.Dead;
+            pendingEvents.Enqueue((EventKind.Finished, null));
+        }
     }
 
     private static int CountBindings(int[] ids)

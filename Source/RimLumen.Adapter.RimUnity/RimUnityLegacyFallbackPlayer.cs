@@ -81,6 +81,8 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
     {
         private enum Playback { Playing, Draining, Dead }
         private Playback state;
+        private bool released;
+        private bool finishPending;
         private readonly RU.GameObject anchor;
         private readonly RU.ParticleSystem[] systems;
         private readonly RU.ParticleSystem.MinMaxCurve[] rates;
@@ -106,23 +108,32 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
         {
             var subTargets = systems.Where(system => system.subEmitters.enabled)
                 .SelectMany(system => system.subEmitters.entries).Select(entry => entry.system).ToHashSet();
+            // request.InitialState names a native asset state; translated RimUnity assets declare none, so the native
+            // handle has already rejected any non-null value and the L0 part starts every system.
             foreach (var system in systems)
-                if (system.gameObject.activeInHierarchy && !subTargets.Contains(system) &&
-                    (request.InitialState is null || system.gameObject.name == request.InitialState)) system.Play(false);
+                if (system.gameObject.activeInHierarchy && !subTargets.Contains(system)) system.Play(false);
             LumenHostRegistry.RegisterContributor(this);
         }
 
         public bool IsAlive => state != Playback.Dead && anchor != null;
         public string Name => "RimUnity L0: " + request.EffectId;
-        // A destroyed scene anchor still needs one capture to unregister this contributor.
-        public bool HasActiveWork => state != Playback.Dead;
+        // A released handle still needs one capture to unregister this contributor and raise Finished.
+        public bool HasActiveWork => state != Playback.Dead || finishPending;
 
-        public void Trigger(string eventOrStateName)
+        // L0 systems carry no timeline events and no states: Trigger restarts the systems named like the node,
+        // as the native handle restarts its nodes, and GoTo has nothing to switch (the native handle owns states).
+        public void Trigger(string name)
         {
             if (state != Playback.Playing || !IsAlive) return;
             foreach (var system in systems)
-                if (system.gameObject.name == eventOrStateName) system.Play(false);
+                if (system.gameObject.name == name) system.Play(false);
         }
+
+        public void GoTo(string stateName) { }
+
+        public event Action<string>? Notify { add { } remove { } }
+        public event Action<string>? StateChanged { add { } remove { } }
+        public event Action? Finished;
 
         public void SetParam(string name, float value)
         {
@@ -163,9 +174,17 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
         public void Dispose() => Stop(false);
         public void CaptureMainThread(in LumenCaptureContext context)
         {
+            if (finishPending)
+            {
+                finishPending = false;
+                LumenHostRegistry.UnregisterContributor(this);
+                Finished?.Invoke();
+                return;
+            }
             if (!IsAlive) { Release(); return; }
             RefreshTransform();
-            if (state == Playback.Draining && systems.All(system => !system.IsAlive(false))) Release();
+            // Play sets emitting, so a started system stays alive until it has played out (also without a Stop).
+            if (systems.All(system => !system.IsAlive(false))) Release();
         }
         public void EnqueuePreCompute(in LumenComputeContext context) { }
         public void RecordBufferBarriers(in LumenBarrierContext context) { }
@@ -181,11 +200,14 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
             anchor.transform.localScale = new RU.Vector3(size, size, size);
         }
 
+        // Ensures: idempotent; the next capture unregisters this contributor and raises Finished once.
         private void Release()
         {
             state = Playback.Dead;
-            LumenHostRegistry.UnregisterContributor(this);
             if (anchor != null) RU.Object.DestroyImmediate(anchor);
+            if (released) return;
+            released = true;
+            finishPending = true;
         }
 
         private static RU.Color ScaleRgb(RU.Color color, float value) => new(color.r * value, color.g * value, color.b * value, color.a);
