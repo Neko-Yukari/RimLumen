@@ -9,11 +9,11 @@ namespace RimLumen.Core.Tests.SceneAndLighting;
 public static class SpacePlaneTransformSuite
 {
     [LumenFact]
-    public static void HeightPlaneMapsLocalYToZWithoutPitchingTranslation()
+    public static void PitchedRotationMapsLocalYToZWithoutPitchingTranslation()
     {
         var node = new EffectNodeSpec
         {
-            Name = "height", SpacePlane = LumenSpacePlane.HeightVertical90,
+            Name = "height", LocalRotation = PitchUp,
             LocalPosition = new Vector3(5f, 7f, 11f),
         };
         var matrix = SpacePlaneTransform.BuildLocalMatrix(node);
@@ -25,13 +25,14 @@ public static class SpacePlaneTransformSuite
     }
 
     [LumenFact]
-    public static void LocalMatrixAppliesScaleThenRotationThenPlaneThenTranslation()
+    public static void LocalMatrixAppliesScaleThenRotationThenTranslation()
     {
         var node = new EffectNodeSpec
         {
-            Name = "ordered", SpacePlane = LumenSpacePlane.HeightVertical90,
+            Name = "ordered",
             LocalScale = new Vector3(2f, 3f, 4f),
-            LocalRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f),
+            // Row vectors: Concatenate(a, b) rotates by a, then by b.
+            LocalRotation = Quaternion.Concatenate(Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f), PitchUp),
             LocalPosition = new Vector3(5f, 7f, 11f),
         };
         var matrix = SpacePlaneTransform.BuildLocalMatrix(node);
@@ -43,19 +44,18 @@ public static class SpacePlaneTransformSuite
     }
 
     [LumenFact]
-    public static void GroundAndFree3DPreserveQuaternionRotationWithoutExtraPitch()
+    public static void GroundAndVertical3DPreserveQuaternionRotationWithoutExtraPitch()
     {
         var ground = SpacePlaneTransform.BuildLocalMatrix(new EffectNodeSpec { Name = "ground" });
         if (ground != Matrix4x4.Identity)
         {
             throw new InvalidOperationException("A default ground node must be the identity transform.");
         }
-        foreach (var plane in new[] { LumenSpacePlane.GroundXZ, LumenSpacePlane.Free3D })
+        foreach (var plane in new[] { LumenSpacePlane.GroundXZ, LumenSpacePlane.Vertical3D })
         {
             var matrix = SpacePlaneTransform.BuildLocalMatrix(new EffectNodeSpec
             {
-                Name = "rotated", SpacePlane = plane,
-                LocalRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2f),
+                Name = "rotated", SpacePlane = plane, LocalRotation = PitchUp,
             });
             AssertClose(Vector3.UnitX, Vector3.TransformNormal(Vector3.UnitX, matrix));
             AssertClose(Vector3.UnitZ, Vector3.TransformNormal(Vector3.UnitY, matrix));
@@ -114,7 +114,7 @@ public static class SpacePlaneTransformSuite
                 },
                 new EffectNodeSpec
                 {
-                    Name = "grandchild", ParentIndex = 1, SpacePlane = LumenSpacePlane.HeightVertical90,
+                    Name = "grandchild", ParentIndex = 1, LocalRotation = PitchUp,
                     LocalPosition = new Vector3(0f, 10f, 0f),
                 },
                 new EffectNodeSpec { Name = "sibling root", LocalPosition = new Vector3(-1f, 0f, 0f) },
@@ -223,6 +223,8 @@ public static class SpacePlaneTransformSuite
             Vector3.Transform(Vector3.Zero, SpacePlaneTransform.BuildLocalMatrix(child)), rootWorld);
         AssertClose(localThenRoot, Vector3.Transform(Vector3.Zero, destination[1]));
     }
+
+    private static readonly Quaternion PitchUp = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2f);
 
     private static void AssertClose(Vector3 expected, Vector3 actual)
     {

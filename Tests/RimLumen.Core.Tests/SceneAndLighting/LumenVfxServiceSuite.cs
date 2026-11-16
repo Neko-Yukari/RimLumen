@@ -58,8 +58,9 @@ public static class LumenVfxServiceSuite
         GlowAssert.Equal(0.5f, handle.PlaybackTime);
         handle.Dispose();
         GlowAssert.Equal(0, service.LiveHandleCount);
-        VfxAssert.Check(!service.HasActiveWork, "Dead handles cannot keep the render pipeline active");
+        VfxAssert.Check(service.HasActiveWork, "A disposed handle still owes Finished for one frame");
         VfxTestData.Step(service, 0f);
+        VfxAssert.Check(!service.HasActiveWork, "Dead handles cannot keep the render pipeline active");
         GlowAssert.Equal(0, service.Simulator.ActiveEmitterCount);
     }
 
@@ -271,6 +272,14 @@ internal sealed class SpyGpuEngine : ILumenGpuParticleEngine
     public void UpdateInstance(int instanceId, in Matrix4x4 worldTransform, bool emitting, float intensityMultiplier = 1f)
         => Updates.Add((instanceId, worldTransform, emitting, intensityMultiplier));
     public void DestroyInstance(int instanceId, bool immediate = false) => Destroys.Add((instanceId, immediate));
+    public readonly List<int> Restarts = new();
+    public readonly List<(int Id, int Count)> Bursts = new();
+    public void RestartInstance(int instanceId) => Restarts.Add(instanceId);
+    public void EmitBurst(int instanceId, int count) => Bursts.Add((instanceId, count));
+    // Ids the test has declared drained; every other created, not immediately destroyed id is alive.
+    public readonly HashSet<int> Drained = new();
+    public bool IsInstanceAlive(int instanceId) => instanceId < Creates.Count && !Drained.Contains(instanceId)
+        && !Destroys.Contains((instanceId, true));
     public void CaptureMainThread(in LumenCaptureContext context) => FrameCalls++;
     public void EnqueuePreCompute(in LumenComputeContext context) => FrameCalls++;
     public void RecordBufferBarriers(in LumenBarrierContext context) => FrameCalls++;

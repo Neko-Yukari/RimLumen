@@ -13,20 +13,13 @@ public static class SpacePlaneTransform
 {
     // Requires: node is non-null.
     // Ensures: returns the node's matrix relative to its parent's frame, in this order:
-    //            S(node.LocalScale) * R(node.LocalRotation) * P(node.SpacePlane) * T(node.LocalPosition)
-    //          where P is identity for GroundXZ and Free3D, and R_x(+90 degrees) for HeightVertical90.
-    // Ensures: HeightVertical90 therefore maps the node's local +Y onto the parent frame's +Z while
-    //          LocalPosition.Y stays an altitude offset (the plane pitch never touches translation).
-    // Ensures: Free3D keeps the node's full 3D LocalRotation without an extra plane pitch.
-    public static Matrix4x4 BuildLocalMatrix(EffectNodeSpec node)
-    {
-        var plane = node.SpacePlane == LumenSpacePlane.HeightVertical90
-            ? Matrix4x4.CreateRotationX(MathF.PI / 2f)
-            : Matrix4x4.Identity;
-        return Matrix4x4.CreateScale(node.LocalScale) *
-               Matrix4x4.CreateFromQuaternion(node.LocalRotation) *
-               plane * Matrix4x4.CreateTranslation(node.LocalPosition);
-    }
+    //            S(node.LocalScale) * R(node.LocalRotation) * T(node.LocalPosition)
+    //          for every SpacePlane: the plane only changes how a Vertical3D emitter is displayed, never the
+    //          node matrix. A rotation never touches the translation, so LocalPosition.Y stays an altitude offset.
+    public static Matrix4x4 BuildLocalMatrix(EffectNodeSpec node) =>
+        Matrix4x4.CreateScale(node.LocalScale) *
+        Matrix4x4.CreateFromQuaternion(node.LocalRotation) *
+        Matrix4x4.CreateTranslation(node.LocalPosition);
 
     // Requires: scale is finite and non-zero.
     // Ensures: returns S(scale) * R_y(rotationDegrees) * T(originWorld): the effect root frame in world space.

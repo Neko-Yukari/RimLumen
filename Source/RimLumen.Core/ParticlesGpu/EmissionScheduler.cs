@@ -32,6 +32,14 @@ public sealed class EmissionScheduler
 
     public bool Finished => !looping && time >= duration;
 
+    // Ensures: the schedule starts over as if newly constructed: time 0, no fractional spawn, the time-0 burst pending.
+    public void Restart()
+    {
+        time = 0d;
+        fractional = 0d;
+        started = false;
+    }
+
     // Requires: dt >= 0; called once per captured frame.
     // Ensures: advances emitter time; preserves fractional rate and counts all crossed bursts.
     public int Advance(float dt, bool emitting)

@@ -80,4 +80,20 @@ public interface ILumenGpuParticleEngine : ILumenFrameContributor
 
     // Ensures: stops emission or reclaims GPU slot when particles expire.
     void DestroyInstance(int instanceId, bool immediate = false);
+
+    // Requires: main thread.
+    // Ensures: the instance emits again from the start of its schedule (time 0, rate remainder cleared, time-0
+    //          bursts pending), exactly like CpuParticleSimulator.RestartEmitter. Unknown or destroyed ids are ignored.
+    void RestartInstance(int instanceId);
+
+    // Requires: main thread; count >= 0.
+    // Ensures: the next captured frame spawns count extra particles (within the instance's slot capacity and the
+    //          particle-density scale) whether or not the instance is emitting, like CpuParticleSimulator.EmitBurst.
+    //          Unknown or destroyed ids are ignored.
+    void EmitBurst(int instanceId, int count);
+
+    // Requires: main thread.
+    // Ensures: true from CreateInstance until the capture that reclaims the instance's slots: the next capture after
+    //          DestroyInstance(id, true), or the end of the drain after DestroyInstance(id, false). False for unknown ids.
+    bool IsInstanceAlive(int instanceId);
 }

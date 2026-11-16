@@ -82,7 +82,7 @@ RimLumen.Core.Api.RimLumenApi.PlayAtCell("MyFireball", map, pawn.Position);
 
 `RimLumenApi.Play(effectId, map, worldPos)` 接受世界坐标；两者都返回 `ILumenEffectHandle`（`Trigger` / `SetParam` / `Stop`）。
 
-`spacePlane`：`GroundXZ`（地面）、`HeightVertical90`（90° 高度层）、`Free3D`、`Vertical3D`（朝天真 3D 空间 + 2D/3D 视角自适应）。`shape`：`Point` `Sphere` `CircleXZ` `Cone` `Box`。`billboardMode`：`Camera` `Horizontal` `StretchedVelocity`。`blendMode`：`Additive` `AlphaBlend` `Premultiplied`。
+`spacePlane`：`GroundXZ`（地面，原样使用节点旋转）、`Vertical3D`（朝天真 3D 空间 + 2D/3D 视角自适应）。`shape`：`Point` `Sphere` `CircleXZ` `Cone` `Box`。`billboardMode`：`Camera` `Horizontal` `StretchedVelocity`。`blendMode`：`Additive` `AlphaBlend` `Premultiplied`。
 
 ### Quickstart 2：`.lumen.json`
 

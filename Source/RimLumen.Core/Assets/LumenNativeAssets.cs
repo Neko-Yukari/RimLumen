@@ -5,6 +5,7 @@ using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Scene;
 using Verse;
 using CurveKey = RimLumen.Core.Contracts.CurveKey;
 
@@ -15,7 +16,12 @@ namespace RimLumen.Core.Assets;
 /// </summary>
 public sealed class LumenEffectDef : Def
 {
+    public float defaultDuration = 2f;
     public List<LumenNodeXml>? nodes;
+    public List<LumenStateXml>? states;
+    public string? initialState;
+    public string? stopState;
+    public List<LumenTimelineEventXml>? timelineEvents;
 
     // Ensures: converts this XML Def into a validated immutable EffectAsset (EffectId defaults to defName).
     public EffectAsset ToEffectAsset(string? packageId = null)
@@ -55,9 +61,69 @@ public sealed class LumenEffectDef : Def
             };
         }
 
-        var asset = new EffectAsset { EffectId = defName, Nodes = specs };
+        var asset = new EffectAsset
+        {
+            EffectId = defName,
+            DefaultDuration = defaultDuration,
+            Nodes = specs,
+            TimelineEvents = ToTimelineEvents(timelineEvents, source),
+            States = ToStates(states, source),
+            InitialState = initialState,
+            StopState = stopState,
+        };
         LumenAssetRules.Validate(asset, source);
         return asset;
+    }
+
+    private static EffectStateSpec[] ToStates(List<LumenStateXml>? states, string source)
+    {
+        if (states is null || states.Count == 0)
+        {
+            return Array.Empty<EffectStateSpec>();
+        }
+
+        var result = new EffectStateSpec[states.Count];
+        for (int i = 0; i < states.Count; i++)
+        {
+            LumenStateXml state = states[i] ?? throw new InvalidDataException($"{source}: states[{i}] is null.");
+            result[i] = new EffectStateSpec
+            {
+                Name = state.name ?? throw new InvalidDataException($"{source}: states[{i}]: name is required."),
+                Nodes = state.nodes?.ToArray() ?? Array.Empty<string>(),
+                Duration = state.duration,
+                Loop = state.loop,
+                Next = state.next,
+            };
+        }
+
+        return result;
+    }
+
+    private static TimelineEventSpec[] ToTimelineEvents(List<LumenTimelineEventXml>? events, string source)
+    {
+        if (events is null || events.Count == 0)
+        {
+            return Array.Empty<TimelineEventSpec>();
+        }
+
+        var result = new TimelineEventSpec[events.Count];
+        for (int i = 0; i < events.Count; i++)
+        {
+            LumenTimelineEventXml timelineEvent = events[i] ?? throw new InvalidDataException($"{source}: timelineEvents[{i}] is null.");
+            if (string.IsNullOrEmpty(timelineEvent.eventName))
+            {
+                throw new InvalidDataException($"{source}: timelineEvents[{i}]: eventName is required.");
+            }
+
+            result[i] = new TimelineEventSpec(
+                timelineEvent.time,
+                timelineEvent.eventName!,
+                timelineEvent.targetNodeIndex,
+                timelineEvent.state,
+                timelineEvent.notify);
+        }
+
+        return result;
     }
 
     private static EmitterSpec ToEmitterSpec(LumenEmitterXml xml, string nodeName, string path)
@@ -265,6 +331,25 @@ public sealed class LumenEmitterXml
     public List<LumenForceFieldXml>? forceFields;
 }
 
+// XML mirror of <see cref="EffectStateSpec"/>; an omitted duration inherits the def's defaultDuration, as in .lumen.json.
+public sealed class LumenStateXml
+{
+    public string? name;
+    public List<string>? nodes;
+    public float? duration;
+    public bool loop = false;
+    public string? next;
+}
+
+public sealed class LumenTimelineEventXml
+{
+    public float time;
+    public string? eventName;
+    public int targetNodeIndex = -1;
+    public string? state;
+    public bool notify = false;
+}
+
 public sealed class LumenBurstXml
 {
     public float time;
@@ -311,7 +396,8 @@ internal static class LumenAssetRules
     // Ensures: throws InvalidDataException naming <paramref name="source"/> when the asset cannot be played:
     //          empty EffectId, no nodes, an empty node name, a parent index that is neither -1 nor an
     //          earlier node (the only cycle-free ordering the runtime accepts), a non-positive particle
-    //          budget, a non-positive or inverted lifetime range, or a flipbook grid below 1 tile.
+    //          budget, a non-positive or inverted lifetime range, a flipbook grid below 1 tile, or a states /
+    //          initialState / stopState / timeline-event state reference that EffectStateGraph.For rejects.
     public static void Validate(EffectAsset asset, string source)
     {
         if (string.IsNullOrEmpty(asset.EffectId))
@@ -379,6 +465,8 @@ internal static class LumenAssetRules
                 throw new InvalidDataException($"{source}: timelineEvents[{i}]: targetNodeIndex {timelineEvent.TargetNodeIndex} must be -1 or in [0, {nodes.Length}).");
             }
         }
+
+        EffectStateGraph.For(asset, source);
     }
 
     private static void ValidateEmitter(EmitterSpec emitter, string path)
@@ -515,6 +603,9 @@ public static class LumenJsonAssetLoader
                 DefaultDuration = scope.Float("defaultDuration", 2f),
                 Nodes = nodes,
                 TimelineEvents = ParseTimelineEvents(scope),
+                States = ParseStates(scope),
+                InitialState = scope.String("initialState", null),
+                StopState = scope.String("stopState", null),
             };
             LumenAssetRules.Validate(asset, $"effect '{effectId}'");
             return asset;
@@ -564,7 +655,12 @@ public static class LumenJsonAssetLoader
         return TrimEffectSuffix(relative);
     }
 
-    private static readonly string[] RootProperties = { "effectId", "defaultDuration", "nodes", "timelineEvents" };
+    private static readonly string[] RootProperties =
+    {
+        "effectId", "defaultDuration", "nodes", "timelineEvents", "states", "initialState", "stopState",
+    };
+
+    private static readonly string[] StateProperties = { "name", "nodes", "duration", "loop", "next" };
 
     private static readonly string[] NodeProperties =
     {
@@ -595,7 +691,10 @@ public static class LumenJsonAssetLoader
         "kind", "centerOrAxis", "parameters", "radius", "strength", "frequency",
     };
 
-    private static readonly string[] TimelineEventProperties = { "time", "timeSeconds", "eventName", "name", "targetNodeIndex" };
+    private static readonly string[] TimelineEventProperties =
+    {
+        "time", "timeSeconds", "eventName", "name", "targetNodeIndex", "state", "notify",
+    };
 
     private static readonly string[] CurveProperties = { "keys", "multiplier" };
 
@@ -834,11 +933,78 @@ public static class LumenJsonAssetLoader
             }
 
             float time = timelineEvent.Has("time") ? timelineEvent.Float("time", 0f) : timelineEvent.Float("timeSeconds", 0f);
-            // Target indices are range-checked by LumenAssetRules once the whole asset exists.
-            events[index++] = new TimelineEventSpec(time, name, timelineEvent.Int("targetNodeIndex", -1));
+            // Target indices and state names are checked by LumenAssetRules once the whole asset exists.
+            events[index++] = new TimelineEventSpec(
+                time,
+                name,
+                timelineEvent.Int("targetNodeIndex", -1),
+                timelineEvent.String("state", null),
+                timelineEvent.Bool("notify", false));
         }
 
         return events;
+    }
+
+    private static EffectStateSpec[] ParseStates(JsonScope scope)
+    {
+        if (!scope.TryGet("states", out JsonElement element) || element.ValueKind == JsonValueKind.Null)
+        {
+            return Array.Empty<EffectStateSpec>();
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException($"asset.states: must be an array, got {element.ValueKind}.");
+        }
+
+        var states = new EffectStateSpec[element.GetArrayLength()];
+        int index = 0;
+        foreach (JsonElement stateElement in element.EnumerateArray())
+        {
+            string statePath = $"asset.states[{index}]";
+            if (stateElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException($"{statePath}: must be an object, got {stateElement.ValueKind}.");
+            }
+
+            var state = new JsonScope(stateElement, statePath);
+            state.Check(StateProperties);
+            states[index++] = new EffectStateSpec
+            {
+                Name = state.String("name", null) ?? throw new InvalidDataException($"{statePath}: 'name' is required."),
+                Nodes = ParseNames(state, "nodes", statePath),
+                Duration = state.OptionalFloat("duration"),
+                Loop = state.Bool("loop", false),
+                Next = state.String("next", null),
+            };
+        }
+
+        return states;
+    }
+
+    private static string[] ParseNames(JsonScope scope, string name, string path)
+    {
+        if (!scope.TryGet(name, out JsonElement element) || element.ValueKind == JsonValueKind.Null)
+        {
+            return Array.Empty<string>();
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException($"{path}.{name}: must be an array of strings, got {element.ValueKind}.");
+        }
+
+        var names = new string[element.GetArrayLength()];
+        int index = 0;
+        foreach (JsonElement item in element.EnumerateArray())
+        {
+            names[index] = item.ValueKind == JsonValueKind.String
+                ? item.GetString()!
+                : throw new InvalidDataException($"{path}.{name}[{index}]: expected a string, got {item.ValueKind}.");
+            index++;
+        }
+
+        return names;
     }
 
     private static ScalarCurve ParseCurve(JsonElement element, string path)
@@ -1152,7 +1318,7 @@ public static class LumenJsonAssetLoader
             if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out int number))
             {
                 var fromNumber = (TEnum)System.Enum.ToObject(typeof(TEnum), number);
-                return System.Enum.IsDefined(fromNumber) ? fromNumber : throw new InvalidDataException($"{path}.{name}: {number} is not a valid {typeof(TEnum).Name} value.");
+                return System.Enum.IsDefined(fromNumber) ? fromNumber : throw new InvalidDataException($"{path}.{name}: {number} is not a valid {typeof(TEnum).Name} value (known: {string.Join(", ", System.Enum.GetNames(typeof(TEnum)))}).");
             }
 
             if (value.ValueKind == JsonValueKind.String && System.Enum.TryParse(value.GetString(), ignoreCase: true, out TEnum parsed) && System.Enum.IsDefined(parsed))
@@ -1395,13 +1561,22 @@ public static class LumenModAssetScanner
 
     private static readonly string[] EffectSuffixes = { ".lumen.json", ".json" };
 
-    private static EffectAsset Alias(EffectAsset asset, string effectId) => new()
+    // Ensures: a copy registered under effectId that reuses the asset's compiled state graph.
+    private static EffectAsset Alias(EffectAsset asset, string effectId)
     {
-        EffectId = effectId,
-        DefaultDuration = asset.DefaultDuration,
-        Nodes = asset.Nodes,
-        TimelineEvents = asset.TimelineEvents,
-    };
+        var alias = new EffectAsset
+        {
+            EffectId = effectId,
+            DefaultDuration = asset.DefaultDuration,
+            Nodes = asset.Nodes,
+            TimelineEvents = asset.TimelineEvents,
+            States = asset.States,
+            InitialState = asset.InitialState,
+            StopState = asset.StopState,
+        };
+        EffectStateGraph.ShareWithAlias(asset, alias);
+        return alias;
+    }
 
     private static string RelativeEffectId(string dataDirectory, string file)
     {

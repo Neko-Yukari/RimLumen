@@ -51,17 +51,19 @@ public static class ParticleEngineTests
     public static void NonLoopingEmitterDrainsAfterFinalSpawn()
     {
         using var engine = new LumenGpuParticleEngine(8);
-        engine.CreateInstance(new EmitterSpec
+        int id = engine.CreateInstance(new EmitterSpec
         {
             Name = "one-shot", MaxParticles = 8, Duration = 0.25f,
             Bursts = new[] { (0f, 8) }, StartLifetimeMin = 1, StartLifetimeMax = 1
         }, Matrix4x4.Identity);
         engine.CaptureMainThread(Frame(2));
-        Require(engine.HasActiveWork, "A large final step must retain newly spawned particles.");
-        engine.CaptureMainThread(Frame(0.5f, 1));
-        Require(engine.HasActiveWork, "Final particles must remain during drain.");
+        engine.CaptureMainThread(Frame(2, 1));
+        Require(engine.HasActiveWork, "A spent schedule keeps its slots until the owner destroys it.");
+        engine.DestroyInstance(id);
         engine.CaptureMainThread(Frame(0.5f, 2));
-        Require(!engine.HasActiveWork, "A finished emitter must return to idle.");
+        Require(engine.HasActiveWork, "Final particles must remain during drain.");
+        engine.CaptureMainThread(Frame(0.5f, 3));
+        Require(!engine.HasActiveWork, "A destroyed emitter must return to idle.");
     }
 
     [LumenFact]
@@ -112,16 +114,52 @@ public static class ParticleEngineTests
                     Bursts = new[] { (0f, 8) }, StartLifetimeMin = 1f, StartLifetimeMax = 1f,
                 } },
             },
+            States = new[]
+            {
+                new EffectStateSpec { Name = "idle", Loop = true },
+                new EffectStateSpec { Name = "burst", Nodes = new[] { "waiting" }, Loop = true },
+            },
         };
         var service = SceneAndLighting.VfxTestData.Service(asset);
         service.GpuEngineProvider = () => engine;
-        using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, InitialState = "other" });
+        using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
         engine.CaptureMainThread(Frame(2f));
         engine.CaptureMainThread(Frame(2f, 1));
-        Require(engine.HasActiveWork, "An unactivated InitialState node must not expire before Trigger.");
-        handle.Trigger("waiting");
+        Require(engine.HasActiveWork, "A node outside the initial state must not expire before its state is entered.");
+        handle.GoTo("burst");
         engine.CaptureMainThread(Frame(0.25f, 2));
         Require(engine.HasActiveWork, "The triggered node retains its spawned particles.");
+    }
+
+    [LumenFact]
+    public static void PulseOnTheFrameTheEffectEndsStillSpawnsOnL2()
+    {
+        using var engine = new LumenGpuParticleEngine(16);
+        var asset = new EffectAsset
+        {
+            EffectId = "gpu.end-pulse", DefaultDuration = 1f,
+            Nodes = new[]
+            {
+                new EffectNodeSpec { Name = "gpu", Emitter = new EmitterSpec
+                {
+                    Name = "gpu", MaxParticles = 16, Duration = 1f, RateOverTime = 6f,
+                    StartLifetimeMin = 1f, StartLifetimeMax = 1f,
+                } },
+            },
+            TimelineEvents = new[] { new TimelineEventSpec(1f, "end", 0) },
+        };
+        var service = SceneAndLighting.VfxTestData.Service(asset);
+        service.GpuEngineProvider = () => engine;
+        using var handle = (Scene.EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        SceneAndLighting.VfxTestData.Step(service, 1f);
+        Require(!handle.IsEmitting, "The effect ended on this frame.");
+        engine.CaptureMainThread(Frame(1f));
+        float budget = engine.CapturedFrame!.Emitters[0].Parameters.Slots.Z;
+        Require(budget == 6f, $"The end pulse must spawn its 6 particles while the instance drains, got {budget}.");
+        engine.CaptureMainThread(Frame(0.5f, 1));
+        Require(engine.IsInstanceAlive(0), "The pulse's particles keep the drain alive for their lifetime.");
+        engine.CaptureMainThread(Frame(0.5f, 2));
+        Require(!engine.HasActiveWork, "The drain ends once the pulse's lifetime has passed.");
     }
 
     [LumenFact]

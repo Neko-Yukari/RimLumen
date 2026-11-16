@@ -95,7 +95,7 @@ public static class EffectInstanceHandleSuite
     }
 
     [LumenFact]
-    public static void TriggerFiresNamedEventsAndActivatesInitiallyPausedNodes()
+    public static void TriggerFiresNamedEventsAndRestartsNodesOutsideTheCurrentState()
     {
         var asset = new EffectAsset
         {
@@ -111,9 +111,16 @@ public static class EffectInstanceHandleSuite
                 },
                 new EffectNodeSpec { Name = "aura", Emitter = VfxTestData.Emitter() },
             },
-            TimelineEvents = new[] { new TimelineEventSpec(20f, "flash", 0) },
+            TimelineEvents = new[] { new TimelineEventSpec(20f, "flash", 0, "aura") },
+            States = new[]
+            {
+                new EffectStateSpec { Name = "idle", Nodes = new[] { "idle" }, Loop = true },
+                new EffectStateSpec { Name = "aura", Nodes = new[] { "aura" }, Loop = true },
+            },
         };
         var service = VfxTestData.Service(asset);
+        GlowAssert.Throws<ArgumentException>(() => service.Play(new LumenPlayRequest { EffectId = asset.EffectId, InitialState = "missing" }));
+        GlowAssert.Equal(0, service.LiveHandleCount);
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId, InitialState = "aura" });
         VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
@@ -121,12 +128,13 @@ public static class EffectInstanceHandleSuite
         GlowAssert.Equal(4, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal(5, service.Simulator.LiveParticleCount);
+        // Trigger restarts the idle node's own schedule (rate 4/s) without leaving the aura state.
         handle.Trigger("idle");
-        GlowAssert.Equal(8, service.Simulator.LiveParticleCount);
+        GlowAssert.Equal(5, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(10, service.Simulator.LiveParticleCount);
+        GlowAssert.Equal(7, service.Simulator.LiveParticleCount);
         handle.Trigger("unknown-state");
-        GlowAssert.Equal(10, service.Simulator.LiveParticleCount);
+        GlowAssert.Equal(7, service.Simulator.LiveParticleCount);
         handle.Dispose();
         handle.Trigger("flash");
         handle.Trigger("idle");
@@ -403,6 +411,9 @@ public static class EffectInstanceHandleSuite
         service.GlowerDriverProvider = _ => driver;
         using var first = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
         using var second = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        int finished = 0;
+        first.Finished += () => finished++;
+        second.Finished += () => finished++;
         VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal(2, driver.TrackedLightCount);
         GlowAssert.Equal(2, service.Simulator.LiveParticleCount);
@@ -418,11 +429,15 @@ public static class EffectInstanceHandleSuite
         GlowAssert.Equal(0, first.LightCount);
         GlowAssert.Equal(0, first.CpuEmitterCount);
         GlowAssert.Equal(sink.Registrations.Count, sink.DeregisterCount);
-        VfxAssert.Check(!service.HasActiveWork, "Immediate teardown leaves no service work");
+        GlowAssert.Equal(0, finished);
+        VfxAssert.Check(service.HasActiveWork, "Finished is still owed, so the service needs one more frame");
+        VfxTestData.Step(service, 0f);
+        GlowAssert.Equal(2, finished);
+        VfxAssert.Check(!service.HasActiveWork, "Immediate teardown leaves no service work once Finished is raised");
     }
 
     [LumenFact]
-    public static void GpuTriggerActivatesAndFadeStopTransfersDrainOwnership()
+    public static void GpuTriggerActivatesAndFadeStopKeepsDrainOwnershipUntilTheEngineReclaims()
     {
         var asset = new EffectAsset
         {
@@ -430,22 +445,33 @@ public static class EffectInstanceHandleSuite
             {
                 new EffectNodeSpec { Name = "gpu", Emitter = VfxTestData.Emitter() },
             },
-            TimelineEvents = new[] { new TimelineEventSpec(1f, "flash", 0) },
+            TimelineEvents = new[] { new TimelineEventSpec(1f, "flash", 0, "other") },
+            States = new[]
+            {
+                new EffectStateSpec { Name = "other", Loop = true },
+                new EffectStateSpec { Name = "lit", Nodes = new[] { "gpu" }, Loop = true },
+            },
         };
         var service = VfxTestData.Service(asset);
         var engine = new SpyGpuEngine();
         service.GpuEngineProvider = () => engine;
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId, InitialState = "other" });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
         GlowAssert.Equal(false, engine.Updates[^1].Emitting);
         handle.Trigger("flash");
+        GlowAssert.Equal((0, 4), engine.Bursts[^1]);
+        GlowAssert.Equal(0, engine.Restarts.Count);
+        handle.GoTo("lit");
+        GlowAssert.Equal(0, engine.Restarts[^1]);
+        VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal(true, engine.Updates[^1].Emitting);
         handle.Stop(true);
         GlowAssert.Equal((0, false), engine.Destroys[0]);
-        GlowAssert.Equal(0, handle.GpuEmitterCount);
-        VfxAssert.Check(!handle.IsAlive && engine.HasActiveWork, "GPU drain belongs to engine, not a liveness proxy");
-        handle.Dispose();
-        GlowAssert.Equal(1, engine.Destroys.Count);
         VfxTestData.Step(service, 2f);
+        VfxAssert.Check(handle.IsAlive && handle.GpuEmitterCount == 1, "the handle owns the GPU drain until the engine reclaims it");
+        handle.Dispose();
+        GlowAssert.Equal((0, true), engine.Destroys[^1]);
+        VfxAssert.Check(!handle.IsAlive && handle.GpuEmitterCount == 0, "Dispose during the GPU drain tears it down");
+        VfxTestData.Step(service, 0f);
         GlowAssert.Equal(0, service.LiveHandleCount);
     }
 

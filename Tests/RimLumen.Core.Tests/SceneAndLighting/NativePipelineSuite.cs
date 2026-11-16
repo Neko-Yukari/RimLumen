@@ -40,6 +40,27 @@ public static class NativePipelineSuite
     }
 
     [LumenFact]
+    public static void RemovedSpacePlaneNamesFailAtTheParser()
+    {
+        // The removed values 1 and 2, and a name outside the two remaining planes.
+        foreach (string plane in new[] { "1", "2", "\"Upright\"" })
+        {
+            try
+            {
+                LumenJsonAssetLoader.Parse($$"""{ "nodes": [ { "name": "n", "spacePlane": {{plane}} } ] }""", "removed.plane");
+            }
+            catch (InvalidDataException error)
+            {
+                NativeTestData.Check(error.Message.Contains("spacePlane"), $"error names the field: {error.Message}");
+                NativeTestData.Check(error.Message.Contains("(known: GroundXZ, Vertical3D)"),
+                    $"error lists the remaining planes: {error.Message}");
+                continue;
+            }
+            throw new InvalidOperationException($"spacePlane {plane} must be rejected");
+        }
+    }
+
+    [LumenFact]
     public static void JsonFullDocumentMapsEveryField()
     {
         var asset = LumenJsonAssetLoader.Parse(FullJson);
@@ -48,7 +69,7 @@ public static class NativePipelineSuite
         NativeTestData.Check(asset.Nodes.Length == 2, "Two nodes");
         EffectNodeSpec node = asset.Nodes[0];
         NativeTestData.Check(node.Name == "core" && node.ParentIndex == -1, "Node identity");
-        NativeTestData.Check(node.SpacePlane == LumenSpacePlane.Free3D, "spacePlane name decoding");
+        NativeTestData.Check(node.SpacePlane == LumenSpacePlane.Vertical3D, "spacePlane name decoding");
         NativeTestData.Close(1f, node.LocalPosition.X, "localPosition.x");
         NativeTestData.Close(3f, node.LocalPosition.Z, "localPosition.z");
         NativeTestData.Close(0.5f, node.LocalScale.X, "localScale.x");
@@ -664,7 +685,7 @@ public static class NativePipelineSuite
         {
           "name": "core",
           "parentIndex": -1,
-          "spacePlane": "Free3D",
+          "spacePlane": "Vertical3D",
           "localPosition": [1, 2, 3],
           "localYawDegrees": 90,
           "localScale": [0.5, 0.75, 2],

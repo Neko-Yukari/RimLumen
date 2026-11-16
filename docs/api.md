@@ -28,18 +28,16 @@
 
 | 枚举值 | 数值 | 旋转行为 | 常见用途 |
 | --- | --- | --- | --- |
-| `GroundXZ` | `0` | 单位矩阵，不加额外俯仰旋转 | 贴地法阵、地面光环、水平扩散波 |
-| `HeightVertical90` | `1` | 局部方向绕 X 轴转 `+90°`，将局部 `+Y` 映射为世界 `+Z`（屏幕上方），**不影响 `LocalPosition.Y` 高度偏移** | 烟花升空、喷泉、垂直火柱、向上喷射 |
-| `Free3D` | `2` | 完全保留节点自身的 3D `LocalRotation`；显示不做任何相机适配 | 任意 3D 朝向子发射器（如 RimUnity 导入资产） |
-| `Vertical3D` | `3` | 与 `Free3D` 相同使用单位旋转，局部 `+Y` 即世界 `+Y`；模拟保持真 3D，**仅显示**按相机适配：IsoRim（Y 被压扁）下把高于 `baseY` 的高度除以压扁系数，还原为真实高度；原版正俯视 2D 相机下把高度投影到屏幕上方（`+Z`），绘制高度取 `max(baseY, MoteOverhead)`；`StretchedVelocity` 的拉伸方向同步取真 3D 速度 | 烟花、喷泉等真正向上喷射并落回地面的特效 |
+| `GroundXZ` | `0` | 原样使用节点自身的 `LocalRotation`，不加额外俯仰旋转；显示不做相机适配 | 贴地法阵、地面光环、水平扩散波、任意 3D 朝向子发射器（如 RimUnity 导入资产） |
+| `Vertical3D` | `3` | 节点矩阵与 `GroundXZ` 相同，局部 `+Y` 即世界 `+Y`；模拟保持真 3D，**仅显示**按相机适配：IsoRim（Y 被压扁）下把高于 `baseY` 的高度除以压扁系数，还原为真实高度；原版正俯视 2D 相机下把高度投影到屏幕上方（`+Z`），绘制高度取 `max(baseY, MoteOverhead)`；`StretchedVelocity` 的拉伸方向同步取真 3D 速度 | 烟花、喷泉等真正向上喷射并落回地面的特效 |
 
-`Vertical3D` 的 `baseY` 是播放原点（`LumenPlayRequest.OriginWorld.Y`）的高度；节点 `LocalPosition.Y` 是相对该原点的高度（例如烟花爆点 `4.8`）。`GroundXZ`、`HeightVertical90`、`Free3D` 的行为保持不变。
+`Vertical3D` 的 `baseY` 是播放原点（`LumenPlayRequest.OriginWorld.Y`）的高度；节点 `LocalPosition.Y` 是相对该原点的高度（例如烟花爆点 `4.8`）。`GroundXZ` 的显示不受影响。数值 `1`、`2` 不再有效，解析时报错。
 
 ### 地面接触过期（`EmitterSpec.KillBelowFloor` / `killBelowFloor`）
 
 `killBelowFloor`（默认 `false`）在 C# `EmitterSpec.KillBelowFloor`、`.lumen.json` 发射器对象以及 XML `LumenEffectDef` 的 `<emitter>` 中均可设置。为 `true` 时，粒子在世界高度低于播放原点高度 `baseY` **且**世界速度 `Y < 0`（正在下落）的那一帧过期并被回收；在地面以下但仍上升、或恰在地面上刚发射的粒子不受影响。L1（CPU）与 L2（GPU compute）行为一致，与空间平面无关，局部空间模拟的发射器按其世界矩阵换算后判定。
 
-> 提示：所有发射形状中，`Cone`（圆锥）的默认主喷射轴是局部 `+Y`。想让粒子沿真实高度向上喷出并落回，请给节点设 `Vertical3D`，把世界空间重力设为 `(0, -1, 0)`，需要落地即消失时再设 `KillBelowFloor`。若仍想让粒子在俯视屏幕里朝屏幕上方（`+Z`）喷出（旧写法，显示不随相机适配），可用 `HeightVertical90` 并把重力设为 `(0, 0, -1)`。
+> 提示：所有发射形状中，`Cone`（圆锥）的默认主喷射轴是局部 `+Y`。想让粒子沿真实高度向上喷出并落回，请给节点设 `Vertical3D`，把世界空间重力设为 `(0, -1, 0)`，需要落地即消失时再设 `KillBelowFloor`。
 
 ### 3. 游戏时间同步
 
@@ -138,8 +136,11 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
     }
   ],
   "timelineEvents": [
-    { "time": 0.5, "eventName": "explode", "targetNodeIndex": 0 }
-  ]
+    { "time": 0.5, "eventName": "explode", "targetNodeIndex": 0, "state": null, "notify": false }
+  ],
+  "states": [],
+  "initialState": null,
+  "stopState": null
 }
 ```
 
@@ -150,6 +151,107 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 - **曲线（`sizeOverLifetime` / `intensityOverTime`）**：支持三种写法——单数值（常量）、数组 `[[time, value], ...]`（时间必须非递减）、对象 `{ "keys": [...], "multiplier": 1 }`。关键帧还可选带切线 `[time, value, inTangent, outTangent]`。
 - **渐变（`colorOverLifetime`）**：支持颜色数组（单色常量）或停靠点数组 `[[time, [r,g,b,a]], ...]` 或对象 `{ "stops": [{ "time": 0, "rgbaLinear": [r,g,b,a] }] }`，同样要求 `time` 非递减。
 - **`pointLight`**：JSON 下颜色支持 `colorRgb` 或 `colorLinear`（二者均取线性 RGB 分量），半径键为 `glowRadius` 与 `overlightRadius`（单位：地图格）。
+- **`timelineEvents` / `states` / `initialState` / `stopState`**：见下一节「状态机」。
+
+### 4. 状态机（`states`）
+
+一个特效由若干命名状态组成，同一时刻只播放一个状态。状态可以按时长自动推进，也可以由 C# 切换，并把关键时刻回调给 C#。
+
+**不写 `states` 时**，整个特效是一个隐式状态：包含全部节点，时长 `defaultDuration`。只要有一个发射器 `looping: true`，这个状态就一直循环到被 `Stop`；否则到时停止新发射，粒子与点光清空后句柄自动死亡并触发 `Finished`。隐式状态没有名字，不触发 `StateChanged`。
+
+**`states[]` 字段**：
+
+| 字段 | 默认 | 含义 |
+| --- | --- | --- |
+| `name` | 必填 | 状态名，在本资产内唯一 |
+| `nodes` | `[]` | 本状态发射的节点名列表；同名节点都属于本状态。一个节点可属于多个状态，也可不属于任何状态 |
+| `duration` | `defaultDuration` | 状态时长（秒，`>= 0`） |
+| `loop` | `false` | `true` 时状态永不自行结束，`duration` 是它的时间轴事件周期 |
+| `next` | `null` | 非循环状态到时进入的状态；为 `null` 时特效到此结束。不能与 `loop` 同时写 |
+
+**根字段**：`initialState` 是播放时进入的状态，默认 `states[0]`；`LumenPlayRequest.InitialState` 可在单次播放时覆盖它。`stopState` 是 `Stop(true)` 进入的收尾状态，它必须能自行结束（不能 `loop`，也不能写 `next`）；不写时 `Stop(true)` 立即开始淡出。
+
+**进入状态**（包括初始状态、`next`、`GoTo`，以及 `GoTo` 当前状态的重入）时：
+
+1. 状态时钟归零，并触发一次 `StateChanged(name)`。
+2. 属于该状态的节点从头开始自己的发射计划：`bursts` 的时刻、发射器 `duration` 与 `rateOverTime` 都从进入时刻起算。L1（CPU）与 L2（GPU）行为一致。
+3. 不属于该状态的节点停止新发射，已发出的粒子跑完寿命，点光在 `0.25s` 内淡出。
+
+状态在帧边界切换：切换发生的那一帧，发射器按新状态模拟整帧。一帧推进跨过多个状态时，会依次走完每个状态与其中的事件。
+
+**`timelineEvents[]` 与状态**：
+
+| 字段 | 默认 | 含义 |
+| --- | --- | --- |
+| `time` | 必填 | 相对所属状态进入时刻的秒数 |
+| `eventName` | 必填 | 事件名，`Trigger` 与 `Notify` 用它 |
+| `targetNodeIndex` | `-1` | 非 `-1` 时向该节点补发一次脉冲：`bursts[0].count`，没有 `bursts` 时取整的 `rateOverTime` |
+| `state` | `initialState` | 所属状态名；只在该状态播放时按时间触发 |
+| `notify` | `false` | `true` 时触发后回调 `ILumenEffectHandle.Notify(eventName)` |
+
+循环状态每过一个 `duration` 周期重新触发一遍它的事件，`time >= duration` 的事件不会按时间触发；`duration` 为 `0` 的循环状态只触发一遍。非循环状态里 `time` 恰好等于 `duration` 的事件仍会触发。
+
+**加载时校验**（`.lumen.json` 与 XML 在解析时报错，C# `EffectAsset` 在 `Play` 时抛 `InvalidDataException`）：状态名为空或重复；`nodes` 中的名字没有对应节点；时长为负或非有限值；`loop` 与 `next` 同时出现；`next`、`initialState`、`stopState` 或事件的 `state` 指向不存在的状态；`stopState` 是循环状态或带 `next`；零时长状态经 `next` 成环；没有 `states` 却写了 `initialState`、`stopState` 或事件 `state`。
+
+#### 示例：龙卷风的生成、持续与消散
+
+```json
+{
+  "effectId": "Tornado",
+  "nodes": [
+    { "name": "funnel", "spacePlane": "Vertical3D", "emitter": {
+        "maxParticles": 2048, "duration": 2, "looping": true, "rateOverTime": 600,
+        "shape": "Cone", "coneAngleDegrees": 8, "startLifetime": 1.6, "startSpeed": 4,
+        "forceFields": [ { "kind": "Vortex", "centerOrAxis": [0, 1, 0], "parameters": [1.5, 2, 0], "radius": 3, "strength": 6 } ] } },
+    { "name": "debris", "spacePlane": "Vertical3D", "emitter": {
+        "maxParticles": 256, "duration": 2, "looping": true, "rateOverTime": 40,
+        "shape": "CircleXZ", "shapeExtents": 2, "startLifetime": 1.2, "startSpeed": 2 } },
+    { "name": "dust", "emitter": {
+        "maxParticles": 512, "duration": 0.5, "bursts": [[0, 300]],
+        "shape": "CircleXZ", "shapeExtents": 2.5, "startLifetime": 1.0, "startSpeed": 1 } },
+    { "name": "collapse", "spacePlane": "Vertical3D", "emitter": {
+        "maxParticles": 512, "duration": 0.5, "bursts": [[0, 400]],
+        "shape": "Sphere", "startLifetime": 1.0, "startSpeed": 6 } }
+  ],
+  "states": [
+    { "name": "spawn", "nodes": ["dust", "funnel"], "duration": 1.5, "next": "sustain" },
+    { "name": "sustain", "nodes": ["funnel", "debris"], "duration": 2, "loop": true },
+    { "name": "collapse", "nodes": ["collapse"], "duration": 1.2 }
+  ],
+  "initialState": "spawn",
+  "stopState": "collapse",
+  "timelineEvents": [
+    { "time": 1.0, "eventName": "touchdown", "state": "spawn", "notify": true },
+    { "time": 0.5, "eventName": "gust", "state": "sustain", "targetNodeIndex": 1 },
+    { "time": 0.3, "eventName": "impact", "state": "collapse", "notify": true }
+  ]
+}
+```
+
+```csharp
+ILumenEffectHandle tornado = RimLumenApi.PlayAtCell("Author.MyMod:Tornado", map, cell);
+tornado.Notify += name =>
+{
+    if (name == "touchdown") StartDamagingCells();   // 生成 1.0s 时漏斗触地
+    if (name == "impact") ScatterDebris();           // 消散 0.3s 时碎片落地
+};
+tornado.Finished += StopDamagingCells;
+// ……风暴结束时：
+tornado.Stop();                                      // 进入 collapse，播完 1.2s 后淡出
+```
+
+逐步状态变化：
+
+| 时刻 | 状态 | 发生了什么 |
+| --- | --- | --- |
+| `0` | `spawn` | `StateChanged("spawn")`；`dust` 喷出 300 粒，`funnel` 开始发射，`debris` 不发射 |
+| `1.0` | `spawn` | `touchdown` 触发 `Notify("touchdown")` |
+| `1.5` | `sustain` | 到时进入 `next`：`StateChanged("sustain")`；`funnel`、`debris` 从头开始发射计划，`dust` 停止新发射 |
+| `2.0`、`4.0`…… | `sustain` | 每个 2s 周期的第 0.5s 触发 `gust`，向 `debris` 补发 40 粒 |
+| 调用 `Stop()` | `collapse` | `StateChanged("collapse")`；`collapse` 喷出 400 粒，漏斗与碎片停止新发射；此后 `GoTo` 被忽略 |
+| `Stop` 后 `0.3s` | `collapse` | `Notify("impact")` |
+| `Stop` 后 `1.2s` | 淡出 | 停止新发射，点光淡出，粒子跑完寿命 |
+| 最后一粒消失 | 已结束 | `IsAlive == false`，触发 `Finished` |
 
 ---
 
@@ -160,7 +262,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 1. **ID**：使用 `<defName>`，同样会同时注册裸短名与 `<packageId>:<defName>`。
 2. **节点字段**：额外提供 `<heightOffset>`（会累加到 `localPosition.y`），`localScale` 为单个浮点标量，不提供 `localRotation` 四元数（用 `<localYawDegrees>`）。
 3. **点光键名**：使用 `<radiusCells>`（对应 JSON 的 `glowRadius`）、`<overlightRadius>`、`<colorLinear>`（环世界 `Color` 语法 `(r, g, b, a)`）、`<intensity>` 与 `<intensityOverTime>`（`<keys>` 由 `<li><time>..</time><value>..</value></li>` 组成）。
-4. **当前限制**：XML Def 暂未暴露 `timelineEvents` 节点（复杂多阶段时间轴事件请使用 `.lumen.json` 或 C# `EffectAsset`）。
+4. **列表字段**：`<states>`、`<timelineEvents>` 与状态的 `<nodes>` 用 `<li>` 列表；状态字段为 `<name>`、`<nodes>`、`<duration>`、`<loop>`、`<next>`，事件字段为 `<time>`、`<eventName>`、`<targetNodeIndex>`、`<state>`、`<notify>`；根上另有 `<defaultDuration>`、`<initialState>`、`<stopState>`。含义与默认值同上一节「状态机」。
 
 ```xml
 <Defs>
@@ -169,7 +271,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
     <nodes>
       <li>
         <name>sparks</name>
-        <spacePlane>HeightVertical90</spacePlane>
+        <spacePlane>Vertical3D</spacePlane>
         <heightOffset>0.3</heightOffset>
         <emitter>
           <preferredTier>L2_GpuCompute</preferredTier>
@@ -189,7 +291,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
           <forceFields>
             <li>
               <kind>GravityDrag</kind>
-              <centerOrAxis>(0, 0, -1)</centerOrAxis>
+              <centerOrAxis>(0, -1, 0)</centerOrAxis>
               <parameters>(0.6, 0, 0)</parameters>
               <strength>8</strength>
             </li>
@@ -202,6 +304,13 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
         </pointLight>
       </li>
     </nodes>
+    <timelineEvents>
+      <li>
+        <time>0.75</time>
+        <eventName>peak</eventName>
+        <notify>true</notify>
+      </li>
+    </timelineEvents>
   </RimLumen.Core.Assets.LumenEffectDef>
 </Defs>
 ```
@@ -269,7 +378,7 @@ ILumenEffectHandle handle2 = RimLumenApi.Play(
     rotationDegrees: 90f,
     realTime: false);
 
-// 3. 完整请求（朝向目标点 / 每帧动态跟随 / 指定初始激活节点）
+// 3. 完整请求（朝向目标点 / 每帧动态跟随 / 指定初始状态）
 ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 {
     EffectId = "MyBeam",
@@ -290,7 +399,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
         yaw = pawn.Rotation.AsAngle;
         return true;
     },
-    InitialState = "charge", // 非 null 时，仅 Name == "charge" 的节点初始发射，其余暂停等待 Trigger
+    InitialState = "charge", // 覆盖资产的 initialState；资产未声明该状态时 Play 抛 ArgumentException
     RealTime = false,
 });
 ```
@@ -302,10 +411,16 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 | 成员 | 作用与注意事项 |
 | --- | --- |
 | `bool IsAlive` | 播放中或淡出排空期间为 `true`，全部粒子与点光清理完毕后变为 `false`。 |
-| `void Trigger(string eventOrStateName)` | 触发同名 `TimelineEventSpec`，并激活同名节点开始发射。**注意**：`L1_NativeCpu` 节点会顺带按 `Bursts[0].Count`（或取整的 `RateOverTime`）补发一次脉冲；`L2_GpuCompute` 节点只会开启发射状态，不会在 `Trigger` 时额外做一次性脉冲。 |
+| `void Trigger(string name)` | 立即触发所有同名时间轴事件（不论所属状态与时间：目标节点脉冲、`Notify`），并让同名节点从头开始发射计划，直到下一次进入状态时重新决定；不改变当前状态。名字无匹配时无效果；淡出后与死亡后无效果。L1 与 L2 行为一致。 |
+| `void GoTo(string stateName)` | 立即进入该状态（重入当前状态即重启它）。资产未声明该状态时抛 `ArgumentException`；`Stop(true)` 之后、淡出与死亡后无效果。 |
+| `event Action<string> Notify` | `notify: true` 的时间轴事件触发时回调事件名（按时间触发或经 `Trigger`）。 |
+| `event Action<string> StateChanged` | 每次进入声明过的状态时回调状态名，包括初始状态。 |
+| `event Action Finished` | `IsAlive` 变为 `false` 时回调一次，无论原因（播完、`Stop`、`Dispose`）。 |
 | `void SetParam(string name, float value)` | 实时修改运行时参数。当前内置三个立即生效的参数名：`intensity`（缩放粒子和点光亮度）、`rate`（缩放 L1 发射速率）、`scale`（乘算根节点缩放）。其他名字会被记录下来但不会影响模拟。 |
-| `void Stop(bool allowFadeOut = true)` | `true` 时立刻停止新发射、现存点光在 `0.25s` 内淡出、空中粒子自然跑完寿命后自动回收；`false` 时立刻切断所有粒子与点光。 |
+| `void Stop(bool allowFadeOut = true)` | `true` 时：资产有 `stopState` 则进入它并播完；随后停止新发射、点光在 `0.25s` 内淡出、空中粒子跑完寿命后回收。没有 `stopState` 时立即开始淡出。`false` 时立刻切断所有粒子与点光。重复调用无效果。 |
 | `void Dispose()` | 等价于 `Stop(false)`，幂等。在 `Thing.DeSpawn` 或地图销毁时务必调用，避免长期持有句柄。 |
+
+三个事件都在主线程的每帧推进中按发生顺序派发，所以在回调里调用 `GoTo` 或 `Stop` 不会重入正在派发的播放：调用立即生效（离开的状态的节点在当帧就停止新发射），由它引起的事件在下一帧派发。`Stop(false)` 与 `Dispose` 之后的 `Finished` 在下一帧派发。RimUnity 兼容播放（`L0_ExternalCpu`）没有状态与时间轴事件：`Notify` 与 `StateChanged` 只来自 RimLumen 原生部分，`Finished` 在两部分都结束后触发。
 
 ---
 

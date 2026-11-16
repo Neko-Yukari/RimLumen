@@ -184,8 +184,17 @@ public static class CpuParticleSimulatorSuite
         Check(simulator.LiveParticleCount == 2 && simulator.HasActiveWork,
             "Emission stops once 0.5s of activation time elapses; live particles survive");
         Step(simulator, 2.5f);
-        Check(simulator.LiveParticleCount == 0 && !simulator.HasActiveWork && simulator.ActiveEmitterCount == 0,
-            "Live particles finish their lifetime and emitter then drains");
+        Check(simulator.LiveParticleCount == 0 && !simulator.HasActiveWork && simulator.ActiveEmitterCount == 1,
+            "Live particles finish their lifetime; the spent emitter idles until released");
+        simulator.RestartEmitter(id);
+        Step(simulator, 0.5f);
+        Check(simulator.LiveParticleCount == 2, "A restarted spent emitter runs a fresh 0.5s window");
+        Step(simulator, 0.5f);
+        Check(simulator.LiveParticleCount == 2, "The restarted window ends at its Duration");
+        simulator.ReleaseEmitter(id);
+        Step(simulator, 3f);
+        Check(simulator.LiveParticleCount == 0 && simulator.ActiveEmitterCount == 0,
+            "A released emitter drains and is removed");
 
         var burstSimulator = new CpuParticleSimulator();
         int burstId = burstSimulator.AcquireEmitter(new EmitterSpec
@@ -723,15 +732,15 @@ public static class CpuParticleSimulatorSuite
     }
 
     [LumenFact]
-    public static void Free3DEmittersStayOnTheLegacyPathUnderIsoRimAndTopDownCameras()
+    public static void GroundEmittersStayOnTheLegacyPathUnderIsoRimAndTopDownCameras()
     {
-        // RimUnity prefabs use Free3D with Unity-baked rotations and MoteOverhead-sized Y offsets: no display remap.
+        // RimUnity prefabs use GroundXZ with Unity-baked rotations and MoteOverhead-sized Y offsets: no display remap.
         Matrix4x4 isoView = IsoRimView().View;
         Matrix4x4 topDown = RigidView(Vector3.UnitX, Vector3.UnitZ, -Vector3.UnitY);
         var simulator = new CpuParticleSimulator();
         int id = simulator.AcquireEmitter(new EmitterSpec
         {
-            Name = "free3d-legacy", StartSizeMin = 2f, StartSizeMax = 2f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+            Name = "ground-legacy", StartSizeMin = 2f, StartSizeMax = 2f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
         }, Matrix4x4.CreateTranslation(3f, 11f, 7f), false);
         simulator.EmitBurst(id, 1);
         Vector3 Center() => (simulator.Vertices[0].Position + simulator.Vertices[1].Position

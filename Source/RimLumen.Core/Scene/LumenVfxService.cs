@@ -18,6 +18,8 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     public const long PoolExhaustedWarningCooldownMs = 10_000;
 
     private readonly List<EffectInstanceHandle> handles = new();
+    // Per-frame scratch: how many queued events each handle raises this frame (fixed before any handler runs).
+    private int[] eventBatches = Array.Empty<int>();
     private bool hasWarnedPoolExhausted;
     private long lastPoolExhaustedWarningMs;
 
@@ -25,10 +27,15 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     {
         public static readonly InertHandle Instance = new();
         public bool IsAlive => false;
-        public void Trigger(string eventOrStateName) { }
+        public void Trigger(string name) { }
+        public void GoTo(string stateName) { }
         public void SetParam(string name, float value) { }
         public void Stop(bool allowFadeOut = true) { }
         public void Dispose() { }
+        // Never raised: the handle is dead before anyone can subscribe.
+        public event Action<string>? Notify { add { } remove { } }
+        public event Action<string>? StateChanged { add { } remove { } }
+        public event Action? Finished { add { } remove { } }
     }
 
     // Requires: simulator is non-null and is the instance registered as a frame contributor.
@@ -87,9 +94,9 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     //          inert handle (IsAlive false, every member a safe no-op) that is not tracked as live.
     //          A hit creates an EffectInstanceHandle, binds each node emitter to the L2 engine when the
     //          emitter prefers L2 and an engine resolves, otherwise to CpuParticleSimulator, and returns it.
-    //          InitialState selects the initially active nodes: when it is non-null only emitters on nodes
-    //          whose Name equals it start emitting, every other emitter starts paused (a later
-    //          Trigger(nodeName) activates it); when it is null every emitter starts emitting.
+    //          The handle enters request.InitialState, or the asset's initial state when it is null.
+    //          Throws InvalidDataException for an asset whose states do not validate (EffectStateGraph.For) and
+    //          ArgumentException for a request.InitialState the asset does not declare.
     public ILumenEffectHandle Play(in LumenPlayRequest request)
     {
         if (!LumenHostRegistry.TryResolveAsset(request.EffectId, out var asset) || asset is null)
@@ -118,21 +125,36 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
             $"[RimLumen] GPU particle slot pool is full; skipping '{effectId}' until active particles expire (throttled to once per 10s).");
     }
 
-    // Ensures: true while any live handle is alive; false once every handle is dead (zero draws).
-    public bool HasActiveWork => LiveHandleCount != 0;
+    // Ensures: true while any handle is alive or still owes its lifecycle events (Finished after an immediate
+    //          stop is raised on the next frame); false once every handle is dead and has raised them (zero draws).
+    public bool HasActiveWork
+    {
+        get
+        {
+            foreach (var handle in handles)
+                if (handle.IsAlive || handle.HasPendingEvents) return true;
+            return false;
+        }
+    }
 
     // Requires: main thread, called before CpuParticleSimulator.CaptureMainThread in the same frame.
-    // Ensures: advances every live handle by context.DeltaTime (real-time handles by UnscaledDeltaTime when it is
-    //          positive) and drops dead handles.
+    // Ensures: advances every handle by context.DeltaTime (real-time handles by UnscaledDeltaTime when it is
+    //          positive); then each handle raises the events queued before any handler of this frame ran, so an
+    //          event a handler causes on any handle (including Finished after Stop(false)) waits for the next frame
+    //          whatever the handle order; finally drops dead handles that have raised all their events.
+    //          Handles played from a handler start on the next frame.
     public void CaptureMainThread(in LumenCaptureContext context)
     {
-        for (int i = handles.Count - 1; i >= 0; i--)
+        int count = handles.Count;
+        if (eventBatches.Length < count) eventBatches = new int[count];
+        for (int i = 0; i < count; i++)
         {
             var handle = handles[i];
-            float dt = handle.RealTime && context.UnscaledDeltaTime > 0f ? context.UnscaledDeltaTime : context.DeltaTime;
-            handle.Advance(dt);
-            if (!handles[i].IsAlive) handles.RemoveAt(i);
+            handle.Advance(handle.RealTime && context.UnscaledDeltaTime > 0f ? context.UnscaledDeltaTime : context.DeltaTime);
+            eventBatches[i] = handle.PendingEventCount;
         }
+        for (int i = 0; i < count; i++) handles[i].RaiseEvents(eventBatches[i]);
+        handles.RemoveAll(static handle => !handle.IsAlive && !handle.HasPendingEvents);
     }
 
     // Ensures: no-op. Compute dispatches belong to the registered contributors that own them

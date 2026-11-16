@@ -536,7 +536,8 @@ public static class ShowcaseStage
             new EffectNodeSpec
             {
                 Name = "stretched_sparks",
-                SpacePlane = LumenSpacePlane.HeightVertical90,
+                // Pitch the cone axis (local +Y) onto screen-up +Z.
+                LocalRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2f),
                 LocalPosition = new Vector3(0f, yMote, -2.5f),
                 Emitter = new EmitterSpec
                 {
