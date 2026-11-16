@@ -1,9 +1,10 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 [CmdletBinding()]
 param(
     [string]$RimWorldDir = 'E:\SteamLibrary\steamapps\common\RimWorld',
     [string]$CaptureAndQuit = '',
     [string]$Benchmark = '',
+    [string]$ValidationSave = '',
     [switch]$NoBuild,
     [switch]$Detach,
     [switch]$CleanupJunction,
@@ -69,6 +70,18 @@ if ($Benchmark -and ($CaptureAndQuit -or $Detach)) {
     throw '-Benchmark cannot be combined with -CaptureAndQuit or -Detach.'
 }
 
+if ($PSBoundParameters.ContainsKey('ValidationSave')) {
+    if ($CaptureAndQuit -or $Benchmark -or $Detach) {
+        throw '-ValidationSave cannot be combined with -CaptureAndQuit, -Benchmark or -Detach.'
+    }
+    if ([string]::IsNullOrWhiteSpace($ValidationSave) -or $ValidationSave.Length -gt 40 -or
+        $ValidationSave.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
+        $ValidationSave -match '[/\\{}<>:*|!@#$%^&?]' -or $ValidationSave.EndsWith('.') -or
+        $ValidationSave -ne $ValidationSave.Trim()) {
+        throw '-ValidationSave requires a valid save name (1-40 characters, no path or trailing dot/space).'
+    }
+}
+
 $rimWorldExe = Join-Path $RimWorldDir 'RimWorld.exe'
 if (-not (Test-Path -LiteralPath $rimWorldExe -PathType Leaf)) {
     throw "RimWorld.exe not found at: $rimWorldExe"
@@ -112,7 +125,7 @@ try {
     $known = ($expansions | ForEach-Object { '<li>ludeon.rimworld.' + $_.ToLowerInvariant() + '</li>' }) -join ''
     $modsXml = @"
 <?xml version="1.0" encoding="utf-8"?>
-<ModsConfigData><version>1.7.5005 rev1</version><activeMods><li>ludeon.rimworld</li><li>nekoyukari.rimlumen</li></activeMods><knownExpansions>$known</knownExpansions></ModsConfigData>
+<ModsConfigData><version>1.7.5005 rev1</version><activeMods><li>brrainz.harmony</li><li>ludeon.rimworld</li><li>nekoyukari.rimlumen</li></activeMods><knownExpansions>$known</knownExpansions></ModsConfigData>
 "@
     Set-Content -LiteralPath (Join-Path $profile 'Config/ModsConfig.xml') -Value $modsXml -Encoding utf8
 
@@ -160,6 +173,38 @@ try {
             throw "Showcase benchmark JSON was not created or is empty: $resolvedJson"
         }
         Write-Host "SHOWCASE BENCH OK: $resolvedJson ($((Get-Item -LiteralPath $resolvedJson).Length) bytes)"
+    }
+    elseif ($ValidationSave) {
+        $savePath = Join-Path $profile "Saves/$ValidationSave.rws"
+        if (Test-Path -LiteralPath $savePath) {
+            Remove-Item -LiteralPath $savePath -Force
+        }
+        $start.CreateNoWindow = $true
+        foreach ($arg in @(
+            '-NoWindow',
+            '-NoCrashDialog',
+            '-quicktest',
+            '-WindowSize=1920,1080',
+            "-savedatafolder=$profile",
+            "-rimlumen-validation-save=$ValidationSave"
+        )) {
+            $start.ArgumentList.Add($arg)
+        }
+
+        $process = [Diagnostics.Process]::Start($start)
+        Write-Host "Started headless RimWorld validation save PID=$($process.Id); timeout=${TimeoutSeconds}s"
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $process.Kill($true)
+            $process.WaitForExit()
+            throw "RimWorld validation save timed out after ${TimeoutSeconds}s; process tree killed."
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "RimWorld validation save exited with code $($process.ExitCode)"
+        }
+        if (-not (Test-Path -LiteralPath $savePath -PathType Leaf) -or (Get-Item -LiteralPath $savePath).Length -le 0) {
+            throw "Validation save was not created or is empty: $savePath"
+        }
+        Write-Host "VALIDATION SAVE OK: $savePath ($((Get-Item -LiteralPath $savePath).Length) bytes)"
     }
     elseif ($CaptureAndQuit) {
         $resolvedPng = [IO.Path]::GetFullPath($CaptureAndQuit)

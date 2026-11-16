@@ -91,8 +91,12 @@ internal static class RimLumenMapHooks
 
     private static void CapturePostfix(object? __result)
     {
-        if (__result is not MeshDrawFrame map || RimLumenRenderHost.FailSafeTripped ||
-            RimLumenRenderHost.Pipeline?.Captured is not { } payload) return;
+        if (__result is not MeshDrawFrame map) return;
+        // Vanilla may hand back the same MeshDrawFrame instance on a later capture (observed in a validation run),
+        // so drop the earlier capture's payload binding and split sentinels before deciding on this one.
+        Frames.Remove(map);
+        if (map.SceneGrabs is List<SceneGrabPoint> previous) previous.RemoveAll(point => Array.IndexOf(sentinels, point) >= 0);
+        if (RimLumenRenderHost.FailSafeTripped || RimLumenRenderHost.Pipeline?.Captured is not { } payload) return;
         try
         {
             // Keep the frame returned by vanilla (and observed by other postfixes); only replace its grab list.
