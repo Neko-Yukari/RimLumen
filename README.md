@@ -32,7 +32,7 @@ Plug and play: vanilla and third-party additive glow effects automatically get H
   - `ShaderPacks`：切包、实时参数滑杆、热重载（Reload）、重扫目录（Rescan）与重置默认 / pack selector, live sliders, hot reload, rescan, and reset
   - `EnableDemoBuildings`（默认关 / default off）：启用娱乐演示建筑（烟花发射器、粒子喷泉）/ enable demo Joy buildings (Firework Launcher & Particle Fountain)
 
-*(兼容性说明：基于 Waylith 公开渲染管线扩展，0 处 Harmony 补丁，内置渲染异常熔断机制。 / Built on Waylith's public render-graph APIs with zero Harmony patches and an automatic fail-safe.)*
+内置渲染异常熔断机制。 / Includes an automatic rendering fail-safe.
 
 ### Quickstart 1：XML Def
 

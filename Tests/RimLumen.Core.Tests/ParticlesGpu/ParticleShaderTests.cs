@@ -200,22 +200,7 @@ public static class ParticleShaderTests
         CompileFile("PostFx/RimLumenBloomDown.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomUp.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenComposite.frag.glsl", RuntimeShaderStage.Fragment);
-        CompileFile("PostFx/RimLumenFogOfWarMask.frag.glsl", RuntimeShaderStage.Fragment);
-        CompileFile("PostFx/RimLumenDarknessMask.frag.glsl", RuntimeShaderStage.Fragment);
         Console.WriteLine("[SPIR-V] compute strides=64,208,48,4; vertex strides=64,208,32; LocalSize=64,1,1");
-    }
-
-    // Overlay masks receive vanilla's material copy and per-draw property block (darkness strength in _ColorTwo,
-    // its clock in _AgeSecsPausable), so every vanilla name must resolve to a slot of the mask's own block.
-    [LumenFact]
-    public static void OverlayMaskPropertiesResolveToMaskUniformSlots()
-    {
-        MaterialLayout darkness = ShaderMetadataParser.ExtractMaterialLayout(ReadPostFx("RimLumenDarknessMask.frag.glsl"), "RimLumenDarknessMask");
-        Require(!darkness.HasErrors, "Darkness mask material layout rejected.");
-        CheckOverrideSlots(darkness, ("_Color", 0), ("_ColorTwo", 16), ("_AgeSecsPausable", 32));
-        MaterialLayout fog = ShaderMetadataParser.ExtractMaterialLayout(ReadPostFx("RimLumenFogOfWarMask.frag.glsl"), "RimLumenFogOfWarMask");
-        Require(!fog.HasErrors, "Fog of war mask material layout rejected.");
-        CheckOverrideSlots(fog, ("_Color", 0));
     }
 
     private static void CheckUniforms(MaterialLayout layout)
@@ -313,9 +298,6 @@ public static class ParticleShaderTests
         string path = Path.Combine(ShaderDirectory(), file);
         return ShaderSourceLoader.ReadShaderSource(path);
     }
-
-    private static string ReadPostFx(string file)
-        => ShaderSourceLoader.ReadShaderSource(Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "PostFx", file)));
 
     private static string ShaderDirectory()
     {

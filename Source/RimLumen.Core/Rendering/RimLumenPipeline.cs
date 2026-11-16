@@ -11,16 +11,13 @@ using UnityStubs.Rendering;
 using Verse;
 using Waylith;
 using Waylith.Rendering;
-using Waylith.Rendering.PostFx;
 
 namespace RimLumen.Core.Rendering;
 
 internal sealed class RimLumenPipeline : IDisposable
 {
     internal readonly EngineApplication App;
-    internal readonly CompositePass SceneComposite;
     internal readonly RimLumenPreBackbufferFeature Pre;
-    internal readonly RimLumenCompositeFeature Composite;
     internal readonly HdrTargets Targets;
     // Mirrors the current submission slot's R32_SFLOAT depth snapshot so particle materials can sample it.
     internal readonly BorrowedRenderTexture DepthProxy = new();
@@ -36,21 +33,16 @@ internal sealed class RimLumenPipeline : IDisposable
     private ILumenFrameContributor[] contributors = Array.Empty<ILumenFrameContributor>();
     private ILumenFrameContributor[] activeContributors = Array.Empty<ILumenFrameContributor>();
     private readonly List<ILumenFrameContributor> activeContributorBuffer = new();
-    private readonly List<string> featureNames = new();
-    private readonly OverlayMaskMaterials overlayMasks = new();
-    // Main thread: this frame's fog of war / darkness commands, re-pointed at their masks, with submission order and
-    // the vanilla material whose current properties each mask draw reads.
-    private readonly List<(int Order, Material Source, MeshDrawCommand Command)> maskCommands = new();
+    internal readonly RimLumenMapChain MapChain;
     private bool disposed;
 
     internal RimLumenPipeline(EngineApplication app)
     {
         App = app;
-        SceneComposite = app.FrameRenderer.Features.SelectMany(feature => feature.Passes).OfType<CompositePass>().Single();
         Targets = new HdrTargets(app);
         ShaderPack = new ShaderPackRuntime(app, RimLumenRenderHost.ActiveShaderPack);
+        MapChain = new RimLumenMapChain(this);
         Pre = new RimLumenPreBackbufferFeature(this);
-        Composite = new RimLumenCompositeFeature(this);
         app.BeforeGraphicsShutdown += Shutdown;
         app.OnShutdown += Quiesce;
     }
@@ -75,16 +67,14 @@ internal sealed class RimLumenPipeline : IDisposable
         LumenSceneBootstrap.Simulator.HdrRendererAttached = true;
         string[] names = App.FrameRenderer.Features.Select(feature => feature.GetType().Name).ToArray();
         int index = FeatureOrderGuard.ComputePreBackbufferInsertIndex(names);
-        if (index < 0) throw new InvalidOperationException("Map/PostFx feature order is unavailable.");
+        if (index < 0) throw new InvalidOperationException("MapRenderFeature is unavailable.");
         App.FrameRenderer.InsertFeature(index, Pre);
-        GuardCompositeOrder();
     }
 
     internal void Detach()
     {
         App.WaitForRenderThreadIdle();
         App.FrameRenderer.RemoveFeature(Pre);
-        App.FrameRenderer.RemoveFeature(Composite);
     }
 
     // Ensures: any thread. Removal is queued for the main thread: the render thread must not edit the feature list, and Detach()
@@ -92,7 +82,6 @@ internal sealed class RimLumenPipeline : IDisposable
     internal void DetachAfterFailSafe() => App.FrameRenderer.RenderToMainThread.Enqueue(() =>
     {
         App.FrameRenderer.RemoveFeature(Pre);
-        App.FrameRenderer.RemoveFeature(Composite);
         // The render thread may already be faulted and would never answer WaitForRenderThreadIdle; the CPU
         // light-field state must still be dropped, so release without waiting for it.
         try { MapLightFieldCollector.Release(App, waitIdle: false); }
@@ -108,27 +97,10 @@ internal sealed class RimLumenPipeline : IDisposable
         App.FrameRenderer.RenderToMainThread.Enqueue(() => Log.Error(message));
     }
 
-    internal void GuardCompositeOrder()
-    {
-        IReadOnlyList<IRenderFeature> features = App.FrameRenderer.Features;
-        featureNames.Clear();
-        int selfIndex = -1;
-        for (int i = 0; i < features.Count; i++)
-        {
-            IRenderFeature feature = features[i];
-            featureNames.Add(feature.GetType().Name);
-            if (selfIndex < 0 && EqualityComparer<IRenderFeature>.Default.Equals(feature, Composite)) selfIndex = i;
-        }
-        int index = FeatureOrderGuard.ComputeCompositeReinsertIndex(featureNames, selfIndex);
-        if (index < 0) return;
-        App.FrameRenderer.RemoveFeature(Composite);
-        App.FrameRenderer.InsertFeature(index, Composite);
-    }
-
     internal void BeginCapture(in FrameTiming timing)
     {
         // FrameRenderer.BeginMainThreadFrame:220-230 runs all early hooks before CaptureFrame:186-192.
-        // This is before ComputeRenderFeature drains Enqueue, even though our pass is after Map.
+        // This is before ComputeRenderFeature drains Enqueue.
         captureIndex = (ulong)timing.FrameNumber;
         mapIndex = -1;
         contributors = Array.Empty<ILumenFrameContributor>();
@@ -183,7 +155,6 @@ internal sealed class RimLumenPipeline : IDisposable
 
     internal PipelineFrame? Capture(in FrameTiming timing)
     {
-        GuardCompositeOrder();
         Captured = null;
         if (Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || Current.CameraDriver?.MyCamera == null)
             return null;
@@ -211,7 +182,6 @@ internal sealed class RimLumenPipeline : IDisposable
     {
         List<FinalDrawItem> draws = mesh.Draws;
         List<FinalDrawItem> glowDraws = glowMesh.Draws;
-        maskCommands.Clear();
         DrawItemFactory maker = MeshDrawSubmission.DrawItemMaker ?? throw new InvalidOperationException("DrawItemFactory is unavailable.");
         for (int i = 0; i < snapshot.CommandCount; i++)
         {
@@ -222,20 +192,11 @@ internal sealed class RimLumenPipeline : IDisposable
                 if (!RimLumenRenderHost.EnableVanillaAdditiveBloom) continue;
                 try
                 {
-                    // Fog of war / darkness: the glow copies are only shown correctly with their mask, so a mask the
-                    // engine rejects (e.g. a mod's incompatible overlay shader) trips this same fail-safe.
-                    string? maskFragment = OverlayMaskMaterials.MaskFragmentFor(command.Material.Shader.Key);
-                    if (maskFragment != null)
-                    {
-                        maskCommands.Add((i, command.Material, new MeshDrawCommand(command.Mesh,
-                            overlayMasks.Get(command.Material, maskFragment), command.PropertyRange, command.Matrix,
-                            command.SubmeshIndex, RimLumenRenderHost.LumenRenderPassId, command.Instancing,
-                            OverlayMaskMaterials.MaskRenderQueue, command.Layer, command.Storage)));
-                        continue;
-                    }
                     FinalDrawItem? candidate = maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i);
                     if (candidate == null) continue;
-                    bool keep = AdditiveEmissiveFilter.IsAdditiveEmissive(candidate.Binding.PipelineState, candidate.Binding.Shader.Key);
+                    // Later glows remain above the split in vanilla order; do not bloom a draw that has not happened yet.
+                    bool keep = candidate.RenderQueue < RimLumenMapHooks.SplitQueue &&
+                        AdditiveEmissiveFilter.IsAdditiveEmissive(candidate.Binding.PipelineState, candidate.Binding.Shader.Key);
                     if (keep)
                     {
                         ShaderDef? def = DefDatabase<ShaderDef>.GetNamedSilentFail(candidate.Binding.Shader.Key);
@@ -252,7 +213,6 @@ internal sealed class RimLumenPipeline : IDisposable
                     // Drop the copies this frame already took too, so the tripping frame shows no enhancement either.
                     foreach (FinalDrawItem copy in glowDraws) FinalDrawItem.Return(copy);
                     glowDraws.Clear();
-                    maskCommands.Clear();
                     continue;
                 }
                 // Preserve the original MapMain submission; only this fresh glow copy changes pass.
@@ -300,9 +260,6 @@ internal sealed class RimLumenPipeline : IDisposable
         bool hasHdrDraws = HdrFrameGate.ShouldRenderHdr(routedDrawCount, hasDirectHdr);
         bool renderHdr = HdrFrameGate.ShouldRenderHdr(routedDrawCount, hasDirectHdr, runOnEmptyFrames);
         if (!renderHdr) RimLumenRenderHost.SetFrameCapabilities(false, false);
-        // Fog of war and darkness cover the glow copies under them; overlays alone never keep a frame from skipping.
-        if (glowDraws.Count > 0) AppendOverlayMasks(glowDraws, maker, snapshot.PropertyArena);
-
         Map? map = Find.CurrentMap;
         int mapSizeX = map?.Size.x ?? 0;
         int mapSizeZ = map?.Size.z ?? 0;
@@ -331,25 +288,6 @@ internal sealed class RimLumenPipeline : IDisposable
 
         return new PipelineFrame(captureIndex, mesh, glowMesh, contributors, depthParams, mapIndex, renderHdr,
             hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms);
-    }
-
-    private void AppendOverlayMasks(List<FinalDrawItem> target, DrawItemFactory maker, DrawPropertyArena arena)
-    {
-        foreach ((int order, Material source, MeshDrawCommand vanilla) in maskCommands)
-        {
-            // Vanilla updates the overlay materials in place (SkyManager rewrites FogOfWar's colour), so each mask
-            // draw carries the source's current properties, then vanilla's per-draw block, which wins on overlap.
-            ReadOnlySpan<DrawProperty> current = source.PropertiesForReading;
-            Span<DrawProperty> properties = arena.Allocate(current.Length + vanilla.PropertyRange.Count, out DrawPropertyRange range);
-            current.CopyTo(properties);
-            arena.GetProperties(vanilla.PropertyRange).CopyTo(properties[current.Length..]);
-            var command = new MeshDrawCommand(vanilla.Mesh, vanilla.Material, range, vanilla.Matrix, vanilla.SubmeshIndex,
-                vanilla.PassId, vanilla.Instancing, vanilla.RenderQueueOverride, vanilla.Layer, vanilla.Storage);
-            // The top queue plus the top host order sorts each mask after every copy, whose host order is 0.
-            FinalDrawItem? mask = maker.TryMake(in command, arena, UnityEngine.Shader.GlobalKeywordKey, order,
-                hostOrder: OverlayMaskMaterials.MaskHostOrder);
-            if (mask != null) target.Add(mask);
-        }
     }
 
     internal static bool HasDirectHdrContributor(IEnumerable<ILumenFrameContributor> frameContributors)
@@ -383,8 +321,7 @@ internal sealed class RimLumenPipeline : IDisposable
         // Destroy framebuffers/textures before the render passes and their pipelines.
         Release("HdrTargets", Targets.Dispose);
         Release("ShaderPackRuntime", () => ShaderPack.Dispose());
-        Release("PreBackbuffer", Pre.Dispose);
-        Release("Composite", Composite.Dispose);
+        Release("MapChain", MapChain.Dispose);
         Log.Message("[RimLumen] Vulkan resource shutdown completed.");
     }
 

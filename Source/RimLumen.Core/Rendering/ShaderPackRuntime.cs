@@ -15,22 +15,6 @@ namespace RimLumen.Core.Rendering;
 
 internal sealed class ShaderPackRuntime : IDisposable
 {
-    private sealed class InlinePostEffectPass : PostEffectPass
-    {
-        internal InlinePostEffectPass(
-            string name,
-            string fragmentShaderPath,
-            ReadOnlySpan<int> bindings,
-            BlendState blend,
-            int pushConstantSize,
-            int uniformBinding)
-            : base(name, fragmentShaderPath, bindings, blend, pushConstantSize, maxPassesPerFrame: 1, uniformBinding: uniformBinding)
-        {
-        }
-
-        public override bool PreBackbuffer => false;
-    }
-
     private sealed class CustomTargetAllocation : IDisposable
     {
         internal readonly ShaderPackTargetSpec Spec;
@@ -57,7 +41,7 @@ internal sealed class ShaderPackRuntime : IDisposable
     private readonly PostEffectPass[] bloomDown;
     private readonly PostEffectPass[] bloomUp;
     private readonly PostEffectPass[] customOffscreenPasses;
-    private readonly InlinePostEffectPass backbufferPass;
+    private readonly PostEffectPass compositePass;
     private readonly ExecutionPlan plan;
     private readonly CustomTargetAllocation[] customTargets;
 
@@ -84,7 +68,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         customOffscreenPasses = Array.Empty<PostEffectPass>();
         try
         {
-            backbufferPass = CreatePasses(mipLevels, out customOffscreenPasses);
+            compositePass = CreatePasses(mipLevels, out customOffscreenPasses);
         }
         catch
         {
@@ -94,11 +78,11 @@ internal sealed class ShaderPackRuntime : IDisposable
         }
     }
 
-    private InlinePostEffectPass CreatePasses(int mipLevels, out PostEffectPass[] offscreenPasses)
+    private PostEffectPass CreatePasses(int mipLevels, out PostEffectPass[] offscreenPasses)
     {
         if (mipLevels > 0)
         {
-            bloomDown[0] = new PostEffectPass(
+            bloomDown[0] = new OffscreenPostEffectPass(
                 "RimLumenBloomDown0",
                 plan.BloomPrefilterShaderPath,
                 new[] { 0, 1, 2, 3, 4 },
@@ -109,7 +93,7 @@ internal sealed class ShaderPackRuntime : IDisposable
 
             for (int i = 1; i < mipLevels; i++)
             {
-                bloomDown[i] = new PostEffectPass(
+                bloomDown[i] = new OffscreenPostEffectPass(
                     $"RimLumenBloomDown{i}",
                     plan.BloomDownShaderPath,
                     new[] { 0, 4 },
@@ -121,7 +105,7 @@ internal sealed class ShaderPackRuntime : IDisposable
 
             for (int i = 0; i < bloomUp.Length; i++)
             {
-                bloomUp[i] = new PostEffectPass(
+                bloomUp[i] = new OffscreenPostEffectPass(
                     $"RimLumenBloomUp{i}",
                     plan.BloomUpShaderPath,
                     new[] { 0, 1, 4 },
@@ -138,7 +122,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         {
             PlannedPass passSpec = plan.Passes[i];
             int[] bindings = passSpec.Inputs.Select(static x => x.Binding).ToArray();
-            offscreenPasses[i] = new PostEffectPass(
+            offscreenPasses[i] = new OffscreenPostEffectPass(
                 passSpec.RuntimeName,
                 passSpec.FragmentShaderPath,
                 bindings,
@@ -150,7 +134,7 @@ internal sealed class ShaderPackRuntime : IDisposable
 
         PlannedPass finalSpec = plan.Passes[^1];
         int[] finalBindings = finalSpec.Inputs.Select(static x => x.Binding).ToArray();
-        return new InlinePostEffectPass(
+        return new PostEffectPass(
             finalSpec.RuntimeName,
             finalSpec.FragmentShaderPath,
             finalBindings,
@@ -255,14 +239,14 @@ internal sealed class ShaderPackRuntime : IDisposable
         PlannedPass finalSpec = plan.Passes[^1];
         foreach (PlannedInput input in finalSpec.Inputs)
         {
-            BindInputSource(backbufferPass, input, slot, glowTex, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
+            BindInputSource(compositePass, input, slot, glowTex, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
         }
-        backbufferPass.SetUniforms(in uniforms);
+        compositePass.SetUniforms(in uniforms);
         Vector4 finalPc = finalSpec.UsesBuiltInComposite
             ? new Vector4(uniforms.BloomParams.X, 0f, 1f / scene.Width, 1f / scene.Height)
             : new Vector4(1f / scene.Width, 1f / scene.Height, finalSpec.ExtraParams.X, finalSpec.ExtraParams.Y);
-        backbufferPass.SetPushConstants(in finalPc);
-        backbufferPass.RecordInline(in ctx, ctx.RenderPass, ctx.SampleCount);
+        compositePass.SetPushConstants(in finalPc);
+        compositePass.RecordInline(in ctx, ctx.RenderPass, ctx.SampleCount);
     }
 
     internal void InvalidateOffscreen()
@@ -275,7 +259,7 @@ internal sealed class ShaderPackRuntime : IDisposable
 
     internal void InvalidateInline()
     {
-        backbufferPass?.Invalidate();
+        compositePass?.Invalidate();
     }
 
     private void EnsurePlaceholdersAndTargets(CommandBuffer cmd, int sceneWidth, int sceneHeight)
@@ -524,6 +508,6 @@ internal sealed class ShaderPackRuntime : IDisposable
         foreach (PostEffectPass? pass in bloomDown) pass?.Dispose();
         foreach (PostEffectPass? pass in bloomUp) pass?.Dispose();
         foreach (PostEffectPass? pass in customOffscreenPasses) pass?.Dispose();
-        backbufferPass?.Dispose();
+        compositePass?.Dispose();
     }
 }

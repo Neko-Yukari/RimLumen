@@ -2,7 +2,13 @@
 
 > Native HDR VFX, programmable ShaderPacks, and GPU compute particle framework for RimWorld 1.7 (Waylith / Vulkan engine).
 
-RimLumen adds an `RGBA16F` HDR pipeline, configurable `0-7` mip bloom, depth-aware soft particles (`R32SFloat`), GPU compute and native CPU particles, dynamic `GlowGrid` point lights, and declarative multi-pass ShaderPacks with zero Harmony patches.
+RimLumen adds an `RGBA16F` HDR pipeline, configurable `0-7` mip bloom, depth-aware soft particles (`R32SFloat`), GPU compute and native CPU particles, dynamic `GlowGrid` point lights, and declarative multi-pass ShaderPacks.
+
+## Map composition order
+
+The entire HDR / bloom / ShaderPack chain composites inside the map pass at the 3152 boundary, immediately after the 3151 glows and before vanilla's 3152 Distortion scene grab. `scene` is a separate same-frame colour copy and `depth` is the same-frame depth at that boundary. The PostEffectPass composite ABI and `pack.json` `backbuffer` output name are unchanged.
+
+Later fog of war 3175, Darkness 3180, weather fog 3169, sun shadows, rain, IsoRim fog, depth plane and post passes 4880–4990, and RimIris's grade cover or process the result. The 3152 distortion motes' scene grab now includes RimLumen. Glows remaining above it in vanilla order: PsychicRitualCandleMote 3155, OxygenOverlayIndoors 3170, GravFieldExtenderGlow 3181, GravEngineGlow 3185, GlowOverlay / GravshipLensFlare 3201, UnlitAdditive 3700. The `glow` input contains only additive glows drawn before 3152.
 
 ## Documentation
 

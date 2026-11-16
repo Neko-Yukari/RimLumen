@@ -46,8 +46,7 @@ internal static class HdrDepthSnapshot
         {
             // Fail-safe: the depth image is already in ShaderReadOnlyOptimal with our barrier recorded, so put
             // it back before the exception reaches the feature fail-safe; otherwise the engine's next depth pass
-            // would observe a mismatched layout. If the copy pass left the command buffer inside its render
-            // pass the barrier is refused, and the layout tracker is still corrected before rethrowing.
+            // would observe a mismatched layout. The owned copy pass closes its render pass before rethrowing.
             try
             {
                 barriers[0] = Barrier(source.Image, aspects, VkImageLayout.ShaderReadOnlyOptimal,
@@ -58,9 +57,10 @@ internal static class HdrDepthSnapshot
                     VkPipelineStageFlags.EarlyFragmentTestsBit | VkPipelineStageFlags.LateFragmentTestsBit,
                     VkDependencyFlags.None, default, default, barriers);
             }
-            catch (Exception)
+            catch (Exception restoreError)
             {
-                // Best effort only: the original failure is what the fail-safe must report.
+                string message = $"[RimLumen] Could not restore scene depth after snapshot failure: {restoreError}";
+                Waylith.EngineApplication.Instance.FrameRenderer.RenderToMainThread.Enqueue(() => RimLumenRenderHost.LogError(message));
             }
             source.SetMipLayout(0, VkImageLayout.DepthStencilAttachmentOptimal);
             throw;

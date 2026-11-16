@@ -9,29 +9,30 @@ namespace RimLumen.Core.Tests.Rendering;
 public static class RenderLogicSuite
 {
     [LumenFact]
-    public static void CompositeOrderHandlesInsertedMissingAndDisplacedSelf()
+    public static void CaptureFeatureIsInsertedBeforeMap()
     {
-        string[] ordered = ["ComputeRenderFeature", "WorldRenderFeature", "MapRenderFeature", "CameraCaptureFeature", "PostFxFeature", "Composite", "ImGuiRenderFeature", "ScreenCaptureFeature"];
-        Equal(-1, FeatureOrderGuard.ComputeCompositeReinsertIndex(ordered, 5));
-        string[] iris = ["ComputeRenderFeature", "WorldRenderFeature", "MapRenderFeature", "CameraCaptureFeature", "PostFxFeature", "Composite", "RimIris", "ImGuiRenderFeature", "ScreenCaptureFeature"];
-        Equal(6, FeatureOrderGuard.ComputeCompositeReinsertIndex(iris, 5));
-        Equal(1, FeatureOrderGuard.ComputeCompositeReinsertIndex(["PostFxFeature", "ImGuiRenderFeature"], -1));
-        Equal(0, FeatureOrderGuard.ComputeCompositeReinsertIndex(["ImGuiRenderFeature"], -1));
-        Equal(-1, FeatureOrderGuard.ComputeCompositeReinsertIndex(["Composite", "PostFxFeature"], 0));
-        Equal(1, FeatureOrderGuard.ComputeCompositeReinsertIndex(["PostFxFeature", "ImGuiRenderFeature", "Composite"], 2));
-        Equal(0, FeatureOrderGuard.ComputeCompositeReinsertIndex(["customIMGUIfeature", "OtherImGui", "Composite"], 2));
-        Equal(-1, FeatureOrderGuard.ComputeCompositeReinsertIndex([], -1));
-        Equal("Composite", iris[5]);
+        Equal(2, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["ComputeRenderFeature", "WorldRenderFeature", "MapRenderFeature", "PostFxFeature"]));
+        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["PostFxFeature"]));
+        Equal(0, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["MapRenderFeature"]));
+        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex([]));
     }
 
     [LumenFact]
-    public static void PreBackbufferRequiresMapBeforePostFx()
+    public static void SplitGrabIsFirstAtItsQueueAndCreatesMissingList()
     {
-        Equal(3, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["ComputeRenderFeature", "WorldRenderFeature", "MapRenderFeature", "CameraCaptureFeature", "PostFxFeature", "ImGuiRenderFeature", "ScreenCaptureFeature"]));
-        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["PostFxFeature"]));
-        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["MapRenderFeature"]));
-        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["PostFxFeature", "MapRenderFeature"]));
-        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex([]));
+        var sentinel = (Queue: 3152, Name: "split");
+        var before = (Queue: 3100, Name: "before");
+        var distortion = (Queue: 3152, Name: "distortion");
+        var after = (Queue: 3200, Name: "after");
+        var grabs = SceneGrabSplit.Insert(new[] { before, distortion, after }, sentinel, static p => p.Queue);
+        Equal(4, grabs.Count);
+        Equal(before, grabs[0]);
+        Equal(sentinel, grabs[1]);
+        Equal(distortion, grabs[2]);
+        Equal(after, grabs[3]);
+        var created = SceneGrabSplit.Insert<(int Queue, string Name)>(null, sentinel, static p => p.Queue);
+        Equal(1, created.Count);
+        Equal(sentinel, created[0]);
     }
 
     [LumenFact]

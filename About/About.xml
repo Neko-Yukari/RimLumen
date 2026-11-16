@@ -8,8 +8,16 @@
   <supportedVersions>
     <li>1.7</li>
   </supportedVersions>
+  <modDependencies>
+    <li>
+      <packageId>brrainz.harmony</packageId>
+      <displayName>Harmony</displayName>
+      <steamWorkshopUrl>steam://url/CommunityFilePage/2009463077</steamWorkshopUrl>
+    </li>
+  </modDependencies>
   <loadAfter>
     <li>Ludeon.RimWorld</li>
+    <li>brrainz.harmony</li>
   </loadAfter>
   <description>【中文】
 RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可编程光影包与 GPU 粒子框架，随游戏暂停与倍速同步推进。
@@ -48,7 +56,7 @@ RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可�
 - RimUnity：https://steamcommunity.com/sharedfiles/filedetails/?id=3819570122
 - IsoRim Waylith：https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
 
-（兼容说明：基于 Waylith 公开渲染管线扩展，不使用 Harmony 补丁并内置渲染异常熔断机制。）
+内置渲染异常熔断机制。
 
 【English】
 RimLumen is an HDR VFX, programmable ShaderPack, and GPU particle framework for RimWorld 1.7 (Waylith / Vulkan), synchronized with game pause and speed multipliers.
@@ -87,5 +95,5 @@ HDR here means internal high-dynamic-range rendering, tone-mapped back to a stan
 - RimUnity: https://steamcommunity.com/sharedfiles/filedetails/?id=3819570122
 - IsoRim Waylith: https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
 
-(Compatibility note: built on Waylith's public render-graph APIs with zero Harmony patches and an automatic rendering fail-safe.)</description>
+Includes an automatic rendering fail-safe.</description>
 </ModMetaData>

@@ -15,6 +15,7 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         // Vanilla/third-party additive copies: bloom and pack input only, never part of the composite core term.
         internal RenderTexture Glow = null!;
         internal RenderTexture DepthSnapshot = null!;
+        internal RenderTexture SceneSnapshot = null!;
         internal RenderTexture[] Down = Array.Empty<RenderTexture>();
         internal RenderTexture[] Up = Array.Empty<RenderTexture>();
         internal VkFramebuffer Framebuffer;
@@ -27,13 +28,14 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
     internal Slot[] Slots { get; private set; } = Array.Empty<Slot>();
     internal VkRenderPass RenderPass { get; private set; }
     private VkFormat depthFormat;
+    private VkFormat sceneFormat;
     private int width;
     private int height;
     private int bloomMipLevels = 5;
 
     internal Slot Ensure(int index, RenderTexture scene, int mipLevels = 5)
     {
-        if (Slots.Length == 0 || width != scene.Width || height != scene.Height || depthFormat != scene.DepthFormat || bloomMipLevels != mipLevels)
+        if (Slots.Length == 0 || width != scene.Width || height != scene.Height || depthFormat != scene.DepthFormat || sceneFormat != scene.ColorFormat || bloomMipLevels != mipLevels)
         {
             // Rebuild notification normally retires these after the engine waits idle; also covers scene-only resize.
             device.WaitIdle();
@@ -41,6 +43,7 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
             width = scene.Width;
             height = scene.Height;
             depthFormat = scene.DepthFormat;
+            sceneFormat = scene.ColorFormat;
             bloomMipLevels = mipLevels;
             RenderPass = CreateRenderPass(depthFormat);
             MipSize[] sizes = bloomMipLevels > 0 ? BloomMipChain.Compute(width, height, bloomMipLevels, 8) : Array.Empty<MipSize>();
@@ -56,6 +59,8 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
                     slot.Color = Make(width, height, $"RimLumen.Hdr.{frame}");
                     slot.Glow = Make(width, height, $"RimLumen.Glow.{frame}");
                     slot.DepthSnapshot = MakeDepthSnapshot(width, height, $"RimLumen.DepthSnapshot.{frame}");
+                    slot.SceneSnapshot = new RenderTexture(width, height, sceneFormat, name: $"RimLumen.SceneSnapshot.{frame}");
+                    slot.SceneSnapshot.Create();
                     slot.Down = new RenderTexture[sizes.Length];
                     slot.Up = new RenderTexture[Math.Max(0, sizes.Length - 1)];
                     for (int level = 0; level < sizes.Length; level++)
@@ -193,6 +198,7 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
             slot.Color?.Dispose();
             slot.Glow?.Dispose();
             slot.DepthSnapshot?.Dispose();
+            slot.SceneSnapshot?.Dispose();
             foreach (RenderTexture? texture in slot.Down) texture?.Dispose();
             foreach (RenderTexture? texture in slot.Up) texture?.Dispose();
         }
