@@ -228,7 +228,7 @@ $packed = @(Get-ChildItem -LiteralPath $outFull -File -Recurse)
 foreach ($file in $packed) {
     $relative = Get-RelativePath $outFull $file.FullName
     $forbidden = ($file.Extension -in @('.cs', '.pdb', '.sln', '.csproj')) -or
-        ($file.Name -like '*.deps.json') -or ($file.Name -ieq '0Harmony.dll')
+        ($file.Name -like '*.deps.json')
     if ($forbidden) {
         $failures.Add("forbidden file in package: $relative")
     }

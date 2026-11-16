@@ -6,7 +6,7 @@ using Verse;
 
 namespace RimLumen.Core.Demo;
 
-// Publishes the optional demo buildings into the vanilla Joy build menu without a Harmony patch and
+// Publishes the optional demo buildings into the vanilla Joy build menu and
 // without reflection: the ThingDefs are authored with canGenerateDefaultDesignator=false, so vanilla's
 // DesignationCategoryDef.ResolveDesignators never adds them, and this registry owns the Designator_Build
 // entries in DesignationCategoryDef.AllResolvedDesignators.
