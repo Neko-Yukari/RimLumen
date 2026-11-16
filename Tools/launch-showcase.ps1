@@ -16,6 +16,9 @@ $OutputEncoding = [Console]::OutputEncoding
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $junction = Join-Path $RimWorldDir 'Mods/RimLumen'
+# A test copy (or another worktree's junction) found at Mods/RimLumen is parked here, outside Mods/ so the game
+# never sees two mods with the same packageId, and moved back when the showcase run ends.
+$parked = Join-Path $RimWorldDir 'RimLumen.parked'
 # Benchmark runs keep their own save-data folder so interactive showcase sessions (dev mode, mod settings) cannot skew them.
 $profileName = if ($Benchmark) { 'rimlumen-bench-profile' } else { 'rimlumen-showcase-profile' }
 $profile = Join-Path $env:LOCALAPPDATA "Temp/opencode/$profileName"
@@ -38,6 +41,15 @@ function Remove-OwnedJunction([string]$JunctionPath, [string]$ExpectedTarget) {
     [IO.Directory]::Delete($JunctionPath)
 }
 
+function Restore-ParkedMod {
+    if (-not (Test-Path -LiteralPath $parked)) { return }
+    if (Get-Item -LiteralPath $junction -Force -ErrorAction SilentlyContinue) {
+        throw "Cannot restore ${parked}: $junction is occupied."
+    }
+    Move-Item -LiteralPath $parked -Destination $junction
+    Write-Host "Restored parked mod to: $junction"
+}
+
 if (@(Get-RimWorldProcess).Count -ne 0) {
     throw 'Preflight refused: a RimWorld process is already running.'
 }
@@ -45,6 +57,7 @@ if (@(Get-RimWorldProcess).Count -ne 0) {
 if ($CleanupJunction) {
     Remove-OwnedJunction -JunctionPath $junction -ExpectedTarget $repoRoot
     Write-Host "Cleaned up junction (if present): $junction"
+    Restore-ParkedMod
     exit 0
 }
 
@@ -74,15 +87,17 @@ $process = $null
 
 try {
     $existing = Get-Item -LiteralPath $junction -Force -ErrorAction SilentlyContinue
+    $isOwnJunction = $existing -and $existing.LinkType -eq 'Junction' -and
+        [IO.Path]::GetFullPath($existing.Target).TrimEnd('\', '/') -eq [IO.Path]::GetFullPath($repoRoot).TrimEnd('\', '/')
+    if ($existing -and -not $isOwnJunction) {
+        if (Test-Path -LiteralPath $parked) {
+            throw "Both $junction and an earlier parked copy $parked exist; resolve them by hand."
+        }
+        Move-Item -LiteralPath $junction -Destination $parked
+        Write-Host "Parked existing Mods/RimLumen at: $parked"
+        $existing = $null
+    }
     if ($existing) {
-        if ($existing.LinkType -ne 'Junction') {
-            throw "Refusing non-junction: $junction"
-        }
-        $actualTarget = [IO.Path]::GetFullPath($existing.Target).TrimEnd('\', '/')
-        $expectedTarget = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\', '/')
-        if ($actualTarget -ne $expectedTarget) {
-            throw "Refusing junction targeting another worktree: $($existing.Target)"
-        }
         $ownsJunction = $true
     }
     else {
@@ -215,5 +230,8 @@ finally {
             $process.WaitForExit()
         }
         Remove-OwnedJunction -JunctionPath $junction -ExpectedTarget $repoRoot
+    }
+    if ($cleanupInFinally) {
+        Restore-ParkedMod
     }
 }
