@@ -639,7 +639,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 5. **历史目标要求**：仅声明了 `"persistent": true` 的目标 `X` 才允许通过 `"prev:X"` 采样上一帧写入的槽位。
 6. **绑定槽位约束**：`inputs[].binding` 必须位于 `[0, 15]`，且不得占用保留 UBO 槽位 `5`，同一 Pass 内不可重复。
 
-默认 Bloom prefilter 提取 `hdr + glow`。阈值默认 `1.0`（设置与包基线一致），峰值 ≤ 阈值时严格输出 0；`bloomKnee=0` 是硬阈值，无除零。正 knee 在阈值之上按 `excess * smoothstep(0,knee,excess)` 平滑起辉，`excess=max(peak-threshold,0)`。
+默认 Bloom prefilter 对 `hdr` 应用阈值后提取，`glow` 不经阈值、整体并入 Bloom：原版加色发光拷贝画在 8 位场景里，单份不超过 1，经阈值会被全部去掉；其泛光强弱由 `bloomIntensity` 控制。阈值默认 `1.0`（设置与包基线一致），峰值 ≤ 阈值时严格输出 0；`bloomKnee=0` 是硬阈值，无除零。正 knee 在阈值之上按 `excess * smoothstep(0,knee,excess)` 平滑起辉，`excess=max(peak-threshold,0)`。
 
 #### 3152 组空帧 Bloom 跳过规则
 

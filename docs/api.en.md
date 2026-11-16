@@ -639,7 +639,7 @@ When switching packs, `ShaderPackCatalog.ApplyOptionsToRuntime` resets the four 
 5. **Persistent history prerequisite**: `"prev:X"` is valid only if target `X` was declared with `"persistent": true`.
 6. **Binding slot limits**: `inputs[].binding` must be in `[0, 15]`, cannot be `5` (reserved for the UBO), and cannot repeat within the same pass.
 
-The default Bloom prefilter extracts `hdr + glow`. The default threshold is `1.0` in both settings and pack baseline, and peaks ≤ threshold extract exactly zero. `bloomKnee=0` is a hard threshold without division by zero. A positive knee softens only above the threshold using `excess * smoothstep(0,knee,excess)`, where `excess=max(peak-threshold,0)`.
+The default Bloom prefilter thresholds `hdr` and adds `glow` in full, without the threshold: vanilla additive glow copies are drawn into the 8-bit scene, so each copy stays at or below 1 and a threshold would remove them entirely; `bloomIntensity` sets how strongly they bloom. The default threshold is `1.0` in both settings and pack baseline, and peaks ≤ threshold extract exactly zero. `bloomKnee=0` is a hard threshold without division by zero. A positive knee softens only above the threshold using `excess * smoothstep(0,knee,excess)`, where `excess=max(peak-threshold,0)`.
 
 #### 3152 Group Empty-Frame Bloom Skip Rule
 

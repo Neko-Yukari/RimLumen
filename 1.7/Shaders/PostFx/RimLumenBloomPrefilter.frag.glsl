@@ -15,7 +15,7 @@ vec3 sanitizeHdr(vec3 c)
 
 void main()
 {
-    vec3 color = sanitizeHdr(texture(sourceImage, uv).rgb) + sanitizeHdr(texture(glowImage, uv).rgb);
+    vec3 color = sanitizeHdr(texture(sourceImage, uv).rgb);
     float brightness = max(color.r, max(color.g, color.b));
     float threshold = pc.value.z;
     float knee = pc.value.w;
@@ -23,5 +23,8 @@ void main()
     // The soft shoulder starts above the threshold; knee=0 is exactly a hard threshold.
     float extracted = knee > 0.0 ? excess * smoothstep(0.0, knee, excess) : excess;
     float contribution = extracted / max(brightness, 0.00001);
-    outColor = vec4(color * contribution, 0.0);
+    // Glow copies hold only additive emissive content drawn into the 8-bit scene, so each copy stays at or below 1
+    // and a threshold would remove them entirely; they bloom in full and the threshold applies to hdr only.
+    vec3 glow = sanitizeHdr(texture(glowImage, uv).rgb);
+    outColor = vec4(color * contribution + glow, 0.0);
 }
