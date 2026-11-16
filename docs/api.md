@@ -41,7 +41,7 @@
 
 ### 3. 游戏时间同步
 
-默认情况下，粒子模拟与节点时间轴严格跟随游戏时间：游戏暂停时步长为 `0`（空中粒子和力场定格并照常绘制），`1x` / `2x` / `3x` 时同步倍速推进。需要无视游戏暂停的特效，可在播放请求中显式传入 `realTime: true`。
+默认情况下，粒子模拟与节点时间轴使用本帧实际完成的 tick 数 / 60 作为步长；没有完成 tick 或宿主因 `LongEventHandler.ShouldWaitForEvent` 跳过游戏更新时为 `0`，暂停仍照常绘制；真实时间照常推进。不再用墙钟步长乘速度档位。原版 `TickRateMultiplier`：Normal=1、Fast=3、Superfast=6（无事发生时 12、无地图时 18）；Ultrafast=15（无地图 150、UltraSpeedBoost 20000），强制普通速度时为 1。实际 tick 循环还受每帧耗时预算限制。来源：`Verse.TickManager`，`Assembly-CSharp.decompiled.cs:52605–52646,52853–52888`。需要实时时钟的特效，传入 `realTime: true`。
 
 ---
 
@@ -438,7 +438,19 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 
 ### 2. 原版加法发光自动增强的兼容现状
 
-RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled` 且 `DstColor == One`、`ColorOp == Add`、`SrcColor` 为 `SrcAlpha` 或 `One`、且不写深度）进行重画以进入 HDR 泛光，并内置排除了 5 个全屏/环境遮罩键：`GlowOverlay`、`OxygenOverlayIndoors`、`GravshipLensFlare`、`UnlitAdditive`、`MoteWater`。
+RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled` 且 `DstColor == One`、`ColorOp == Add`、`SrcColor` 为 `SrcAlpha` 或 `One`、且不写深度）额外画一份拷贝进入 HDR 泛光，并内置排除了 5 个全屏/环境遮罩键：`GlowOverlay`、`OxygenOverlayIndoors`、`GravshipLensFlare`、`UnlitAdditive`、`MoteWater`。
+
+原版绘制保持原样，发光核心仍由原版场景画出；拷贝只写入独立的 `glow` 目标，不进入 `hdr` 层，也不参与合成的核心项。早组拷贝供内置 Bloom 预过滤和光影包的 `glow` 输入使用，后续组只供宿主 Bloom 使用。因此发光下方的地面不会被压暗。关闭该开关或触发其熔断后，原版发光不再有任何增强；没有其他原生 HDR 效果、且当前光影包不改写场景时，画面与原版一致。
+
+按有效 `FinalDrawItem.RenderQueue` 分为四组，分别在地图 Pass 内的边界执行：`q < 3152` → 3152、`[3152, 3169)` → 3169、`[3169, 3178)` → 3178、`[3178, int.MaxValue)` → 地图末尾 `int.MaxValue`。各组不合并；边界在同队列的原版场景抓取之前执行。
+
+3152 组执行一次完整的原生 HDR、早组发光、Bloom 和光影包 DAG / 合成，仍由现有原生绘制、贡献者和 `runOnEmptyFrames` 条件触发，不能仅因早组发光为空而跳过。它位于原版 3152 Distortion 抓取之前；包的 `glow` 只含 `q < 3152` 拷贝，`scene` 和 `depth` 是该边界的独立同帧快照，不是后续边界的快照。最终合成写回地图颜色，不采样正在写入的颜色图像。`pack.json` 的 `"backbuffer"` 名称与 PostEffectPass 合成 ABI 不变，名称表示最终合成输出，而不是交换链插槽。
+
+后续组只重画各自的加法发光拷贝，执行宿主 Bloom 预过滤、降采样、升采样，再将 Bloom 的 RGB 加到场景并保留目标 Alpha，不做色调映射。原始核心已经在场景中，不会再次加入；原生 HDR 粒子、调色、雾、自定义 DAG 和历史缓冲也不会重跑。后续组使用同一帧捕获的当前包 `BloomParams`（强度、阈值、knee、scatter）及请求的 mip 级数；组为空或 mip 级数为 0 时，不添加该组边界或 Pass。
+
+自定义 `bloomPrefilterShader`、`bloomDownShader` 和 `bloomUpShader` 只用于 3152 组，后续组使用宿主着色器，并不等价于任意自定义 Bloom。Cinematic 的后续组不会产生光丝或影响 Adaptation；Atmospheric 的后续 Bloom 不照亮薄雾，也不使用依赖雾的 scatter 增益；Crisp、Vibrant 等包的合成色彩映射不作用于后续 Bloom。光影包 DAG 和历史缓冲只随 3152 组执行一次，不按组重复。
+
+已安装原版及 DLC 的静态清单中，3155 仪式蜡烛在 3169 组增强，位于天气雾 3169 和太阳阴影 3170 之前；3177 轨道 / 电力光束及端点在 3178 组增强，位于战争迷雾 3175 之后、Gravship 抓取及 Darkness 3180 之前；3181 重力场、3185 引擎、3201 推进火焰和 4000 Noctol 眼睛在地图末尾增强。清单中 `[3169, 3174]` 和 `[3178, 3179]` 没有符合条件的绘制。末组 Bloom 晚于 3201 Screen 和 3251 VoidNode 抓取，因此不包含在这两次抓取中；不保证所有覆盖层、抓取或第三方绘制顺序。这些是静态顺序契约，实机表现尚未验证。
 
 如果在自定义 `ShaderDef` 上不想被自动重画增强，可以挂载 `<li Class="RimLumen.Core.Compat.LumenEmissiveModExtension"><EnableHdrBloom>false</EnableHdrBloom></li>` 进行逐 `ShaderDef` 排除。（注：该扩展类中的 `HdrMultiplier` 字段当前尚未接入重画强度调节，仅 `EnableHdrBloom` 生效。）
 
@@ -620,19 +632,21 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 
 #### 静态 DAG 校验规则（`ShaderPackGraphValidator`）
 
-1. **保留源名**：`hdr`、`bloom`、`scene`、`depth`、`mapLightField`、`backbuffer` 为保留源名，不可作为自定义 `targets[].name`，也不能用 `prev:` 作为自定义目标前缀。
+1. **保留源名**：`hdr`、`glow`、`bloom`、`scene`、`depth`、`mapLightField`、`backbuffer` 为保留源名，不可作为自定义 `targets[].name`，也不能用 `prev:` 作为自定义目标前缀。
 2. **末尾唯一 `backbuffer`**：若 `passes` 非空，仅最后一个 Pass 必须输出到 `"backbuffer"`；其余所有离屏 Pass 必须输出到已声明的 `targets[].name`，且必须使用 `"blend": "Opaque"` 与非空 `shader`。
 3. **禁止采样 `backbuffer`**：任何 Pass 的 `inputs[].source` 均不能填 `"backbuffer"`。
 4. **无前向引用与无同帧自读**：采样普通 `target` 时，必须有排在当前 Pass 之前的 Pass 已向其写入；禁止在同一 Pass 中既写 `X` 又直接以 `X` 作为输入。
 5. **历史目标要求**：仅声明了 `"persistent": true` 的目标 `X` 才允许通过 `"prev:X"` 采样上一帧写入的槽位。
 6. **绑定槽位约束**：`inputs[].binding` 必须位于 `[0, 15]`，且不得占用保留 UBO 槽位 `5`，同一 Pass 内不可重复。
 
-#### 空帧 Bloom 跳过规则
+默认 Bloom prefilter 提取 `hdr + glow`。阈值默认 `1.0`（设置与包基线一致），峰值 ≤ 阈值时严格输出 0；`bloomKnee=0` 是硬阈值，无除零。正 knee 在阈值之上按 `excess * smoothstep(0,knee,excess)` 平滑起辉，`excess=max(peak-threshold,0)`。
+
+#### 3152 组空帧 Bloom 跳过规则
 
 即使 `runOnEmptyFrames` 为 `true`，当满足以下任一条件时，运行时仍会跳过内置 Bloom 降采样与升采样链，并将 `bloom` 输入源绑定为 1×1 全黑占位纹理 `black1x1`：
 
 - `bloomMipLevels == 0`；
-- 当前帧没有任何 HDR 绘制（`!hasHdrDraws`），**且**包未设置 `bloomPrefilterShader`、`bloomDownShader`、`bloomUpShader` 中的任意一个路径。
+- 当前帧没有任何 HDR 绘制（含原版发光拷贝，`!hasHdrDraws`），**且**包未设置 `bloomPrefilterShader`、`bloomDownShader`、`bloomUpShader` 中的任意一个路径。
 
 需要基于 `scene` / `depth` / `mapLightField` 在空帧计算自定义 Bloom 散射时，请至少指定一个自定义 Bloom 着色器（如 `bloomPrefilterShader`）并启用 `runOnEmptyFrames: true`。
 
@@ -649,11 +663,14 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 
 | 源名称 | 格式与滤波 | 未激活时的占位纹理 | 说明 |
 | --- | --- | --- | --- |
-| `hdr` | `R16G16B16A16SFloat` / `Linear` | — | 线性 HDR 粒子与发光绘制层（A 为遮罩/不透明度）。 |
+| `hdr` | `R16G16B16A16SFloat` / `Linear` | — | RimLumen 原生 HDR 绘制层：RGB 为预乘颜色；A 为原生 Alpha / 预乘粒子的覆盖度，加法粒子写 0。不含原版发光拷贝。合成后受后续地图覆盖层处理。 |
+| `glow` | `R16G16B16A16SFloat` / `Linear` | `black1x1`（全 0） | 原版及第三方加法发光的拷贝，未截断的叠加值。场景里已有这些发光的核心，合成时不要再把它加回场景；用于泛光、光晕、拖尾等。在 3152 边界前捕获，尚未经过后续地图覆盖层。A 未使用。 |
 | `bloom` | `R16G16B16A16SFloat` / `Linear` | `black1x1`（`R8G8B8A8UNorm` 全 0） | 内置多级 Bloom 金字塔输出。 |
-| `scene` | 场景主色彩格式 / `Linear` | — | Waylith 渲染的地图、角色与建筑主场景画面。 |
-| `depth` | `R32SFloat` / `Point` | `depth1x1`（`R32SFloat`，值为 `1.0`） | 由场景深度拷贝得到的线性可读颜色快照。 |
-| `mapLightField` | `R8G8B8A8UNorm` / `Linear` | `black1x1`（全 0） | 尺寸为 `mapSizeX x mapSizeZ` 的全图屋顶/光照/封闭度/迷雾场。 |
+| `scene` | 场景主色彩格式 / `Linear` | — | 3152 边界处地图、角色与建筑主场景的独立同帧颜色拷贝。 |
+| `depth` | `R32SFloat` / `Point` | `depth1x1`（`R32SFloat`，远平面 `0.0`） | 由 3152 边界同帧场景深度拷贝得到、供常规采样的颜色快照。 |
+| `mapLightField` | `R8G8B8A8UNorm` / `Linear` | `black1x1`（全 0） | 尺寸为 `mapSizeX x mapSizeZ` 的全图屋顶/人工光/存在使用室外温度的房间/迷雾场。 |
+
+`hdr`、`glow` 与 `scene` 的 RGB 使用同一种编码，可以直接相加，不需要做 gamma / 线性转换：场景目标是 `B8G8R8A8UNorm`，原版直接按存储值混合，RimLumen 的 HDR 目标用同样的着色器输出与混合方式，只是不截断。`1.0` 等于原版的满亮度，大于 `1.0` 的部分就是原版会截掉的额外亮度。
 
 #### 默认输入绑定（未使用 `passes` 自定义绑定时）
 
@@ -664,13 +681,13 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
   - `binding = 3`：`depth`
   - `binding = 4`：`mapLightField`
 - **自定义 `bloomPrefilterShader`**：
-  - `binding = 0`：`hdr`、`binding = 2`：`scene`、`binding = 3`：`depth`、`binding = 4`：`mapLightField`（注意：**没有 `binding = 1`**，请勿声明）。
+  - `binding = 0`：`hdr`、`binding = 1`：`glow`、`binding = 2`：`scene`、`binding = 3`：`depth`、`binding = 4`：`mapLightField`。
 - **自定义 `bloomDownShader`**：
   - `binding = 0`：上一级降采样纹理、`binding = 4`：`mapLightField`。
 - **自定义 `bloomUpShader`**：
   - `binding = 0`：更低分辨率升采样输入、`binding = 1`：同级降采样纹理、`binding = 4`：`mapLightField`。
 
-> 混合与 Alpha 提示：`passes` 为空时默认合成 Pass 固定使用 `PremultipliedAlpha` 混合到 Backbuffer。若你的合成着色器直接输出最终全屏图像（如含调色、雾效），请输出 `vec4(finalRgb, 1.0)` 或使用显式 `passes` 并设 `"blend": "Opaque"`；若只想把 HDR 粒子与 Bloom 叠加到场景之上，则输出 `vec4(mappedHdr, hdr.a)`。
+> 混合与 Alpha 提示：`passes` 为空时默认合成 Pass 固定使用 `PremultipliedAlpha` 混合到 3152 边界的地图颜色。若你的合成着色器直接输出最终全屏图像（如含调色、雾效），请输出 `vec4(finalRgb, 1.0)` 或使用显式 `passes` 并设 `"blend": "Opaque"`；若只想把 HDR 粒子与 Bloom 叠加到场景之上，则输出 `vec4(mappedHdr, hdr.a)`：结果为 `mappedHdr + scene * (1 - hdr.a)`，`hdr` 与泛光都为空的像素保持场景原样。色调曲线由各包的合成着色器自行决定；内置默认合成在峰值不超过 1 时原样输出，超过 1 时峰值保持 1，超出部分沿原色相向白色压缩。
 
 > 数值安全提示：`hdr` 是 `RGBA16F`，大量加色粒子叠加后可能溢出成 `Inf`，个别驱动上还可能出现 `NaN`，而不同驱动对它们的处理不一致。凡是直接读取 `hdr` 的 Pass（自定义 prefilter、合成、亮度统计），尤其是写入 `persistent` 历史目标的 Pass，都应先把 `NaN`/`Inf` 置 0 并设上限，否则一个坏像素会被模糊扩散，或长期留在历史缓冲里。内置包的写法见 `Cinematic/Common.glslinc` 中的 `sanitizeHdr`。
 
@@ -686,28 +703,33 @@ layout(location = 0) out vec4 outColor;
 
 同一光影包内可使用相对路径 `#include "Common.glslinc"` 复用公共函数与 UBO 声明。
 
-#### Uniform Buffer（`set = 0, binding = 5`，176 字节 `std140`）
+#### Uniform Buffer（`set = 0, binding = 5`，208 字节 `std140`）
 
 ```glsl
 layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 {
     mat4 InvViewProjection; // 偏移   0 (64 B): ViewProjection 逆矩阵（Row-Major 存储）
     vec4 ScreenAndMapSize;  // 偏移  64 (16 B): (1.0/sceneW, 1.0/sceneH, mapSizeX, mapSizeZ)
-    vec4 EnvParams;         // 偏移  80 (16 B): (elapsedTime, skyGlow, zoomRootSize, flags)
-    vec4 BloomParams;       // 偏移  96 (16 B): (bloomIntensity, bloomThreshold, bloomKnee, bloomScatter)
-    vec4 PackParam0;        // 偏移 112 (16 B): (packParam0,  packParam1,  packParam2,  packParam3)
-    vec4 PackParam1;        // 偏移 128 (16 B): (packParam4,  packParam5,  packParam6,  packParam7)
-    vec4 PackParam2;        // 偏移 144 (16 B): (packParam8,  packParam9,  packParam10, packParam11)
-    vec4 PackParam3;        // 偏移 160 (16 B): (packParam12, packParam13, packParam14, packParam15)
+    float GameSeconds;      // 80: TicksGame / 60
+    float RealSeconds;      // 84: host elapsed seconds
+    float SkyGlow;          // 88
+    float ZoomRootSize;     // 92
+    float HasHdrDraws;      // 96
+    float HasSceneDepth;    // 100
+    float HasMapLightField; // 104
+    float IsPaused;         // 108
+    float DepthValid;       // 112
+    float GameDeltaSeconds; // 116: TicksThisFrame / 60; skipped update => 0
+    float RealDeltaSeconds; // 120: host frame delta
+    float Padding;          // 124
+    vec4 BloomParams;       // 128: intensity, threshold, knee, scatter
+    vec4 PackParams[4];     // 144: 4 行，每行 16 字节，共 64 字节
 } ubo;
 ```
 
-- **参数映射注意**：`options[].target` 指定的 `packParam0..3` 依次填入 `ubo.PackParam0.xyzw`，`packParam4..7` 填入 `ubo.PackParam1.xyzw`，以此类推。因此 `target` 为 `"packParam1"` 时在 GLSL 中应读取 `ubo.PackParam0.y`，而非 `ubo.PackParam1.x`。
-- **`EnvParams.w` 状态位掩码**：着色器中使用 `uint flags = uint(ubo.EnvParams.w + 0.5);` 解包：
-  - `1u`（bit 0）：`hasHdrDraws`（存在活动 HDR 绘制或直接 HDR 贡献者）
-  - `2u`（bit 1）：`hasSceneDepth`（`depth` 绑定真实场景深度而非 `depth1x1`）
-  - `4u`（bit 2）：`hasMapLightField`（`mapLightField` 已就绪且绑定真实地图光场）
-  - `8u`（bit 3）：`isPaused`（游戏是否处于暂停状态）
+- **参数映射**：`options[].target` 的 `packParamN`（`N = 0..15`）对应 `ubo.PackParams[N / 4][N % 4]`；已有着色器需将旧向量成员改为 `PackParams` 数组。
+- **当前 ABI**：旧 `EnvParams` 位掩码已移除；外部包须同步上述 208 字节布局。`HasHdrDraws`（含早组 glow 拷贝）、`HasSceneDepth`、`HasMapLightField`、`IsPaused` 均为独立的 0/1 float。`DepthValid=1` 表示该边界的真实深度快照，`0` 表示远平面占位，不表示每个像素都有几何体。
+- `GameSeconds` 为游戏 ticks / 60，暂停停止；`RealSeconds` 为宿主经过的真实秒数。对应 Delta 字段是本帧步长。Cinematic 的 Adapt 与 StreakExtract 读取 `hdr + glow`，合成核心仍只读取 `hdr`；Adapt 使用游戏秒时间常数 0.2 秒，权重 `1-exp(-GameDeltaSeconds/0.2)`。
 
 #### Push Constant（16 字节 `vec4`）
 
@@ -724,11 +746,11 @@ layout(push_constant) uniform Params { vec4 value; } pc;
 
 #### Reverse-Z 深度与地面坐标反投影
 
-Waylith 采用 Reverse-Z 深度：近平面为 `1.0`，空背景/远平面为 `0.0`；深度未激活时的 `depth1x1` 占位纹理值为 `1.0`。区分真实 3D 几何体（例如 IsoRim 墙体）与平铺地面/天空背景可使用：
+Waylith 采用 Reverse-Z 深度：近平面为 `1.0`，空背景/远平面为 `0.0`；深度未激活时的 `depth1x1` 占位纹理值为 `0.0`，且 `DepthValid=0`。区分真实 3D 几何体（例如 IsoRim 墙体）与平铺地面/天空背景可使用：
 
 ```glsl
 float depth = texture(depthImage, uv).r;
-float is3DGeom = step(0.0001, min(depth, 1.0 - depth));
+float is3DGeom = ubo.DepthValid * step(0.0001, min(depth, 1.0 - depth));
 ```
 
 使用 `ubo.InvViewProjection` 从屏幕 `uv` 重建世界地面（`y = 0`）坐标与地图光场 UV（同时兼容原版俯视与 IsoRim 倾斜视角）：
@@ -752,10 +774,10 @@ bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fie
 
 | 通道 | 含义 | 编码规则（`MapLightFieldEncoder`） |
 | --- | --- | --- |
-| `R` | 屋顶（`Roof`） | 有屋顶为 `1.0`（`255`），无屋顶为 `0.0`（`0`）。 |
-| `G` | 地表光亮（`GroundGlow`） | 若 `glowGrid.VisualGlowAt` 的 `a == 1`（日光直射露天地格），直接编码为 `1.0`（`255`）；否则取 `min(0.5, (max(r, g, b) / 255.0) * 3.6)`（人工光源上限 `0.5`，借此区分日光与火把）。 |
-| `B` | 封闭度（`Enclosure`） | 无屋顶为 `0.0`（`0`）；有屋顶且房间使用室外温度（半开放棚/门廊）为 `~0.502`（`128/255`）；完全封闭室内为 `1.0`（`255`）。 |
-| `A` | 战争迷雾（`FogOfWar`） | 未探索迷雾格为 `1.0`（`255`），已探索格为 `0.0`（`0`）。 |
+| `R` | 屋顶（`Roofed`） | `RoofGrid.Roofed` 为 true 时 `1.0`（255），否则 0。来源：`Assembly-CSharp.decompiled.cs:92166–92168`。 |
+| `G` | 人工地表光（`ArtificialGroundGlow`） | `min(0.5,(max(r,g,b)/255.0)*3.6)`，按 UNorm8 四舍五入，不含天空光。来源：`GlowGrid.GroundGlowAt` 人工光分量，`Assembly-CSharp.decompiled.cs:69541–69542`。半亮度量化为 128/255。 |
+| `B` | 存在使用室外温度的房间（`HasOutdoorTemperatureRoom`） | 该格存在 Room 且 `Room.UsesOutdoorTemperature` 为 true 时 `1.0`（255），否则 0；否则明确包含室内温度 Room，以及墙/岩石等无 Room 格。来源：`Assembly-CSharp.decompiled.cs:90349–90358`。这是定义的事实，不是占位或无 Room 格的室内/室外分类；原版 `TryGetDirectAirTemperatureForCell` 无 Room 时返回 false/21f（`:92707–92714`），未给出该 bool 分类。本输入不推断邻格。 |
+| `A` | 战争迷雾（`Fogged`） | `FogGrid.IsFogged` 为 true 时 `1.0`（255），否则 0。来源：`Assembly-CSharp.decompiled.cs:68695–68701`。 |
 
 #### 内置光影包参考
 
@@ -822,12 +844,20 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 {
     mat4 InvViewProjection;
     vec4 ScreenAndMapSize;
-    vec4 EnvParams;
+    float GameSeconds;
+    float RealSeconds;
+    float SkyGlow;
+    float ZoomRootSize;
+    float HasHdrDraws;
+    float HasSceneDepth;
+    float HasMapLightField;
+    float IsPaused;
+    float DepthValid;
+    float GameDeltaSeconds;
+    float RealDeltaSeconds;
+    float Padding;
     vec4 BloomParams;
-    vec4 PackParam0;
-    vec4 PackParam1;
-    vec4 PackParam2;
-    vec4 PackParam3;
+    vec4 PackParams[4];
 } ubo;
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
@@ -858,16 +888,16 @@ void main()
 
     vec2 fieldUv = world.xz / max(ubo.ScreenAndMapSize.zw, vec2(1.0));
     bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fieldUv.y <= 1.0;
-    uint flags = uint(ubo.EnvParams.w + 0.5);
 
     float darkness = 0.0;
-    if ((flags & 4u) != 0u && insideMap)
+    if (ubo.HasMapLightField > 0.5 && insideMap)
     {
         vec4 field = texture(mapLightField, fieldUv);
-        float outdoor = 1.0 - smoothstep(0.25, 0.90, max(field.r * 0.55, field.b));
+        float enclosure = field.r * mix(1.0, 0.55, field.b);
+        float outdoor = 1.0 - smoothstep(0.25, 0.90, enclosure);
         float litProtect = smoothstep(0.04, 0.45, field.g);
-        float night = smoothstep(0.88, 0.22, clamp(ubo.EnvParams.y, 0.0, 1.0));
-        darkness = night * outdoor * (1.0 - litProtect) * (1.0 - field.a) * clamp(ubo.PackParam0.x, 0.0, 0.9);
+        float night = smoothstep(0.88, 0.22, clamp(ubo.SkyGlow, 0.0, 1.0));
+        darkness = night * outdoor * (1.0 - litProtect) * (1.0 - field.a) * clamp(ubo.PackParams[0].x, 0.0, 0.9);
     }
 
     vec3 base = scene * mix(vec3(1.0), vec3(0.76, 0.86, 1.06), darkness) * (1.0 - darkness * 0.65);

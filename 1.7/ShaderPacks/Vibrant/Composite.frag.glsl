@@ -3,12 +3,20 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 {
     mat4 InvViewProjection;
     vec4 ScreenAndMapSize;
-    vec4 EnvParams;
+    float GameSeconds;
+    float RealSeconds;
+    float SkyGlow;
+    float ZoomRootSize;
+    float HasHdrDraws;
+    float HasSceneDepth;
+    float HasMapLightField;
+    float IsPaused;
+    float DepthValid;
+    float GameDeltaSeconds;
+    float RealDeltaSeconds;
+    float Padding;
     vec4 BloomParams;
-    vec4 PackParam0;
-    vec4 PackParam1;
-    vec4 PackParam2;
-    vec4 PackParam3;
+    vec4 PackParams[4];
 } ubo;
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
@@ -28,10 +36,10 @@ void main()
     vec4 hdr = texture(hdrImage, uv);
     hdr.rgb = sanitizeHdr(hdr.rgb);
     vec3 bloom = texture(bloomImage, uv).rgb * ubo.BloomParams.x;
-    float gain = max(0.2, ubo.PackParam0.y);
+    float gain = max(0.2, ubo.PackParams[0][1]);
     vec3 color = (hdr.rgb + bloom) * gain;
 
-    float satBoost = clamp(ubo.PackParam0.x, 0.0, 1.5);
+    float satBoost = clamp(ubo.PackParams[0][0], 0.0, 1.5);
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     color = max(vec3(0.0), mix(vec3(luma), color, 1.0 + satBoost * 0.65));
 

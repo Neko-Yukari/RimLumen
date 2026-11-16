@@ -9,29 +9,89 @@ namespace RimLumen.Core.Tests.Rendering;
 public static class RenderLogicSuite
 {
     [LumenFact]
-    public static void CompositeOrderHandlesInsertedMissingAndDisplacedSelf()
+    public static void CaptureFeatureIsInsertedBeforeMap()
     {
-        string[] ordered = ["ComputeRenderFeature", "WorldRenderFeature", "MapRenderFeature", "CameraCaptureFeature", "PostFxFeature", "Composite", "ImGuiRenderFeature", "ScreenCaptureFeature"];
-        Equal(-1, FeatureOrderGuard.ComputeCompositeReinsertIndex(ordered, 5));
-        string[] iris = ["ComputeRenderFeature", "WorldRenderFeature", "MapRenderFeature", "CameraCaptureFeature", "PostFxFeature", "Composite", "RimIris", "ImGuiRenderFeature", "ScreenCaptureFeature"];
-        Equal(6, FeatureOrderGuard.ComputeCompositeReinsertIndex(iris, 5));
-        Equal(1, FeatureOrderGuard.ComputeCompositeReinsertIndex(["PostFxFeature", "ImGuiRenderFeature"], -1));
-        Equal(0, FeatureOrderGuard.ComputeCompositeReinsertIndex(["ImGuiRenderFeature"], -1));
-        Equal(-1, FeatureOrderGuard.ComputeCompositeReinsertIndex(["Composite", "PostFxFeature"], 0));
-        Equal(1, FeatureOrderGuard.ComputeCompositeReinsertIndex(["PostFxFeature", "ImGuiRenderFeature", "Composite"], 2));
-        Equal(0, FeatureOrderGuard.ComputeCompositeReinsertIndex(["customIMGUIfeature", "OtherImGui", "Composite"], 2));
-        Equal(-1, FeatureOrderGuard.ComputeCompositeReinsertIndex([], -1));
-        Equal("Composite", iris[5]);
+        Equal(2, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["ComputeRenderFeature", "WorldRenderFeature", "MapRenderFeature", "PostFxFeature"]));
+        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["PostFxFeature"]));
+        Equal(0, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["MapRenderFeature"]));
+        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex([]));
     }
 
     [LumenFact]
-    public static void PreBackbufferRequiresMapBeforePostFx()
+    public static void SplitGrabIsFirstAtItsQueueAndCreatesMissingList()
     {
-        Equal(3, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["ComputeRenderFeature", "WorldRenderFeature", "MapRenderFeature", "CameraCaptureFeature", "PostFxFeature", "ImGuiRenderFeature", "ScreenCaptureFeature"]));
-        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["PostFxFeature"]));
-        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["MapRenderFeature"]));
-        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex(["PostFxFeature", "MapRenderFeature"]));
-        Equal(-1, FeatureOrderGuard.ComputePreBackbufferInsertIndex([]));
+        var sentinel = (Queue: 3152, Name: "split");
+        var before = (Queue: 3100, Name: "before");
+        var distortion = (Queue: 3152, Name: "distortion");
+        var after = (Queue: 3200, Name: "after");
+        var grabs = SceneGrabSplit.Insert(new[] { before, distortion, after }, sentinel, static p => p.Queue);
+        Equal(4, grabs.Count);
+        Equal(before, grabs[0]);
+        Equal(sentinel, grabs[1]);
+        Equal(distortion, grabs[2]);
+        Equal(after, grabs[3]);
+        var created = SceneGrabSplit.Insert<(int Queue, string Name)>(null, sentinel, static p => p.Queue);
+        Equal(1, created.Count);
+        Equal(sentinel, created[0]);
+    }
+
+    [LumenFact]
+    public static void GravshipSplitPrecedesEverySameQueueGrab()
+    {
+        var split = (Queue: 3178, Name: "split");
+        var gravship = (Queue: 3178, Name: "gravship");
+        var other = (Queue: 3178, Name: "other");
+        var grabs = SceneGrabSplit.Insert(new[] { gravship, other }, split, static p => p.Queue);
+        Equal(split, grabs[0]);
+        Equal(gravship, grabs[1]);
+        Equal(other, grabs[2]);
+    }
+
+    [LumenFact]
+    public static void GlowGroupsPartitionEffectiveQueuesWithoutGaps()
+    {
+        Equal(GlowGroup.Early, GlowGroups.Classify(int.MinValue));
+        Equal(GlowGroup.Early, GlowGroups.Classify(3151));
+        Equal(GlowGroup.BeforeWeather, GlowGroups.Classify(3152));
+        Equal(GlowGroup.BeforeWeather, GlowGroups.Classify(3168));
+        Equal(GlowGroup.BeforeGravship, GlowGroups.Classify(3169));
+        Equal(GlowGroup.BeforeGravship, GlowGroups.Classify(3177));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(3178));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(int.MaxValue - 1));
+        GlowQueueRange early = GlowGroups.Range(GlowGroup.Early);
+        GlowQueueRange weather = GlowGroups.Range(GlowGroup.BeforeWeather);
+        GlowQueueRange gravship = GlowGroups.Range(GlowGroup.BeforeGravship);
+        GlowQueueRange end = GlowGroups.Range(GlowGroup.MapEnd);
+        Equal(int.MinValue, early.MinInclusive);
+        Equal(early.MaxExclusive, weather.MinInclusive);
+        Equal(weather.MaxExclusive, gravship.MinInclusive);
+        Equal(gravship.MaxExclusive, end.MinInclusive);
+        Equal(int.MaxValue, end.MaxExclusive);
+        Equal(true, 3152 >= weather.MinInclusive && 3152 < weather.MaxExclusive);
+        Equal(false, 3169 >= weather.MinInclusive && 3169 < weather.MaxExclusive);
+        Equal(true, 3178 >= end.MinInclusive && 3178 < end.MaxExclusive);
+        Equal(false, int.MaxValue >= end.MinInclusive && int.MaxValue < end.MaxExclusive);
+        // Verified candle, orbital beam and later distortion/portal/ritual/psychic queues.
+        Equal(GlowGroup.BeforeWeather, GlowGroups.Classify(3155));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(3181));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(3185));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(3201));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(4000));
+    }
+
+    [LumenFact]
+    public static void GlowGroupsScheduleOnlyOwnedWorkAndPositiveMipLateCopies()
+    {
+        GlowGroupMask captured = GlowGroups.Mask(GlowGroup.BeforeWeather) | GlowGroups.Mask(GlowGroup.MapEnd);
+        Equal(false, GlowGroups.ShouldSplit(GlowGroup.Early, captured, earlyWork: false, 5));
+        // Early work includes native draws, compute-only barriers or RunOnEmptyFrames independently of glow bits.
+        Equal(true, GlowGroups.ShouldSplit(GlowGroup.Early, GlowGroupMask.None, earlyWork: true, 0));
+        Equal(false, GlowGroups.ShouldSplit(GlowGroup.Early, GlowGroupMask.Early, earlyWork: false, 5));
+        Equal(true, GlowGroups.ShouldSplit(GlowGroup.BeforeWeather, captured, earlyWork: false, 5));
+        Equal(false, GlowGroups.ShouldSplit(GlowGroup.BeforeGravship, captured, earlyWork: true, 5));
+        Equal(true, GlowGroups.ShouldSplit(GlowGroup.MapEnd, captured, earlyWork: false, 1));
+        Equal(false, GlowGroups.ShouldSplit(GlowGroup.MapEnd, captured, earlyWork: true, 0));
+        Equal(false, GlowGroups.ShouldSplit(GlowGroup.BeforeWeather, GlowGroupMask.None, earlyWork: false, 5));
     }
 
     [LumenFact]

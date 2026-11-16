@@ -16,15 +16,15 @@ void main()
     vec3 bloom = texture(bloomImage, uv).rgb * ubo.BloomParams.x;
     vec3 streak = texture(streakImage, uv).rgb;
 
-    float tintBias = clamp(ubo.PackParam0.z, -1.0, 1.0);
+    float tintBias = clamp(ubo.PackParams[0][2], -1.0, 1.0);
     vec3 coolTint = vec3(0.65, 0.85, 1.25);
     vec3 warmTint = vec3(1.20, 0.96, 0.68);
     vec3 streakTint = mix(coolTint, warmTint, tintBias * 0.5 + 0.5);
 
     float adapted = clamp(texture(adaptImage, vec2(0.5)).r, 0.0, 8.0);
-    float exposureScale = 1.0 / (1.0 + adapted * 0.35 * max(0.0, ubo.PackParam0.y));
+    float exposureScale = 1.0 / (1.0 + adapted * 0.35 * max(0.0, ubo.PackParams[0][1]));
 
-    vec3 color = (hdr.rgb + bloom + streak * streakTint * max(0.0, ubo.PackParam0.x)) * exposureScale;
+    vec3 color = (hdr.rgb + bloom + streak * streakTint * max(0.0, ubo.PackParams[0][0])) * exposureScale;
     float peak = max(color.r, max(color.g, color.b));
     float shoulder = max(peak - 0.85, 0.0);
     float desat = shoulder / (shoulder + 3.2);

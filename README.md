@@ -11,7 +11,7 @@ HDR here means internal high-dynamic-range rendering, tone-mapped back to a stan
 | 能力 / Feature | 说明 / Detail |
 |---|---|
 | HDR & Bloom | 原生 `RGBA16F` 渲染 + `0–7` 级可配 Bloom / native `RGBA16F` + configurable `0–7` mip bloom |
-| ShaderPacks | 声明式多 Pass 光影包（`ShaderPacks/*/pack.json` + GLSL）：自定义渲染目标、持久化历史缓冲、场景深度与 `mapLightField`（屋顶/地面亮度/室内封闭度/迷雾）、实时滑杆与热重载隔离 / declarative multi-pass packs, custom targets, persistent history, scene depth & `mapLightField`, live sliders & isolated hot reload |
+| ShaderPacks | 声明式多 Pass 光影包（`ShaderPacks/*/pack.json` + GLSL）：自定义渲染目标、持久化历史缓冲、场景深度与 `mapLightField`（屋顶/人工地面光/存在使用室外温度的房间/迷雾）、实时滑杆与热重载隔离 / declarative multi-pass packs, custom targets, persistent history, scene depth & `mapLightField`, live sliders & isolated hot reload |
 | Soft Particles | 读取场景深度的软粒子 / depth-aware soft particles (`R32SFloat`) |
 | L2 | Vulkan Compute 粒子（力场模拟 + `InstancedDrawInfo.Direct` 实例化绘制）/ Vulkan compute simulation + instanced drawing |
 | L1 | 原生 CPU 粒子（贴图、Flipbook 序列帧、速度拉伸）/ native CPU particles (textures, flipbooks, velocity stretch) |
@@ -23,16 +23,16 @@ HDR here means internal high-dynamic-range rendering, tone-mapped back to a stan
 
 ## 玩家 / Players
 
-装上即用：原版与其他模组的加色发光特效自动获得 HDR Bloom 泛光，内置 5 档即切光影包，并可加载第三方模组或 `Config/RimLumen/ShaderPacks/` 下的自定义光影包。
-Plug and play: vanilla and third-party additive glow effects automatically get HDR bloom, with 5 built-in ShaderPacks (`Standard`, `Atmospheric`, `Cinematic`, `Vibrant`, `Crisp`) and support for mod or `Config/RimLumen/ShaderPacks/` packs.
+装上即用：符合条件的原版与其他模组加色发光自动获得 Bloom 泛光，内置 5 档即切光影包，并可加载第三方模组或 `Config/RimLumen/ShaderPacks/` 下的自定义光影包。队列 ≥3152 的发光使用宿主 Bloom 着色器和当前光影包的参数，不包含光影包的完整自定义效果；地图末尾的泛光不会出现在此前的 Screen 和 VoidNode 抓取中。
+Plug and play: eligible vanilla and third-party additive glows automatically get bloom, with 5 built-in ShaderPacks (`Standard`, `Atmospheric`, `Cinematic`, `Vibrant`, `Crisp`) and support for mod or `Config/RimLumen/ShaderPacks/` packs. Glows at render queues >=3152 use host bloom shaders and pack parameters, not the pack's complete custom effects; map-end bloom is absent from earlier Screen and VoidNode grabs.
 
 - 设置：选项 → 模组设置 → RimLumen / Options -> Mod Settings -> RimLumen
-  - `EnhanceVanillaAdditiveGlow`（默认开 / default on）：无其他 RimLumen 特效播放时，关闭后画面与不装本模组逐像素一致 / off = pixel-identical when no RimLumen effects are active
+  - `EnhanceVanillaAdditiveGlow`（默认开 / default on）：无其他 RimLumen 特效播放且当前光影包不重写场景时，关闭后画面与不装本模组逐像素一致 / off = pixel-identical only when no RimLumen effects are active and the active pack does not rewrite the scene
   - `ParticleDensityScale`（0.1 – 1.0，默认 1.0 / default 1.0）：粒子密度 / particle density
   - `ShaderPacks`：切包、实时参数滑杆、热重载（Reload）、重扫目录（Rescan）与重置默认 / pack selector, live sliders, hot reload, rescan, and reset
   - `EnableDemoBuildings`（默认关 / default off）：启用娱乐演示建筑（烟花发射器、粒子喷泉）/ enable demo Joy buildings (Firework Launcher & Particle Fountain)
 
-*(兼容性说明：基于 Waylith 公开渲染管线扩展，0 处 Harmony 补丁，内置渲染异常熔断机制。 / Built on Waylith's public render-graph APIs with zero Harmony patches and an automatic fail-safe.)*
+内置渲染异常熔断机制。 / Includes an automatic rendering fail-safe.
 
 ### Quickstart 1：XML Def
 

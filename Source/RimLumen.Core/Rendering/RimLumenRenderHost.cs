@@ -69,13 +69,13 @@ public static class RimLumenRenderHost
     // Requires: main thread; modRootDirectory is the RimLumen mod root (contains 1.7/Shaders).
     // Ensures: idempotent. Headless (no GraphicsDevice) => no-op, Capabilities stay default.
     //   Otherwise registers 1.7/Shaders with ShaderSourceLoader, registers the pass id + layer route,
-    //   inserts RimLumenPreBackbufferFeature (after MapRenderFeature, before PostFxFeature) and
-    //   RimLumenCompositeFeature (immediately before the ImGui feature). 0 Harmony.
+    //   captures before MapRenderFeature and records the chain at the map's 3152 scene-grab split.
     public static void Install(string modRootDirectory)
     {
         if (LumenRenderPassId != 0 || EngineApplication.Instance?.GraphicsDevice == null)
             return;
 
+        RimLumenMapHooks.Arm();
         ShaderSourceLoader.RegisterShaderSourceDirectory(Path.Combine(modRootDirectory, "1.7", "Shaders"));
         byte passId = RenderPassRegistry.Register("RimLumenHdr");
         // UnityStubs LayerMask allocates named layers at 16..31; vanilla uses Default=0.

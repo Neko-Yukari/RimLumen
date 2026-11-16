@@ -8,8 +8,16 @@
   <supportedVersions>
     <li>1.7</li>
   </supportedVersions>
+  <modDependencies>
+    <li>
+      <packageId>brrainz.harmony</packageId>
+      <displayName>Harmony</displayName>
+      <steamWorkshopUrl>steam://url/CommunityFilePage/2009463077</steamWorkshopUrl>
+    </li>
+  </modDependencies>
   <loadAfter>
     <li>Ludeon.RimWorld</li>
+    <li>brrainz.harmony</li>
   </loadAfter>
   <description>【中文】
 RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可编程光影包与 GPU 粒子框架，随游戏暂停与倍速同步推进。
@@ -17,8 +25,8 @@ RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可�
 
 【面向模组开发者】
 1. 原生 RGBA16F HDR 通道与可编程光影包（ShaderPacks）
-- 在地图与 UI 之间分配 RGBA16F 浮点目标与 0–7 级可配 Bloom 链，高亮中心自然向白炽感过渡且保留边缘色相；自动识别并增强原版与第三方加法混合发光绘制。
-- 在 Mod 的 ShaderPacks/ 或 Config/RimLumen/ShaderPacks/ 放入 pack.json 与 GLSL 片段着色器，支持自定义中间渲染目标（R16G16B16A16SFloat / R8G8B8A8UNorm / R16SFloat）、跨帧持久化历史缓冲、场景深度与地图光场（mapLightField：屋顶、地面亮度、室内封闭度、战争迷雾）采样。
+- 在地图与 UI 之间分配 RGBA16F 浮点目标与 0–7 级可配 Bloom 链，高亮中心自然向白炽感过渡且保留边缘色相；自动增强符合条件的原版与第三方加法混合发光绘制；队列 ≥3152 的发光使用宿主 Bloom，不包含光影包完整自定义效果，地图末尾泛光不进入此前的 Screen 和 VoidNode 抓取。
+- 在 Mod 的 ShaderPacks/ 或 Config/RimLumen/ShaderPacks/ 放入 pack.json 与 GLSL 片段着色器，支持自定义中间渲染目标（R16G16B16A16SFloat / R8G8B8A8UNorm / R16SFloat）、跨帧持久化历史缓冲、场景深度与地图光场（mapLightField：屋顶、人工地面光、存在使用室外温度的房间、战争迷雾）采样。
 - 支持设置页实时参数滑杆与热重载；外部着色器编译或管线校验失败时隔离报错并保留上一份有效包继续运行。
 
 2. L2 GPU Compute 与 L1 原生 CPU 双路粒子
@@ -40,15 +48,15 @@ RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可�
   · Cinematic（电影光丝）：横向变形光丝、6 级柔和泛光与跨帧自适应曝光。
   · Vibrant（霓虹高饱和）：抑制高光泛白，强化色彩饱和度与能量光晕。
   · Crisp（锐利克制）：高起辉阈值与 3 级紧致泛光，保留地形与 UI 锐利清晰。
-- 实时滑杆与热重载：设置页支持实时调节当前光影包参数、热重载、逐像素可还原的原版发光增强开关、粒子密度（10%–100%）与可选娱乐演示建筑（烟花发射器与粒子喷泉）。
+- 实时滑杆与热重载：设置页支持实时调节当前光影包参数、热重载、原版发光增强开关（仅在无活动特效且当前光影包不重写场景时，关闭后逐像素还原原版）、粒子密度（10%–100%）与可选娱乐演示建筑（烟花发射器与粒子喷泉）。
 - 6 站对照演示说明（见宣传图）：#1 LDR vs HDR 泛光 / #2 L1 速度拉伸 / #3 动态点光照地 / #4 深度软粒子穿墙淡出 / #5 L2 GPU 12k 旋涡 / #6 原版发光自动 HDR。
-- 实测性能参考（1080p · RTX 4080 SUPER · 无校验层 · 3 力场 + 5 级 Bloom + 软粒子，每档 60 帧）：0–50,000 粒子整帧均值 5.54–5.55 ms（~180 FPS），100,000 粒子 5.76 ms（174 FPS），250,000 粒子 8.49 ms（118 FPS），500,000 粒子 14.79 ms（68 FPS）；全档位主线程耗时低于 0.01 ms。默认 1,048,576 共享槽位满池后安全降级不报错。
+- 实测性能参考（1080p · RTX 4080 SUPER · 无校验层 · 3 力场 + 5 级 Bloom + 软粒子，每档 60 帧）：0–50,000 粒子整帧均值 5.54–5.55 ms（~180 FPS），100,000 粒子 5.76 ms（174 FPS），250,000 粒子 8.49 ms（118 FPS），500,000 粒子 14.79 ms（68 FPS）；全档位主线程耗时低于 0.01 ms。1,048,576 个共享槽位耗尽时，跳过新特效，最多每 10 秒记录一次警告。
 
 【推荐搭配】
 - RimUnity：https://steamcommunity.com/sharedfiles/filedetails/?id=3819570122
 - IsoRim Waylith：https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
 
-（兼容说明：基于 Waylith 公开渲染管线扩展，不使用 Harmony 补丁并内置渲染异常熔断机制。）
+内置渲染异常熔断机制。
 
 【English】
 RimLumen is an HDR VFX, programmable ShaderPack, and GPU particle framework for RimWorld 1.7 (Waylith / Vulkan), synchronized with game pause and speed multipliers.
@@ -56,8 +64,8 @@ HDR here means internal high-dynamic-range rendering, tone-mapped back to a stan
 
 [For Modders]
 1. Native RGBA16F HDR Pipeline and Programmable ShaderPacks
-- Allocates an RGBA16F floating-point target and a configurable 0–7 mip HDR bloom chain before UI rendering, keeping bright cores warm without clipping edge hues. Automatically picks up vanilla and third-party additive glow draws.
-- Place pack.json and fragment GLSL shaders in a mod's ShaderPacks/ folder or Config/RimLumen/ShaderPacks/ to declare custom intermediate targets (R16G16B16A16SFloat, R8G8B8A8UNorm, R16SFloat), persistent history buffers, scene depth sampling, and the built-in mapLightField texture (roof state, ground glow, indoor enclosure, fog of war).
+- Allocates an RGBA16F floating-point target and a configurable 0–7 mip HDR bloom chain before UI rendering, keeping bright cores warm without clipping edge hues. Automatically enhances eligible vanilla and third-party additive glow draws. Glows at render queues >=3152 use host bloom rather than the pack's complete custom effects; map-end bloom is absent from earlier Screen and VoidNode grabs.
+- Place pack.json and fragment GLSL shaders in a mod's ShaderPacks/ folder or Config/RimLumen/ShaderPacks/ to declare custom intermediate targets (R16G16B16A16SFloat, R8G8B8A8UNorm, R16SFloat), persistent history buffers, scene depth sampling, and the built-in mapLightField texture (roof state, artificial ground glow, presence of an outdoor-temperature room, fog of war).
 - Exposes live UI sliders and hot-reload in Mod Settings; broken shaders or invalid graphs report an isolated diagnostic message and keep the last valid pack active without tripping the fail-safe.
 
 2. GPU Compute and Native CPU Particle Paths
@@ -79,13 +87,13 @@ HDR here means internal high-dynamic-range rendering, tone-mapped back to a stan
   · Cinematic: anamorphic streaks, 6-mip soft bloom, and adaptive exposure.
   · Vibrant: suppresses highlight desaturation and boosts energy glow chroma.
   · Crisp: high threshold with tight 3-mip bloom to keep terrain and UI sharp in combat.
-- Live Tuning and Demo Buildings: adjust per-pack sliders, hot-reload shaders, toggle vanilla additive glow (pixel-identical when off and no RimLumen effects play), scale Particle Density (10%–100%), and optionally enable Demo Joy Buildings (Firework Launcher and Particle Fountain).
+- Live Tuning and Demo Buildings: adjust per-pack sliders, hot-reload shaders, toggle vanilla additive glow (pixel-identical when off only if no RimLumen effects play and the active pack does not rewrite the scene), scale Particle Density (10%–100%), and optionally enable Demo Joy Buildings (Firework Launcher and Particle Fountain).
 - 6-Station Showcase Legend (see screenshots): #1 LDR vs HDR Bloom / #2 L1 Velocity Stretch / #3 Moving GlowGrid Light / #4 Soft Particle Wall Fade / #5 L2 GPU 12k Vortex / #6 Auto Vanilla HDR.
-- Measured Benchmark (1080p, RTX 4080 SUPER, validation off, 3 force fields + 5-mip bloom + soft particles, 60 frames/step): 0–50,000 particles at 5.54–5.55 ms (~180 FPS), 100,000 at 5.76 ms (174 FPS), 250,000 at 8.49 ms (118 FPS), and 500,000 at 14.79 ms (68 FPS), with main-thread capture under 0.01 ms. Shared 1,048,576-slot pool degrades gracefully if exhausted.
+- Measured Benchmark (1080p, RTX 4080 SUPER, validation off, 3 force fields + 5-mip bloom + soft particles, 60 frames/step): 0–50,000 particles at 5.54–5.55 ms (~180 FPS), 100,000 at 5.76 ms (174 FPS), 250,000 at 8.49 ms (118 FPS), and 500,000 at 14.79 ms (68 FPS), with main-thread capture under 0.01 ms. When the 1,048,576 shared slots are exhausted, new effects are skipped and a warning is logged at most every 10 seconds.
 
 [Recommended Companions]
 - RimUnity: https://steamcommunity.com/sharedfiles/filedetails/?id=3819570122
 - IsoRim Waylith: https://steamcommunity.com/sharedfiles/filedetails/?id=3819577715
 
-(Compatibility note: built on Waylith's public render-graph APIs with zero Harmony patches and an automatic rendering fail-safe.)</description>
+Includes an automatic rendering fail-safe.</description>
 </ModMetaData>

@@ -3,12 +3,20 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 {
     mat4 InvViewProjection;
     vec4 ScreenAndMapSize;
-    vec4 EnvParams;
+    float GameSeconds;
+    float RealSeconds;
+    float SkyGlow;
+    float ZoomRootSize;
+    float HasHdrDraws;
+    float HasSceneDepth;
+    float HasMapLightField;
+    float IsPaused;
+    float DepthValid;
+    float GameDeltaSeconds;
+    float RealDeltaSeconds;
+    float Padding;
     vec4 BloomParams;
-    vec4 PackParam0;
-    vec4 PackParam1;
-    vec4 PackParam2;
-    vec4 PackParam3;
+    vec4 PackParams[4];
 } ubo;
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
@@ -47,7 +55,7 @@ void main()
 
     vec3 baseWithFog = mix(darkenedScene, max(darkenedScene, mistColor), mist * 0.42);
 
-    float scatterStrength = ubo.BloomParams.x + max(0.0, ubo.PackParam0.w) * (0.22 + mist * 0.75);
+    float scatterStrength = ubo.BloomParams.x + max(0.0, ubo.PackParams[0][3]) * (0.22 + mist * 0.75);
     vec3 hdrAccum = hdr.rgb + bloom * scatterStrength;
     float peak = max(hdrAccum.r, max(hdrAccum.g, hdrAccum.b));
     float shoulder = max(peak - 1.0, 0.0);

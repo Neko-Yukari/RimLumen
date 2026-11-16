@@ -12,10 +12,14 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
     internal sealed class Slot
     {
         internal RenderTexture Color = null!;
+        // Vanilla/third-party additive copies: bloom and pack input only, never part of the composite core term.
+        internal RenderTexture Glow = null!;
         internal RenderTexture DepthSnapshot = null!;
+        internal RenderTexture SceneSnapshot = null!;
         internal RenderTexture[] Down = Array.Empty<RenderTexture>();
         internal RenderTexture[] Up = Array.Empty<RenderTexture>();
         internal VkFramebuffer Framebuffer;
+        internal VkFramebuffer GlowFramebuffer;
         internal VkImageView SceneDepth;
         internal RenderTexture? Bloom => Down.Length == 0 ? null : (Up.Length == 0 ? Down[0] : Up[0]);
     }
@@ -24,13 +28,14 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
     internal Slot[] Slots { get; private set; } = Array.Empty<Slot>();
     internal VkRenderPass RenderPass { get; private set; }
     private VkFormat depthFormat;
+    private VkFormat sceneFormat;
     private int width;
     private int height;
     private int bloomMipLevels = 5;
 
-    internal unsafe Slot Ensure(int index, RenderTexture scene, int mipLevels = 5)
+    internal Slot Ensure(int index, RenderTexture scene, int mipLevels = 5)
     {
-        if (Slots.Length == 0 || width != scene.Width || height != scene.Height || depthFormat != scene.DepthFormat || bloomMipLevels != mipLevels)
+        if (Slots.Length == 0 || width != scene.Width || height != scene.Height || depthFormat != scene.DepthFormat || sceneFormat != scene.ColorFormat || bloomMipLevels != mipLevels)
         {
             // Rebuild notification normally retires these after the engine waits idle; also covers scene-only resize.
             device.WaitIdle();
@@ -38,6 +43,7 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
             width = scene.Width;
             height = scene.Height;
             depthFormat = scene.DepthFormat;
+            sceneFormat = scene.ColorFormat;
             bloomMipLevels = mipLevels;
             RenderPass = CreateRenderPass(depthFormat);
             MipSize[] sizes = bloomMipLevels > 0 ? BloomMipChain.Compute(width, height, bloomMipLevels, 8) : Array.Empty<MipSize>();
@@ -51,7 +57,10 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
                     Slot slot = new();
                     Slots[frame] = slot;
                     slot.Color = Make(width, height, $"RimLumen.Hdr.{frame}");
+                    slot.Glow = Make(width, height, $"RimLumen.Glow.{frame}");
                     slot.DepthSnapshot = MakeDepthSnapshot(width, height, $"RimLumen.DepthSnapshot.{frame}");
+                    slot.SceneSnapshot = new RenderTexture(width, height, sceneFormat, name: $"RimLumen.SceneSnapshot.{frame}");
+                    slot.SceneSnapshot.Create();
                     slot.Down = new RenderTexture[sizes.Length];
                     slot.Up = new RenderTexture[Math.Max(0, sizes.Length - 1)];
                     for (int level = 0; level < sizes.Length; level++)
@@ -71,16 +80,30 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         Slot result = Slots[index];
         if (result.Framebuffer.IsNull() || !result.SceneDepth.Equals(scene.DepthView))
         {
-            if (!result.Framebuffer.IsNull()) device.DestroyFramebuffer(result.Framebuffer, device.VkAllocator);
+            DestroyFramebuffers(result);
             result.SceneDepth = scene.DepthView;
-            VkImageView* views = stackalloc VkImageView[2] { result.Color.ColorView, scene.DepthView };
-            result.Framebuffer = device.CreateFramebuffer(new VkFramebufferCreateInfo
-            {
-                RenderPass = RenderPass, AttachmentCount = 2, Attachments = views,
-                Width = width, Height = height, Layers = 1
-            }, device.VkAllocator);
+            result.Framebuffer = CreateFramebuffer(result.Color, scene.DepthView);
+            result.GlowFramebuffer = CreateFramebuffer(result.Glow, scene.DepthView);
         }
         return result;
+    }
+
+    private unsafe VkFramebuffer CreateFramebuffer(RenderTexture color, VkImageView sceneDepth)
+    {
+        VkImageView* views = stackalloc VkImageView[2] { color.ColorView, sceneDepth };
+        return device.CreateFramebuffer(new VkFramebufferCreateInfo
+        {
+            RenderPass = RenderPass, AttachmentCount = 2, Attachments = views,
+            Width = width, Height = height, Layers = 1
+        }, device.VkAllocator);
+    }
+
+    private void DestroyFramebuffers(Slot slot)
+    {
+        if (!slot.Framebuffer.IsNull()) device.DestroyFramebuffer(slot.Framebuffer, device.VkAllocator);
+        if (!slot.GlowFramebuffer.IsNull()) device.DestroyFramebuffer(slot.GlowFramebuffer, device.VkAllocator);
+        slot.Framebuffer = default;
+        slot.GlowFramebuffer = default;
     }
 
     private static RenderTexture Make(int width, int height, string name)
@@ -171,9 +194,11 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         foreach (Slot? slot in Slots)
         {
             if (slot is null) continue;
-            if (!slot.Framebuffer.IsNull()) device.DestroyFramebuffer(slot.Framebuffer, device.VkAllocator);
+            DestroyFramebuffers(slot);
             slot.Color?.Dispose();
+            slot.Glow?.Dispose();
             slot.DepthSnapshot?.Dispose();
+            slot.SceneSnapshot?.Dispose();
             foreach (RenderTexture? texture in slot.Down) texture?.Dispose();
             foreach (RenderTexture? texture in slot.Up) texture?.Dispose();
         }

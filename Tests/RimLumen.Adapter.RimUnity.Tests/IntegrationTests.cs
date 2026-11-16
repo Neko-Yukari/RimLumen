@@ -211,7 +211,6 @@ internal static class IntegrationTests
         var adapterRefs = typeof(RimUnityAssetProvider).Assembly.GetReferencedAssemblies();
         Check.True(adapterRefs.Any(reference => reference.Name!.Contains("RimUnity", StringComparison.OrdinalIgnoreCase)),
             "Adapter must reference RimUnity so the Core proof is not vacuous");
-        Check.True(adapterRefs.All(reference => reference.Name != "0Harmony"), "Zero Harmony");
     }
 
     private sealed class RecordingInner(ILumenVfxService inner) : ILumenVfxService

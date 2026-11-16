@@ -11,16 +11,13 @@ using UnityStubs.Rendering;
 using Verse;
 using Waylith;
 using Waylith.Rendering;
-using Waylith.Rendering.PostFx;
 
 namespace RimLumen.Core.Rendering;
 
 internal sealed class RimLumenPipeline : IDisposable
 {
     internal readonly EngineApplication App;
-    internal readonly CompositePass SceneComposite;
     internal readonly RimLumenPreBackbufferFeature Pre;
-    internal readonly RimLumenCompositeFeature Composite;
     internal readonly HdrTargets Targets;
     // Mirrors the current submission slot's R32_SFLOAT depth snapshot so particle materials can sample it.
     internal readonly BorrowedRenderTexture DepthProxy = new();
@@ -30,23 +27,25 @@ internal sealed class RimLumenPipeline : IDisposable
     internal PipelineFrame? Captured;
     internal L1ParticleBatchRenderer L1Renderer { get; private set; } = null!;
     private ulong captureIndex;
+    private float gameSeconds;
+    private float gameDeltaSeconds;
+    private float realDeltaSeconds;
     private CameraView view;
     private Vector4 depthParams;
     private int mapIndex = -1;
     private ILumenFrameContributor[] contributors = Array.Empty<ILumenFrameContributor>();
     private ILumenFrameContributor[] activeContributors = Array.Empty<ILumenFrameContributor>();
     private readonly List<ILumenFrameContributor> activeContributorBuffer = new();
-    private readonly List<string> featureNames = new();
+    internal readonly RimLumenMapChain MapChain;
     private bool disposed;
 
     internal RimLumenPipeline(EngineApplication app)
     {
         App = app;
-        SceneComposite = app.FrameRenderer.Features.SelectMany(feature => feature.Passes).OfType<CompositePass>().Single();
         Targets = new HdrTargets(app);
         ShaderPack = new ShaderPackRuntime(app, RimLumenRenderHost.ActiveShaderPack);
+        MapChain = new RimLumenMapChain(this);
         Pre = new RimLumenPreBackbufferFeature(this);
-        Composite = new RimLumenCompositeFeature(this);
         app.BeforeGraphicsShutdown += Shutdown;
         app.OnShutdown += Quiesce;
     }
@@ -71,16 +70,14 @@ internal sealed class RimLumenPipeline : IDisposable
         LumenSceneBootstrap.Simulator.HdrRendererAttached = true;
         string[] names = App.FrameRenderer.Features.Select(feature => feature.GetType().Name).ToArray();
         int index = FeatureOrderGuard.ComputePreBackbufferInsertIndex(names);
-        if (index < 0) throw new InvalidOperationException("Map/PostFx feature order is unavailable.");
+        if (index < 0) throw new InvalidOperationException("MapRenderFeature is unavailable.");
         App.FrameRenderer.InsertFeature(index, Pre);
-        GuardCompositeOrder();
     }
 
     internal void Detach()
     {
         App.WaitForRenderThreadIdle();
         App.FrameRenderer.RemoveFeature(Pre);
-        App.FrameRenderer.RemoveFeature(Composite);
     }
 
     // Ensures: any thread. Removal is queued for the main thread: the render thread must not edit the feature list, and Detach()
@@ -88,7 +85,6 @@ internal sealed class RimLumenPipeline : IDisposable
     internal void DetachAfterFailSafe() => App.FrameRenderer.RenderToMainThread.Enqueue(() =>
     {
         App.FrameRenderer.RemoveFeature(Pre);
-        App.FrameRenderer.RemoveFeature(Composite);
         // The render thread may already be faulted and would never answer WaitForRenderThreadIdle; the CPU
         // light-field state must still be dropped, so release without waiting for it.
         try { MapLightFieldCollector.Release(App, waitIdle: false); }
@@ -104,27 +100,10 @@ internal sealed class RimLumenPipeline : IDisposable
         App.FrameRenderer.RenderToMainThread.Enqueue(() => Log.Error(message));
     }
 
-    internal void GuardCompositeOrder()
-    {
-        IReadOnlyList<IRenderFeature> features = App.FrameRenderer.Features;
-        featureNames.Clear();
-        int selfIndex = -1;
-        for (int i = 0; i < features.Count; i++)
-        {
-            IRenderFeature feature = features[i];
-            featureNames.Add(feature.GetType().Name);
-            if (selfIndex < 0 && EqualityComparer<IRenderFeature>.Default.Equals(feature, Composite)) selfIndex = i;
-        }
-        int index = FeatureOrderGuard.ComputeCompositeReinsertIndex(featureNames, selfIndex);
-        if (index < 0) return;
-        App.FrameRenderer.RemoveFeature(Composite);
-        App.FrameRenderer.InsertFeature(index, Composite);
-    }
-
     internal void BeginCapture(in FrameTiming timing)
     {
         // FrameRenderer.BeginMainThreadFrame:220-230 runs all early hooks before CaptureFrame:186-192.
-        // This is before ComputeRenderFeature drains Enqueue, even though our pass is after Map.
+        // This is before ComputeRenderFeature drains Enqueue.
         captureIndex = (ulong)timing.FrameNumber;
         mapIndex = -1;
         contributors = Array.Empty<ILumenFrameContributor>();
@@ -135,11 +114,14 @@ internal sealed class RimLumenPipeline : IDisposable
             return;
         }
         MapLightFieldCollector.BeginCapture(App, Find.CurrentMap);
-        // Gameplay effects follow the game clock: dt = 0 while paused (frozen in mid-air, still rendered every frame),
-        // scaled by TickRateMultiplier (1x/2x/3x).
+        // TickManagerUpdate counts completed ticks; its time budget may run fewer than the requested speed.
+        TickManager tickManager = Current.Game.tickManager;
         float unscaledDt = MathF.Max(0f, timing.DeltaTime);
-        TickManager? tickManager = Current.Game.tickManager;
-        float simDt = tickManager != null && tickManager.Paused ? 0f : unscaledDt * (tickManager?.TickRateMultiplier ?? 1f);
+        // Root_Play skips Game.UpdatePlay while waiting; TicksThisFrame then still belongs to the previous update.
+        float simDt = LongEventHandler.ShouldWaitForEvent ? 0f : tickManager.TicksThisFrame / 60f;
+        gameSeconds = tickManager.TicksGame / 60f;
+        gameDeltaSeconds = simDt;
+        realDeltaSeconds = unscaledDt;
         view = CameraViewFactory.GetView(camera);
         depthParams = new Vector4(camera.nearClipPlane, camera.farClipPlane, camera.orthographic ? 1f : 0f, 1f);
         activeContributorBuffer.Clear();
@@ -179,24 +161,48 @@ internal sealed class RimLumenPipeline : IDisposable
 
     internal PipelineFrame? Capture(in FrameTiming timing)
     {
-        GuardCompositeOrder();
         Captured = null;
         if (Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || Current.CameraDriver?.MyCamera == null)
             return null;
         MeshDrawSubmissionSnapshot snapshot = MeshDrawSubmission.CaptureFlushedSnapshot(App.GraphicsDevice!);
-        var draws = MeshDrawFrame.RentList();
+        // Both frames own their rented draws from here on; only a published PipelineFrame takes them over.
+        var mesh = new MeshDrawFrame(timing.FrameNumber, view, MeshDrawFrame.RentList(), MeshDrawFrame.RentList(), Vector3.UnitY);
+        // The vanilla scene keeps drawing the original glow; these copies only feed bloom and the `glow` pack input.
+        var glowMesh = new MeshDrawFrame(timing.FrameNumber, view, MeshDrawFrame.RentList(), MeshDrawFrame.RentList(), Vector3.UnitY);
+        try
+        {
+            Captured = CaptureFrame(in timing, snapshot, mesh, glowMesh);
+            return Captured;
+        }
+        catch (Exception)
+        {
+            mesh.Dispose();
+            glowMesh.Dispose();
+            throw;
+        }
+    }
+
+    // Ensures: a PipelineFrame owning mesh and glowMesh, or null after disposing both when the frame is skipped.
+    private PipelineFrame? CaptureFrame(in FrameTiming timing, MeshDrawSubmissionSnapshot snapshot, MeshDrawFrame mesh,
+        MeshDrawFrame glowMesh)
+    {
+        List<FinalDrawItem> draws = mesh.Draws;
+        List<FinalDrawItem> glowDraws = glowMesh.Draws;
         DrawItemFactory maker = MeshDrawSubmission.DrawItemMaker ?? throw new InvalidOperationException("DrawItemFactory is unavailable.");
         for (int i = 0; i < snapshot.CommandCount; i++)
         {
             MeshDrawCommand command = snapshot.Commands[i];
-            if (command.PassId != RimLumenRenderHost.LumenRenderPassId)
+            bool vanillaGlow = command.PassId != RimLumenRenderHost.LumenRenderPassId;
+            if (vanillaGlow)
             {
-                if (!RimLumenRenderHost.EnableVanillaAdditiveBloom) continue;
+                if (!RimLumenRenderHost.EnableVanillaAdditiveBloom ||
+                    (command.PassId != 0 && command.PassId != RimWorldWaylith.Rendering.RenderPassIds.MapMain)) continue;
                 try
                 {
                     FinalDrawItem? candidate = maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i);
                     if (candidate == null) continue;
-                    bool keep = AdditiveEmissiveFilter.IsAdditiveEmissive(candidate.Binding.PipelineState, candidate.Binding.Shader.Key);
+                    bool keep = candidate.RenderQueue < int.MaxValue &&
+                        AdditiveEmissiveFilter.IsAdditiveEmissive(candidate.Binding.PipelineState, candidate.Binding.Shader.Key);
                     if (keep)
                     {
                         ShaderDef? def = DefDatabase<ShaderDef>.GetNamedSilentFail(candidate.Binding.Shader.Key);
@@ -210,21 +216,29 @@ internal sealed class RimLumenPipeline : IDisposable
                     // Native RimLumen effects keep rendering; only the third-party/vanilla glow enhancement is dropped.
                     Log.Error($"[RimLumen] Vanilla additive compatibility fail-safe tripped; disabling vanilla glow enhancement: {ex}");
                     RimLumenRenderHost.EnableVanillaAdditiveBloom = false;
+                    // Drop the copies this frame already took too, so the tripping frame shows no enhancement either.
+                    foreach (FinalDrawItem copy in glowDraws) FinalDrawItem.Return(copy);
+                    glowDraws.Clear();
                     continue;
                 }
-                // Preserve the original MapMain submission; only this fresh HDR copy changes pass.
+                // Preserve the original MapMain submission; only this fresh glow copy changes pass.
                 command = new MeshDrawCommand(command.Mesh, command.Material, command.PropertyRange, command.Matrix,
                     command.SubmeshIndex, RimLumenRenderHost.LumenRenderPassId, command.Instancing,
                     command.RenderQueueOverride, command.Layer, command.Storage);
             }
             FinalDrawItem? draw = maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i);
             if (draw == null) continue;
+            if (draw.RenderQueue == int.MaxValue)
+            {
+                FinalDrawItem.Return(draw);
+                continue;
+            }
             if (draw.Binding.PipelineState.Depth.Write)
             {
                 FinalDrawItem.Return(draw);
                 throw new InvalidOperationException("RimLumen routed materials must not write shared scene depth.");
             }
-            draws.Add(draw);
+            (vanillaGlow ? glowDraws : draws).Add(draw);
         }
         int unsupported = 0;
         foreach (PersistentDrawCallSource source in snapshot.PersistentSources)
@@ -242,21 +256,31 @@ internal sealed class RimLumenPipeline : IDisposable
         foreach (ILumenFrameContributor contributor in contributors)
             if (contributor is ILumenHdrDrawAppender appender)
                 appender.AppendHdrDraws(captureIndex, draws, maker, snapshot.PropertyArena, draws.Count, DepthProxy);
-        var mesh = new MeshDrawFrame(timing.FrameNumber, view, draws, MeshDrawFrame.RentList(), Vector3.UnitY);
 
         ShaderPackSpec activePack = RimLumenRenderHost.ActiveShaderPack;
         bool runOnEmptyFrames = activePack.RunOnEmptyFrames;
-        if (HdrFrameGate.Decide(contributors.Length > 0, draws.Count, runOnEmptyFrames) == HdrFrameMode.Skip)
+        GlowGroupMask glowGroups = GlowGroupMask.None;
+        int earlyGlowCount = 0;
+        foreach (FinalDrawItem glow in glowDraws)
+        {
+            GlowGroup group = GlowGroups.Classify(glow.RenderQueue);
+            glowGroups |= GlowGroups.Mask(group);
+            if (group == GlowGroup.Early) earlyGlowCount++;
+        }
+        int routedDrawCount = draws.Count + earlyGlowCount;
+        bool earlyWork = HdrFrameGate.Decide(contributors.Length > 0, routedDrawCount, runOnEmptyFrames) != HdrFrameMode.Skip;
+        bool lateWork = activePack.BloomMipLevels > 0 && (glowGroups & ~GlowGroupMask.Early) != 0;
+        if (!earlyWork && !lateWork)
         {
             mesh.Dispose();
+            glowMesh.Dispose();
             RimLumenRenderHost.SetFrameCapabilities(false, false);
             return null;
         }
         bool hasDirectHdr = HasDirectHdrContributor(contributors);
-        bool hasHdrDraws = HdrFrameGate.ShouldRenderHdr(draws.Count, hasDirectHdr);
-        bool renderHdr = HdrFrameGate.ShouldRenderHdr(draws.Count, hasDirectHdr, runOnEmptyFrames);
+        bool hasHdrDraws = HdrFrameGate.ShouldRenderHdr(routedDrawCount, hasDirectHdr);
+        bool renderHdr = HdrFrameGate.ShouldRenderHdr(routedDrawCount, hasDirectHdr, runOnEmptyFrames);
         if (!renderHdr) RimLumenRenderHost.SetFrameCapabilities(false, false);
-
         Map? map = Find.CurrentMap;
         int mapSizeX = map?.Size.x ?? 0;
         int mapSizeZ = map?.Size.z ?? 0;
@@ -274,7 +298,10 @@ internal sealed class RimLumenPipeline : IDisposable
             (int)extent.Height,
             mapSizeX,
             mapSizeZ,
+            gameSeconds,
             (float)timing.ElapsedTime,
+            gameDeltaSeconds,
+            realDeltaSeconds,
             skyGlow,
             zoomRootSize,
             hasHdrDraws,
@@ -283,9 +310,8 @@ internal sealed class RimLumenPipeline : IDisposable
             isPaused,
             in rtParams);
 
-        Captured = new PipelineFrame(captureIndex, mesh, contributors, depthParams, mapIndex, renderHdr,
-            hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms);
-        return Captured;
+        return new PipelineFrame(captureIndex, mesh, glowMesh, contributors, depthParams, mapIndex, renderHdr,
+            hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms, glowGroups, earlyWork);
     }
 
     internal static bool HasDirectHdrContributor(IEnumerable<ILumenFrameContributor> frameContributors)
@@ -319,8 +345,7 @@ internal sealed class RimLumenPipeline : IDisposable
         // Destroy framebuffers/textures before the render passes and their pipelines.
         Release("HdrTargets", Targets.Dispose);
         Release("ShaderPackRuntime", () => ShaderPack.Dispose());
-        Release("PreBackbuffer", Pre.Dispose);
-        Release("Composite", Composite.Dispose);
+        Release("MapChain", MapChain.Dispose);
         Log.Message("[RimLumen] Vulkan resource shutdown completed.");
     }
 
@@ -334,6 +359,7 @@ internal sealed class RimLumenPipeline : IDisposable
 internal sealed class PipelineFrame(
     ulong index,
     MeshDrawFrame mesh,
+    MeshDrawFrame glowMesh,
     ILumenFrameContributor[] contributors,
     Vector4 depthParams,
     int mapIndex,
@@ -341,7 +367,9 @@ internal sealed class PipelineFrame(
     bool hasHdrDraws,
     bool hasSceneDepth,
     int bloomMipLevels,
-    ShaderPackUniforms uniforms) : IDisposable
+    ShaderPackUniforms uniforms,
+    GlowGroupMask glowGroups,
+    bool earlyWork) : IDisposable
 {
     internal bool RenderHdr { get; } = renderHdr;
     internal bool HasHdrDraws { get; } = hasHdrDraws;
@@ -351,7 +379,16 @@ internal sealed class PipelineFrame(
     internal int MapIndex { get; } = mapIndex;
     internal ulong Index { get; } = index;
     internal MeshDrawFrame Mesh { get; } = mesh;
+    internal MeshDrawFrame GlowMesh { get; } = glowMesh;
+    internal bool HasGlowDraws => (GlowGroupsCaptured & GlowGroupMask.Early) != 0;
+    internal GlowGroupMask GlowGroupsCaptured { get; } = glowGroups;
+    internal bool ShouldSplit(GlowGroup group) => GlowGroups.ShouldSplit(group, GlowGroupsCaptured, earlyWork, BloomMipLevels);
     internal ILumenFrameContributor[] Contributors { get; } = contributors;
     internal Vector4 DepthParams { get; } = depthParams;
-    public void Dispose() => Mesh.Dispose();
+
+    public void Dispose()
+    {
+        Mesh.Dispose();
+        GlowMesh.Dispose();
+    }
 }

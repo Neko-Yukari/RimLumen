@@ -3,12 +3,20 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 {
     mat4 InvViewProjection;
     vec4 ScreenAndMapSize;
-    vec4 EnvParams;
+    float GameSeconds;
+    float RealSeconds;
+    float SkyGlow;
+    float ZoomRootSize;
+    float HasHdrDraws;
+    float HasSceneDepth;
+    float HasMapLightField;
+    float IsPaused;
+    float DepthValid;
+    float GameDeltaSeconds;
+    float RealDeltaSeconds;
+    float Padding;
     vec4 BloomParams;
-    vec4 PackParam0;
-    vec4 PackParam1;
-    vec4 PackParam2;
-    vec4 PackParam3;
+    vec4 PackParams[4];
 } ubo;
 
 layout(set = 0, binding = 0) uniform sampler2D sceneImage;
@@ -67,28 +75,29 @@ void main()
 
     vec2 fieldUv = world.xz / max(ubo.ScreenAndMapSize.zw, vec2(1.0));
     bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fieldUv.y <= 1.0;
-    uint flags = uint(ubo.EnvParams.w + 0.5);
-    bool hasMapField = (flags & 4u) != 0u && insideMap;
+    bool hasMapField = ubo.HasMapLightField > 0.5 && insideMap;
 
     float enclosure = 0.0;
-    float groundGlow = 0.0;
+    float artificialGroundGlow = 0.0;
     float fogOfWar = 0.0;
     if (hasMapField)
     {
         vec4 field = texture(mapLightField, fieldUv);
-        groundGlow = field.g;
-        enclosure = max(field.r * 0.55, field.b);
+        artificialGroundGlow = field.g;
+        // R is roof coverage; B only says an outdoor-temperature Room exists. A roof without that
+        // fact (including room-less walls/rock) fully suppresses this pack's outdoor fog and darkening.
+        enclosure = field.r * mix(1.0, 0.55, field.b);
         fogOfWar = field.a;
     }
 
     float outdoorFactor = 1.0 - smoothstep(0.25, 0.90, enclosure);
-    float litProtect = smoothstep(0.04, 0.45, groundGlow);
-    float skyGlow = clamp(ubo.EnvParams.y, 0.0, 1.0);
+    float litProtect = smoothstep(0.04, 0.45, artificialGroundGlow);
+    float skyGlow = clamp(ubo.SkyGlow, 0.0, 1.0);
     float nightFactor = smoothstep(0.88, 0.22, skyGlow);
 
-    float darkness = nightFactor * outdoorFactor * (1.0 - litProtect) * (1.0 - fogOfWar) * max(0.0, ubo.PackParam0.x);
+    float darkness = nightFactor * outdoorFactor * (1.0 - litProtect) * (1.0 - fogOfWar) * max(0.0, ubo.PackParams[0][0]);
 
-    float drift = ubo.EnvParams.x * max(0.0, ubo.PackParam0.z);
+    float drift = ubo.GameSeconds * max(0.0, ubo.PackParams[0][2]);
     vec2 wind = vec2(drift * 0.22, drift * 0.09);
     float n1 = fbm(world.xz * 0.085 - wind);
     float n2 = fbm(world.xz * 0.042 + wind * 0.6 + vec2(4.2, 9.1));
@@ -96,11 +105,11 @@ void main()
 
     // Subtle attenuation on 3D walls when scene depth is present (IsoRim).
     float depth = texture(depthImage, uv).r;
-    float is3DGeom = step(0.0001, min(depth, 1.0 - depth));
+    float is3DGeom = ubo.DepthValid * step(0.0001, min(depth, 1.0 - depth));
     float mistHeightMask = mix(1.0, 0.55, is3DGeom);
 
-    float mist = wisp * outdoorFactor * (1.0 - fogOfWar) * (0.35 + 0.65 * nightFactor) * mistHeightMask * max(0.0, ubo.PackParam0.y);
-    float litMist = clamp(groundGlow * 1.4 + dot(texture(bloomImage, uv).rgb, vec3(0.333)), 0.0, 1.0);
+    float mist = wisp * outdoorFactor * (1.0 - fogOfWar) * (0.35 + 0.65 * nightFactor) * mistHeightMask * max(0.0, ubo.PackParams[0][1]);
+    float litMist = clamp(artificialGroundGlow * 1.4 + dot(texture(bloomImage, uv).rgb, vec3(0.333)), 0.0, 1.0);
 
     outColor = vec4(mist, litMist, darkness, 1.0);
 }

@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using System.Linq;
 using System.Numerics;
 using System.Reflection;
@@ -20,16 +22,82 @@ public static class ShaderPackTests
     [LumenFact]
     public static void ShaderPackUniformsMatchesStd140Layout()
     {
-        Require(Marshal.SizeOf<ShaderPackUniforms>() == 176,
-            $"Expected 176 bytes, got {Marshal.SizeOf<ShaderPackUniforms>()}.");
+        Require(Marshal.SizeOf<ShaderPackUniforms>() == 208,
+            $"Expected 208 bytes, got {Marshal.SizeOf<ShaderPackUniforms>()}.");
         Equal(0, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.InvViewProjection)).ToInt32());
         Equal(64, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.ScreenAndMapSize)).ToInt32());
-        Equal(80, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.EnvParams)).ToInt32());
-        Equal(96, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.BloomParams)).ToInt32());
-        Equal(112, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam0)).ToInt32());
-        Equal(128, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam1)).ToInt32());
-        Equal(144, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam2)).ToInt32());
-        Equal(160, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam3)).ToInt32());
+        Equal(80, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.GameSeconds)).ToInt32());
+        Equal(84, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.RealSeconds)).ToInt32());
+        Equal(88, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.SkyGlow)).ToInt32());
+        Equal(92, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.ZoomRootSize)).ToInt32());
+        Equal(96, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.HasHdrDraws)).ToInt32());
+        Equal(100, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.HasSceneDepth)).ToInt32());
+        Equal(104, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.HasMapLightField)).ToInt32());
+        Equal(108, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.IsPaused)).ToInt32());
+        Equal(112, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.DepthValid)).ToInt32());
+        Equal(116, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.GameDeltaSeconds)).ToInt32());
+        Equal(120, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.RealDeltaSeconds)).ToInt32());
+        Equal(124, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.Padding)).ToInt32());
+        Equal(128, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.BloomParams)).ToInt32());
+        Equal(144, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam0)).ToInt32());
+        Equal(160, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam1)).ToInt32());
+        Equal(176, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam2)).ToInt32());
+        Equal(192, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam3)).ToInt32());
+        Equal(16, Marshal.SizeOf<Vector4>());
+        Equal(64, Marshal.SizeOf<ShaderPackUniforms>() - 144);
+        WithSlangLoaded(() =>
+        {
+            CheckCompiledPackParams("Atmospheric/FogPass.frag.glsl");
+            CheckCompiledPackParams("Atmospheric/Composite.frag.glsl");
+            CheckCompiledPackParams("Cinematic/Composite.frag.glsl");
+            CheckCompiledPackParams("Crisp/Composite.frag.glsl");
+            CheckCompiledPackParams("Vibrant/Composite.frag.glsl");
+        });
+    }
+
+    private static void CheckCompiledPackParams(string relativePath)
+    {
+        string path = Path.Combine(RepoRoot(), "1.7", "ShaderPacks", relativePath);
+        string source = ShaderSourceLoader.ReadShaderSource(path);
+        Require(Regex.IsMatch(source, @"\bvec4\s+PackParams\s*\[\s*4\s*\]\s*;"), $"{relativePath}: missing vec4 PackParams[4].");
+        Require(!Regex.IsMatch(source, @"\bPackParam[0-3]\b"), $"{relativePath}: old GLSL vector alias remains.");
+        byte[] spirv = RuntimeShaderCompiler.Compile(source, path, "main", RuntimeShaderLanguage.Glsl, RuntimeShaderStage.Fragment);
+        uint[] words = MemoryMarshal.Cast<byte, uint>(spirv).ToArray();
+        var instructions = new List<uint[]>();
+        for (int offset = 5; offset < words.Length;)
+        {
+            int count = (int)(words[offset] >> 16);
+            uint[] instruction = words.AsSpan(offset, count).ToArray();
+            instruction[0] &= 0xffff;
+            instructions.Add(instruction);
+            offset += count;
+        }
+        // Follow set=0/binding=5 through OpVariable/OpTypePointer to its actual compiled block and last member.
+        uint uniform = instructions.Single(x => x[0] == 71 && x[2] == 33 && x[3] == 5 &&
+            instructions.Any(set => set[0] == 71 && set[1] == x[1] && set[2] == 34 && set[3] == 0))[1];
+        uint pointer = instructions.Single(x => x[0] == 59 && x[2] == uniform)[1];
+        uint block = instructions.Single(x => x[0] == 32 && x[1] == pointer)[3];
+        uint[] members = instructions.Single(x => x[0] == 30 && x[1] == block);
+        Equal(18, members.Length); // result id + 16 members + opcode
+        // Slang lowers a GLSL array member to a one-member struct; the array itself starts at wrapper offset 0.
+        uint wrapper = members[17];
+        uint[] wrapperType = instructions.Single(x => x[0] == 30 && x[1] == wrapper);
+        Equal(3, wrapperType.Length);
+        Equal(0u, instructions.Single(x => x[0] == 72 && x[1] == wrapper && x[2] == 0 && x[3] == 35)[4]);
+        uint array = wrapperType[2];
+        uint[] arrayType = instructions.Single(x => x[0] == 28 && x[1] == array);
+        uint length = instructions.Single(x => x[0] == 43 && x[2] == arrayType[3])[3];
+        uint stride = instructions.Single(x => x[0] == 71 && x[1] == array && x[2] == 6)[3];
+        uint baseOffset = instructions.Single(x => x[0] == 72 && x[1] == block && x[2] == 15 && x[3] == 35)[4];
+        uint[] vector = instructions.Single(x => x[0] == 23 && x[1] == arrayType[2]);
+        Equal(4u, vector[3]);
+        Equal(32u, instructions.Single(x => x[0] == 22 && x[1] == vector[2])[2]);
+        Equal(144u, baseOffset);
+        Equal(16u, stride);
+        Equal(4u, length);
+        Equal(64u, stride * length);
+        Equal(208u, baseOffset + stride * length);
+        Console.WriteLine($"[PACK ABI] {relativePath}: base={baseOffset}, stride={stride}, count={length}, bytes={stride * length}, UBO={baseOffset + stride * length}");
     }
 
     [LumenFact]
@@ -46,6 +114,16 @@ public static class ShaderPackTests
         }
         Equal(new Vector4(1.25f, 1.75f, 2.25f, 2.75f), p.PackParam0);
         Equal(new Vector4(7.25f, 7.75f, 8.25f, 8.75f), p.PackParam3);
+        ShaderPackUniformBlockSnapshot snapshot = p.CaptureSnapshot();
+        ShaderPackUniforms uniforms = ShaderPackUniforms.Build(Matrix4x4.Identity, 1, 1, 1, 1,
+            0f, 0f, 0f, 0f, 0f, 0f, false, false, false, false, in snapshot);
+        ReadOnlySpan<float> indexed = MemoryMarshal.Cast<byte, float>(
+            MemoryMarshal.AsBytes(new[] { uniforms }.AsSpan()).Slice(144, 64));
+        Require(indexed.SequenceEqual(new float[]
+        {
+            1.25f, 1.75f, 2.25f, 2.75f, 3.25f, 3.75f, 4.25f, 4.75f,
+            5.25f, 5.75f, 6.25f, 6.75f, 7.25f, 7.75f, 8.25f, 8.75f
+        }), "packParamN must occupy PackParams[N/4][N%4] in the uploaded bytes.");
         Throws<ArgumentOutOfRangeException>(() => p.GetPackParam(-1));
         Throws<ArgumentOutOfRangeException>(() => p.GetPackParam(16));
         Throws<ArgumentOutOfRangeException>(() => p.SetPackParam(-1, 0f));
@@ -94,6 +172,7 @@ public static class ShaderPackTests
                         new ShaderPackInputBinding(1, "bloom"),
                         new ShaderPackInputBinding(2, "scene"),
                         new ShaderPackInputBinding(3, "blur"),
+                        new ShaderPackInputBinding(4, "GLOW"),
                     ],
                     ShaderPackBlendMode.PremultipliedAlpha),
             ],
@@ -110,6 +189,7 @@ public static class ShaderPackTests
         Equal(new ShaderPackGraphValidator.PlannedInput(0, ShaderPackGraphValidator.InputKind.Hdr), plan.Passes[2].Inputs[0]);
         Equal(new ShaderPackGraphValidator.PlannedInput(1, ShaderPackGraphValidator.InputKind.Bloom), plan.Passes[2].Inputs[1]);
         Equal(new ShaderPackGraphValidator.PlannedInput(3, ShaderPackGraphValidator.InputKind.Target, 1), plan.Passes[2].Inputs[3]);
+        Equal(new ShaderPackGraphValidator.PlannedInput(4, ShaderPackGraphValidator.InputKind.Glow), plan.Passes[2].Inputs[4]);
     }
 
     [LumenFact]
@@ -177,7 +257,7 @@ public static class ShaderPackTests
         Throws<ArgumentException>(() => ShaderPackGraphValidator.Validate(new ShaderPackSpec { BloomMipLevels = 8 }));
 
         // Reserved target names and prefix
-        foreach (string badName in new[] { "hdr", "bloom", "scene", "depth", "mapLightField", "backbuffer", "prev:foo", "" })
+        foreach (string badName in new[] { "hdr", "glow", "bloom", "scene", "depth", "mapLightField", "backbuffer", "prev:foo", "" })
         {
             Throws<ArgumentException>(() => ShaderPackGraphValidator.Validate(new ShaderPackSpec
             {
@@ -283,34 +363,37 @@ public static class ShaderPackTests
     }
 
     [LumenFact]
-    public static void MapLightFieldEncoderMatchesVanillaGlowAndEnclosure()
+    public static void MapLightFieldEncoderMatchesRoofArtificialLightOutdoorRoomAndFog()
     {
         Span<byte> rgba = stackalloc byte[4];
 
-        // Sunlit cell (a == 1): GroundGlow = 255, unroofed => R=0, B=0, unfogged => A=0
-        MapLightFieldEncoder.EncodeCell(roofed: false, 10, 20, 30, 1, usesOutdoorTemp: true, fogged: false, rgba);
+        // Unroofed cell with an outdoor-temperature Room and independent artificial light.
+        MapLightFieldEncoder.EncodeCell(roofed: false, 10, 20, 30, hasOutdoorTemperatureRoom: true, fogged: false, rgba);
         Equal((byte)0, rgba[0]);
-        Equal((byte)255, rgba[1]);
-        Equal((byte)0, rgba[2]);
-        Equal((byte)0, rgba[3]);
-
-        // Roofed outdoor (porch) with dark glow, fogged
-        MapLightFieldEncoder.EncodeCell(roofed: true, 0, 0, 0, 0, usesOutdoorTemp: true, fogged: true, rgba);
-        Equal((byte)255, rgba[0]);
-        Equal((byte)0, rgba[1]);
-        Equal((byte)128, rgba[2]);
-        Equal((byte)255, rgba[3]);
-
-        // Roofed indoor with max torch glow (capped at 0.5 * 255 = 128)
-        MapLightFieldEncoder.EncodeCell(roofed: true, 255, 128, 0, 0, usesOutdoorTemp: false, fogged: false, rgba);
-        Equal((byte)255, rgba[0]);
-        Equal((byte)128, rgba[1]);
+        Equal((byte)108, rgba[1]);
         Equal((byte)255, rgba[2]);
         Equal((byte)0, rgba[3]);
 
+        // Roofed outdoor (porch) with dark glow, fogged
+        MapLightFieldEncoder.EncodeCell(roofed: true, 0, 0, 0, hasOutdoorTemperatureRoom: true, fogged: true, rgba);
+        Equal((byte)255, rgba[0]);
+        Equal((byte)0, rgba[1]);
+        Equal((byte)255, rgba[2]);
+        Equal((byte)255, rgba[3]);
+
+        // Indoor-temperature Room or no Room: B=false, independent of roof and artificial-light cap.
+        MapLightFieldEncoder.EncodeCell(roofed: true, 255, 128, 0, hasOutdoorTemperatureRoom: false, fogged: false, rgba);
+        Equal((byte)255, rgba[0]);
+        Equal((byte)128, rgba[1]);
+        Equal((byte)0, rgba[2]);
+        Equal((byte)0, rgba[3]);
+
         // Mid torch glow: r = 20 => 20/255 * 3.6 = 0.28235 -> round(0.28235 * 255) = 72
-        MapLightFieldEncoder.EncodeCell(roofed: false, 20, 0, 0, 0, usesOutdoorTemp: true, fogged: false, rgba);
+        MapLightFieldEncoder.EncodeCell(roofed: false, 20, 0, 0, hasOutdoorTemperatureRoom: false, fogged: false, rgba);
+        Equal((byte)0, rgba[0]);
         Equal((byte)72, rgba[1]);
+        Equal((byte)0, rgba[2]);
+        Equal((byte)0, rgba[3]);
     }
 
     [LumenFact]
@@ -332,32 +415,36 @@ public static class ShaderPackTests
         Matrix4x4 vp = Matrix4x4.CreateOrthographic(40f, 22.5f, 0.3f, 200f);
 
         ShaderPackUniforms u = ShaderPackUniforms.Build(
-            in vp, 1920, 1080, 250, 200, 12.5f, 0.75f, 24f,
+            in vp, 1920, 1080, 250, 200, 12.5f, 20f, 0.05f, 0.016f, 0.75f, 24f,
             hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: false, isPaused: false, in snapshot);
 
         Equal(1f / 1920f, u.ScreenAndMapSize.X);
         Equal(1f / 1080f, u.ScreenAndMapSize.Y);
         Equal(250f, u.ScreenAndMapSize.Z);
         Equal(200f, u.ScreenAndMapSize.W);
-        Equal(12.5f, u.EnvParams.X);
-        Equal(0.75f, u.EnvParams.Y);
-        Equal(24f, u.EnvParams.Z);
-        Equal(3f, u.EnvParams.W);
+        Equal(12.5f, u.GameSeconds);
+        Equal(0.75f, u.SkyGlow);
+        Equal(24f, u.ZoomRootSize);
+        Equal(1f, u.HasHdrDraws);
+        Equal(1f, u.DepthValid);
+        Equal(0f, u.HasMapLightField);
         Require(Matrix4x4.Invert(vp, out Matrix4x4 inv), "ViewProjection must be invertible.");
         Equal(inv, u.InvViewProjection);
         Equal(new Vector4(0.3f, 1.2f, 0.4f, 0.7f), u.BloomParams);
         Equal(new Vector4(0f, 0f, 9f, 0f), u.PackParam0);
         Equal(new Vector4(0f, 0f, 0f, -3f), u.PackParam3);
 
-        // All four flag bits; bit 3 is paused.
+        // Named float flags are independently available to shader consumers.
         ShaderPackUniforms all = ShaderPackUniforms.Build(
-            in vp, 800, 600, 1, 1, 0f, 1f, 24f,
+            in vp, 800, 600, 1, 1, 0f, 0f, 0f, 0f, 1f, 24f,
             hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: true, in snapshot);
-        Equal(15f, all.EnvParams.W);
+        Equal(1f, all.HasSceneDepth);
+        Equal(1f, all.HasMapLightField);
+        Equal(1f, all.IsPaused);
         ShaderPackUniforms none = ShaderPackUniforms.Build(
-            in vp, 0, 0, 0, 0, 0f, 1f, 24f,
+            in vp, 0, 0, 0, 0, 0f, 0f, 0f, 0f, 1f, 24f,
             hasHdrDraws: false, hasSceneDepth: false, hasMapLightField: false, isPaused: false, in snapshot);
-        Equal(0f, none.EnvParams.W);
+        Equal(0f, none.DepthValid);
         Equal(0f, none.ScreenAndMapSize.X);
     }
 
@@ -406,14 +493,14 @@ public static class ShaderPackTests
         var runtime = new ShaderPackRuntimeParams();
         runtime.BloomIntensity = 0.3f;
         runtime.SetPackParam(0, 0.375f);
-        ShaderPackUniforms uniforms = ShaderPackUniforms.Build(viewProjection, 1920, 1080, 250, 250, 7.5f, 0.8f, 24f,
+        ShaderPackUniforms uniforms = ShaderPackUniforms.Build(viewProjection, 1920, 1080, 250, 250, 7.5f, 10f, 0.05f, 0.016f, 0.8f, 24f,
             hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: false, runtime.CaptureSnapshot());
 
         Equal(1f / 1920f, uniforms.ScreenAndMapSize.X);
         Equal(250f, uniforms.ScreenAndMapSize.Z);
         Equal(0.3f, uniforms.BloomParams.X);
         Equal(0.375f, uniforms.PackParam0.X);
-        Equal(7.5f, uniforms.EnvParams.X);
+        Equal(7.5f, uniforms.GameSeconds);
 
         Vector3 ground = new(51.25f, 0f, 36.75f);
         Vector4 clip = SlangMultiply(viewProjection, new Vector4(ground, 1f));
@@ -466,6 +553,9 @@ public static class ShaderPackTests
         // Slang compilation tests (valid + broken GLSL)
         WithSlangLoaded(() =>
         {
+            string bloomAdd = Path.Combine(RepoRoot(), "1.7", "Shaders", "PostFx", "RimLumenBloomAdd.frag.glsl");
+            RuntimeShaderCompiler.Compile(File.ReadAllText(bloomAdd), bloomAdd, "main",
+                RuntimeShaderLanguage.Glsl, RuntimeShaderStage.Fragment, out _);
             string tempDir = Path.Combine(Path.GetTempPath(), "opencode", "rimlumen-shaderpack-tests-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
             try
@@ -483,12 +573,20 @@ public static class ShaderPackTests
                     {
                         mat4 InvViewProjection;
                         vec4 ScreenAndMapSize;
-                        vec4 EnvParams;
+                        float GameSeconds;
+                        float RealSeconds;
+                        float SkyGlow;
+                        float ZoomRootSize;
+                        float HasHdrDraws;
+                        float HasSceneDepth;
+                        float HasMapLightField;
+                        float IsPaused;
+                        float DepthValid;
+                        float GameDeltaSeconds;
+                        float RealDeltaSeconds;
+                        float Padding;
                         vec4 BloomParams;
-                        vec4 PackParam0;
-                        vec4 PackParam1;
-                        vec4 PackParam2;
-                        vec4 PackParam3;
+                        vec4 PackParams[4];
                     } ubo;
                     layout(push_constant) uniform Push { vec4 value; } pc;
                     layout(location = 0) out vec4 outColor;
@@ -498,7 +596,7 @@ public static class ShaderPackTests
                         vec3 lf = texture(uLightField, wp.xz / max(ubo.ScreenAndMapSize.zw, vec2(1.0))).rgb;
                         vec3 hdr = texture(uHdr, vUv).rgb + texture(uBloom, vUv).rgb * ubo.BloomParams.x;
                         vec3 scene = texture(uScene, vUv).rgb;
-                        outColor = vec4(scene + hdr + lf * 0.01 + pc.value.xxx * 0.0 + ubo.PackParam0.xyz * 0.0, 1.0);
+                        outColor = vec4(scene + hdr + lf * 0.01 + pc.value.xxx * 0.0 + ubo.PackParams[0].xyz * 0.0, 1.0);
                     }
                     """);
 

@@ -171,9 +171,13 @@ internal static class MapLightFieldCollector
                 int idx = rowOffset + x;
                 bool roofed = map.roofGrid.Roofed(idx);
                 Color32 glow = map.glowGrid.VisualGlowAt(idx);
-                bool usesOutdoorTemp = map.regionGrid?.GetValidRegionAt_NoRebuild(new IntVec3(x, 0, z))?.Room?.UsesOutdoorTemperature ?? true;
+                Room? room = map.regionGrid?.GetValidRegionAt_NoRebuild(new IntVec3(x, 0, z))?.Room;
+                // B means a Room exists AND UsesOutdoorTemperature (AC:90349-90358).
+                // No Room is false, not an indoor/outdoor classification; vanilla's temperature lookup returns
+                // false/21f without a Room (AC:92707-92714), rather than providing that classification.
+                bool hasOutdoorTemperatureRoom = room != null && room.UsesOutdoorTemperature;
                 bool fogged = map.fogGrid.IsFogged(idx);
-                MapLightFieldEncoder.EncodeCell(roofed, glow.r, glow.g, glow.b, glow.a, usesOutdoorTemp, fogged, cpuRgba.AsSpan(idx * 4, 4));
+                MapLightFieldEncoder.EncodeCell(roofed, glow.r, glow.g, glow.b, hasOutdoorTemperatureRoom, fogged, cpuRgba.AsSpan(idx * 4, 4));
             }
         }
     }
