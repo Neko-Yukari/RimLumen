@@ -723,14 +723,11 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float RealDeltaSeconds; // 120: host frame delta
     float Padding;          // 124
     vec4 BloomParams;       // 128: intensity, threshold, knee, scatter
-    vec4 PackParam0;        // 144: packParam0..3
-    vec4 PackParam1;        // 160: packParam4..7
-    vec4 PackParam2;        // 176: packParam8..11
-    vec4 PackParam3;        // 192: packParam12..15
+    vec4 PackParams[4];     // 144: 4 rows, 16-byte stride, 64 bytes total
 } ubo;
 ```
 
-- **Parameter packing note**: `options[].target` values `packParam0..3` map to `ubo.PackParam0.xyzw`, `packParam4..7` map to `ubo.PackParam1.xyzw`, and so on. Thus `"target": "packParam1"` is read from `ubo.PackParam0.y`, not `ubo.PackParam1.x`.
+- **Parameter mapping**: `options[].target` value `packParamN` (`N = 0..15`) maps to `ubo.PackParams[N / 4][N % 4]`; existing shaders must replace the old vector members with the `PackParams` array.
 - **Current ABI**: the old `EnvParams` bitmask is removed; external packs must adopt this 208-byte layout. `HasHdrDraws` (including early-group glow copies), `HasSceneDepth`, `HasMapLightField`, and `IsPaused` are separate 0/1 floats. `DepthValid=1` means a real depth snapshot at the boundary; 0 means the far-plane placeholder, not a per-pixel geometry test.
 - `GameSeconds` is game ticks / 60 and stops on pause; `RealSeconds` is host elapsed real seconds. Their Delta fields hold this frame's step. Cinematic Adapt and StreakExtract read `hdr + glow`; the composite core remains `hdr` only. Adapt uses a 0.2-game-second time constant: `1-exp(-GameDeltaSeconds/0.2)`.
 
@@ -860,10 +857,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float RealDeltaSeconds;
     float Padding;
     vec4 BloomParams;
-    vec4 PackParam0;
-    vec4 PackParam1;
-    vec4 PackParam2;
-    vec4 PackParam3;
+    vec4 PackParams[4];
 } ubo;
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
@@ -903,7 +897,7 @@ void main()
         float outdoor = 1.0 - smoothstep(0.25, 0.90, enclosure);
         float litProtect = smoothstep(0.04, 0.45, field.g);
         float night = smoothstep(0.88, 0.22, clamp(ubo.SkyGlow, 0.0, 1.0));
-        darkness = night * outdoor * (1.0 - litProtect) * (1.0 - field.a) * clamp(ubo.PackParam0.x, 0.0, 0.9);
+        darkness = night * outdoor * (1.0 - litProtect) * (1.0 - field.a) * clamp(ubo.PackParams[0].x, 0.0, 0.9);
     }
 
     vec3 base = scene * mix(vec3(1.0), vec3(0.76, 0.86, 1.06), darkness) * (1.0 - darkness * 0.65);

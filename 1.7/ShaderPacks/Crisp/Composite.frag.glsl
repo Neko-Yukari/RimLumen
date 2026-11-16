@@ -16,10 +16,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float RealDeltaSeconds;
     float Padding;
     vec4 BloomParams;
-    vec4 PackParam0;
-    vec4 PackParam1;
-    vec4 PackParam2;
-    vec4 PackParam3;
+    vec4 PackParams[4];
 } ubo;
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
@@ -39,7 +36,7 @@ void main()
     vec4 hdr = texture(hdrImage, uv);
     hdr.rgb = sanitizeHdr(hdr.rgb);
     vec3 bloom = texture(bloomImage, uv).rgb * ubo.BloomParams.x;
-    float crisp = clamp(ubo.PackParam0.x, 0.0, 1.0);
+    float crisp = clamp(ubo.PackParams[0][0], 0.0, 1.0);
     vec3 color = hdr.rgb * (1.0 + crisp * 0.25) + bloom;
 
     float peak = max(color.r, max(color.g, color.b));

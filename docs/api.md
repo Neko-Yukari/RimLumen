@@ -723,14 +723,11 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float RealDeltaSeconds; // 120: host frame delta
     float Padding;          // 124
     vec4 BloomParams;       // 128: intensity, threshold, knee, scatter
-    vec4 PackParam0;        // 144: packParam0..3
-    vec4 PackParam1;        // 160: packParam4..7
-    vec4 PackParam2;        // 176: packParam8..11
-    vec4 PackParam3;        // 192: packParam12..15
+    vec4 PackParams[4];     // 144: 4 行，每行 16 字节，共 64 字节
 } ubo;
 ```
 
-- **参数映射注意**：`options[].target` 指定的 `packParam0..3` 依次填入 `ubo.PackParam0.xyzw`，`packParam4..7` 填入 `ubo.PackParam1.xyzw`，以此类推。因此 `target` 为 `"packParam1"` 时在 GLSL 中应读取 `ubo.PackParam0.y`，而非 `ubo.PackParam1.x`。
+- **参数映射**：`options[].target` 的 `packParamN`（`N = 0..15`）对应 `ubo.PackParams[N / 4][N % 4]`；已有着色器需将旧向量成员改为 `PackParams` 数组。
 - **当前 ABI**：旧 `EnvParams` 位掩码已移除；外部包须同步上述 208 字节布局。`HasHdrDraws`（含早组 glow 拷贝）、`HasSceneDepth`、`HasMapLightField`、`IsPaused` 均为独立的 0/1 float。`DepthValid=1` 表示该边界的真实深度快照，`0` 表示远平面占位，不表示每个像素都有几何体。
 - `GameSeconds` 为游戏 ticks / 60，暂停停止；`RealSeconds` 为宿主经过的真实秒数。对应 Delta 字段是本帧步长。Cinematic 的 Adapt 与 StreakExtract 读取 `hdr + glow`，合成核心仍只读取 `hdr`；Adapt 使用游戏秒时间常数 0.2 秒，权重 `1-exp(-GameDeltaSeconds/0.2)`。
 
@@ -860,10 +857,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float RealDeltaSeconds;
     float Padding;
     vec4 BloomParams;
-    vec4 PackParam0;
-    vec4 PackParam1;
-    vec4 PackParam2;
-    vec4 PackParam3;
+    vec4 PackParams[4];
 } ubo;
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
@@ -903,7 +897,7 @@ void main()
         float outdoor = 1.0 - smoothstep(0.25, 0.90, enclosure);
         float litProtect = smoothstep(0.04, 0.45, field.g);
         float night = smoothstep(0.88, 0.22, clamp(ubo.SkyGlow, 0.0, 1.0));
-        darkness = night * outdoor * (1.0 - litProtect) * (1.0 - field.a) * clamp(ubo.PackParam0.x, 0.0, 0.9);
+        darkness = night * outdoor * (1.0 - litProtect) * (1.0 - field.a) * clamp(ubo.PackParams[0].x, 0.0, 0.9);
     }
 
     vec3 base = scene * mix(vec3(1.0), vec3(0.76, 0.86, 1.06), darkness) * (1.0 - darkness * 0.65);

@@ -16,10 +16,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float RealDeltaSeconds;
     float Padding;
     vec4 BloomParams;
-    vec4 PackParam0;
-    vec4 PackParam1;
-    vec4 PackParam2;
-    vec4 PackParam3;
+    vec4 PackParams[4];
 } ubo;
 
 layout(set = 0, binding = 0) uniform sampler2D sceneImage;
@@ -98,9 +95,9 @@ void main()
     float skyGlow = clamp(ubo.SkyGlow, 0.0, 1.0);
     float nightFactor = smoothstep(0.88, 0.22, skyGlow);
 
-    float darkness = nightFactor * outdoorFactor * (1.0 - litProtect) * (1.0 - fogOfWar) * max(0.0, ubo.PackParam0.x);
+    float darkness = nightFactor * outdoorFactor * (1.0 - litProtect) * (1.0 - fogOfWar) * max(0.0, ubo.PackParams[0][0]);
 
-    float drift = ubo.GameSeconds * max(0.0, ubo.PackParam0.z);
+    float drift = ubo.GameSeconds * max(0.0, ubo.PackParams[0][2]);
     vec2 wind = vec2(drift * 0.22, drift * 0.09);
     float n1 = fbm(world.xz * 0.085 - wind);
     float n2 = fbm(world.xz * 0.042 + wind * 0.6 + vec2(4.2, 9.1));
@@ -111,7 +108,7 @@ void main()
     float is3DGeom = ubo.DepthValid * step(0.0001, min(depth, 1.0 - depth));
     float mistHeightMask = mix(1.0, 0.55, is3DGeom);
 
-    float mist = wisp * outdoorFactor * (1.0 - fogOfWar) * (0.35 + 0.65 * nightFactor) * mistHeightMask * max(0.0, ubo.PackParam0.y);
+    float mist = wisp * outdoorFactor * (1.0 - fogOfWar) * (0.35 + 0.65 * nightFactor) * mistHeightMask * max(0.0, ubo.PackParams[0][1]);
     float litMist = clamp(artificialGroundGlow * 1.4 + dot(texture(bloomImage, uv).rgb, vec3(0.333)), 0.0, 1.0);
 
     outColor = vec4(mist, litMist, darkness, 1.0);

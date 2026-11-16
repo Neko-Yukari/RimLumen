@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using System.Linq;
 using System.Numerics;
 using System.Reflection;
@@ -41,6 +43,61 @@ public static class ShaderPackTests
         Equal(160, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam1)).ToInt32());
         Equal(176, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam2)).ToInt32());
         Equal(192, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam3)).ToInt32());
+        Equal(16, Marshal.SizeOf<Vector4>());
+        Equal(64, Marshal.SizeOf<ShaderPackUniforms>() - 144);
+        WithSlangLoaded(() =>
+        {
+            CheckCompiledPackParams("Atmospheric/FogPass.frag.glsl");
+            CheckCompiledPackParams("Atmospheric/Composite.frag.glsl");
+            CheckCompiledPackParams("Cinematic/Composite.frag.glsl");
+            CheckCompiledPackParams("Crisp/Composite.frag.glsl");
+            CheckCompiledPackParams("Vibrant/Composite.frag.glsl");
+        });
+    }
+
+    private static void CheckCompiledPackParams(string relativePath)
+    {
+        string path = Path.Combine(RepoRoot(), "1.7", "ShaderPacks", relativePath);
+        string source = ShaderSourceLoader.ReadShaderSource(path);
+        Require(Regex.IsMatch(source, @"\bvec4\s+PackParams\s*\[\s*4\s*\]\s*;"), $"{relativePath}: missing vec4 PackParams[4].");
+        Require(!Regex.IsMatch(source, @"\bPackParam[0-3]\b"), $"{relativePath}: old GLSL vector alias remains.");
+        byte[] spirv = RuntimeShaderCompiler.Compile(source, path, "main", RuntimeShaderLanguage.Glsl, RuntimeShaderStage.Fragment);
+        uint[] words = MemoryMarshal.Cast<byte, uint>(spirv).ToArray();
+        var instructions = new List<uint[]>();
+        for (int offset = 5; offset < words.Length;)
+        {
+            int count = (int)(words[offset] >> 16);
+            uint[] instruction = words.AsSpan(offset, count).ToArray();
+            instruction[0] &= 0xffff;
+            instructions.Add(instruction);
+            offset += count;
+        }
+        // Follow set=0/binding=5 through OpVariable/OpTypePointer to its actual compiled block and last member.
+        uint uniform = instructions.Single(x => x[0] == 71 && x[2] == 33 && x[3] == 5 &&
+            instructions.Any(set => set[0] == 71 && set[1] == x[1] && set[2] == 34 && set[3] == 0))[1];
+        uint pointer = instructions.Single(x => x[0] == 59 && x[2] == uniform)[1];
+        uint block = instructions.Single(x => x[0] == 32 && x[1] == pointer)[3];
+        uint[] members = instructions.Single(x => x[0] == 30 && x[1] == block);
+        Equal(18, members.Length); // result id + 16 members + opcode
+        // Slang lowers a GLSL array member to a one-member struct; the array itself starts at wrapper offset 0.
+        uint wrapper = members[17];
+        uint[] wrapperType = instructions.Single(x => x[0] == 30 && x[1] == wrapper);
+        Equal(3, wrapperType.Length);
+        Equal(0u, instructions.Single(x => x[0] == 72 && x[1] == wrapper && x[2] == 0 && x[3] == 35)[4]);
+        uint array = wrapperType[2];
+        uint[] arrayType = instructions.Single(x => x[0] == 28 && x[1] == array);
+        uint length = instructions.Single(x => x[0] == 43 && x[2] == arrayType[3])[3];
+        uint stride = instructions.Single(x => x[0] == 71 && x[1] == array && x[2] == 6)[3];
+        uint baseOffset = instructions.Single(x => x[0] == 72 && x[1] == block && x[2] == 15 && x[3] == 35)[4];
+        uint[] vector = instructions.Single(x => x[0] == 23 && x[1] == arrayType[2]);
+        Equal(4u, vector[3]);
+        Equal(32u, instructions.Single(x => x[0] == 22 && x[1] == vector[2])[2]);
+        Equal(144u, baseOffset);
+        Equal(16u, stride);
+        Equal(4u, length);
+        Equal(64u, stride * length);
+        Equal(208u, baseOffset + stride * length);
+        Console.WriteLine($"[PACK ABI] {relativePath}: base={baseOffset}, stride={stride}, count={length}, bytes={stride * length}, UBO={baseOffset + stride * length}");
     }
 
     [LumenFact]
@@ -57,6 +114,16 @@ public static class ShaderPackTests
         }
         Equal(new Vector4(1.25f, 1.75f, 2.25f, 2.75f), p.PackParam0);
         Equal(new Vector4(7.25f, 7.75f, 8.25f, 8.75f), p.PackParam3);
+        ShaderPackUniformBlockSnapshot snapshot = p.CaptureSnapshot();
+        ShaderPackUniforms uniforms = ShaderPackUniforms.Build(Matrix4x4.Identity, 1, 1, 1, 1,
+            0f, 0f, 0f, 0f, 0f, 0f, false, false, false, false, in snapshot);
+        ReadOnlySpan<float> indexed = MemoryMarshal.Cast<byte, float>(
+            MemoryMarshal.AsBytes(new[] { uniforms }.AsSpan()).Slice(144, 64));
+        Require(indexed.SequenceEqual(new float[]
+        {
+            1.25f, 1.75f, 2.25f, 2.75f, 3.25f, 3.75f, 4.25f, 4.75f,
+            5.25f, 5.75f, 6.25f, 6.75f, 7.25f, 7.75f, 8.25f, 8.75f
+        }), "packParamN must occupy PackParams[N/4][N%4] in the uploaded bytes.");
         Throws<ArgumentOutOfRangeException>(() => p.GetPackParam(-1));
         Throws<ArgumentOutOfRangeException>(() => p.GetPackParam(16));
         Throws<ArgumentOutOfRangeException>(() => p.SetPackParam(-1, 0f));
@@ -519,10 +586,7 @@ public static class ShaderPackTests
                         float RealDeltaSeconds;
                         float Padding;
                         vec4 BloomParams;
-                        vec4 PackParam0;
-                        vec4 PackParam1;
-                        vec4 PackParam2;
-                        vec4 PackParam3;
+                        vec4 PackParams[4];
                     } ubo;
                     layout(push_constant) uniform Push { vec4 value; } pc;
                     layout(location = 0) out vec4 outColor;
@@ -532,7 +596,7 @@ public static class ShaderPackTests
                         vec3 lf = texture(uLightField, wp.xz / max(ubo.ScreenAndMapSize.zw, vec2(1.0))).rgb;
                         vec3 hdr = texture(uHdr, vUv).rgb + texture(uBloom, vUv).rgb * ubo.BloomParams.x;
                         vec3 scene = texture(uScene, vUv).rgb;
-                        outColor = vec4(scene + hdr + lf * 0.01 + pc.value.xxx * 0.0 + ubo.PackParam0.xyz * 0.0, 1.0);
+                        outColor = vec4(scene + hdr + lf * 0.01 + pc.value.xxx * 0.0 + ubo.PackParams[0].xyz * 0.0, 1.0);
                     }
                     """);
 
