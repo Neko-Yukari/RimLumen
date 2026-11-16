@@ -12,17 +12,19 @@ namespace RimLumen.Core.Rendering;
 
 internal static class RimLumenMapHooks
 {
-    internal const int SplitQueue = 3152;
     private const string HarmonyId = "NekoYukari.RimLumen.MapSplit";
     private static readonly ConditionalWeakTable<MeshDrawFrame, PipelineFrame> Frames = new();
-    private static SceneGrabPoint sentinel = null!;
+    private static readonly SceneGrabPoint[] sentinels = new SceneGrabPoint[4];
     private static FieldInfo sceneGrabs = null!;
     private static FieldInfo sceneTargets = null!;
     private static FieldInfo mapRenderer = null!;
     private static bool armed;
     [ThreadStatic] private static RecordScope? current;
 
-    private sealed record RecordScope(FrameContext Context, PipelineFrame Payload, SceneColorTargets Targets, MeshBatchRenderer Renderer);
+    private sealed record RecordScope(FrameContext Context, PipelineFrame Payload, SceneColorTargets Targets, MeshBatchRenderer Renderer)
+    {
+        internal GlowGroupMask Recorded;
+    }
 
     internal static void Arm()
     {
@@ -41,8 +43,14 @@ internal static class RimLumenMapHooks
             ?? throw new MissingMemberException(typeof(SceneColorTargets).FullName, "LoadAttachment");
         if (load.PropertyType != typeof(PassAttachment) || load.GetMethod is not { IsPublic: true, IsStatic: false } || load.GetIndexParameters().Length != 0)
             throw new InvalidOperationException("SceneColorTargets.LoadAttachment signature changed.");
-        sentinel = SceneGrabRegistry.Define("RimLumenSplit", SplitQueue);
-        if (sentinel.Queue != SplitQueue) throw new InvalidOperationException("SceneGrabPoint RimLumenSplit queue changed.");
+        for (int i = 0; i < sentinels.Length; i++)
+        {
+            GlowGroup group = (GlowGroup)i;
+            string name = group == GlowGroup.Early ? "RimLumenSplit" : "RimLumenSplit" + group;
+            int queue = GlowGroups.Range(group).MaxExclusive;
+            sentinels[i] = SceneGrabRegistry.Define(name, queue);
+            if (sentinels[i].Queue != queue) throw new InvalidOperationException($"SceneGrabPoint {name} queue changed.");
+        }
         var harmony = new Harmony(HarmonyId);
         string target = capture.DeclaringType!.FullName + "." + capture.Name;
         try
@@ -88,7 +96,10 @@ internal static class RimLumenMapHooks
         try
         {
             // Keep the frame returned by vanilla (and observed by other postfixes); only replace its grab list.
-            sceneGrabs.SetValue(map, SceneGrabSplit.Insert(map.SceneGrabs, sentinel, static point => point.Queue));
+            IReadOnlyList<SceneGrabPoint>? grabs = map.SceneGrabs;
+            for (int i = 0; i < sentinels.Length; i++)
+                if (payload.ShouldSplit((GlowGroup)i)) grabs = SceneGrabSplit.Insert(grabs, sentinels[i], static point => point.Queue);
+            sceneGrabs.SetValue(map, grabs);
             Frames.Add(map, payload);
         }
         catch (Exception ex) { RimLumenRenderHost.Pipeline!.TripRenderFailSafe(ex); }
@@ -110,12 +121,14 @@ internal static class RimLumenMapHooks
 
     private static bool GrabPrefix(SceneGrabPoint point)
     {
-        if (!ReferenceEquals(point, sentinel)) return true;
+        int index = Array.IndexOf(sentinels, point);
+        if (index < 0) return true;
+        GlowGroup group = (GlowGroup)index;
         RecordScope? scope = current;
-        if (scope != null && !RimLumenRenderHost.FailSafeTripped)
+        if (scope != null && !RimLumenRenderHost.FailSafeTripped && (scope.Recorded & GlowGroups.Mask(group)) == 0)
         {
-            current = null;
-            try { RimLumenRenderHost.Pipeline!.MapChain.Record(scope.Context, scope.Payload, scope.Targets); }
+            scope.Recorded |= GlowGroups.Mask(group);
+            try { RimLumenRenderHost.Pipeline!.MapChain.Record(scope.Context, scope.Payload, scope.Targets, group); }
             finally
             {
                 // The map renderer caches Vulkan bindings across slices; the chain replaced those bindings.

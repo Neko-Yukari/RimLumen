@@ -36,6 +36,65 @@ public static class RenderLogicSuite
     }
 
     [LumenFact]
+    public static void GravshipSplitPrecedesEverySameQueueGrab()
+    {
+        var split = (Queue: 3178, Name: "split");
+        var gravship = (Queue: 3178, Name: "gravship");
+        var other = (Queue: 3178, Name: "other");
+        var grabs = SceneGrabSplit.Insert(new[] { gravship, other }, split, static p => p.Queue);
+        Equal(split, grabs[0]);
+        Equal(gravship, grabs[1]);
+        Equal(other, grabs[2]);
+    }
+
+    [LumenFact]
+    public static void GlowGroupsPartitionEffectiveQueuesWithoutGaps()
+    {
+        Equal(GlowGroup.Early, GlowGroups.Classify(int.MinValue));
+        Equal(GlowGroup.Early, GlowGroups.Classify(3151));
+        Equal(GlowGroup.BeforeWeather, GlowGroups.Classify(3152));
+        Equal(GlowGroup.BeforeWeather, GlowGroups.Classify(3168));
+        Equal(GlowGroup.BeforeGravship, GlowGroups.Classify(3169));
+        Equal(GlowGroup.BeforeGravship, GlowGroups.Classify(3177));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(3178));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(int.MaxValue - 1));
+        GlowQueueRange early = GlowGroups.Range(GlowGroup.Early);
+        GlowQueueRange weather = GlowGroups.Range(GlowGroup.BeforeWeather);
+        GlowQueueRange gravship = GlowGroups.Range(GlowGroup.BeforeGravship);
+        GlowQueueRange end = GlowGroups.Range(GlowGroup.MapEnd);
+        Equal(int.MinValue, early.MinInclusive);
+        Equal(early.MaxExclusive, weather.MinInclusive);
+        Equal(weather.MaxExclusive, gravship.MinInclusive);
+        Equal(gravship.MaxExclusive, end.MinInclusive);
+        Equal(int.MaxValue, end.MaxExclusive);
+        Equal(true, 3152 >= weather.MinInclusive && 3152 < weather.MaxExclusive);
+        Equal(false, 3169 >= weather.MinInclusive && 3169 < weather.MaxExclusive);
+        Equal(true, 3178 >= end.MinInclusive && 3178 < end.MaxExclusive);
+        Equal(false, int.MaxValue >= end.MinInclusive && int.MaxValue < end.MaxExclusive);
+        // Verified candle, orbital beam and later distortion/portal/ritual/psychic queues.
+        Equal(GlowGroup.BeforeWeather, GlowGroups.Classify(3155));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(3181));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(3185));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(3201));
+        Equal(GlowGroup.MapEnd, GlowGroups.Classify(4000));
+    }
+
+    [LumenFact]
+    public static void GlowGroupsScheduleOnlyOwnedWorkAndPositiveMipLateCopies()
+    {
+        GlowGroupMask captured = GlowGroups.Mask(GlowGroup.BeforeWeather) | GlowGroups.Mask(GlowGroup.MapEnd);
+        Equal(false, GlowGroups.ShouldSplit(GlowGroup.Early, captured, earlyWork: false, 5));
+        // Early work includes native draws, compute-only barriers or RunOnEmptyFrames independently of glow bits.
+        Equal(true, GlowGroups.ShouldSplit(GlowGroup.Early, GlowGroupMask.None, earlyWork: true, 0));
+        Equal(false, GlowGroups.ShouldSplit(GlowGroup.Early, GlowGroupMask.Early, earlyWork: false, 5));
+        Equal(true, GlowGroups.ShouldSplit(GlowGroup.BeforeWeather, captured, earlyWork: false, 5));
+        Equal(false, GlowGroups.ShouldSplit(GlowGroup.BeforeGravship, captured, earlyWork: true, 5));
+        Equal(true, GlowGroups.ShouldSplit(GlowGroup.MapEnd, captured, earlyWork: false, 1));
+        Equal(false, GlowGroups.ShouldSplit(GlowGroup.MapEnd, captured, earlyWork: true, 0));
+        Equal(false, GlowGroups.ShouldSplit(GlowGroup.BeforeWeather, GlowGroupMask.None, earlyWork: false, 5));
+    }
+
+    [LumenFact]
     public static void MipChainCeilsDimensionsAndHonorsLimits()
     {
         EqualMips([new(960, 540), new(480, 270), new(240, 135), new(120, 68), new(60, 34), new(30, 17), new(15, 9), new(8, 5), new(4, 3), new(2, 2)], BloomMipChain.Compute(1920, 1080, 20, 2));

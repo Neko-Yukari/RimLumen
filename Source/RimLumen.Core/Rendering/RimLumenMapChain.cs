@@ -4,6 +4,7 @@ using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Lighting;
+using RimLumen.Core.Rendering.Logic;
 using RimWorldWaylith.Rendering;
 using Waylith.Graphics;
 using Waylith.Rendering;
@@ -18,10 +19,15 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
     private bool labelOpen;
     private bool renderPassOpen;
 
-    internal void Record(in FrameContext ctx, PipelineFrame payload, SceneColorTargets targets)
+    internal void Record(in FrameContext ctx, PipelineFrame payload, SceneColorTargets targets, GlowGroup group)
     {
         try
         {
+            if (group != GlowGroup.Early)
+            {
+                RecordLate(in ctx, payload, targets, group);
+                return;
+            }
             if (!payload.RenderHdr)
             {
                 var barriers = new LumenBarrierContext { Frame = ctx, FrameIndex = payload.Index };
@@ -71,16 +77,7 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
             slot.Framebuffer, slot.Color.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat, scene.DepthFormat);
         var barrierContext = new LumenBarrierContext { Frame = frame, FrameIndex = payload.Index };
         foreach (ILumenFrameContributor contributor in payload.Contributors) contributor.RecordBufferBarriers(in barrierContext);
-        if (payload.HasGlowDraws)
-        {
-            var glowFrame = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer, owner.Targets.RenderPass,
-                slot.GlowFramebuffer, slot.Glow.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat, scene.DepthFormat);
-            BeginPass(in glowFrame, clear: true);
-            glowRenderer.InvalidateCommandBufferBindings();
-            glowRenderer.RecordPass(in glowFrame, payload.GlowMesh, RimLumenRenderHost.LumenRenderPassId);
-            EndPass(in glowFrame);
-            slot.Glow.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
-        }
+        if (payload.HasGlowDraws) RecordGlow(in ctx, payload, scene, slot, GlowGroup.Early);
         BeginPass(in frame, clear: true);
         var draw = new LumenHdrDrawContext
         {
@@ -117,6 +114,37 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
             return;
         }
         owner.Recorded();
+    }
+
+    private void RecordLate(in FrameContext ctx, PipelineFrame payload, SceneColorTargets targets, GlowGroup group)
+    {
+        RenderTexture scene = targets.Current(ctx.SubmissionFrameIndex);
+        if (!scene.HasDepth) throw new InvalidOperationException("RimLumen requires scene depth at the late glow split.");
+        PassAttachment attachment = targets.LoadAttachment
+            ?? throw new InvalidOperationException("SceneColorTargets.LoadAttachment is unavailable at the late glow split.");
+        HdrTargets.Slot slot = owner.Targets.Ensure(ctx.SubmissionFrameIndex, scene, payload.BloomMipLevels);
+        ctx.CommandBuffer.BeginDebugLabel("RimLumen/LateBloom\0"u8, new float4(1f, 0.5f, 0f, 1f));
+        labelOpen = true;
+        RecordGlow(in ctx, payload, scene, slot, group);
+        ShaderPackUniforms uniforms = payload.Uniforms;
+        owner.ShaderPack.RecordLateBloom(in ctx, slot, in uniforms, group);
+        FrameContext composite = attachment.MakeFrameContext(in ctx);
+        BeginPass(in composite, clear: false);
+        try { owner.ShaderPack.RecordLateBloomComposite(in composite, slot, in uniforms, group); }
+        finally { EndPass(in composite); }
+    }
+
+    private void RecordGlow(in FrameContext ctx, PipelineFrame payload, RenderTexture scene, HdrTargets.Slot slot, GlowGroup group)
+    {
+        var frame = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer, owner.Targets.RenderPass,
+            slot.GlowFramebuffer, slot.Glow.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat, scene.DepthFormat);
+        BeginPass(in frame, clear: true);
+        GlowQueueRange range = GlowGroups.Range(group);
+        glowRenderer.InvalidateCommandBufferBindings();
+        glowRenderer.RecordPass(in frame, payload.GlowMesh, RimLumenRenderHost.LumenRenderPassId,
+            queueMin: range.MinInclusive, queueMax: range.MaxExclusive);
+        EndPass(in frame);
+        slot.Glow.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
     }
 
     private unsafe void BeginPass(in FrameContext frame, bool clear)

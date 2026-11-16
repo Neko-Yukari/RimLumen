@@ -440,11 +440,17 @@ An emitter's `textureKey` is resolved on the main thread in the following order:
 
 By default, RimLumen draws an extra copy of vanilla and third-party additive draws (`Blend.Enabled`, `DstColor == One`, `ColorOp == Add`, `SrcColor` is `SrcAlpha` or `One`, and `!Depth.Write`) for HDR bloom, with five built-in fullscreen/ambient shader exclusions: `GlowOverlay`, `OxygenOverlayIndoors`, `GravshipLensFlare`, `UnlitAdditive`, and `MoteWater`.
 
-The vanilla draw is left untouched, so the vanilla scene still draws the glow core. The copy goes only into a separate `glow` target that feeds the built-in bloom prefilter and the `glow` pack input; it never enters the `hdr` layer or the composite's core term. The ground under a glow is therefore never darkened. Turning the toggle off, or its fail-safe tripping, removes every enhancement of vanilla glow; the image is vanilla when no other native HDR effect is active and the current pack does not rewrite the scene.
+The vanilla draw is left untouched, so the vanilla scene still draws the glow core. Copies go only into a separate `glow` target, never into the `hdr` layer or the composite's core term. Early copies feed the built-in bloom prefilter and the pack's `glow` input; later copies feed host bloom only. The ground under a glow is therefore never darkened. Turning the toggle off, or its fail-safe tripping, removes every enhancement of vanilla glow; the image is vanilla when no other native HDR effect is active and the current pack does not rewrite the scene.
 
-The entire RimLumen HDR / bloom / ShaderPack chain runs **inside the map pass at the 3152 boundary**, immediately after the 3151 glows and before vanilla's 3152 Distortion scene grab. The final composite writes back to map colour. `scene` is a separate same-frame colour copy at this boundary; `depth` is the same-frame depth at this boundary. No pass samples the colour image it is writing. The `pack.json` `"backbuffer"` name and PostEffectPass composite ABI are unchanged: the name denotes the final composite output, not a swapchain slot.
+Four groups use the effective `FinalDrawItem.RenderQueue` and execute at map-pass boundaries: `q < 3152` → 3152, `[3152, 3169)` → 3169, `[3169, 3178)` → 3178, and `[3178, int.MaxValue)` → map end `int.MaxValue`. Groups are not merged; each boundary runs before vanilla scene grabs at the same queue.
 
-Later fog of war 3175, Darkness 3180, weather fog 3169, sun shadows, rain, IsoRim fog, depth plane and post passes 4880–4990, and RimIris's grade cover or process the composite. The 3152 distortion motes' scene grab now includes RimLumen too. Glows remaining above it, in vanilla order: PsychicRitualCandleMote 3155, OxygenOverlayIndoors 3170, GravFieldExtenderGlow 3181, GravEngineGlow 3185, GlowOverlay / GravshipLensFlare 3201, UnlitAdditive 3700. The `glow` copies include only additive glows drawn before 3152.
+The 3152 group runs the full native HDR, early glow, bloom and ShaderPack DAG / composite once, under the existing native draw, contributor and `runOnEmptyFrames` triggers; it is not suppressed merely because early glow is empty. It precedes vanilla's 3152 Distortion grab. The pack's `glow` contains only `q < 3152` copies; `scene` and `depth` are separate same-frame snapshots at this boundary, not later captures. The final composite writes map colour without sampling the image being written. The `pack.json` `"backbuffer"` name and PostEffectPass composite ABI remain unchanged: the name denotes the final composite output, not a swapchain slot.
+
+Later groups only redraw their additive glow copies, run host bloom prefilter, downsample and upsample, then add bloom RGB to the scene while preserving destination alpha, without tone mapping. The original core is already in the scene and is not added again; native HDR particles, grading, fog, custom DAG and history do not rerun. Later groups use the same frame's captured active-pack `BloomParams` (intensity, threshold, knee, scatter) and requested mip count. An absent group or zero mips adds no boundary or passes for that group.
+
+Custom `bloomPrefilterShader`, `bloomDownShader` and `bloomUpShader` apply only to the 3152 group; later groups use host shaders, not an equivalent of arbitrary custom bloom. Later Cinematic copies do not create streaks or affect Adaptation; Atmospheric late bloom does not light mist or use fog-dependent scatter gain; Crisp, Vibrant and other pack composite colour mapping does not apply to late bloom. The pack DAG and history run once with the 3152 group, not once per group.
+
+In the installed vanilla / DLC static inventory, ritual candle clusters at 3155 bloom at 3169 before weather FogOverlay 3169 and SunShadow 3170; orbital / power beams and endpoints at 3177 bloom at 3178 after FogOfWar 3175 and before the Gravship grab and Darkness 3180; grav-field 3181, grav engine 3185, thruster flame 3201 and Noctol eyes 4000 bloom at map end. The inventory has no eligible draws in `[3169, 3174]` or `[3178, 3179]`. The last group's bloom is later than the 3201 Screen and 3251 VoidNode grabs and is not included in them; ordering is not guaranteed for all overlays, grabs or third-party draws. This is a static ordering contract; in-game behaviour has not been verified.
 
 To opt a custom `ShaderDef` out of automatic HDR redraw, attach `<li Class="RimLumen.Core.Compat.LumenEmissiveModExtension"><EnableHdrBloom>false</EnableHdrBloom></li>`. (Note: `HdrMultiplier` on that extension class is not yet wired into redraw intensity scaling; only `EnableHdrBloom` takes effect.)
 
@@ -635,7 +641,7 @@ When switching packs, `ShaderPackCatalog.ApplyOptionsToRuntime` resets the four 
 
 The default Bloom prefilter extracts `hdr + glow`. The default threshold is `1.0` in both settings and pack baseline, and peaks ≤ threshold extract exactly zero. `bloomKnee=0` is a hard threshold without division by zero. A positive knee softens only above the threshold using `excess * smoothstep(0,knee,excess)`, where `excess=max(peak-threshold,0)`.
 
-#### Empty-Frame Bloom Skip Rule
+#### 3152 Group Empty-Frame Bloom Skip Rule
 
 Even when `runOnEmptyFrames` is `true`, the runtime skips the built-in Bloom downsample/upsample chain and binds a `1x1` black placeholder (`black1x1`) to `bloom` whenever either condition holds:
 
@@ -725,7 +731,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 ```
 
 - **Parameter packing note**: `options[].target` values `packParam0..3` map to `ubo.PackParam0.xyzw`, `packParam4..7` map to `ubo.PackParam1.xyzw`, and so on. Thus `"target": "packParam1"` is read from `ubo.PackParam0.y`, not `ubo.PackParam1.x`.
-- **Current ABI**: the old `EnvParams` bitmask is removed; external packs must adopt this 208-byte layout. `HasHdrDraws` (including glow copies), `HasSceneDepth`, `HasMapLightField`, and `IsPaused` are separate 0/1 floats. `DepthValid=1` means a real depth snapshot at the boundary; 0 means the far-plane placeholder, not a per-pixel geometry test.
+- **Current ABI**: the old `EnvParams` bitmask is removed; external packs must adopt this 208-byte layout. `HasHdrDraws` (including early-group glow copies), `HasSceneDepth`, `HasMapLightField`, and `IsPaused` are separate 0/1 floats. `DepthValid=1` means a real depth snapshot at the boundary; 0 means the far-plane placeholder, not a per-pixel geometry test.
 - `GameSeconds` is game ticks / 60 and stops on pause; `RealSeconds` is host elapsed real seconds. Their Delta fields hold this frame's step. Cinematic Adapt and StreakExtract read `hdr + glow`; the composite core remains `hdr` only. Adapt uses a 0.2-game-second time constant: `1-exp(-GameDeltaSeconds/0.2)`.
 
 #### Push Constant (16-byte `vec4`)

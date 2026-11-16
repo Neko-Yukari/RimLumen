@@ -9,6 +9,7 @@ using Waylith.Graphics;
 using Waylith.Rendering;
 using Waylith.Rendering.PostFx;
 using RimLumen.Core.Lighting;
+using RimLumen.Core.Rendering.Logic;
 using static RimLumen.Core.Rendering.Logic.ShaderPackGraphValidator;
 
 namespace RimLumen.Core.Rendering;
@@ -38,6 +39,15 @@ internal sealed class ShaderPackRuntime : IDisposable
     internal readonly ShaderPackSpec Spec;
     private readonly EngineApplication app;
     private readonly int framesInFlight;
+    // Each PostEffectPass resets its descriptor pool on RecordInline: never share one across groups in a frame.
+    private sealed class LateBloomPasses(int mipLevels)
+    {
+        internal readonly PostEffectPass[] Down = new PostEffectPass[mipLevels];
+        internal readonly PostEffectPass[] Up = new PostEffectPass[Math.Max(0, mipLevels - 1)];
+        internal PostEffectPass Composite = null!;
+    }
+
+    private readonly LateBloomPasses?[] lateBloom = new LateBloomPasses[3];
     private readonly PostEffectPass[] bloomDown;
     private readonly PostEffectPass[] bloomUp;
     private readonly PostEffectPass[] customOffscreenPasses;
@@ -159,45 +169,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         bool skipBuiltInBloom = plan.BloomMipLevels == 0 || (!hasHdrDraws && !plan.HasCustomBloomShader);
 
         if (!skipBuiltInBloom && slot.Down.Length > 0)
-        {
-            bloomDown[0].SetInput(0, slot.Color);
-            bloomDown[0].SetInput(1, glowTex);
-            bloomDown[0].SetInput(2, scene);
-            bloomDown[0].SetInput(3, depthTex);
-            BindMapLightField(bloomDown[0], 4);
-            bloomDown[0].SetUniforms(in uniforms);
-            var p0 = new Vector4(1f / slot.Color.Width, 1f / slot.Color.Height, uniforms.BloomParams.Y, uniforms.BloomParams.Z);
-            bloomDown[0].SetPushConstants(in p0);
-            bloomDown[0].Output = slot.Down[0];
-            bloomDown[0].Record(in ctx, null);
-
-            RenderTexture prev = slot.Down[0];
-            for (int i = 1; i < slot.Down.Length; i++)
-            {
-                bloomDown[i].SetInput(0, prev);
-                BindMapLightField(bloomDown[i], 4);
-                bloomDown[i].SetUniforms(in uniforms);
-                var pi = new Vector4(1f / prev.Width, 1f / prev.Height, uniforms.BloomParams.Y, uniforms.BloomParams.Z);
-                bloomDown[i].SetPushConstants(in pi);
-                bloomDown[i].Output = slot.Down[i];
-                bloomDown[i].Record(in ctx, null);
-                prev = slot.Down[i];
-            }
-
-            RenderTexture input = prev;
-            for (int i = slot.Up.Length - 1; i >= 0; i--)
-            {
-                bloomUp[i].SetInput(0, input);
-                bloomUp[i].SetInput(1, slot.Down[i]);
-                BindMapLightField(bloomUp[i], 4);
-                bloomUp[i].SetUniforms(in uniforms);
-                var pu = new Vector4(1f / input.Width, 1f / input.Height, uniforms.BloomParams.W, 0f);
-                bloomUp[i].SetPushConstants(in pu);
-                bloomUp[i].Output = slot.Up[i];
-                bloomUp[i].Record(in ctx, null);
-                input = slot.Up[i];
-            }
-        }
+            RecordBloom(in ctx, slot, in uniforms, bloomDown, bloomUp, slot.Color, glowTex, scene, depthTex);
 
         RenderTexture bloomTex = skipBuiltInBloom || slot.Bloom is null ? black1x1! : slot.Bloom;
         ulong writeOrdinal = persistentFrameOrdinal;
@@ -220,6 +192,54 @@ internal sealed class ShaderPackRuntime : IDisposable
 
         lastRenderedPersistentOrdinal = writeOrdinal;
         persistentFrameOrdinal = writeOrdinal + 1;
+    }
+
+    private void RecordBloom(in FrameContext ctx, HdrTargets.Slot slot, in ShaderPackUniforms uniforms,
+        PostEffectPass[] down, PostEffectPass[] up, RenderTexture hdr, RenderTexture glow,
+        RenderTexture? scene = null, RenderTexture? depth = null)
+    {
+        down[0].SetInput(0, hdr);
+        down[0].SetInput(1, glow);
+        if (scene != null)
+        {
+            down[0].SetInput(2, scene);
+            down[0].SetInput(3, depth!);
+        }
+        var p0 = new Vector4(1f / slot.Glow.Width, 1f / slot.Glow.Height, uniforms.BloomParams.Y, uniforms.BloomParams.Z);
+        down[0].SetPushConstants(in p0);
+        down[0].Output = slot.Down[0];
+        PrepareBloomPass(down[0], in uniforms, scene != null);
+        down[0].Record(in ctx, null);
+        RenderTexture prev = slot.Down[0];
+        for (int i = 1; i < slot.Down.Length; i++)
+        {
+            down[i].SetInput(0, prev);
+            PrepareBloomPass(down[i], in uniforms, scene != null);
+            var pc = new Vector4(1f / prev.Width, 1f / prev.Height, uniforms.BloomParams.Y, uniforms.BloomParams.Z);
+            down[i].SetPushConstants(in pc);
+            down[i].Output = slot.Down[i];
+            down[i].Record(in ctx, null);
+            prev = slot.Down[i];
+        }
+        RenderTexture input = prev;
+        for (int i = slot.Up.Length - 1; i >= 0; i--)
+        {
+            up[i].SetInput(0, input);
+            up[i].SetInput(1, slot.Down[i]);
+            PrepareBloomPass(up[i], in uniforms, scene != null);
+            var pc = new Vector4(1f / input.Width, 1f / input.Height, uniforms.BloomParams.W, 0f);
+            up[i].SetPushConstants(in pc);
+            up[i].Output = slot.Up[i];
+            up[i].Record(in ctx, null);
+            input = slot.Up[i];
+        }
+    }
+
+    private void PrepareBloomPass(PostEffectPass pass, in ShaderPackUniforms uniforms, bool packPass)
+    {
+        if (!packPass) return;
+        BindMapLightField(pass, 4);
+        pass.SetUniforms(in uniforms);
     }
 
     internal void RecordComposite(
@@ -249,20 +269,65 @@ internal sealed class ShaderPackRuntime : IDisposable
         compositePass.RecordInline(in ctx, ctx.RenderPass, ctx.SampleCount);
     }
 
+    // Requires: a scheduled non-Early group, nonempty mip targets, and no open render pass; called once per group/frame.
+    // Ensures: host bloom uses black HDR/current Glow and captured parameters; scene, HDR and pack history are untouched.
+    internal void RecordLateBloom(in FrameContext ctx, HdrTargets.Slot slot, in ShaderPackUniforms uniforms, GlowGroup group)
+    {
+        EnsurePlaceholders(ctx.CommandBuffer);
+        LateBloomPasses passes = GetLatePasses(group);
+        RecordBloom(in ctx, slot, in uniforms, passes.Down, passes.Up, black1x1!, slot.Glow);
+    }
+
+    // Requires: this group's bloom was recorded and a scene LOAD pass is open; called once per group/frame.
+    // Ensures: adds only bloom RGB times intensity, preserving destination alpha and all pack state.
+    internal void RecordLateBloomComposite(in FrameContext ctx, HdrTargets.Slot slot, in ShaderPackUniforms uniforms, GlowGroup group)
+    {
+        PostEffectPass pass = lateBloom[(int)group - 1]!.Composite;
+        pass.SetInput(0, slot.Bloom!);
+        var pc = new Vector4(uniforms.BloomParams.X, 0f, 0f, 0f);
+        pass.SetPushConstants(in pc);
+        pass.RecordInline(in ctx, ctx.RenderPass, ctx.SampleCount);
+    }
+
+    private LateBloomPasses GetLatePasses(GlowGroup group)
+    {
+        int index = (int)group - 1;
+        if (lateBloom[index] is { } existing) return existing;
+        var passes = new LateBloomPasses(plan.BloomMipLevels);
+        lateBloom[index] = passes;
+        for (int i = 0; i < passes.Down.Length; i++)
+            passes.Down[i] = new OffscreenPostEffectPass($"RimLumen{group}BloomDown{i}",
+                i == 0 ? "PostFx/RimLumenBloomPrefilter.frag.glsl" : "PostFx/RimLumenBloomDown.frag.glsl",
+                i == 0 ? new[] { 0, 1 } : new[] { 0 }, BlendState.Opaque, pushConstantSize: 16);
+        for (int i = 0; i < passes.Up.Length; i++)
+            passes.Up[i] = new OffscreenPostEffectPass($"RimLumen{group}BloomUp{i}",
+                "PostFx/RimLumenBloomUp.frag.glsl", new[] { 0, 1 }, BlendState.Opaque, pushConstantSize: 16);
+        passes.Composite = new PostEffectPass($"RimLumen{group}BloomAdd", "PostFx/RimLumenBloomAdd.frag.glsl",
+            new[] { 0 }, ToBlendState(ShaderPackBlendMode.Additive), pushConstantSize: 16);
+        return passes;
+    }
+
     internal void InvalidateOffscreen()
     {
         DisposeCustomTargets();
         foreach (PostEffectPass? pass in bloomDown) pass?.Invalidate();
         foreach (PostEffectPass? pass in bloomUp) pass?.Invalidate();
         foreach (PostEffectPass? pass in customOffscreenPasses) pass?.Invalidate();
+        foreach (LateBloomPasses? passes in lateBloom)
+        {
+            if (passes == null) continue;
+            foreach (PostEffectPass? pass in passes.Down) pass?.Invalidate();
+            foreach (PostEffectPass? pass in passes.Up) pass?.Invalidate();
+        }
     }
 
     internal void InvalidateInline()
     {
         compositePass?.Invalidate();
+        foreach (LateBloomPasses? passes in lateBloom) passes?.Composite?.Invalidate();
     }
 
-    private void EnsurePlaceholdersAndTargets(CommandBuffer cmd, int sceneWidth, int sceneHeight)
+    private void EnsurePlaceholders(CommandBuffer cmd)
     {
         if (black1x1 is null)
         {
@@ -281,6 +346,11 @@ internal sealed class ShaderPackRuntime : IDisposable
             placeholdersCleared = true;
         }
 
+    }
+
+    private void EnsurePlaceholdersAndTargets(CommandBuffer cmd, int sceneWidth, int sceneHeight)
+    {
+        EnsurePlaceholders(cmd);
         if (plan.Targets.Count == 0)
             return;
 
@@ -509,5 +579,12 @@ internal sealed class ShaderPackRuntime : IDisposable
         foreach (PostEffectPass? pass in bloomUp) pass?.Dispose();
         foreach (PostEffectPass? pass in customOffscreenPasses) pass?.Dispose();
         compositePass?.Dispose();
+        foreach (LateBloomPasses? passes in lateBloom)
+        {
+            if (passes == null) continue;
+            foreach (PostEffectPass? pass in passes.Down) pass?.Dispose();
+            foreach (PostEffectPass? pass in passes.Up) pass?.Dispose();
+            passes.Composite?.Dispose();
+        }
     }
 }

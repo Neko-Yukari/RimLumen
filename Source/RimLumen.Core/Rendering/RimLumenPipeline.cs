@@ -195,13 +195,13 @@ internal sealed class RimLumenPipeline : IDisposable
             bool vanillaGlow = command.PassId != RimLumenRenderHost.LumenRenderPassId;
             if (vanillaGlow)
             {
-                if (!RimLumenRenderHost.EnableVanillaAdditiveBloom) continue;
+                if (!RimLumenRenderHost.EnableVanillaAdditiveBloom ||
+                    (command.PassId != 0 && command.PassId != RimWorldWaylith.Rendering.RenderPassIds.MapMain)) continue;
                 try
                 {
                     FinalDrawItem? candidate = maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i);
                     if (candidate == null) continue;
-                    // Later glows remain above the split in vanilla order; do not bloom a draw that has not happened yet.
-                    bool keep = candidate.RenderQueue < RimLumenMapHooks.SplitQueue &&
+                    bool keep = candidate.RenderQueue < int.MaxValue &&
                         AdditiveEmissiveFilter.IsAdditiveEmissive(candidate.Binding.PipelineState, candidate.Binding.Shader.Key);
                     if (keep)
                     {
@@ -228,6 +228,11 @@ internal sealed class RimLumenPipeline : IDisposable
             }
             FinalDrawItem? draw = maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i);
             if (draw == null) continue;
+            if (draw.RenderQueue == int.MaxValue)
+            {
+                FinalDrawItem.Return(draw);
+                continue;
+            }
             if (draw.Binding.PipelineState.Depth.Write)
             {
                 FinalDrawItem.Return(draw);
@@ -254,8 +259,18 @@ internal sealed class RimLumenPipeline : IDisposable
 
         ShaderPackSpec activePack = RimLumenRenderHost.ActiveShaderPack;
         bool runOnEmptyFrames = activePack.RunOnEmptyFrames;
-        int routedDrawCount = draws.Count + glowDraws.Count;
-        if (HdrFrameGate.Decide(contributors.Length > 0, routedDrawCount, runOnEmptyFrames) == HdrFrameMode.Skip)
+        GlowGroupMask glowGroups = GlowGroupMask.None;
+        int earlyGlowCount = 0;
+        foreach (FinalDrawItem glow in glowDraws)
+        {
+            GlowGroup group = GlowGroups.Classify(glow.RenderQueue);
+            glowGroups |= GlowGroups.Mask(group);
+            if (group == GlowGroup.Early) earlyGlowCount++;
+        }
+        int routedDrawCount = draws.Count + earlyGlowCount;
+        bool earlyWork = HdrFrameGate.Decide(contributors.Length > 0, routedDrawCount, runOnEmptyFrames) != HdrFrameMode.Skip;
+        bool lateWork = activePack.BloomMipLevels > 0 && (glowGroups & ~GlowGroupMask.Early) != 0;
+        if (!earlyWork && !lateWork)
         {
             mesh.Dispose();
             glowMesh.Dispose();
@@ -296,7 +311,7 @@ internal sealed class RimLumenPipeline : IDisposable
             in rtParams);
 
         return new PipelineFrame(captureIndex, mesh, glowMesh, contributors, depthParams, mapIndex, renderHdr,
-            hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms);
+            hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms, glowGroups, earlyWork);
     }
 
     internal static bool HasDirectHdrContributor(IEnumerable<ILumenFrameContributor> frameContributors)
@@ -352,7 +367,9 @@ internal sealed class PipelineFrame(
     bool hasHdrDraws,
     bool hasSceneDepth,
     int bloomMipLevels,
-    ShaderPackUniforms uniforms) : IDisposable
+    ShaderPackUniforms uniforms,
+    GlowGroupMask glowGroups,
+    bool earlyWork) : IDisposable
 {
     internal bool RenderHdr { get; } = renderHdr;
     internal bool HasHdrDraws { get; } = hasHdrDraws;
@@ -363,7 +380,9 @@ internal sealed class PipelineFrame(
     internal ulong Index { get; } = index;
     internal MeshDrawFrame Mesh { get; } = mesh;
     internal MeshDrawFrame GlowMesh { get; } = glowMesh;
-    internal bool HasGlowDraws => GlowMesh.Draws.Count > 0;
+    internal bool HasGlowDraws => (GlowGroupsCaptured & GlowGroupMask.Early) != 0;
+    internal GlowGroupMask GlowGroupsCaptured { get; } = glowGroups;
+    internal bool ShouldSplit(GlowGroup group) => GlowGroups.ShouldSplit(group, GlowGroupsCaptured, earlyWork, BloomMipLevels);
     internal ILumenFrameContributor[] Contributors { get; } = contributors;
     internal Vector4 DepthParams { get; } = depthParams;
 

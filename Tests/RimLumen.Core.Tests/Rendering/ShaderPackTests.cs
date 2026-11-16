@@ -486,6 +486,9 @@ public static class ShaderPackTests
         // Slang compilation tests (valid + broken GLSL)
         WithSlangLoaded(() =>
         {
+            string bloomAdd = Path.Combine(RepoRoot(), "1.7", "Shaders", "PostFx", "RimLumenBloomAdd.frag.glsl");
+            RuntimeShaderCompiler.Compile(File.ReadAllText(bloomAdd), bloomAdd, "main",
+                RuntimeShaderLanguage.Glsl, RuntimeShaderStage.Fragment, out _);
             string tempDir = Path.Combine(Path.GetTempPath(), "opencode", "rimlumen-shaderpack-tests-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
             try

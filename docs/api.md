@@ -440,11 +440,17 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 
 RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled` 且 `DstColor == One`、`ColorOp == Add`、`SrcColor` 为 `SrcAlpha` 或 `One`、且不写深度）额外画一份拷贝进入 HDR 泛光，并内置排除了 5 个全屏/环境遮罩键：`GlowOverlay`、`OxygenOverlayIndoors`、`GravshipLensFlare`、`UnlitAdditive`、`MoteWater`。
 
-原版绘制保持原样，发光核心仍由原版场景画出；拷贝只写入独立的 `glow` 目标，供内置 Bloom 预过滤和光影包的 `glow` 输入使用，不进入 `hdr` 层，也不参与合成的核心项。因此发光下方的地面不会被压暗。关闭该开关或触发其熔断后，原版发光不再有任何增强；没有其他原生 HDR 效果、且当前光影包不改写场景时，画面与原版一致。
+原版绘制保持原样，发光核心仍由原版场景画出；拷贝只写入独立的 `glow` 目标，不进入 `hdr` 层，也不参与合成的核心项。早组拷贝供内置 Bloom 预过滤和光影包的 `glow` 输入使用，后续组只供宿主 Bloom 使用。因此发光下方的地面不会被压暗。关闭该开关或触发其熔断后，原版发光不再有任何增强；没有其他原生 HDR 效果、且当前光影包不改写场景时，画面与原版一致。
 
-RimLumen 的整条 HDR / Bloom / 光影包链在地图 Pass 内的 **3152 边界**执行：紧接 3151 发光之后、原版 3152 Distortion 场景抓取之前。最终合成写回地图颜色，`scene` 是该边界的独立同帧颜色拷贝，`depth` 是该边界的同帧深度；不会采样正在写入的颜色图像。`pack.json` 的 `"backbuffer"` 名称与 PostEffectPass 合成 ABI 保持不变，该名称表示最终合成输出，并不表示交换链插槽。
+按有效 `FinalDrawItem.RenderQueue` 分为四组，分别在地图 Pass 内的边界执行：`q < 3152` → 3152、`[3152, 3169)` → 3169、`[3169, 3178)` → 3178、`[3178, int.MaxValue)` → 地图末尾 `int.MaxValue`。各组不合并；边界在同队列的原版场景抓取之前执行。
 
-因此后续的战争迷雾 3175、Darkness 3180、天气雾 3169、太阳阴影、雨、IsoRim 雾、深度平面与 4880–4990 后处理、RimIris 调色都会覆盖或处理合成结果；3152 distortion motes 的场景抓取也包含 RimLumen。仍位于其上的发光按原版顺序为：PsychicRitualCandleMote 3155、OxygenOverlayIndoors 3170、GravFieldExtenderGlow 3181、GravEngineGlow 3185、GlowOverlay / GravshipLensFlare 3201、UnlitAdditive 3700。`glow` 拷贝仅包含 3152 之前已绘制的加法发光。
+3152 组执行一次完整的原生 HDR、早组发光、Bloom 和光影包 DAG / 合成，仍由现有原生绘制、贡献者和 `runOnEmptyFrames` 条件触发，不能仅因早组发光为空而跳过。它位于原版 3152 Distortion 抓取之前；包的 `glow` 只含 `q < 3152` 拷贝，`scene` 和 `depth` 是该边界的独立同帧快照，不是后续边界的快照。最终合成写回地图颜色，不采样正在写入的颜色图像。`pack.json` 的 `"backbuffer"` 名称与 PostEffectPass 合成 ABI 不变，名称表示最终合成输出，而不是交换链插槽。
+
+后续组只重画各自的加法发光拷贝，执行宿主 Bloom 预过滤、降采样、升采样，再将 Bloom 的 RGB 加到场景并保留目标 Alpha，不做色调映射。原始核心已经在场景中，不会再次加入；原生 HDR 粒子、调色、雾、自定义 DAG 和历史缓冲也不会重跑。后续组使用同一帧捕获的当前包 `BloomParams`（强度、阈值、knee、scatter）及请求的 mip 级数；组为空或 mip 级数为 0 时，不添加该组边界或 Pass。
+
+自定义 `bloomPrefilterShader`、`bloomDownShader` 和 `bloomUpShader` 只用于 3152 组，后续组使用宿主着色器，并不等价于任意自定义 Bloom。Cinematic 的后续组不会产生光丝或影响 Adaptation；Atmospheric 的后续 Bloom 不照亮薄雾，也不使用依赖雾的 scatter 增益；Crisp、Vibrant 等包的合成色彩映射不作用于后续 Bloom。光影包 DAG 和历史缓冲只随 3152 组执行一次，不按组重复。
+
+已安装原版及 DLC 的静态清单中，3155 仪式蜡烛在 3169 组增强，位于天气雾 3169 和太阳阴影 3170 之前；3177 轨道 / 电力光束及端点在 3178 组增强，位于战争迷雾 3175 之后、Gravship 抓取及 Darkness 3180 之前；3181 重力场、3185 引擎、3201 推进火焰和 4000 Noctol 眼睛在地图末尾增强。清单中 `[3169, 3174]` 和 `[3178, 3179]` 没有符合条件的绘制。末组 Bloom 晚于 3201 Screen 和 3251 VoidNode 抓取，因此不包含在这两次抓取中；不保证所有覆盖层、抓取或第三方绘制顺序。这些是静态顺序契约，实机表现尚未验证。
 
 如果在自定义 `ShaderDef` 上不想被自动重画增强，可以挂载 `<li Class="RimLumen.Core.Compat.LumenEmissiveModExtension"><EnableHdrBloom>false</EnableHdrBloom></li>` 进行逐 `ShaderDef` 排除。（注：该扩展类中的 `HdrMultiplier` 字段当前尚未接入重画强度调节，仅 `EnableHdrBloom` 生效。）
 
@@ -635,7 +641,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 
 默认 Bloom prefilter 提取 `hdr + glow`。阈值默认 `1.0`（设置与包基线一致），峰值 ≤ 阈值时严格输出 0；`bloomKnee=0` 是硬阈值，无除零。正 knee 在阈值之上按 `excess * smoothstep(0,knee,excess)` 平滑起辉，`excess=max(peak-threshold,0)`。
 
-#### 空帧 Bloom 跳过规则
+#### 3152 组空帧 Bloom 跳过规则
 
 即使 `runOnEmptyFrames` 为 `true`，当满足以下任一条件时，运行时仍会跳过内置 Bloom 降采样与升采样链，并将 `bloom` 输入源绑定为 1×1 全黑占位纹理 `black1x1`：
 
@@ -725,7 +731,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 ```
 
 - **参数映射注意**：`options[].target` 指定的 `packParam0..3` 依次填入 `ubo.PackParam0.xyzw`，`packParam4..7` 填入 `ubo.PackParam1.xyzw`，以此类推。因此 `target` 为 `"packParam1"` 时在 GLSL 中应读取 `ubo.PackParam0.y`，而非 `ubo.PackParam1.x`。
-- **当前 ABI**：旧 `EnvParams` 位掩码已移除；外部包须同步上述 208 字节布局。`HasHdrDraws`（含 glow 拷贝）、`HasSceneDepth`、`HasMapLightField`、`IsPaused` 均为独立的 0/1 float。`DepthValid=1` 表示该边界的真实深度快照，`0` 表示远平面占位，不表示每个像素都有几何体。
+- **当前 ABI**：旧 `EnvParams` 位掩码已移除；外部包须同步上述 208 字节布局。`HasHdrDraws`（含早组 glow 拷贝）、`HasSceneDepth`、`HasMapLightField`、`IsPaused` 均为独立的 0/1 float。`DepthValid=1` 表示该边界的真实深度快照，`0` 表示远平面占位，不表示每个像素都有几何体。
 - `GameSeconds` 为游戏 ticks / 60，暂停停止；`RealSeconds` 为宿主经过的真实秒数。对应 Delta 字段是本帧步长。Cinematic 的 Adapt 与 StreakExtract 读取 `hdr + glow`，合成核心仍只读取 `hdr`；Adapt 使用游戏秒时间常数 0.2 秒，权重 `1-exp(-GameDeltaSeconds/0.2)`。
 
 #### Push Constant（16 字节 `vec4`）
