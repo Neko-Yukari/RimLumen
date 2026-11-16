@@ -13,6 +13,7 @@
   </loadAfter>
   <description>【中文】
 RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可编程光影包与 GPU 粒子框架，随游戏暂停与倍速同步推进。
+这里的 HDR 指游戏内部的高动态范围渲染，最终色调映射回普通画面输出：不需要 HDR 显示器，也不需要开启 Windows HDR，能运行 RimWorld 1.7 的 Vulkan 驱动即可。
 
 【面向模组开发者】
 1. 原生 RGBA16F HDR 通道与可编程光影包（ShaderPacks）
@@ -51,6 +52,7 @@ RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可�
 
 【English】
 RimLumen is an HDR VFX, programmable ShaderPack, and GPU particle framework for RimWorld 1.7 (Waylith / Vulkan), synchronized with game pause and speed multipliers.
+HDR here means internal high-dynamic-range rendering, tone-mapped back to a standard image: no HDR monitor or Windows HDR needed, and no driver requirement beyond what RimWorld 1.7's Vulkan renderer already needs.
 
 [For Modders]
 1. Native RGBA16F HDR Pipeline and Programmable ShaderPacks

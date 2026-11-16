@@ -3,6 +3,9 @@
 RimWorld 1.7（Waylith / Vulkan）的 HDR 视效、可编程光影包与 GPU Compute 粒子框架。
 HDR VFX, programmable ShaderPack, and GPU compute particle framework for RimWorld 1.7 (Waylith / Vulkan).
 
+这里的 HDR 指游戏内部的高动态范围渲染，最终色调映射回普通画面输出：不需要 HDR 显示器，也不需要开启 Windows HDR，能运行 RimWorld 1.7 的 Vulkan 驱动即可。
+HDR here means internal high-dynamic-range rendering, tone-mapped back to a standard image: no HDR monitor or Windows HDR needed, and no driver requirement beyond what RimWorld 1.7's Vulkan renderer already needs.
+
 ## 模组作者 / Modders
 
 | 能力 / Feature | 说明 / Detail |
@@ -140,5 +143,3 @@ pwsh -NoProfile -File Tools/launch-showcase.ps1       # 启动六站演示场景
 
 `pack-release.ps1` 只输出可上传内容：`About/`、`LoadFolders.xml`、`Languages/`、`README.md`、`docs/api.md`、剥离展示脚手架后的两个 dll（无 pdb）、`1.7/Defs`、`1.7/Textures`、`1.7/ShaderPacks`、`1.7/Shaders/Particles` 与 `PostFx`；不含源码、测试；结束时自检并打印文件数与字节数。
 `launch-showcase.ps1` 会在已有 RimWorld 进程时拒绝启动。
-
-早期策划与决策文档已归档到 `archive/`（不发布到文档站，也不随 Workshop 包发布）。
