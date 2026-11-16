@@ -19,8 +19,9 @@ void main()
     float brightness = max(color.r, max(color.g, color.b));
     float threshold = pc.value.z;
     float knee = pc.value.w;
-    float soft = clamp(brightness - threshold + knee, 0.0, 2.0 * knee);
-    soft = soft * soft / (4.0 * knee);
-    float contribution = max(brightness - threshold, soft) / max(brightness, 0.00001);
+    float excess = max(brightness - threshold, 0.0);
+    // The soft shoulder starts above the threshold; knee=0 is exactly a hard threshold.
+    float extracted = knee > 0.0 ? excess * smoothstep(0.0, knee, excess) : excess;
+    float contribution = extracted / max(brightness, 0.00001);
     outColor = vec4(color * contribution, 0.0);
 }

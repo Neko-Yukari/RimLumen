@@ -20,7 +20,8 @@
       "output": "streakExtract",
       "blend": "Opaque",
       "inputs": [
-        { "binding": 0, "source": "hdr" }
+        { "binding": 0, "source": "hdr" },
+        { "binding": 1, "source": "glow" }
       ]
     },
     {
@@ -50,7 +51,8 @@
       "blend": "Opaque",
       "inputs": [
         { "binding": 0, "source": "hdr" },
-        { "binding": 1, "source": "prev:adapt" }
+        { "binding": 1, "source": "prev:adapt" },
+        { "binding": 2, "source": "glow" }
       ]
     },
     {

@@ -41,7 +41,7 @@ RimWorld 1.7 uses a 2.5D orthographic/perspective top-down view with the followi
 
 ### 3. Game Time Synchronization
 
-By default, particle simulation and node timelines strictly follow the game clock: step size is `0` when paused (in-flight particles and force fields freeze in place while continuing to render), and scales with `1x` / `2x` / `3x` game speeds. To ignore game pause, explicitly pass `realTime: true` in the play request.
+Particle simulation and node timelines use ticks actually completed this frame / 60 as their step, not wall-clock delta multiplied by a speed setting. No completed tick, or a host update skipped for `LongEventHandler.ShouldWaitForEvent`, means a zero game step; paused effects still render and real time continues. Vanilla TickRateMultiplier is Normal=1, Fast=3, Superfast=6 (12 when nothing happens, 18 without maps), Ultrafast=15 (150 without maps, 20000 with UltraSpeedBoost), and 1 when forced normal. The actual tick loop also has a frame-time budget. Source: Verse.TickManager, Assembly-CSharp.decompiled.cs:52605–52646,52853–52888. Pass `realTime: true` for effects using real time.
 
 ---
 
@@ -633,6 +633,8 @@ When switching packs, `ShaderPackCatalog.ApplyOptionsToRuntime` resets the four 
 5. **Persistent history prerequisite**: `"prev:X"` is valid only if target `X` was declared with `"persistent": true`.
 6. **Binding slot limits**: `inputs[].binding` must be in `[0, 15]`, cannot be `5` (reserved for the UBO), and cannot repeat within the same pass.
 
+The default Bloom prefilter extracts `hdr + glow`. The default threshold is `1.0` in both settings and pack baseline, and peaks ≤ threshold extract exactly zero. `bloomKnee=0` is a hard threshold without division by zero. A positive knee softens only above the threshold using `excess * smoothstep(0,knee,excess)`, where `excess=max(peak-threshold,0)`.
+
 #### Empty-Frame Bloom Skip Rule
 
 Even when `runOnEmptyFrames` is `true`, the runtime skips the built-in Bloom downsample/upsample chain and binds a `1x1` black placeholder (`black1x1`) to `bloom` whenever either condition holds:
@@ -659,8 +661,8 @@ If your pack needs custom Bloom scattering on empty frames (e.g., from `scene`, 
 | `glow` | `R16G16B16A16SFloat` / `Linear` | `black1x1` (zero) | Copies of vanilla and third-party additive glow, accumulated without clipping. The scene already contains their cores, so do not add this back onto the scene in a composite; use it for bloom, halos or streaks. Captured before the 3152 boundary, before later map overlays. A is unused. |
 | `bloom` | `R16G16B16A16SFloat` / `Linear` | `black1x1` (`R8G8B8A8UNorm` zero) | Built-in multi-mip Bloom pyramid output. |
 | `scene` | Main scene format / `Linear` | — | Separate same-frame copy of main scene colour (map, pawns, buildings, vanilla lighting) at the 3152 boundary. |
-| `depth` | `R32SFloat` / `Point` | `depth1x1` (`R32SFloat`, value `1.0`) | Colour snapshot copied from same-frame scene depth at the 3152 boundary for regular shader sampling. |
-| `mapLightField` | `R8G8B8A8UNorm` / `Linear` | `black1x1` (zero) | Map-sized (`mapSizeX x mapSizeZ`) roof, glow, enclosure, and fog-of-war texture. |
+| `depth` | `R32SFloat` / `Point` | `depth1x1` (`R32SFloat`, far plane `0.0`) | Colour snapshot copied from same-frame scene depth at the 3152 boundary for regular shader sampling. |
+| `mapLightField` | `R8G8B8A8UNorm` / `Linear` | `black1x1` (zero) | Map-sized (`mapSizeX x mapSizeZ`) roof, artificial-light, has-outdoor-temperature-Room, and fog-of-war texture. |
 
 The RGB of `hdr`, `glow` and `scene` share one encoding, so they add directly with no gamma or linear conversion: the scene target is `B8G8R8A8UNorm` and vanilla blends the stored values directly, while RimLumen's HDR targets use the same shader outputs and blend modes without clipping. `1.0` is vanilla full brightness; anything above `1.0` is the extra brightness vanilla clips.
 
@@ -695,28 +697,36 @@ layout(location = 0) out vec4 outColor;
 
 Relative `#include "Common.glslinc"` files inside the same pack directory are supported.
 
-#### Uniform Buffer (`set = 0, binding = 5`, 176-byte `std140`)
+#### Uniform Buffer (`set = 0, binding = 5`, 208-byte `std140`)
 
 ```glsl
 layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 {
     mat4 InvViewProjection; // Offset   0 (64 B): Inverse ViewProjection (Row-Major storage)
     vec4 ScreenAndMapSize;  // Offset  64 (16 B): (1.0/sceneW, 1.0/sceneH, mapSizeX, mapSizeZ)
-    vec4 EnvParams;         // Offset  80 (16 B): (elapsedTime, skyGlow, zoomRootSize, flags)
-    vec4 BloomParams;       // Offset  96 (16 B): (bloomIntensity, bloomThreshold, bloomKnee, bloomScatter)
-    vec4 PackParam0;        // Offset 112 (16 B): (packParam0,  packParam1,  packParam2,  packParam3)
-    vec4 PackParam1;        // Offset 128 (16 B): (packParam4,  packParam5,  packParam6,  packParam7)
-    vec4 PackParam2;        // Offset 144 (16 B): (packParam8,  packParam9,  packParam10, packParam11)
-    vec4 PackParam3;        // Offset 160 (16 B): (packParam12, packParam13, packParam14, packParam15)
+    float GameSeconds;      // 80: TicksGame / 60
+    float RealSeconds;      // 84: host elapsed seconds
+    float SkyGlow;          // 88
+    float ZoomRootSize;     // 92
+    float HasHdrDraws;      // 96
+    float HasSceneDepth;    // 100
+    float HasMapLightField; // 104
+    float IsPaused;         // 108
+    float DepthValid;       // 112
+    float GameDeltaSeconds; // 116: TicksThisFrame / 60; skipped update => 0
+    float RealDeltaSeconds; // 120: host frame delta
+    float Padding;          // 124
+    vec4 BloomParams;       // 128: intensity, threshold, knee, scatter
+    vec4 PackParam0;        // 144: packParam0..3
+    vec4 PackParam1;        // 160: packParam4..7
+    vec4 PackParam2;        // 176: packParam8..11
+    vec4 PackParam3;        // 192: packParam12..15
 } ubo;
 ```
 
 - **Parameter packing note**: `options[].target` values `packParam0..3` map to `ubo.PackParam0.xyzw`, `packParam4..7` map to `ubo.PackParam1.xyzw`, and so on. Thus `"target": "packParam1"` is read from `ubo.PackParam0.y`, not `ubo.PackParam1.x`.
-- **`EnvParams.w` bitmask**: Unpack with `uint flags = uint(ubo.EnvParams.w + 0.5);`:
-  - `1u` (bit 0): `hasHdrDraws` (at least one HDR draw, vanilla glow copy or direct HDR contributor is active)
-  - `2u` (bit 1): `hasSceneDepth` (`depth` holds a real scene depth snapshot rather than `depth1x1`)
-  - `4u` (bit 2): `hasMapLightField` (`mapLightField` is ready and bound to the real map field)
-  - `8u` (bit 3): `isPaused` (game clock is paused)
+- **Current ABI**: the old `EnvParams` bitmask is removed; external packs must adopt this 208-byte layout. `HasHdrDraws` (including glow copies), `HasSceneDepth`, `HasMapLightField`, and `IsPaused` are separate 0/1 floats. `DepthValid=1` means a real depth snapshot at the boundary; 0 means the far-plane placeholder, not a per-pixel geometry test.
+- `GameSeconds` is game ticks / 60 and stops on pause; `RealSeconds` is host elapsed real seconds. Their Delta fields hold this frame's step. Cinematic Adapt and StreakExtract read `hdr + glow`; the composite core remains `hdr` only. Adapt uses a 0.2-game-second time constant: `1-exp(-GameDeltaSeconds/0.2)`.
 
 #### Push Constant (16-byte `vec4`)
 
@@ -733,11 +743,11 @@ layout(push_constant) uniform Params { vec4 value; } pc;
 
 #### Reverse-Z Depth and World Ground-Plane Reconstruction
 
-Waylith uses Reverse-Z depth: near plane is `1.0` and sky/unrendered background is `0.0`, while the inactive `depth1x1` placeholder is `1.0`. To test whether a pixel belongs to real 3D geometry (e.g., IsoRim walls) rather than flat background or placeholder:
+Waylith uses Reverse-Z depth: near plane is `1.0` and sky/unrendered background is `0.0`, while the inactive `depth1x1` placeholder is `0.0` with `DepthValid=0`. To test whether a pixel belongs to real 3D geometry (e.g., IsoRim walls) rather than flat background or placeholder:
 
 ```glsl
 float depth = texture(depthImage, uv).r;
-float is3DGeom = step(0.0001, min(depth, 1.0 - depth));
+float is3DGeom = ubo.DepthValid * step(0.0001, min(depth, 1.0 - depth));
 ```
 
 To reconstruct the world ground-plane (`y = 0`) position and `mapLightField` UV from screen `uv` (compatible with both vanilla 2D top-down and IsoRim oblique cameras):
@@ -761,10 +771,10 @@ bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fie
 
 | Channel | Meaning | Encoding Rule |
 | --- | --- | --- |
-| `R` | Roof | `1.0` (`255`) if roofed, `0.0` (`0`) if unroofed. |
-| `G` | GroundGlow | `1.0` (`255`) when `glowGrid.VisualGlowAt` has `a == 1` (sunlit open cell); otherwise `min(0.5, (max(r, g, b) / 255.0) * 3.6)` (artificial lights cap at `0.5` so shaders can distinguish sunlight from torches). |
-| `B` | Enclosure | `0.0` (`0`) if unroofed; `~0.502` (`128/255`) if roofed with `UsesOutdoorTemperature == true` (porches/semi-open sheds); `1.0` (`255`) if fully enclosed indoors. |
-| `A` | FogOfWar | `1.0` (`255`) if fogged (unexplored), `0.0` (`0`) if revealed. |
+| `R` | Roofed | `1.0` (255) iff `RoofGrid.Roofed` is true, otherwise 0. Source: Assembly-CSharp.decompiled.cs:92166–92168. |
+| `G` | ArtificialGroundGlow | `min(0.5,(max(r,g,b)/255.0)*3.6)`, rounded to UNorm8, excluding sky light. Source: the artificial component of GlowGrid.GroundGlowAt, Assembly-CSharp.decompiled.cs:69541–69542. Half brightness quantizes to 128/255. |
+| `B` | HasOutdoorTemperatureRoom | `1.0` (255) iff the cell has a Room AND `Room.UsesOutdoorTemperature` is true, otherwise 0. Otherwise explicitly includes indoor-temperature Rooms and room-less cells such as walls/rock. Property source: Assembly-CSharp.decompiled.cs:90349–90358. This is a defined fact, not a placeholder or an indoor/outdoor classification for room-less cells: vanilla TryGetDirectAirTemperatureForCell returns false/21f without a Room (:92707–92714), not that bool classification. This input does not infer from neighbours. |
+| `A` | Fogged | `1.0` (255) iff `FogGrid.IsFogged` is true, otherwise 0. Source: Assembly-CSharp.decompiled.cs:68695–68701. |
 
 #### Built-in ShaderPacks Reference
 
@@ -831,7 +841,18 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 {
     mat4 InvViewProjection;
     vec4 ScreenAndMapSize;
-    vec4 EnvParams;
+    float GameSeconds;
+    float RealSeconds;
+    float SkyGlow;
+    float ZoomRootSize;
+    float HasHdrDraws;
+    float HasSceneDepth;
+    float HasMapLightField;
+    float IsPaused;
+    float DepthValid;
+    float GameDeltaSeconds;
+    float RealDeltaSeconds;
+    float Padding;
     vec4 BloomParams;
     vec4 PackParam0;
     vec4 PackParam1;
@@ -867,15 +888,15 @@ void main()
 
     vec2 fieldUv = world.xz / max(ubo.ScreenAndMapSize.zw, vec2(1.0));
     bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fieldUv.y <= 1.0;
-    uint flags = uint(ubo.EnvParams.w + 0.5);
 
     float darkness = 0.0;
-    if ((flags & 4u) != 0u && insideMap)
+    if (ubo.HasMapLightField > 0.5 && insideMap)
     {
         vec4 field = texture(mapLightField, fieldUv);
-        float outdoor = 1.0 - smoothstep(0.25, 0.90, max(field.r * 0.55, field.b));
+        float enclosure = field.r * mix(1.0, 0.55, field.b);
+        float outdoor = 1.0 - smoothstep(0.25, 0.90, enclosure);
         float litProtect = smoothstep(0.04, 0.45, field.g);
-        float night = smoothstep(0.88, 0.22, clamp(ubo.EnvParams.y, 0.0, 1.0));
+        float night = smoothstep(0.88, 0.22, clamp(ubo.SkyGlow, 0.0, 1.0));
         darkness = night * outdoor * (1.0 - litProtect) * (1.0 - field.a) * clamp(ubo.PackParam0.x, 0.0, 0.9);
     }
 

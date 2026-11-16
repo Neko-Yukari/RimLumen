@@ -5,7 +5,18 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 {
     mat4 InvViewProjection;
     vec4 ScreenAndMapSize;
-    vec4 EnvParams;
+    float GameSeconds;
+    float RealSeconds;
+    float SkyGlow;
+    float ZoomRootSize;
+    float HasHdrDraws;
+    float HasSceneDepth;
+    float HasMapLightField;
+    float IsPaused;
+    float DepthValid;
+    float GameDeltaSeconds;
+    float RealDeltaSeconds;
+    float Padding;
     vec4 BloomParams;
     vec4 PackParam0;
     vec4 PackParam1;

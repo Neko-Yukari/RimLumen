@@ -27,7 +27,7 @@ HDR here means internal high-dynamic-range rendering, tone-mapped back to a stan
 Plug and play: vanilla and third-party additive glow effects automatically get HDR bloom, with 5 built-in ShaderPacks (`Standard`, `Atmospheric`, `Cinematic`, `Vibrant`, `Crisp`) and support for mod or `Config/RimLumen/ShaderPacks/` packs.
 
 - 设置：选项 → 模组设置 → RimLumen / Options -> Mod Settings -> RimLumen
-  - `EnhanceVanillaAdditiveGlow`（默认开 / default on）：无其他 RimLumen 特效播放时，关闭后画面与不装本模组逐像素一致 / off = pixel-identical when no RimLumen effects are active
+  - `EnhanceVanillaAdditiveGlow`（默认开 / default on）：无其他 RimLumen 特效播放且当前光影包不重写场景时，关闭后画面与不装本模组逐像素一致 / off = pixel-identical only when no RimLumen effects are active and the active pack does not rewrite the scene
   - `ParticleDensityScale`（0.1 – 1.0，默认 1.0 / default 1.0）：粒子密度 / particle density
   - `ShaderPacks`：切包、实时参数滑杆、热重载（Reload）、重扫目录（Rescan）与重置默认 / pack selector, live sliders, hot reload, rescan, and reset
   - `EnableDemoBuildings`（默认关 / default off）：启用娱乐演示建筑（烟花发射器、粒子喷泉）/ enable demo Joy buildings (Firework Launcher & Particle Fountain)

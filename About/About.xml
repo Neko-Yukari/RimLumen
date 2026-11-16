@@ -48,7 +48,7 @@ RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可�
   · Cinematic（电影光丝）：横向变形光丝、6 级柔和泛光与跨帧自适应曝光。
   · Vibrant（霓虹高饱和）：抑制高光泛白，强化色彩饱和度与能量光晕。
   · Crisp（锐利克制）：高起辉阈值与 3 级紧致泛光，保留地形与 UI 锐利清晰。
-- 实时滑杆与热重载：设置页支持实时调节当前光影包参数、热重载、逐像素可还原的原版发光增强开关、粒子密度（10%–100%）与可选娱乐演示建筑（烟花发射器与粒子喷泉）。
+- 实时滑杆与热重载：设置页支持实时调节当前光影包参数、热重载、原版发光增强开关（仅在无活动特效且当前光影包不重写场景时，关闭后逐像素还原原版）、粒子密度（10%–100%）与可选娱乐演示建筑（烟花发射器与粒子喷泉）。
 - 6 站对照演示说明（见宣传图）：#1 LDR vs HDR 泛光 / #2 L1 速度拉伸 / #3 动态点光照地 / #4 深度软粒子穿墙淡出 / #5 L2 GPU 12k 旋涡 / #6 原版发光自动 HDR。
 - 实测性能参考（1080p · RTX 4080 SUPER · 无校验层 · 3 力场 + 5 级 Bloom + 软粒子，每档 60 帧）：0–50,000 粒子整帧均值 5.54–5.55 ms（~180 FPS），100,000 粒子 5.76 ms（174 FPS），250,000 粒子 8.49 ms（118 FPS），500,000 粒子 14.79 ms（68 FPS）；全档位主线程耗时低于 0.01 ms。默认 1,048,576 共享槽位满池后安全降级不报错。
 
@@ -87,7 +87,7 @@ HDR here means internal high-dynamic-range rendering, tone-mapped back to a stan
   · Cinematic: anamorphic streaks, 6-mip soft bloom, and adaptive exposure.
   · Vibrant: suppresses highlight desaturation and boosts energy glow chroma.
   · Crisp: high threshold with tight 3-mip bloom to keep terrain and UI sharp in combat.
-- Live Tuning and Demo Buildings: adjust per-pack sliders, hot-reload shaders, toggle vanilla additive glow (pixel-identical when off and no RimLumen effects play), scale Particle Density (10%–100%), and optionally enable Demo Joy Buildings (Firework Launcher and Particle Fountain).
+- Live Tuning and Demo Buildings: adjust per-pack sliders, hot-reload shaders, toggle vanilla additive glow (pixel-identical when off only if no RimLumen effects play and the active pack does not rewrite the scene), scale Particle Density (10%–100%), and optionally enable Demo Joy Buildings (Firework Launcher and Particle Fountain).
 - 6-Station Showcase Legend (see screenshots): #1 LDR vs HDR Bloom / #2 L1 Velocity Stretch / #3 Moving GlowGrid Light / #4 Soft Particle Wall Fade / #5 L2 GPU 12k Vortex / #6 Auto Vanilla HDR.
 - Measured Benchmark (1080p, RTX 4080 SUPER, validation off, 3 force fields + 5-mip bloom + soft particles, 60 frames/step): 0–50,000 particles at 5.54–5.55 ms (~180 FPS), 100,000 at 5.76 ms (174 FPS), 250,000 at 8.49 ms (118 FPS), and 500,000 at 14.79 ms (68 FPS), with main-thread capture under 0.01 ms. Shared 1,048,576-slot pool degrades gracefully if exhausted.
 

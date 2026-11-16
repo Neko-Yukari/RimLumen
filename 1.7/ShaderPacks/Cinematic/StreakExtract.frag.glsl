@@ -2,12 +2,13 @@
 #include "Common.glslinc"
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
+layout(set = 0, binding = 1) uniform sampler2D glowImage;
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 outColor;
 
 void main()
 {
-    vec3 c = sanitizeHdr(texture(hdrImage, uv).rgb);
+    vec3 c = sanitizeHdr(texture(hdrImage, uv).rgb) + sanitizeHdr(texture(glowImage, uv).rgb);
     float peak = max(c.r, max(c.g, c.b));
     float threshold = max(0.35, ubo.BloomParams.y * 0.9);
     float knee = max(0.15, ubo.BloomParams.z);

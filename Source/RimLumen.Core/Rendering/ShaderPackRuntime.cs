@@ -277,7 +277,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         if (!placeholdersCleared)
         {
             ClearAndMakeSampleable(cmd, black1x1, 0f, 0f, 0f, 0f);
-            ClearAndMakeSampleable(cmd, depth1x1, 1f, 0f, 0f, 0f);
+            ClearAndMakeSampleable(cmd, depth1x1, 0f, 0f, 0f, 0f);
             placeholdersCleared = true;
         }
 

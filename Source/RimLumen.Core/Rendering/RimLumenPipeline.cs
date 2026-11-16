@@ -27,6 +27,9 @@ internal sealed class RimLumenPipeline : IDisposable
     internal PipelineFrame? Captured;
     internal L1ParticleBatchRenderer L1Renderer { get; private set; } = null!;
     private ulong captureIndex;
+    private float gameSeconds;
+    private float gameDeltaSeconds;
+    private float realDeltaSeconds;
     private CameraView view;
     private Vector4 depthParams;
     private int mapIndex = -1;
@@ -111,11 +114,14 @@ internal sealed class RimLumenPipeline : IDisposable
             return;
         }
         MapLightFieldCollector.BeginCapture(App, Find.CurrentMap);
-        // Gameplay effects follow the game clock: dt = 0 while paused (frozen in mid-air, still rendered every frame),
-        // scaled by TickRateMultiplier (1x/2x/3x).
+        // TickManagerUpdate counts completed ticks; its time budget may run fewer than the requested speed.
+        TickManager tickManager = Current.Game.tickManager;
         float unscaledDt = MathF.Max(0f, timing.DeltaTime);
-        TickManager? tickManager = Current.Game.tickManager;
-        float simDt = tickManager != null && tickManager.Paused ? 0f : unscaledDt * (tickManager?.TickRateMultiplier ?? 1f);
+        // Root_Play skips Game.UpdatePlay while waiting; TicksThisFrame then still belongs to the previous update.
+        float simDt = LongEventHandler.ShouldWaitForEvent ? 0f : tickManager.TicksThisFrame / 60f;
+        gameSeconds = tickManager.TicksGame / 60f;
+        gameDeltaSeconds = simDt;
+        realDeltaSeconds = unscaledDt;
         view = CameraViewFactory.GetView(camera);
         depthParams = new Vector4(camera.nearClipPlane, camera.farClipPlane, camera.orthographic ? 1f : 0f, 1f);
         activeContributorBuffer.Clear();
@@ -277,7 +283,10 @@ internal sealed class RimLumenPipeline : IDisposable
             (int)extent.Height,
             mapSizeX,
             mapSizeZ,
+            gameSeconds,
             (float)timing.ElapsedTime,
+            gameDeltaSeconds,
+            realDeltaSeconds,
             skyGlow,
             zoomRootSize,
             hasHdrDraws,

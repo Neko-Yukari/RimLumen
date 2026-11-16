@@ -10,6 +10,18 @@ The entire HDR / bloom / ShaderPack chain composites inside the map pass at the 
 
 Later fog of war 3175, Darkness 3180, weather fog 3169, sun shadows, rain, IsoRim fog, depth plane and post passes 4880–4990, and RimIris's grade cover or process the result. The 3152 distortion motes' scene grab now includes RimLumen. Glows remaining above it in vanilla order: PsychicRitualCandleMote 3155, OxygenOverlayIndoors 3170, GravFieldExtenderGlow 3181, GravEngineGlow 3185, GlowOverlay / GravshipLensFlare 3201, UnlitAdditive 3700. The `glow` input contains only additive glows drawn before 3152.
 
+## Current ShaderPack input ABI
+
+The UBO is now 208-byte std140 at set 0 binding 5; external packs must replace the old EnvParams block. Offsets: InvViewProjection 0 (mat4), ScreenAndMapSize 64 (vec4); floats GameSeconds 80, RealSeconds 84, SkyGlow 88, ZoomRootSize 92, HasHdrDraws 96, HasSceneDepth 100, HasMapLightField 104, IsPaused 108, DepthValid 112, GameDeltaSeconds 116, RealDeltaSeconds 120, Padding 124; vec4 BloomParams 128, PackParam0 144, PackParam1 160, PackParam2 176, PackParam3 192. Flags are independent 0/1 floats. Missing depth is reverse-Z far=0 with DepthValid=0; real boundary depth has DepthValid=1 (not a per-pixel geometry claim).
+
+Particle DeltaTime and GameDeltaSeconds are actual TicksThisFrame/60, or zero when the host skips game update for LongEventHandler.ShouldWaitForEvent (Root_Play.Update AC:53551–53566); GameSeconds is TicksGame/60, stopping on pause. RealSeconds and RealDeltaSeconds are host elapsed/frame seconds. Vanilla speed requests are Normal 1, Fast 3, Superfast 6 (12 idle, 18 without maps), Ultrafast 15 (150 without maps, 20000 boosted), forced normal 1; completed ticks are budget-limited. Source: Verse.TickManager, Assembly-CSharp.decompiled.cs:52605–52646,52853–52888.
+
+Cinematic StreakExtract and Adapt read hdr + glow; composite core reads hdr only. Adapt's exponential time constant is 0.2 game seconds: 1-exp(-GameDeltaSeconds/0.2). Default bloom threshold is 1.0 in settings and pack baseline; peak ≤ threshold extracts exactly 0. Knee=0 is a hard threshold without division by zero; positive knee uses excess*smoothstep(0,knee,excess) above threshold only.
+
+mapLightField RGBA means Roofed / ArtificialGroundGlow / HasOutdoorTemperatureRoom / Fogged. R is RoofGrid.Roofed (AC:92166–92168), 255/0 as shipped. G is min(0.5,max(rgb)/255*3.6), rounded to UNorm8, excluding sky light (GlowGrid.GroundGlowAt artificial component, AC:69541–69542). B is 255 iff a Room exists AND Room.UsesOutdoorTemperature is true (AC:90349–90358), otherwise 0 including indoor-temperature Rooms and room-less walls/rock. This is a defined fact, not a placeholder or vanilla indoor/outdoor classification of room-less cells: TryGetDirectAirTemperatureForCell returns false/21f without a Room (AC:92707–92714), not that bool classification. No neighbour inference. A is FogGrid.IsFogged, 255/0 (AC:68695–68701). AC refers to Assembly-CSharp.decompiled.cs. Atmospheric reads roof R directly and combines it with B in its visual formula, enclosure=R*mix(1,0.55,B), leaving G strictly artificial light.
+
+Turning vanilla glow enhancement off is pixel-identical only when no RimLumen effects are active and the active pack does not rewrite the scene.
+
 ## Documentation
 
 - [English Developer API Manual](api.en.md): Complete reference for coordinates (`Vertical3D` / `GroundXZ`), `.lumen.json`, XML `LumenEffectDef`, the effect state machine (`states`, `stopState`, `Notify`), force fields, `RimLumenApi`, `LumenTextureRegistry`, `Chezhou.RimUnity` bridge, and the programmable `ShaderPacks` specification.

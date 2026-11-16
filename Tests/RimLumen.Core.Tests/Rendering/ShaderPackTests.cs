@@ -20,16 +20,27 @@ public static class ShaderPackTests
     [LumenFact]
     public static void ShaderPackUniformsMatchesStd140Layout()
     {
-        Require(Marshal.SizeOf<ShaderPackUniforms>() == 176,
-            $"Expected 176 bytes, got {Marshal.SizeOf<ShaderPackUniforms>()}.");
+        Require(Marshal.SizeOf<ShaderPackUniforms>() == 208,
+            $"Expected 208 bytes, got {Marshal.SizeOf<ShaderPackUniforms>()}.");
         Equal(0, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.InvViewProjection)).ToInt32());
         Equal(64, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.ScreenAndMapSize)).ToInt32());
-        Equal(80, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.EnvParams)).ToInt32());
-        Equal(96, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.BloomParams)).ToInt32());
-        Equal(112, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam0)).ToInt32());
-        Equal(128, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam1)).ToInt32());
-        Equal(144, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam2)).ToInt32());
-        Equal(160, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam3)).ToInt32());
+        Equal(80, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.GameSeconds)).ToInt32());
+        Equal(84, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.RealSeconds)).ToInt32());
+        Equal(88, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.SkyGlow)).ToInt32());
+        Equal(92, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.ZoomRootSize)).ToInt32());
+        Equal(96, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.HasHdrDraws)).ToInt32());
+        Equal(100, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.HasSceneDepth)).ToInt32());
+        Equal(104, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.HasMapLightField)).ToInt32());
+        Equal(108, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.IsPaused)).ToInt32());
+        Equal(112, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.DepthValid)).ToInt32());
+        Equal(116, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.GameDeltaSeconds)).ToInt32());
+        Equal(120, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.RealDeltaSeconds)).ToInt32());
+        Equal(124, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.Padding)).ToInt32());
+        Equal(128, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.BloomParams)).ToInt32());
+        Equal(144, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam0)).ToInt32());
+        Equal(160, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam1)).ToInt32());
+        Equal(176, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam2)).ToInt32());
+        Equal(192, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam3)).ToInt32());
     }
 
     [LumenFact]
@@ -285,34 +296,37 @@ public static class ShaderPackTests
     }
 
     [LumenFact]
-    public static void MapLightFieldEncoderMatchesVanillaGlowAndEnclosure()
+    public static void MapLightFieldEncoderMatchesRoofArtificialLightOutdoorRoomAndFog()
     {
         Span<byte> rgba = stackalloc byte[4];
 
-        // Sunlit cell (a == 1): GroundGlow = 255, unroofed => R=0, B=0, unfogged => A=0
-        MapLightFieldEncoder.EncodeCell(roofed: false, 10, 20, 30, 1, usesOutdoorTemp: true, fogged: false, rgba);
+        // Unroofed cell with an outdoor-temperature Room and independent artificial light.
+        MapLightFieldEncoder.EncodeCell(roofed: false, 10, 20, 30, hasOutdoorTemperatureRoom: true, fogged: false, rgba);
         Equal((byte)0, rgba[0]);
-        Equal((byte)255, rgba[1]);
-        Equal((byte)0, rgba[2]);
-        Equal((byte)0, rgba[3]);
-
-        // Roofed outdoor (porch) with dark glow, fogged
-        MapLightFieldEncoder.EncodeCell(roofed: true, 0, 0, 0, 0, usesOutdoorTemp: true, fogged: true, rgba);
-        Equal((byte)255, rgba[0]);
-        Equal((byte)0, rgba[1]);
-        Equal((byte)128, rgba[2]);
-        Equal((byte)255, rgba[3]);
-
-        // Roofed indoor with max torch glow (capped at 0.5 * 255 = 128)
-        MapLightFieldEncoder.EncodeCell(roofed: true, 255, 128, 0, 0, usesOutdoorTemp: false, fogged: false, rgba);
-        Equal((byte)255, rgba[0]);
-        Equal((byte)128, rgba[1]);
+        Equal((byte)108, rgba[1]);
         Equal((byte)255, rgba[2]);
         Equal((byte)0, rgba[3]);
 
+        // Roofed outdoor (porch) with dark glow, fogged
+        MapLightFieldEncoder.EncodeCell(roofed: true, 0, 0, 0, hasOutdoorTemperatureRoom: true, fogged: true, rgba);
+        Equal((byte)255, rgba[0]);
+        Equal((byte)0, rgba[1]);
+        Equal((byte)255, rgba[2]);
+        Equal((byte)255, rgba[3]);
+
+        // Indoor-temperature Room or no Room: B=false, independent of roof and artificial-light cap.
+        MapLightFieldEncoder.EncodeCell(roofed: true, 255, 128, 0, hasOutdoorTemperatureRoom: false, fogged: false, rgba);
+        Equal((byte)255, rgba[0]);
+        Equal((byte)128, rgba[1]);
+        Equal((byte)0, rgba[2]);
+        Equal((byte)0, rgba[3]);
+
         // Mid torch glow: r = 20 => 20/255 * 3.6 = 0.28235 -> round(0.28235 * 255) = 72
-        MapLightFieldEncoder.EncodeCell(roofed: false, 20, 0, 0, 0, usesOutdoorTemp: true, fogged: false, rgba);
+        MapLightFieldEncoder.EncodeCell(roofed: false, 20, 0, 0, hasOutdoorTemperatureRoom: false, fogged: false, rgba);
+        Equal((byte)0, rgba[0]);
         Equal((byte)72, rgba[1]);
+        Equal((byte)0, rgba[2]);
+        Equal((byte)0, rgba[3]);
     }
 
     [LumenFact]
@@ -334,32 +348,36 @@ public static class ShaderPackTests
         Matrix4x4 vp = Matrix4x4.CreateOrthographic(40f, 22.5f, 0.3f, 200f);
 
         ShaderPackUniforms u = ShaderPackUniforms.Build(
-            in vp, 1920, 1080, 250, 200, 12.5f, 0.75f, 24f,
+            in vp, 1920, 1080, 250, 200, 12.5f, 20f, 0.05f, 0.016f, 0.75f, 24f,
             hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: false, isPaused: false, in snapshot);
 
         Equal(1f / 1920f, u.ScreenAndMapSize.X);
         Equal(1f / 1080f, u.ScreenAndMapSize.Y);
         Equal(250f, u.ScreenAndMapSize.Z);
         Equal(200f, u.ScreenAndMapSize.W);
-        Equal(12.5f, u.EnvParams.X);
-        Equal(0.75f, u.EnvParams.Y);
-        Equal(24f, u.EnvParams.Z);
-        Equal(3f, u.EnvParams.W);
+        Equal(12.5f, u.GameSeconds);
+        Equal(0.75f, u.SkyGlow);
+        Equal(24f, u.ZoomRootSize);
+        Equal(1f, u.HasHdrDraws);
+        Equal(1f, u.DepthValid);
+        Equal(0f, u.HasMapLightField);
         Require(Matrix4x4.Invert(vp, out Matrix4x4 inv), "ViewProjection must be invertible.");
         Equal(inv, u.InvViewProjection);
         Equal(new Vector4(0.3f, 1.2f, 0.4f, 0.7f), u.BloomParams);
         Equal(new Vector4(0f, 0f, 9f, 0f), u.PackParam0);
         Equal(new Vector4(0f, 0f, 0f, -3f), u.PackParam3);
 
-        // All four flag bits; bit 3 is paused.
+        // Named float flags are independently available to shader consumers.
         ShaderPackUniforms all = ShaderPackUniforms.Build(
-            in vp, 800, 600, 1, 1, 0f, 1f, 24f,
+            in vp, 800, 600, 1, 1, 0f, 0f, 0f, 0f, 1f, 24f,
             hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: true, in snapshot);
-        Equal(15f, all.EnvParams.W);
+        Equal(1f, all.HasSceneDepth);
+        Equal(1f, all.HasMapLightField);
+        Equal(1f, all.IsPaused);
         ShaderPackUniforms none = ShaderPackUniforms.Build(
-            in vp, 0, 0, 0, 0, 0f, 1f, 24f,
+            in vp, 0, 0, 0, 0, 0f, 0f, 0f, 0f, 1f, 24f,
             hasHdrDraws: false, hasSceneDepth: false, hasMapLightField: false, isPaused: false, in snapshot);
-        Equal(0f, none.EnvParams.W);
+        Equal(0f, none.DepthValid);
         Equal(0f, none.ScreenAndMapSize.X);
     }
 
@@ -408,14 +426,14 @@ public static class ShaderPackTests
         var runtime = new ShaderPackRuntimeParams();
         runtime.BloomIntensity = 0.3f;
         runtime.SetPackParam(0, 0.375f);
-        ShaderPackUniforms uniforms = ShaderPackUniforms.Build(viewProjection, 1920, 1080, 250, 250, 7.5f, 0.8f, 24f,
+        ShaderPackUniforms uniforms = ShaderPackUniforms.Build(viewProjection, 1920, 1080, 250, 250, 7.5f, 10f, 0.05f, 0.016f, 0.8f, 24f,
             hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: false, runtime.CaptureSnapshot());
 
         Equal(1f / 1920f, uniforms.ScreenAndMapSize.X);
         Equal(250f, uniforms.ScreenAndMapSize.Z);
         Equal(0.3f, uniforms.BloomParams.X);
         Equal(0.375f, uniforms.PackParam0.X);
-        Equal(7.5f, uniforms.EnvParams.X);
+        Equal(7.5f, uniforms.GameSeconds);
 
         Vector3 ground = new(51.25f, 0f, 36.75f);
         Vector4 clip = SlangMultiply(viewProjection, new Vector4(ground, 1f));
@@ -485,7 +503,18 @@ public static class ShaderPackTests
                     {
                         mat4 InvViewProjection;
                         vec4 ScreenAndMapSize;
-                        vec4 EnvParams;
+                        float GameSeconds;
+                        float RealSeconds;
+                        float SkyGlow;
+                        float ZoomRootSize;
+                        float HasHdrDraws;
+                        float HasSceneDepth;
+                        float HasMapLightField;
+                        float IsPaused;
+                        float DepthValid;
+                        float GameDeltaSeconds;
+                        float RealDeltaSeconds;
+                        float Padding;
                         vec4 BloomParams;
                         vec4 PackParam0;
                         vec4 PackParam1;

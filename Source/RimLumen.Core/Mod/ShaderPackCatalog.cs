@@ -19,7 +19,7 @@ public static class ShaderPackCatalog
             "RimLumen_BloomIntensityTooltip"),
         new("bloomThreshold", "RimLumen_BloomThreshold", ShaderPackOptionTarget.BloomThreshold, 1.0f, 0.2f, 3.0f, 0.05f,
             "RimLumen_BloomThresholdTooltip"),
-        new("bloomKnee", "RimLumen_BloomKnee", ShaderPackOptionTarget.BloomKnee, 0.5f, 0.05f, 1.0f, 0.01f,
+        new("bloomKnee", "RimLumen_BloomKnee", ShaderPackOptionTarget.BloomKnee, 0.5f, 0.0f, 1.0f, 0.01f,
             "RimLumen_BloomKneeTooltip"),
         new("bloomScatter", "RimLumen_BloomScatter", ShaderPackOptionTarget.BloomScatter, 0.65f, 0.2f, 0.95f, 0.01f,
             "RimLumen_BloomScatterTooltip"),

@@ -204,18 +204,29 @@ internal readonly record struct ShaderPackUniformBlockSnapshot(
     Vector4 PackParam2,
     Vector4 PackParam3);
 
-// 176-byte std140 UBO bound at set=0, binding=5 across ShaderPack passes.
+// 208-byte std140 UBO bound at set=0, binding=5 across ShaderPack passes.
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
 public struct ShaderPackUniforms
 {
     public Matrix4x4 InvViewProjection; // 0 (64B)
     public Vector4 ScreenAndMapSize;    // 64 (16B): (1/screenW, 1/screenH, mapSizeX, mapSizeZ)
-    public Vector4 EnvParams;           // 80 (16B): (elapsedTime, skyGlow, zoomRootSize, flags 0..15 as float)
-    public Vector4 BloomParams;         // 96 (16B): (bloomIntensity, bloomThreshold, bloomKnee, bloomScatter)
-    public Vector4 PackParam0;          // 112 (16B)
-    public Vector4 PackParam1;          // 128 (16B)
-    public Vector4 PackParam2;          // 144 (16B)
-    public Vector4 PackParam3;          // 160 (16B)
+    public float GameSeconds;          // 80
+    public float RealSeconds;          // 84
+    public float SkyGlow;              // 88
+    public float ZoomRootSize;         // 92
+    public float HasHdrDraws;          // 96
+    public float HasSceneDepth;        // 100
+    public float HasMapLightField;     // 104
+    public float IsPaused;             // 108
+    public float DepthValid;           // 112: 1 for a real boundary snapshot, 0 for placeholder
+    public float GameDeltaSeconds;     // 116
+    public float RealDeltaSeconds;     // 120
+    public float Padding;            // 124
+    public Vector4 BloomParams;         // 128
+    public Vector4 PackParam0;          // 144
+    public Vector4 PackParam1;          // 160
+    public Vector4 PackParam2;          // 176
+    public Vector4 PackParam3;          // 192
 
     internal static ShaderPackUniforms Build(
         in Matrix4x4 viewProjection,
@@ -223,7 +234,10 @@ public struct ShaderPackUniforms
         int screenHeight,
         int mapSizeX,
         int mapSizeZ,
-        float elapsedTime,
+        float gameSeconds,
+        float realSeconds,
+        float gameDeltaSeconds,
+        float realDeltaSeconds,
         float skyGlow,
         float zoomRootSize,
         bool hasHdrDraws,
@@ -233,10 +247,6 @@ public struct ShaderPackUniforms
         in ShaderPackUniformBlockSnapshot runtime)
     {
         Matrix4x4 invViewProj = Matrix4x4.Invert(viewProjection, out Matrix4x4 inv) ? inv : Matrix4x4.Identity;
-        uint flags = (hasHdrDraws ? 1u : 0u)
-            | (hasSceneDepth ? 2u : 0u)
-            | (hasMapLightField ? 4u : 0u)
-            | (isPaused ? 8u : 0u);
         return new ShaderPackUniforms
         {
             InvViewProjection = invViewProj,
@@ -245,7 +255,12 @@ public struct ShaderPackUniforms
                 screenHeight > 0 ? 1f / screenHeight : 0f,
                 mapSizeX,
                 mapSizeZ),
-            EnvParams = new Vector4(elapsedTime, skyGlow, zoomRootSize, flags),
+            GameSeconds = gameSeconds, RealSeconds = realSeconds,
+            GameDeltaSeconds = gameDeltaSeconds, RealDeltaSeconds = realDeltaSeconds,
+            SkyGlow = skyGlow, ZoomRootSize = zoomRootSize,
+            HasHdrDraws = hasHdrDraws ? 1f : 0f, HasSceneDepth = hasSceneDepth ? 1f : 0f,
+            HasMapLightField = hasMapLightField ? 1f : 0f, IsPaused = isPaused ? 1f : 0f,
+            DepthValid = hasSceneDepth ? 1f : 0f,
             BloomParams = new Vector4(runtime.BloomIntensity, runtime.BloomThreshold, runtime.BloomKnee, runtime.BloomScatter),
             PackParam0 = runtime.PackParam0,
             PackParam1 = runtime.PackParam1,
