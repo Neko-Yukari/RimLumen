@@ -6,12 +6,14 @@ using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Text.Json;
+using Brutal.VulkanApi;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.ParticlesGpu;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Scene;
 using Verse;
 using Waylith;
+using Waylith.Graphics;
 using Waylith.Rendering;
 using Waylith.UnityCompat;
 
@@ -25,6 +27,16 @@ internal static class ShowcaseBenchmarkSession
 {
     private const string OutputPrefix = "-rimlumen-showcase-bench=";
     private static readonly int[] Tiers = { 0, 10_000, 50_000, 100_000, 250_000, 500_000 };
+
+    // Many-emitter tiers run after the ladder, so the ladder's own numbers stay comparable. Every emitter is the
+    // ladder workload at ParticlesPerEmitter, stacked on the ladder's origin: the total matches Bench-500k and
+    // only the emitter count differs. Game-time emitters stand still for the measured frames (ticks are paused).
+    private const int ParticlesPerEmitter = 1_000;
+    private static readonly (string Id, int RealTime, int GameTime)[] EmitterTiers =
+    {
+        ("Bench-500x1k", 500, 0),
+        ("Bench-Paused-250rt+250gt", 250, 250),
+    };
 
     // Ensures: true iff args carries "-rimlumen-showcase-bench=<jsonPath>" (key case-insensitive, one
     //   optional pair of surrounding quotes on the value); jsonPath is empty when it returns false.
@@ -155,6 +167,7 @@ internal static class ShowcaseBenchmarkSession
         private readonly TimeSpeed savedTimeSpeed;
         private readonly bool savedCameraDriver;
         private readonly bool savedScreenshotMode;
+        private readonly VkPresentModeKHR savedPresentMode;
         private readonly Dictionary<Window, bool> windowVisibility = new();
 
         private SessionState(EngineApplication app)
@@ -164,6 +177,7 @@ internal static class ShowcaseBenchmarkSession
             savedTimeSpeed = tickManager.CurTimeSpeed;
             savedCameraDriver = Current.CameraDriver.enabled;
             savedScreenshotMode = Find.UIRoot.screenshotMode.Active;
+            savedPresentMode = app.RenderContext!.PresentMode;
         }
 
         internal static SessionState Capture(EngineApplication app) => new(app);
@@ -174,6 +188,8 @@ internal static class ShowcaseBenchmarkSession
             Current.CameraDriver.enabled = false;
             Find.UIRoot.screenshotMode.Active = true;
             ScreenFader.SetColor(UnityEngine.Color.clear);
+            // FIFO present paces every tier to the monitor refresh rate; launch-showcase.ps1 lifts the engine cap with -TargetFrameRate=0.
+            EngineWindow.SetVSyncMode(VSyncMode.Off);
             app.OnUpdate += PrepareDeterministicFrame;
             PrepareDeterministicFrame();
         }
@@ -191,6 +207,12 @@ internal static class ShowcaseBenchmarkSession
         internal void Restore()
         {
             app.OnUpdate -= PrepareDeterministicFrame;
+            EngineWindow.SetVSyncMode(savedPresentMode switch
+            {
+                VkPresentModeKHR.ImmediateKHR => VSyncMode.Off,
+                VkPresentModeKHR.MailboxKHR => VSyncMode.TripleBuffer,
+                _ => VSyncMode.VSync,
+            });
             Find.UIRoot.screenshotMode.Active = savedScreenshotMode;
             foreach (KeyValuePair<Window, bool> entry in windowVisibility)
                 entry.Key.drawInScreenshotMode = entry.Value;
@@ -211,6 +233,9 @@ internal static class ShowcaseBenchmarkSession
         if (!cell.InBounds(map)) throw new InvalidOperationException("Camera centre is outside the map.");
         Vector3 origin = new(cell.x + 0.5f, 0f, cell.z + 0.5f);
         int mapId = map.uniqueID;
+
+        // The present-mode switch rebuilds the swapchain a few frames later; keep that out of the first tier.
+        for (int i = 0; i < 30; i++) yield return new UnityEngine.WaitForEndOfFrame();
 
         foreach (int targetCount in Tiers)
         {
@@ -241,9 +266,7 @@ internal static class ShowcaseBenchmarkSession
 
                 // Read live particles only after the measured frames, so the readback never enters the frame times.
                 int live = targetCount == 0 ? 0 : gpu.CountLiveParticles();
-                double meanMs = frameMs.Average();
-                double[] sorted = frameMs.OrderBy(v => v).ToArray();
-                double p95Ms = sorted[Math.Min(sorted.Length - 1, (int)Math.Ceiling(sorted.Length * 0.95) - 1)];
+                (double meanMs, double p95Ms, double maxMs) = Summarize(frameMs);
                 steps.Add(new
                 {
                     Id = id,
@@ -252,7 +275,7 @@ internal static class ShowcaseBenchmarkSession
                     MeasuredFrames = frameMs.Count,
                     FrameMeanMs = Math.Round(meanMs, 3),
                     FrameP95Ms = Math.Round(p95Ms, 3),
-                    FrameMaxMs = Math.Round(sorted[^1], 3),
+                    FrameMaxMs = Math.Round(maxMs, 3),
                     ApproxFps = Math.Round(1000.0 / Math.Max(0.001, meanMs), 1),
                 });
 
@@ -267,7 +290,72 @@ internal static class ShowcaseBenchmarkSession
                 if (targetCount > 0) LumenSceneBootstrap.Catalog.Unregister(id);
             }
         }
+
+        TickManager tickManager = Find.TickManager;
+        foreach ((string id, int realTime, int gameTime) in EmitterTiers)
+        {
+            RegisterWorkload(id, ParticlesPerEmitter);
+            var workloads = new List<ILumenEffectHandle>(realTime + gameTime);
+            try
+            {
+                for (int i = 0; i < realTime + gameTime; i++)
+                {
+                    ILumenEffectHandle handle = LumenSceneBootstrap.Service.Play(new LumenPlayRequest
+                    {
+                        EffectId = id, MapIndex = mapId, OriginWorld = origin, RealTime = i < realTime
+                    });
+                    if (!handle.IsAlive) throw new InvalidOperationException($"Benchmark workload failed to start: {id} #{i}");
+                    workloads.Add(handle);
+                }
+                if (gameTime > 0)
+                {
+                    // Game-time emitters only spawn while ticks run: fill them, then pause again before measuring.
+                    tickManager.CurTimeSpeed = TimeSpeed.Normal;
+                    for (int i = 0; i < 10; i++) yield return new UnityEngine.WaitForEndOfFrame();
+                    tickManager.Pause();
+                }
+                for (int i = 0; i < 8; i++) yield return new UnityEngine.WaitForEndOfFrame();
+
+                var frameMs = new List<double>(60);
+                for (int i = 0; i < 60; i++)
+                {
+                    long t0 = Stopwatch.GetTimestamp();
+                    yield return new UnityEngine.WaitForEndOfFrame();
+                    frameMs.Add(Stopwatch.GetElapsedTime(t0).TotalMilliseconds);
+                }
+
+                int live = gpu.CountLiveParticles();
+                (double meanMs, double p95Ms, double maxMs) = Summarize(frameMs);
+                steps.Add(new
+                {
+                    Id = id,
+                    TargetParticles = (realTime + gameTime) * ParticlesPerEmitter,
+                    LiveParticles = live,
+                    RealTimeEmitters = realTime,
+                    GameTimeEmitters = gameTime,
+                    MeasuredFrames = frameMs.Count,
+                    FrameMeanMs = Math.Round(meanMs, 3),
+                    FrameP95Ms = Math.Round(p95Ms, 3),
+                    FrameMaxMs = Math.Round(maxMs, 3),
+                    ApproxFps = Math.Round(1000.0 / Math.Max(0.001, meanMs), 1),
+                });
+            }
+            finally
+            {
+                tickManager.Pause();
+                foreach (ILumenEffectHandle handle in workloads) handle.Stop(allowFadeOut: false);
+                LumenSceneBootstrap.Catalog.Unregister(id);
+            }
+            yield return new UnityEngine.WaitForEndOfFrame();
+            yield return new UnityEngine.WaitForEndOfFrame();
+        }
         yield return new UnityEngine.WaitForEndOfFrame();
+    }
+
+    private static (double MeanMs, double P95Ms, double MaxMs) Summarize(List<double> frameMs)
+    {
+        double[] sorted = frameMs.OrderBy(v => v).ToArray();
+        return (frameMs.Average(), sorted[Math.Min(sorted.Length - 1, (int)Math.Ceiling(sorted.Length * 0.95) - 1)], sorted[^1]);
     }
 
     // Ensures: registers the L2 GPU workload asset; changing any field breaks comparability with earlier results.

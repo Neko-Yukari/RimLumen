@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using Brutal.VulkanApi;
@@ -10,6 +9,7 @@ using Waylith.Graphics;
 using Waylith.Rendering;
 using Waylith.Rendering.PostFx;
 using RimLumen.Core.Lighting;
+using static RimLumen.Core.Rendering.Logic.ShaderPackGraphValidator;
 
 namespace RimLumen.Core.Rendering;
 
@@ -58,10 +58,8 @@ internal sealed class ShaderPackRuntime : IDisposable
     private readonly PostEffectPass[] bloomUp;
     private readonly PostEffectPass[] customOffscreenPasses;
     private readonly InlinePostEffectPass backbufferPass;
-    // Spec-derived facts the per-frame record paths branch on.
-    private readonly bool hasCustomBloomShader;
-    private readonly bool finalPassUsesBuiltInComposite;
-    private readonly Dictionary<string, CustomTargetAllocation> customTargets = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ExecutionPlan plan;
+    private readonly CustomTargetAllocation[] customTargets;
 
     private RenderTexture? black1x1;
     private RenderTexture? depth1x1;
@@ -74,22 +72,19 @@ internal sealed class ShaderPackRuntime : IDisposable
 
     internal ShaderPackRuntime(EngineApplication app, ShaderPackSpec spec)
     {
+        plan = ExecutionPlan.Compile(spec);
         this.app = app;
         Spec = spec;
+        customTargets = new CustomTargetAllocation[plan.Targets.Count];
         framesInFlight = Math.Max(1, app.RenderContext?.FramesInFlight ?? 3);
 
-        hasCustomBloomShader = NullIfBlank(spec.BloomPrefilterShaderPath) is not null
-            || NullIfBlank(spec.BloomDownShaderPath) is not null
-            || NullIfBlank(spec.BloomUpShaderPath) is not null;
-        finalPassUsesBuiltInComposite = spec.Passes.Count > 0 && NullIfBlank(spec.Passes[^1].FragmentShaderPath) is null;
-
-        int mipLevels = spec.BloomMipLevels;
+        int mipLevels = plan.BloomMipLevels;
         bloomDown = new PostEffectPass[mipLevels];
         bloomUp = new PostEffectPass[Math.Max(0, mipLevels - 1)];
         customOffscreenPasses = Array.Empty<PostEffectPass>();
         try
         {
-            backbufferPass = CreatePasses(spec, mipLevels, out customOffscreenPasses);
+            backbufferPass = CreatePasses(mipLevels, out customOffscreenPasses);
         }
         catch
         {
@@ -99,17 +94,13 @@ internal sealed class ShaderPackRuntime : IDisposable
         }
     }
 
-    private InlinePostEffectPass CreatePasses(ShaderPackSpec spec, int mipLevels, out PostEffectPass[] offscreenPasses)
+    private InlinePostEffectPass CreatePasses(int mipLevels, out PostEffectPass[] offscreenPasses)
     {
         if (mipLevels > 0)
         {
-            string prefilterPath = NullIfBlank(spec.BloomPrefilterShaderPath) ?? "RimLumenBloomPrefilter.frag.glsl";
-            string downPath = NullIfBlank(spec.BloomDownShaderPath) ?? "RimLumenBloomDown.frag.glsl";
-            string upPath = NullIfBlank(spec.BloomUpShaderPath) ?? "RimLumenBloomUp.frag.glsl";
-
             bloomDown[0] = new PostEffectPass(
                 "RimLumenBloomDown0",
-                prefilterPath,
+                plan.BloomPrefilterShaderPath,
                 new[] { 0, 2, 3, 4 },
                 BlendState.Opaque,
                 pushConstantSize: 16,
@@ -120,7 +111,7 @@ internal sealed class ShaderPackRuntime : IDisposable
             {
                 bloomDown[i] = new PostEffectPass(
                     $"RimLumenBloomDown{i}",
-                    downPath,
+                    plan.BloomDownShaderPath,
                     new[] { 0, 4 },
                     BlendState.Opaque,
                     pushConstantSize: 16,
@@ -132,7 +123,7 @@ internal sealed class ShaderPackRuntime : IDisposable
             {
                 bloomUp[i] = new PostEffectPass(
                     $"RimLumenBloomUp{i}",
-                    upPath,
+                    plan.BloomUpShaderPath,
                     new[] { 0, 1, 4 },
                     BlendState.Opaque,
                     pushConstantSize: 16,
@@ -141,28 +132,15 @@ internal sealed class ShaderPackRuntime : IDisposable
             }
         }
 
-        if (spec.Passes.Count == 0)
-        {
-            offscreenPasses = Array.Empty<PostEffectPass>();
-            string compositePath = NullIfBlank(spec.CompositeShaderPath) ?? "RimLumenComposite.frag.glsl";
-            return new InlinePostEffectPass(
-                "RimLumenComposite",
-                compositePath,
-                new[] { 0, 1, 2, 3, 4 },
-                ToBlendState(ShaderPackBlendMode.PremultipliedAlpha),
-                pushConstantSize: 16,
-                uniformBinding: 5);
-        }
-
-        int offscreenCount = spec.Passes.Count - 1;
+        int offscreenCount = plan.Passes.Count - 1;
         offscreenPasses = new PostEffectPass[offscreenCount];
         for (int i = 0; i < offscreenCount; i++)
         {
-            ShaderPackPassSpec passSpec = spec.Passes[i];
+            PlannedPass passSpec = plan.Passes[i];
             int[] bindings = passSpec.Inputs.Select(static x => x.Binding).ToArray();
             offscreenPasses[i] = new PostEffectPass(
-                $"RimLumenPackPass.{i}",
-                passSpec.FragmentShaderPath!,
+                passSpec.RuntimeName,
+                passSpec.FragmentShaderPath,
                 bindings,
                 BlendState.Opaque,
                 pushConstantSize: 16,
@@ -170,15 +148,11 @@ internal sealed class ShaderPackRuntime : IDisposable
                 uniformBinding: 5);
         }
 
-        ShaderPackPassSpec finalSpec = spec.Passes[^1];
-        string? customFinalPath = NullIfBlank(finalSpec.FragmentShaderPath);
-        string finalPath = customFinalPath ?? NullIfBlank(spec.CompositeShaderPath) ?? "RimLumenComposite.frag.glsl";
-        int[] finalBindings = customFinalPath is null && finalSpec.Inputs.Count == 0
-            ? new[] { 0, 1, 2, 3, 4 }
-            : finalSpec.Inputs.Select(static x => x.Binding).ToArray();
+        PlannedPass finalSpec = plan.Passes[^1];
+        int[] finalBindings = finalSpec.Inputs.Select(static x => x.Binding).ToArray();
         return new InlinePostEffectPass(
-            "RimLumenPackComposite",
-            finalPath,
+            finalSpec.RuntimeName,
+            finalSpec.FragmentShaderPath,
             finalBindings,
             ToBlendState(finalSpec.BlendMode),
             pushConstantSize: 16,
@@ -196,7 +170,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         EnsurePlaceholdersAndTargets(ctx.CommandBuffer, scene.Width, scene.Height);
 
         RenderTexture depthTex = hasSceneDepth ? slot.DepthSnapshot : depth1x1!;
-        bool skipBuiltInBloom = Spec.BloomMipLevels == 0 || (!hasHdrDraws && !hasCustomBloomShader);
+        bool skipBuiltInBloom = plan.BloomMipLevels == 0 || (!hasHdrDraws && !plan.HasCustomBloomShader);
 
         if (!skipBuiltInBloom && slot.Down.Length > 0)
         {
@@ -243,14 +217,14 @@ internal sealed class ShaderPackRuntime : IDisposable
 
         for (int i = 0; i < customOffscreenPasses.Length; i++)
         {
-            ShaderPackPassSpec passSpec = Spec.Passes[i];
+            PlannedPass passSpec = plan.Passes[i];
             PostEffectPass pass = customOffscreenPasses[i];
-            foreach (ShaderPackInputBinding input in passSpec.Inputs)
+            foreach (PlannedInput input in passSpec.Inputs)
             {
-                BindInputSource(pass, input.Binding, input.Source, slot, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, writeOrdinal);
+                BindInputSource(pass, input, slot, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, writeOrdinal);
             }
             pass.SetUniforms(in uniforms);
-            RenderTexture output = ResolveWriteTarget(passSpec.OutputTarget, ctx.SubmissionFrameIndex, writeOrdinal);
+            RenderTexture output = ResolveWriteTarget(passSpec.OutputTargetIndex, ctx.SubmissionFrameIndex, writeOrdinal);
             var pc = new Vector4(1f / output.Width, 1f / output.Height, passSpec.ExtraParams.X, passSpec.ExtraParams.Y);
             pass.SetPushConstants(in pc);
             pass.Output = output;
@@ -270,41 +244,16 @@ internal sealed class ShaderPackRuntime : IDisposable
         bool hasSceneDepth)
     {
         RenderTexture depthTex = hasSceneDepth ? slot.DepthSnapshot : depth1x1!;
-        bool skipBuiltInBloom = Spec.BloomMipLevels == 0 || (!hasHdrDraws && !hasCustomBloomShader);
+        bool skipBuiltInBloom = plan.BloomMipLevels == 0 || (!hasHdrDraws && !plan.HasCustomBloomShader);
         RenderTexture bloomTex = skipBuiltInBloom || slot.Bloom is null ? black1x1! : slot.Bloom;
 
-        if (Spec.Passes.Count == 0)
+        PlannedPass finalSpec = plan.Passes[^1];
+        foreach (PlannedInput input in finalSpec.Inputs)
         {
-            backbufferPass.SetInput(0, slot.Color);
-            backbufferPass.SetInput(1, bloomTex);
-            backbufferPass.SetInput(2, scene);
-            backbufferPass.SetInput(3, depthTex);
-            BindMapLightField(backbufferPass, 4);
-            backbufferPass.SetUniforms(in uniforms);
-            var pc = new Vector4(uniforms.BloomParams.X, 0f, 1f / scene.Width, 1f / scene.Height);
-            backbufferPass.SetPushConstants(in pc);
-            backbufferPass.RecordInline(in ctx, ctx.RenderPass, ctx.SampleCount);
-            return;
-        }
-
-        ShaderPackPassSpec finalSpec = Spec.Passes[^1];
-        if (finalPassUsesBuiltInComposite && finalSpec.Inputs.Count == 0)
-        {
-            backbufferPass.SetInput(0, slot.Color);
-            backbufferPass.SetInput(1, bloomTex);
-            backbufferPass.SetInput(2, scene);
-            backbufferPass.SetInput(3, depthTex);
-            BindMapLightField(backbufferPass, 4);
-        }
-        else
-        {
-            foreach (ShaderPackInputBinding input in finalSpec.Inputs)
-            {
-                BindInputSource(backbufferPass, input.Binding, input.Source, slot, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
-            }
+            BindInputSource(backbufferPass, input, slot, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
         }
         backbufferPass.SetUniforms(in uniforms);
-        Vector4 finalPc = finalPassUsesBuiltInComposite
+        Vector4 finalPc = finalSpec.UsesBuiltInComposite
             ? new Vector4(uniforms.BloomParams.X, 0f, 1f / scene.Width, 1f / scene.Height)
             : new Vector4(1f / scene.Width, 1f / scene.Height, finalSpec.ExtraParams.X, finalSpec.ExtraParams.Y);
         backbufferPass.SetPushConstants(in finalPc);
@@ -343,21 +292,22 @@ internal sealed class ShaderPackRuntime : IDisposable
             placeholdersCleared = true;
         }
 
-        if (Spec.Targets.Count == 0)
+        if (plan.Targets.Count == 0)
             return;
 
-        if (customTargets.Count > 0 && (targetWidth != sceneWidth || targetHeight != sceneHeight))
+        if (targetWidth != 0 && (targetWidth != sceneWidth || targetHeight != sceneHeight))
         {
             app.Device.WaitIdle();
             DisposeCustomTargets();
         }
 
-        if (customTargets.Count == 0)
+        if (targetWidth == 0)
         {
             targetWidth = sceneWidth;
             targetHeight = sceneHeight;
-            foreach (ShaderPackTargetSpec spec in Spec.Targets)
+            for (int targetIndex = 0; targetIndex < plan.Targets.Count; targetIndex++)
             {
+                ShaderPackTargetSpec spec = plan.Targets[targetIndex];
                 int w = Math.Max(1, (int)MathF.Round(sceneWidth * spec.Scale));
                 int h = Math.Max(1, (int)MathF.Round(sceneHeight * spec.Scale));
                 int ringCount = spec.Persistent ? Math.Max(2, framesInFlight) : framesInFlight;
@@ -370,7 +320,7 @@ internal sealed class ShaderPackRuntime : IDisposable
                     {
                         ring[i] = CreateRenderTexture(w, h, format, filter, $"RimLumen.PackTarget.{spec.Name}.{i}");
                     }
-                    customTargets[spec.Name] = new CustomTargetAllocation(spec, ring);
+                    customTargets[targetIndex] = new CustomTargetAllocation(spec, ring);
                 }
                 catch
                 {
@@ -381,7 +331,7 @@ internal sealed class ShaderPackRuntime : IDisposable
             }
         }
 
-        foreach (CustomTargetAllocation alloc in customTargets.Values)
+        foreach (CustomTargetAllocation alloc in customTargets)
         {
             if (alloc.NeedsPersistentClear)
             {
@@ -392,9 +342,9 @@ internal sealed class ShaderPackRuntime : IDisposable
         }
     }
 
-    private RenderTexture ResolveWriteTarget(string name, int submissionIndex, ulong writeOrdinal)
+    private RenderTexture ResolveWriteTarget(int targetIndex, int submissionIndex, ulong writeOrdinal)
     {
-        CustomTargetAllocation alloc = customTargets[name];
+        CustomTargetAllocation alloc = customTargets[targetIndex];
         if (alloc.Spec.Persistent)
         {
             int idx = (int)(writeOrdinal % (ulong)alloc.Ring.Length);
@@ -405,8 +355,7 @@ internal sealed class ShaderPackRuntime : IDisposable
 
     private void BindInputSource(
         PostEffectPass pass,
-        int binding,
-        string source,
+        PlannedInput input,
         HdrTargets.Slot slot,
         RenderTexture bloomTex,
         RenderTexture scene,
@@ -414,45 +363,22 @@ internal sealed class ShaderPackRuntime : IDisposable
         int submissionIndex,
         ulong writeOrdinal)
     {
-        if (string.Equals(source, "hdr", StringComparison.OrdinalIgnoreCase))
+        switch (input.Kind)
         {
-            pass.SetInput(binding, slot.Color);
-            return;
+            case InputKind.Hdr: pass.SetInput(input.Binding, slot.Color); return;
+            case InputKind.Bloom: pass.SetInput(input.Binding, bloomTex); return;
+            case InputKind.Scene: pass.SetInput(input.Binding, scene); return;
+            case InputKind.Depth: pass.SetInput(input.Binding, depthTex); return;
+            case InputKind.MapLightField: BindMapLightField(pass, input.Binding); return;
+            case InputKind.Target:
+                CustomTargetAllocation alloc = customTargets[input.TargetIndex];
+                int index = alloc.Spec.Persistent
+                    ? (int)((writeOrdinal + (ulong)alloc.Ring.Length - (ulong)input.HistoryFramesAgo) % (ulong)alloc.Ring.Length)
+                    : submissionIndex % alloc.Ring.Length;
+                pass.SetInput(input.Binding, alloc.Ring[index]);
+                return;
+            default: throw new ArgumentOutOfRangeException(nameof(input));
         }
-        if (string.Equals(source, "bloom", StringComparison.OrdinalIgnoreCase))
-        {
-            pass.SetInput(binding, bloomTex);
-            return;
-        }
-        if (string.Equals(source, "scene", StringComparison.OrdinalIgnoreCase))
-        {
-            pass.SetInput(binding, scene);
-            return;
-        }
-        if (string.Equals(source, "depth", StringComparison.OrdinalIgnoreCase))
-        {
-            pass.SetInput(binding, depthTex);
-            return;
-        }
-        if (string.Equals(source, "mapLightField", StringComparison.OrdinalIgnoreCase))
-        {
-            BindMapLightField(pass, binding);
-            return;
-        }
-        if (source.StartsWith("prev:", StringComparison.OrdinalIgnoreCase))
-        {
-            string targetName = source[5..];
-            CustomTargetAllocation prevAlloc = customTargets[targetName];
-            int prevIdx = (int)((writeOrdinal + (ulong)prevAlloc.Ring.Length - 1UL) % (ulong)prevAlloc.Ring.Length);
-            pass.SetInput(binding, prevAlloc.Ring[prevIdx]);
-            return;
-        }
-
-        CustomTargetAllocation alloc = customTargets[source];
-        RenderTexture tex = alloc.Spec.Persistent
-            ? alloc.Ring[(int)(writeOrdinal % (ulong)alloc.Ring.Length)]
-            : alloc.Ring[submissionIndex % alloc.Ring.Length];
-        pass.SetInput(binding, tex);
     }
 
     private void BindMapLightField(PostEffectPass pass, int binding)
@@ -532,9 +458,6 @@ internal sealed class ShaderPackRuntime : IDisposable
         }
     }
 
-    private static string? NullIfBlank(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value;
-
     private static VkFormat ToVkFormat(ShaderPackTargetFormat format) => format switch
     {
         ShaderPackTargetFormat.R16G16B16A16SFloat => VkFormat.R16G16B16A16SFloat,
@@ -574,9 +497,9 @@ internal sealed class ShaderPackRuntime : IDisposable
 
     private void DisposeCustomTargets()
     {
-        foreach (CustomTargetAllocation alloc in customTargets.Values)
-            alloc.Dispose();
-        customTargets.Clear();
+        foreach (CustomTargetAllocation? alloc in customTargets)
+            alloc?.Dispose();
+        Array.Clear(customTargets);
         targetWidth = 0;
         targetHeight = 0;
     }

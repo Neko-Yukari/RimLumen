@@ -34,6 +34,9 @@ internal sealed class RimLumenPipeline : IDisposable
     private Vector4 depthParams;
     private int mapIndex = -1;
     private ILumenFrameContributor[] contributors = Array.Empty<ILumenFrameContributor>();
+    private ILumenFrameContributor[] activeContributors = Array.Empty<ILumenFrameContributor>();
+    private readonly List<ILumenFrameContributor> activeContributorBuffer = new();
+    private readonly List<string> featureNames = new();
     private bool disposed;
 
     internal RimLumenPipeline(EngineApplication app)
@@ -65,7 +68,7 @@ internal sealed class RimLumenPipeline : IDisposable
     {
         LumenSceneBootstrap.EnsureInitialized();
         L1Renderer ??= new L1ParticleBatchRenderer(DepthProxy, App.RenderContext?.FramesInFlight ?? 3);
-        LumenSceneBootstrap.Simulator.BatchSink = L1Renderer;
+        LumenSceneBootstrap.Simulator.HdrRendererAttached = true;
         string[] names = App.FrameRenderer.Features.Select(feature => feature.GetType().Name).ToArray();
         int index = FeatureOrderGuard.ComputePreBackbufferInsertIndex(names);
         if (index < 0) throw new InvalidOperationException("Map/PostFx feature order is unavailable.");
@@ -103,9 +106,16 @@ internal sealed class RimLumenPipeline : IDisposable
 
     internal void GuardCompositeOrder()
     {
-        IRenderFeature[] features = App.FrameRenderer.Features.ToArray();
-        int index = FeatureOrderGuard.ComputeCompositeReinsertIndex(features.Select(feature => feature.GetType().Name).ToArray(),
-            Array.IndexOf(features, Composite));
+        IReadOnlyList<IRenderFeature> features = App.FrameRenderer.Features;
+        featureNames.Clear();
+        int selfIndex = -1;
+        for (int i = 0; i < features.Count; i++)
+        {
+            IRenderFeature feature = features[i];
+            featureNames.Add(feature.GetType().Name);
+            if (selfIndex < 0 && EqualityComparer<IRenderFeature>.Default.Equals(feature, Composite)) selfIndex = i;
+        }
+        int index = FeatureOrderGuard.ComputeCompositeReinsertIndex(featureNames, selfIndex);
         if (index < 0) return;
         App.FrameRenderer.RemoveFeature(Composite);
         App.FrameRenderer.InsertFeature(index, Composite);
@@ -132,7 +142,15 @@ internal sealed class RimLumenPipeline : IDisposable
         float simDt = tickManager != null && tickManager.Paused ? 0f : unscaledDt * (tickManager?.TickRateMultiplier ?? 1f);
         view = CameraViewFactory.GetView(camera);
         depthParams = new Vector4(camera.nearClipPlane, camera.farClipPlane, camera.orthographic ? 1f : 0f, 1f);
-        contributors = LumenHostRegistry.GetContributorsSnapshot().Where(contributor => contributor.HasActiveWork).ToArray();
+        activeContributorBuffer.Clear();
+        foreach (ILumenFrameContributor contributor in LumenHostRegistry.GetSharedContributorsSnapshot())
+            if (contributor.HasActiveWork) activeContributorBuffer.Add(contributor);
+        bool changed = activeContributorBuffer.Count != activeContributors.Length;
+        for (int i = 0; !changed && i < activeContributors.Length; i++)
+            changed = !ReferenceEquals(activeContributorBuffer[i], activeContributors[i]);
+        // Captured frames may still be on the render thread; publish replacements, never mutate their arrays.
+        if (changed) activeContributors = activeContributorBuffer.ToArray();
+        contributors = activeContributors;
         var extent = App.RenderContext!.Extent;
         int currentMapIndex = Find.CurrentMap?.uniqueID ?? -1;
         mapIndex = currentMapIndex;
@@ -208,7 +226,13 @@ internal sealed class RimLumenPipeline : IDisposable
             }
             draws.Add(draw);
         }
-        int unsupported = snapshot.PersistentSources.Sum(source => source.DrawItemsReadOnly.Count(draw => draw.PassId == RimLumenRenderHost.LumenRenderPassId));
+        int unsupported = 0;
+        foreach (PersistentDrawCallSource source in snapshot.PersistentSources)
+        {
+            IReadOnlyList<FinalDrawItem> items = source.DrawItemsReadOnly;
+            for (int i = 0; i < items.Count; i++)
+                if (items[i].PassId == RimLumenRenderHost.LumenRenderPassId) unsupported++;
+        }
         if (unsupported > 0)
             Log.Error($"[RimLumen] Unsupported routed persistent draws: {unsupported}. Public-only copy is unavailable; submit dynamic MeshDrawCommand instead.");
         // Particles were staged on the main thread in BeginCapture and their mesh upload was just drained
@@ -288,7 +312,7 @@ internal sealed class RimLumenPipeline : IDisposable
         disposed = true;
         App.BeforeGraphicsShutdown -= Shutdown;
         App.OnShutdown -= Quiesce;
-        LumenSceneBootstrap.Simulator.BatchSink = null;
+        LumenSceneBootstrap.Simulator.HdrRendererAttached = false;
         Release("L1Particles", L1Renderer.Dispose);
         Release("MapLightField", () => MapLightFieldCollector.DisposeGpu(App));
         Release("DepthProxy", DepthProxy.Dispose);

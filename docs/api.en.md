@@ -301,7 +301,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 
 | Member | Behavior & Notes |
 | --- | --- |
-| `bool IsAlive` | `true` while playing or fading/draining; becomes `false` once all particles and point lights are cleaned up. |
+| `bool IsAlive` | `true` while playing or fading/draining; becomes `false` once `L1_NativeCpu` particles and point lights are cleaned up. **Note**: `L2_GpuCompute` particles do not gate this. After `Stop(true)` the handle stops tracking them at once and the engine lets airborne L2 particles finish their lifetime, so an effect with only L2 nodes and no point lights reports `IsAlive == false` immediately after `Stop(true)`. |
 | `void Trigger(string eventOrStateName)` | Fires matching `TimelineEventSpec` entries and activates matching nodes. **Note**: `L1_NativeCpu` nodes also emit a pulse of `Bursts[0].Count` (or rounded `RateOverTime`); `L2_GpuCompute` nodes only enable emission without an extra one-shot burst on `Trigger`. |
 | `void SetParam(string name, float value)` | Updates runtime scalar parameters. Three built-in names take effect immediately: `intensity` (scales particle and light brightness), `rate` (scales L1 emission rate), and `scale` (multiplies root scale). Other names are stored without affecting simulation. |
 | `void Stop(bool allowFadeOut = true)` | When `true`, immediately stops new emission, fades active point lights over `0.25s`, and lets live particles finish their lifetime before reclamation. When `false`, immediately destroys all particles and lights. |

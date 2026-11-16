@@ -56,15 +56,14 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     // Ensures: always "LumenVfxService".
     public string Name => "LumenVfxService";
 
-    // Ensures: IsHdrActive and IsSceneDepthAvailable report whether an HDR pass owner has installed
-    //          Simulator.BatchSink (the sink is only offered inside RimLumenVfxPass, which has RGBA16F
-    //          colour plus read-only scene depth); IsGpuComputeAvailable reports whether the L2 resolver
+    // Ensures: IsHdrActive and IsSceneDepthAvailable report whether the pipeline's HDR renderer is
+    //          attached (RGBA16F colour plus read-only scene depth); IsGpuComputeAvailable reports whether the L2 resolver
     //          yields an engine; MaxGpuParticlesPerFrame is 4096 with an engine and 0 without.
     public LumenCapabilities Capabilities
     {
         get
         {
-            bool hdr = Simulator.BatchSink is not null;
+            bool hdr = Simulator.HdrRendererAttached;
             bool gpu = GpuEngineProvider?.Invoke() is not null;
             return new LumenCapabilities(hdr, hdr, gpu, gpu ? 4096 : 0);
         }
@@ -142,7 +141,7 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     // Ensures: no-op, for the same reason as EnqueuePreCompute.
     public void RecordBufferBarriers(in LumenBarrierContext context) { }
 
-    // Ensures: no-op, for the same reason as EnqueuePreCompute: CpuParticleSimulator.RecordHdrDraws
-    //          submits the L1 batch once, and the L2 engine submits its own instances.
+    // Ensures: no-op. The pipeline appends L1 batches and the L2 engine appends its own instances;
+    //          MeshBatchRenderer records both from the captured draw list.
     public void RecordHdrDraws(in LumenHdrDrawContext context) { }
 }

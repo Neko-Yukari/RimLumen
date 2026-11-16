@@ -43,7 +43,7 @@ public sealed class RimLumenSettings : ModSettings
     internal void ApplyScalarsToRuntime()
     {
         RimLumenRenderHost.EnableVanillaAdditiveBloom = EnhanceVanillaAdditiveGlow;
-        RimLumenRenderHost.ParticleDensityScale = Mathf.Clamp(ParticleDensityScale, 0.1f, 1.0f);
+        RimLumenRenderHost.ParticleDensityScale = ParticleDensityScale;
         DemoBuildingRegistry.SyncWithSettings(EnableDemoBuildings);
     }
 

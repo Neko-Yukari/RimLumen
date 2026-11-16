@@ -1,4 +1,3 @@
-using System;
 using System.Numerics;
 
 namespace RimLumen.Core.Scene;
@@ -35,18 +34,6 @@ public struct CpuParticle
     public float Size;
     public Vector4 Color;
     public int FlipbookFrame;
-}
-
-/// <summary>
-/// Sink the HDR pass owner installs on <see cref="CpuParticleSimulator"/> to consume the L1 quad
-/// batch. When no sink is installed the simulator produces vertices but submits no draw.
-/// </summary>
-public interface IL1ParticleBatchSink
-{
-    // Requires: called on the render thread inside the RimLumen HDR VFX pass; main-thread staging
-    //           of mutable simulator buffers must already have completed during CaptureMainThread.
-    // Ensures: submits one dynamic quad batch (4 vertices per particle, 6 indices per particle).
-    void Submit(ReadOnlySpan<ParticleVertex> vertices, ReadOnlySpan<uint> indices, int liveParticleCount);
 }
 
 /// <summary>Contiguous index range in <see cref="CpuParticleSimulator"/> sharing one texture and blend mode.</summary>

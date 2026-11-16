@@ -235,6 +235,17 @@ public static class ParticleDataTests
     }
 
     [LumenFact]
+    public static void SimulationDispatchCoversTailBlocksAndSizesScratchWithoutOverflow()
+    {
+        Equal(1, ParticleSimulationDispatch.BlockCount(1));
+        Equal(1, ParticleSimulationDispatch.BlockCount(64));
+        Equal(2, ParticleSimulationDispatch.BlockCount(65));
+        Equal(7813, ParticleSimulationDispatch.BlockCount(500000));
+        Equal(31252L, ParticleSimulationDispatch.ScratchBytes(500000));
+        Equal(33554432, ParticleSimulationDispatch.BlockCount(int.MaxValue));
+    }
+
+    [LumenFact]
     public static void GpuStructSizesAndOffsetsMatchShaderStorageLayout()
     {
         Equal(64, Marshal.SizeOf<GpuParticle>());

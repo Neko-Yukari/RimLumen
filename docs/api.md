@@ -301,7 +301,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 
 | 成员 | 作用与注意事项 |
 | --- | --- |
-| `bool IsAlive` | 播放中或淡出排空期间为 `true`，全部粒子与点光清理完毕后变为 `false`。 |
+| `bool IsAlive` | 播放中或淡出排空期间为 `true`，`L1_NativeCpu` 粒子与点光清理完毕后变为 `false`。**注意**：`L2_GpuCompute` 粒子不参与这一判定，`Stop(true)` 后句柄立即不再跟踪它们，空中的 L2 粒子由引擎继续跑完寿命；只含 L2 节点且没有点光的特效在 `Stop(true)` 后 `IsAlive` 立刻为 `false`。 |
 | `void Trigger(string eventOrStateName)` | 触发同名 `TimelineEventSpec`，并激活同名节点开始发射。**注意**：`L1_NativeCpu` 节点会顺带按 `Bursts[0].Count`（或取整的 `RateOverTime`）补发一次脉冲；`L2_GpuCompute` 节点只会开启发射状态，不会在 `Trigger` 时额外做一次性脉冲。 |
 | `void SetParam(string name, float value)` | 实时修改运行时参数。当前内置三个立即生效的参数名：`intensity`（缩放粒子和点光亮度）、`rate`（缩放 L1 发射速率）、`scale`（乘算根节点缩放）。其他名字会被记录下来但不会影响模拟。 |
 | `void Stop(bool allowFadeOut = true)` | `true` 时立刻停止新发射、现存点光在 `0.25s` 内淡出、空中粒子自然跑完寿命后自动回收；`false` 时立刻切断所有粒子与点光。 |

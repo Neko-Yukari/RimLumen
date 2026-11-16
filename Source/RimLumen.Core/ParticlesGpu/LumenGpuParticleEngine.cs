@@ -32,6 +32,10 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
     private readonly int capacity;
     private readonly EmitterSlotAllocator allocator;
     private readonly Dictionary<int, Instance> instances = new();
+    private readonly List<ParticleEmitterFrame> captureRows = new();
+    private readonly List<EmitterSlotRange> captureClears = new();
+    private readonly List<int> captureRemoved = new();
+    private readonly List<GpuForceField> captureFields = new();
     private int nextId;
     private bool disposed;
     private ParticleFrame? captured;
@@ -73,6 +77,11 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
             Id = id, Spec = spec, Slots = range, Scheduler = scheduler,
             Curves = curves, World = initialWorldTransform
         });
+        lock (lifecycleGate)
+        {
+            System.Threading.Volatile.Write(ref idleRequested, false);
+            idleStartedAt = null;
+        }
         return id;
     }
 
@@ -131,12 +140,13 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!float.IsFinite(context.DeltaTime) || context.DeltaTime < 0)
             throw new ArgumentOutOfRangeException(nameof(context.DeltaTime));
-        var rows = new List<ParticleEmitterFrame>(instances.Count);
-        var clears = new List<EmitterSlotRange>();
-        var removed = new List<int>();
-        var fields = new List<GpuForceField>();
+        var rows = captureRows;
+        var clears = captureClears;
+        var removed = captureRemoved;
+        var fields = captureFields;
+        rows.Clear(); clears.Clear(); removed.Clear(); fields.Clear();
         // Player-facing density setting; the default 1.0 leaves the emission budget untouched.
-        float density = Math.Clamp(RimLumenRenderHost.ParticleDensityScale, 0.1f, 1.0f);
+        float density = RimLumenRenderHost.ParticleDensityScale;
         foreach (Instance instance in instances.Values)
         {
             float dt = instance.RealTime && context.UnscaledDeltaTime > 0f ? context.UnscaledDeltaTime : context.DeltaTime;
@@ -152,9 +162,7 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
             }
             EmitterSpec spec = instance.Spec;
             int budget = instance.State == InstanceState.Emitting && instance.Activated && dt > 0f
-                ? Math.Min(instance.Slots.Capacity, instance.Scheduler.Advance(dt, instance.Emitting)) : 0;
-            if (density < 0.999f && budget > 0)
-                budget = Math.Min(instance.Slots.Capacity, (int)MathF.Ceiling(budget * density));
+                ? Math.Min(instance.Slots.Capacity, instance.Scheduler.Advance(dt, instance.Emitting, density)) : 0;
             // Spawns are simulated at the end of this step, so even a long final step
             // must retain the newly spawned particles for a complete maximum lifetime.
             if (instance.State == InstanceState.Emitting && instance.Activated && instance.Scheduler.Finished)
@@ -205,7 +213,7 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
     }
 }
 
-internal sealed record ParticleEmitterFrame(int InstanceId, GpuEmitterParams Parameters,
+internal readonly record struct ParticleEmitterFrame(int InstanceId, GpuEmitterParams Parameters,
     GpuCurveSample[] Curves, string? TextureKey, LumenBlendMode Blend, int MapIndex = -1,
     bool IsVertical3D = false, float BaseY = 0f, bool KillBelowFloor = false)
 {

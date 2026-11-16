@@ -54,8 +54,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     // Ensures: always "L1_NativeCpu".
     public string Name => "L1_NativeCpu";
 
-    // Ensures: optional HDR submission target; null means "no HDR pass owner installed yet".
-    public IL1ParticleBatchSink? BatchSink { get; set; }
+    // Set by the pipeline while its HDR renderer is attached.
+    internal bool HdrRendererAttached { get; set; }
 
     // Ensures: true while at least one emitter is emitting or at least one particle is alive;
     //          false once every emitter is drained and every particle expired.
@@ -156,8 +156,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     {
         if (emitters.TryGetValue(emitterId, out var emitter) && emitter.State != EmissionState.Draining)
         {
-            float density = DensityScale();
-            Spawn(emitterId, emitter, density >= 1f ? count : ScaleCount(count, density));
+            Spawn(emitterId, emitter, ParticleEmissionBudget.ScaleBurst(count, RimLumenRenderHost.ParticleDensityScale));
         }
     }
 
@@ -198,7 +197,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         int existingCount = particleCount;
         float dt = context.DeltaTime;
         float unscaledDt = context.UnscaledDeltaTime;
-        float density = DensityScale();
+        float density = RimLumenRenderHost.ParticleDensityScale;
         foreach (int id in emitterIds)
         {
             var emitter = emitters[id];
@@ -214,9 +213,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             if (emitter.State == EmissionState.Emitting)
             {
                 double emissionDt = Math.Max(0d, emissionEnd - start);
-                emitter.RateRemainder += (double)spec.RateOverTime * emitter.RateMultiplier * emissionDt * density;
-                double count = Math.Floor(emitter.RateRemainder);
-                emitter.RateRemainder -= count;
+                double count = ParticleEmissionBudget.AccumulateRate(ref emitter.RateRemainder,
+                    (double)spec.RateOverTime * emitter.RateMultiplier, emissionDt, density);
                 Spawn(id, emitter, (int)Math.Min(Math.Max(0, count), spec.MaxParticles));
                 foreach (var burst in spec.Bursts)
                 {
@@ -226,7 +224,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                     if (looping && (burst.Time < 0 || burst.Time > spec.Duration)) crossings = 0;
                     if (!emitter.Started && burst.Time == 0f && emitterDt > 0f) crossings++;
                     if (crossings > 0)
-                        Spawn(id, emitter, (int)Math.Min(crossings * ScaleCount(burst.Count, density), spec.MaxParticles));
+                        Spawn(id, emitter, (int)Math.Min(crossings * ParticleEmissionBudget.ScaleBurst(burst.Count, density), spec.MaxParticles));
                 }
             }
             if (limited && end >= spec.Duration) emitter.State = EmissionState.Draining;
@@ -260,10 +258,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     // Ensures: no-op; L1 records no buffer barriers.
     public void RecordBufferBarriers(in LumenBarrierContext context) { }
 
-    // Requires: called inside RimLumenVfxPass; HasActiveWork was true for this frame.
-    // Ensures: forwards the current batch to BatchSink when one is installed, otherwise submits nothing.
-    public void RecordHdrDraws(in LumenHdrDrawContext context)
-        => BatchSink?.Submit(Vertices, Indices, batchCount);
+    // Ensures: no command-buffer work. MeshBatchRenderer records the draws appended by the pipeline
+    //   from the L1 mesh staged during main-thread capture.
+    public void RecordHdrDraws(in LumenHdrDrawContext context) { }
 
     private void RemoveParticle(int index)
     {
@@ -359,16 +356,6 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
 
     private static Vector3 NormalizeOr(Vector3 value, Vector3 fallback)
         => value.LengthSquared() > 1e-10f ? Vector3.Normalize(value) : fallback;
-
-    // Ensures: 1 for the default scale (so default frames stay bit-exact), otherwise the clamped host scale.
-    private static float DensityScale()
-    {
-        float density = Math.Clamp(RimLumen.Core.Rendering.RimLumenRenderHost.ParticleDensityScale, 0.1f, 1.0f);
-        return density < 0.999f ? density : 1f;
-    }
-
-    private static int ScaleCount(int count, float density)
-        => count > 0 && density < 1f ? Math.Max(1, (int)MathF.Round(count * density)) : count;
 
     private int GroupOf(EmitterSpec spec)
     {

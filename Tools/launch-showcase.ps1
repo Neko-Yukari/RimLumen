@@ -123,6 +123,8 @@ try {
             '-quicktest',
             '-WindowSize=1920,1080',
             '-ResetVulkanFallback',
+            # The game caps frames at the monitor refresh rate; uncapped, tiers below the cap become measurable.
+            '-TargetFrameRate=0',
             "-savedatafolder=$profile",
             "-rimlumen-showcase-bench=$resolvedJson"
         )) {

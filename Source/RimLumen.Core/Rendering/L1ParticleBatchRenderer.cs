@@ -16,9 +16,9 @@ namespace RimLumen.Core.Rendering;
 // when it captures the frame's draw snapshot, and Capture() appends one MeshDrawCommand per SubMesh so
 // MeshBatchRenderer records them inside the RimLumenHdr pass.
 // Threading: the simulator's vertex/index arrays are rewritten (and resized) by the next main-thread
-// capture, so Stage copies them and Submit stays a no-op. Texture keys are resolved on the main thread
+// capture, so Stage copies them. Texture keys are resolved on the main thread
 // in Stage; ContentFinder is never touched on the render thread.
-internal sealed class L1ParticleBatchRenderer : IL1ParticleBatchSink, IDisposable
+internal sealed class L1ParticleBatchRenderer : IDisposable
 {
     // Distinct particle textures per capture (one cached Material each). Materials outlive the frame they
     // were created for, but a capture that would need more than this many distinct materials drops its
@@ -219,12 +219,6 @@ internal sealed class L1ParticleBatchRenderer : IL1ParticleBatchSink, IDisposabl
             materials[key].Material.Dispose();
             materials.Remove(key);
         }
-    }
-
-    // Ensures: keeps the IL1ParticleBatchSink contract callable without recording; draws are appended by
-    //   the pipeline from the mesh staged in Stage (MeshBatchRenderer owns the pass-0 draw order).
-    public void Submit(ReadOnlySpan<ParticleVertex> vertices, ReadOnlySpan<uint> indices, int liveParticleCount)
-    {
     }
 
     // Requires: render thread idle and GPU idle (called from RimLumenPipeline.Dispose after Quiesce).

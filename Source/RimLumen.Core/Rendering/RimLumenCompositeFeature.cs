@@ -24,6 +24,7 @@ internal sealed class RimLumenCompositeFeature : IRenderFeature
     public object? CaptureFrame(in FrameTiming timing)
     {
         if (RimLumenRenderHost.FailSafeTripped) return null;
+        // Second look per frame: a feature captured after Pre may have reordered the list since Pre checked it.
         owner.GuardCompositeOrder();
         return owner.Captured is { RenderHdr: true } frame ? frame : null;
     }

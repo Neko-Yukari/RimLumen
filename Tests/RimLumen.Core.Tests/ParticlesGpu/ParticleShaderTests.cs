@@ -64,7 +64,7 @@ public static class ParticleShaderTests
             int index = int.Parse(binding.Groups[1].Value);
             Require(index < 16 && bindings.Add(index), "Compute bindings must be unique and in [0,15].");
         }
-        Require(bindings.SetEquals(new[] { 0, 1, 2 }), "Compute must expose exactly particle/emitter/field bindings 0/1/2.");
+        Require(bindings.SetEquals(new[] { 0, 1, 2, 3 }), "Compute must expose exactly particle/emitter/field/dead-block bindings 0/1/2/3.");
         Require(pushBlocks == 1 && pushBytes <= 128 && pushBytes == Marshal.SizeOf<GpuSimPushConstants>(),
             $"Compute push layout is {pushBytes} bytes; expected fixed CPU layout within host 128-byte limit.");
     }
@@ -185,7 +185,7 @@ public static class ParticleShaderTests
         byte[] fragment = Compile("ParticleBillboard.frag.glsl", RuntimeShaderStage.Fragment);
         var computeInstructions = Instructions(compute);
         var vertexInstructions = Instructions(vertex);
-        foreach (uint stride in new uint[] { 64, 208, 48 })
+        foreach (uint stride in new uint[] { 64, 208, 48, 4 })
             Require(HasArrayStride(computeInstructions, stride), $"Compute SPIR-V missing {stride}-byte storage array stride.");
         foreach (uint stride in new uint[] { 64, 208, 32 })
             Require(HasArrayStride(vertexInstructions, stride), $"Vertex SPIR-V missing {stride}-byte storage array stride.");
@@ -196,7 +196,7 @@ public static class ParticleShaderTests
         CompileFile("Particles/L1ParticleQuad.vert.glsl", RuntimeShaderStage.Vertex);
         CompileFile("Particles/L1ParticleQuad.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenDepthCopy.frag.glsl", RuntimeShaderStage.Fragment);
-        Console.WriteLine("[SPIR-V] compute strides=64,208,48; vertex strides=64,208,32; LocalSize=64,1,1");
+        Console.WriteLine("[SPIR-V] compute strides=64,208,48,4; vertex strides=64,208,32; LocalSize=64,1,1");
     }
 
     private static void CheckUniforms(MaterialLayout layout)

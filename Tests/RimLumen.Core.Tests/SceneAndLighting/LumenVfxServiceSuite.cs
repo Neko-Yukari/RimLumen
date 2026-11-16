@@ -114,13 +114,14 @@ public static class LumenVfxServiceSuite
         var service = new LumenVfxService(simulator) { GpuEngineProvider = () => null };
         GlowAssert.Equal("LumenVfxService", service.Name);
         GlowAssert.Equal(new LumenCapabilities(false, false, false, 0), service.Capabilities);
-        simulator.BatchSink = new CountingBatchSink();
+        simulator.HdrRendererAttached = true;
         service.GpuEngineProvider = () => new SpyGpuEngine();
         GlowAssert.Equal(new LumenCapabilities(true, true, true, 4096), service.Capabilities);
         service.EnqueuePreCompute(default);
         service.RecordBufferBarriers(default);
         service.RecordHdrDraws(default);
-        GlowAssert.Equal(0, ((CountingBatchSink)simulator.BatchSink).Calls);
+        simulator.HdrRendererAttached = false;
+        GlowAssert.Equal(new LumenCapabilities(false, false, true, 4096), service.Capabilities);
     }
 
     [LumenFact]
@@ -215,11 +216,6 @@ public static class LumenVfxServiceSuite
         GlowAssert.Equal(2, warnings.Count);
     }
 
-    private sealed class CountingBatchSink : IL1ParticleBatchSink
-    {
-        public int Calls;
-        public void Submit(ReadOnlySpan<ParticleVertex> vertices, ReadOnlySpan<uint> indices, int liveParticleCount) => Calls++;
-    }
 }
 
 internal static class VfxTestData

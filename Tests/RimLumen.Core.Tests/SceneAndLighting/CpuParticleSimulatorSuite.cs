@@ -488,19 +488,12 @@ public static class CpuParticleSimulatorSuite
     }
 
     [LumenFact]
-    public static void BatchSinkReceivesQuadIndicesAndGpuCallbacksAreNoOps()
+    public static void BatchIndicesPreserveQuadWindingAndOffsets()
     {
         var simulator = new CpuParticleSimulator();
         int id = simulator.AcquireEmitter(new EmitterSpec { Name = "batch" }, Matrix4x4.Identity, false);
         simulator.EmitBurst(id, 2);
         Step(simulator, 0f);
-        simulator.RecordHdrDraws(default);
-        var sink = new BatchSink();
-        simulator.BatchSink = sink;
-        simulator.EnqueuePreCompute(default);
-        simulator.RecordBufferBarriers(default);
-        simulator.RecordHdrDraws(default);
-        Check(sink.Calls == 1 && sink.Particles == 2 && sink.Vertices == 8 && sink.Indices == 12, "Batch submission sizes");
         ReadOnlySpan<uint> expected = stackalloc uint[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
         Check(simulator.Indices.SequenceEqual(expected), "Quad winding and offsets");
     }
@@ -525,7 +518,6 @@ public static class CpuParticleSimulatorSuite
         Step(simulator, 0.25f);
         Vector(firstVelocity, simulator.LiveParticles[0].Velocity);
         simulator.SetEmitterParams(later, true, 1f, 1f);
-        simulator.BatchSink = new BatchSink();
         for (int i = 0; i < 20; i++) { Step(simulator, 0.25f); simulator.RecordHdrDraws(default); }
         long before = GC.GetAllocatedBytesForCurrentThread();
         for (int i = 0; i < 100; i++)
@@ -843,15 +835,6 @@ public static class CpuParticleSimulatorSuite
         up.X, up.Y, up.Z, 0f,
         -forward.X, -forward.Y, -forward.Z, 0f,
         0f, 0f, 0f, 1f);
-
-    private sealed class BatchSink : IL1ParticleBatchSink
-    {
-        public int Calls, Particles, Vertices, Indices;
-        public void Submit(ReadOnlySpan<ParticleVertex> vertices, ReadOnlySpan<uint> indices, int liveParticleCount)
-        {
-            Calls++; Particles = liveParticleCount; Vertices = vertices.Length; Indices = indices.Length;
-        }
-    }
 
     private static void Step(CpuParticleSimulator simulator, float dt, Matrix4x4? view = null, int mapIndex = -1)
     {

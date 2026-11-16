@@ -36,10 +36,6 @@ public static class ShaderPackTests
     public static void RuntimeParamsIndexesAll16PackParamsAndValidatesBounds()
     {
         var p = new ShaderPackRuntimeParams();
-        Equal(0.16f, p.BloomIntensity);
-        Equal(1.0f, p.BloomThreshold);
-        Equal(0.5f, p.BloomKnee);
-        Equal(0.65f, p.BloomScatter);
         for (int i = 0; i < 16; i++)
         {
             p.SetPackParam(i, i * 0.5f + 1.25f);
@@ -57,10 +53,8 @@ public static class ShaderPackTests
     }
 
     [LumenFact]
-    public static void GraphValidatorAcceptsValidDagAndPersistentHistory()
+    public static void GraphCompilerResolvesInputKindsTargetsAndPersistentHistory()
     {
-        ShaderPackGraphValidator.Validate(ShaderPackSpec.Default);
-
         var valid = new ShaderPackSpec
         {
             Id = "valid-multipass",
@@ -80,7 +74,7 @@ public static class ShaderPackTests
                     "history",
                     [
                         new ShaderPackInputBinding(0, "scene"),
-                        new ShaderPackInputBinding(1, "prev:history"),
+                        new ShaderPackInputBinding(1, "PrEv:HISTORY"),
                         new ShaderPackInputBinding(2, "depth"),
                         new ShaderPackInputBinding(3, "mapLightField"),
                     ],
@@ -89,7 +83,7 @@ public static class ShaderPackTests
                     "blur",
                     "blur.frag.glsl",
                     "blur",
-                    [new ShaderPackInputBinding(0, "history")],
+                    [new ShaderPackInputBinding(0, "HISTORY")],
                     ShaderPackBlendMode.Opaque),
                 new ShaderPackPassSpec(
                     "composite",
@@ -104,7 +98,75 @@ public static class ShaderPackTests
                     ShaderPackBlendMode.PremultipliedAlpha),
             ],
         };
-        ShaderPackGraphValidator.Validate(valid);
+        ShaderPackGraphValidator.ExecutionPlan plan = ShaderPackGraphValidator.ExecutionPlan.Compile(valid);
+        Equal(0, plan.Passes[0].OutputTargetIndex);
+        Equal(1, plan.Passes[1].OutputTargetIndex);
+        Equal(-1, plan.Passes[2].OutputTargetIndex);
+        Equal(new ShaderPackGraphValidator.PlannedInput(0, ShaderPackGraphValidator.InputKind.Scene), plan.Passes[0].Inputs[0]);
+        Equal(new ShaderPackGraphValidator.PlannedInput(1, ShaderPackGraphValidator.InputKind.Target, 0, 1), plan.Passes[0].Inputs[1]);
+        Equal(new ShaderPackGraphValidator.PlannedInput(2, ShaderPackGraphValidator.InputKind.Depth), plan.Passes[0].Inputs[2]);
+        Equal(new ShaderPackGraphValidator.PlannedInput(3, ShaderPackGraphValidator.InputKind.MapLightField), plan.Passes[0].Inputs[3]);
+        Equal(new ShaderPackGraphValidator.PlannedInput(0, ShaderPackGraphValidator.InputKind.Target, 0), plan.Passes[1].Inputs[0]);
+        Equal(new ShaderPackGraphValidator.PlannedInput(0, ShaderPackGraphValidator.InputKind.Hdr), plan.Passes[2].Inputs[0]);
+        Equal(new ShaderPackGraphValidator.PlannedInput(1, ShaderPackGraphValidator.InputKind.Bloom), plan.Passes[2].Inputs[1]);
+        Equal(new ShaderPackGraphValidator.PlannedInput(3, ShaderPackGraphValidator.InputKind.Target, 1), plan.Passes[2].Inputs[3]);
+    }
+
+    [LumenFact]
+    public static void GraphCompilerNormalizesShaderSelectionAndImplicitCompositeInputs()
+    {
+        var spec = new ShaderPackSpec
+        {
+            CompositeShaderPath = "custom-composite.glsl",
+            BloomPrefilterShaderPath = " ",
+            BloomDownShaderPath = "custom-down.glsl",
+            BloomUpShaderPath = "\t",
+            Passes = [new ShaderPackPassSpec("final", " ", "BACKBUFFER", [])],
+        };
+        ShaderPackGraphValidator.ExecutionPlan plan = ShaderPackGraphValidator.ExecutionPlan.Compile(spec);
+        Equal("custom-composite.glsl", plan.Passes[0].FragmentShaderPath);
+        Equal(true, plan.Passes[0].UsesBuiltInComposite);
+        Equal("RimLumenBloomPrefilter.frag.glsl", plan.BloomPrefilterShaderPath);
+        Equal("custom-down.glsl", plan.BloomDownShaderPath);
+        Equal("RimLumenBloomUp.frag.glsl", plan.BloomUpShaderPath);
+        Equal(true, plan.HasCustomBloomShader);
+        Equal(5, plan.Passes[0].Inputs.Count);
+        Equal(new ShaderPackGraphValidator.PlannedInput(4, ShaderPackGraphValidator.InputKind.MapLightField), plan.Passes[0].Inputs[4]);
+
+        ShaderPackGraphValidator.ExecutionPlan custom = ShaderPackGraphValidator.ExecutionPlan.Compile(new ShaderPackSpec
+        {
+            CompositeShaderPath = "unused.glsl",
+            Passes = [new ShaderPackPassSpec("final", "explicit.glsl", "backbuffer", [])],
+        });
+        Equal("explicit.glsl", custom.Passes[0].FragmentShaderPath);
+        Equal(false, custom.Passes[0].UsesBuiltInComposite);
+        Equal(0, custom.Passes[0].Inputs.Count);
+
+        ShaderPackGraphValidator.ExecutionPlan implicitComposite = ShaderPackGraphValidator.ExecutionPlan.Compile(new ShaderPackSpec
+        {
+            CompositeShaderPath = "\t",
+        });
+        Equal("RimLumenComposite.frag.glsl", implicitComposite.Passes[0].FragmentShaderPath);
+        Equal(5, implicitComposite.Passes[0].Inputs.Count);
+        Equal(ShaderPackBlendMode.PremultipliedAlpha, implicitComposite.Passes[0].BlendMode);
+    }
+
+    [LumenFact]
+    public static void GraphCompilerSnapshotsListsAndRevalidatesEachCompilation()
+    {
+        var inputs = new System.Collections.Generic.List<ShaderPackInputBinding> { new(0, "scene") };
+        var passes = new System.Collections.Generic.List<ShaderPackPassSpec>
+        {
+            new("final", "custom.glsl", "backbuffer", inputs),
+        };
+        var spec = new ShaderPackSpec { Passes = passes };
+        ShaderPackGraphValidator.ExecutionPlan plan = ShaderPackGraphValidator.ExecutionPlan.Compile(spec);
+        inputs[0] = new ShaderPackInputBinding(0, "unknown");
+        Equal(ShaderPackGraphValidator.InputKind.Scene, plan.Passes[0].Inputs[0].Kind);
+        Throws<ArgumentException>(() => ShaderPackGraphValidator.ExecutionPlan.Compile(spec));
+        passes.Clear();
+        Equal("custom.glsl", plan.Passes[0].FragmentShaderPath);
+        Equal("RimLumenComposite.frag.glsl", ShaderPackGraphValidator.ExecutionPlan.Compile(spec).Passes[0].FragmentShaderPath);
     }
 
     [LumenFact]

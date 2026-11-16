@@ -2,12 +2,134 @@ using System;
 using System.Numerics;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.ParticlesGpu;
+using RimLumen.Core.Rendering;
+using RimLumen.Core.Scene;
 
 namespace RimLumen.Core.Tests.ParticlesGpu;
 
 [LumenTestSuite]
 public static class ParticleEngineTests
 {
+    [LumenFact]
+    public static void DensityBudgetsMatchCpuAcrossUnevenSubparticleSteps()
+    {
+        float originalDensity = RimLumenRenderHost.ParticleDensityScale;
+        try
+        {
+            RimLumenRenderHost.ParticleDensityScale = 0.5f;
+            var spec = new EmitterSpec
+            {
+                Name = "density-rate", MaxParticles = 64, Looping = true, Duration = 1,
+                RateOverTime = 4, StartLifetimeMin = 20, StartLifetimeMax = 20,
+            };
+            var cpu = new CpuParticleSimulator();
+            cpu.AcquireEmitter(spec, Matrix4x4.Identity);
+            using var gpu = new LumenGpuParticleEngine(64);
+            gpu.CreateInstance(spec, Matrix4x4.Identity);
+
+            Require(DensityStep(cpu, gpu, 0.125f, 0) == 0, "A half-rate subparticle step must retain its fraction.");
+            Require(DensityStep(cpu, gpu, 0.375f, 1) == 1, "The retained fraction must produce one particle.");
+            Require(DensityStep(cpu, gpu, 0.25f, 2) == 0, "An unscaled budget of one at half density must not round up.");
+            Require(DensityStep(cpu, gpu, 0.125f, 3) == 0, "An uneven subparticle step must retain its fraction.");
+            Require(DensityStep(cpu, gpu, 0.125f, 4) == 1, "The remaining fraction must produce the second particle.");
+            Require(cpu.LiveParticleCount == 2, "One second at rate four and half density emits two particles.");
+        }
+        finally
+        {
+            RimLumenRenderHost.ParticleDensityScale = originalDensity;
+        }
+    }
+
+    [LumenFact]
+    public static void HalfDensityRetainsFractionsWhenEveryStepIsBelowOneParticle()
+    {
+        float originalDensity = RimLumenRenderHost.ParticleDensityScale;
+        try
+        {
+            RimLumenRenderHost.ParticleDensityScale = 0.5f;
+            var spec = new EmitterSpec
+            {
+                Name = "density-subparticle", MaxParticles = 64, Looping = true, Duration = 1,
+                RateOverTime = 4, StartLifetimeMin = 20, StartLifetimeMax = 20,
+            };
+            var cpu = new CpuParticleSimulator();
+            cpu.AcquireEmitter(spec, Matrix4x4.Identity);
+            using var gpu = new LumenGpuParticleEngine(64);
+            gpu.CreateInstance(spec, Matrix4x4.Identity);
+
+            Require(DensityStep(cpu, gpu, 0.125f, 0) == 0, "First quarter-particle remains fractional.");
+            Require(DensityStep(cpu, gpu, 0.125f, 1) == 0, "Second quarter-particle remains fractional.");
+            Require(DensityStep(cpu, gpu, 0.125f, 2) == 0, "Third quarter-particle remains fractional.");
+            Require(DensityStep(cpu, gpu, 0.125f, 3) == 1, "Four fractional steps emit exactly one particle.");
+        }
+        finally
+        {
+            RimLumenRenderHost.ParticleDensityScale = originalDensity;
+        }
+    }
+
+    [LumenFact]
+    public static void DensityBurstBudgetsMatchCpuPerOccurrenceRounding()
+    {
+        float originalDensity = RimLumenRenderHost.ParticleDensityScale;
+        try
+        {
+            RimLumenRenderHost.ParticleDensityScale = 0.5f;
+            var spec = new EmitterSpec
+            {
+                Name = "density-bursts", MaxParticles = 64, Looping = true, Duration = 1,
+                Bursts = new[] { (0f, 1), (0.5f, 5), (1f, 3) },
+                StartLifetimeMin = 20, StartLifetimeMax = 20,
+            };
+            var cpu = new CpuParticleSimulator();
+            cpu.AcquireEmitter(spec, Matrix4x4.Identity);
+            using var gpu = new LumenGpuParticleEngine(64);
+            gpu.CreateInstance(spec, Matrix4x4.Identity);
+
+            Require(DensityStep(cpu, gpu, 0.25f, 0) == 1, "A nonzero burst never scales below one.");
+            Require(DensityStep(cpu, gpu, 0.25f, 1) == 2, "Five at half density rounds to even, not up.");
+            Require(DensityStep(cpu, gpu, 1.5f, 2) == 8, "Each crossed burst is scaled before summing occurrences.");
+        }
+        finally
+        {
+            RimLumenRenderHost.ParticleDensityScale = originalDensity;
+        }
+    }
+
+    private static int DensityStep(CpuParticleSimulator cpu, LumenGpuParticleEngine gpu, float dt, ulong frameIndex)
+    {
+        int before = cpu.LiveParticleCount;
+        cpu.CaptureMainThread(Frame(dt, frameIndex));
+        gpu.CaptureMainThread(Frame(dt, frameIndex));
+        int budget = (int)gpu.CapturedFrame!.Emitters[0].Parameters.Slots.Z;
+        Require(cpu.LiveParticleCount - before == budget,
+            $"Frame {frameIndex}: CPU emitted {cpu.LiveParticleCount - before}; GPU budget {budget}.");
+        return budget;
+    }
+
+    [LumenFact]
+    public static void CaptureKeepsEarlierSnapshotsImmutableWhenRowsAreReusedAndCompacted()
+    {
+        using var engine = new LumenGpuParticleEngine(16);
+        int first = engine.CreateInstance(Looping(), Matrix4x4.Identity);
+        int second = engine.CreateInstance(Looping(), Matrix4x4.CreateTranslation(2, 0, 0));
+        engine.CaptureMainThread(Frame(0.25f, 0));
+        ParticleFrame previous = engine.CapturedFrame!;
+
+        engine.DestroyInstance(first, immediate: true);
+        engine.UpdateInstance(second, Matrix4x4.CreateTranslation(7, 0, 0), emitting: true);
+        engine.CaptureMainThread(Frame(0.125f, 1));
+        ParticleFrame current = engine.CapturedFrame!;
+
+        Require(previous.Emitters.Length == 2 && previous.Clears.Length == 0, "A queued snapshot must retain its own row and clear arrays.");
+        Require(previous.Emitters[0].InstanceId == first && previous.Emitters[1].Parameters.World.M14 == 2f,
+            "Later capture must not overwrite emitter identities or transforms in a queued snapshot.");
+        Require(current.Emitters.Length == 1 && current.Emitters[0].InstanceId == second &&
+            current.Emitters[0].Parameters.World.M14 == 7f && current.Emitters[0].Parameters.Tables.X == 0f,
+            "The next snapshot must compact the surviving emitter into its new draw row.");
+        Require(current.Clears.Length == 1, "The removed range must travel with the new snapshot only.");
+    }
+
     [LumenFact]
     public static void IdleConstructorAndCaptureNeedNoGpuContext()
     {

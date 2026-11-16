@@ -1,5 +1,6 @@
 using System;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Scene;
 
 namespace RimLumen.Core.ParticlesGpu;
 
@@ -34,7 +35,9 @@ public sealed class EmissionScheduler
 
     // Requires: dt >= 0; called once per captured frame.
     // Ensures: advances emitter time; preserves fractional rate and counts all crossed bursts.
-    public int Advance(float dt, bool emitting)
+    public int Advance(float dt, bool emitting) => Advance(dt, emitting, 1f);
+
+    internal int Advance(float dt, bool emitting, float density)
     {
         if (!float.IsFinite(dt) || dt < 0f) throw new ArgumentOutOfRangeException(nameof(dt));
         double end = looping ? time + dt : Math.Min(time + dt, duration);
@@ -42,9 +45,7 @@ public sealed class EmissionScheduler
         double count = 0;
         if (emitting)
         {
-            double generated = fractional + (end - time) * rate;
-            count = Math.Floor(generated);
-            remainder = generated - count;
+            count = ParticleEmissionBudget.AccumulateRate(ref remainder, rate, end - time, density);
             foreach (var burst in bursts)
             {
                 if (burst.Count == 0) continue;
@@ -61,7 +62,7 @@ public sealed class EmissionScheduler
                     occurrences = burst.Time > time && burst.Time <= end ? 1 : 0;
                 }
                 if (!started && burst.Time == 0f) occurrences++;
-                count += occurrences * burst.Count;
+                count += occurrences * ParticleEmissionBudget.ScaleBurst(burst.Count, density);
             }
             if (count > int.MaxValue)
                 throw new OverflowException("Frame emission exceeds the integer spawn budget.");

@@ -5,6 +5,7 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(std430, set = 0, binding = 0) buffer ParticleStorage { GpuParticle particles[]; };
 layout(std430, set = 0, binding = 1) readonly buffer EmitterStorage { GpuEmitterParams emitters[]; };
 layout(std430, set = 0, binding = 2) readonly buffer FieldStorage { GpuForceField fields[]; };
+layout(std430, set = 0, binding = 3) buffer DeadBlockStorage { uint deadBlocks[]; };
 layout(push_constant) uniform GpuSimPushConstants
 {
     uint emitterIndex;
@@ -166,16 +167,111 @@ vec3 acceleration(GpuEmitterParams emitter, vec3 position, out float drag)
     return total;
 }
 
+GpuParticle integrateParticle(GpuEmitterParams emitter, uint slot)
+{
+    GpuParticle particle = GpuParticle(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0));
+    if (emitter.State.z <= 0.5)
+        particle = particles[slot];
+    if (particle.SizeSeedEmitterFlags.w > 0.5)
+    {
+        particle.PositionAndAge.w += emitter.State.x;
+        if (particle.PositionAndAge.w >= particle.VelocityAndLifetime.w)
+            particle.SizeSeedEmitterFlags.w = 0.0;
+        else
+        {
+            float drag;
+            vec3 force = acceleration(emitter, particle.PositionAndAge.xyz, drag);
+            particle.VelocityAndLifetime.xyz = (particle.VelocityAndLifetime.xyz + force * emitter.State.x)
+                * exp(-drag * emitter.State.x);
+            particle.PositionAndAge.xyz += particle.VelocityAndLifetime.xyz * emitter.State.x;
+            if ((sim.pad0 & 1u) != 0u)
+            {
+                // KillBelowFloor: pad1 carries the floor height (float bits); expire descending particles below it.
+                float floorY = uintBitsToFloat(sim.pad1);
+                bool worldSpace = emitter.SizeCone.w > 0.5;
+                float worldY = worldSpace ? particle.PositionAndAge.y
+                    : (emitter.World * vec4(particle.PositionAndAge.xyz, 1.0)).y;
+                float worldVelY = worldSpace ? particle.VelocityAndLifetime.y
+                    : (emitter.World * vec4(particle.VelocityAndLifetime.xyz, 0.0)).y;
+                if (worldY < floorY && worldVelY < 0.0)
+                    particle.SizeSeedEmitterFlags.w = 0.0;
+            }
+        }
+    }
+    return particle;
+}
+
+uint inclusivePrefix(uint value)
+{
+    uint lane = gl_LocalInvocationID.x;
+    deadPrefix[lane] = value;
+    barrier();
+    for (uint offset = 1u; offset < 64u; offset <<= 1u)
+    {
+        uint preceding = lane >= offset ? deadPrefix[lane - offset] : 0u;
+        barrier();
+        deadPrefix[lane] += preceding;
+        barrier();
+    }
+    return deadPrefix[lane];
+}
+
 void main()
 {
-    // Exactly ONE workgroup per emitter. All lanes cross every barrier, including tail lanes.
-    // Cursor-ordered full dead scan: fills min(budget, dead count), never drops budget merely
-    // because a candidate is live. No readback, atomics, or cross-workgroup synchronization.
+    // Cursor-ordered dead ranks fill exactly min(budget, dead count), without atomics or readback.
+    // Every workgroup crosses its local barriers uniformly, including lanes beyond the final slot.
     GpuEmitterParams emitter = emitters[sim.emitterIndex];
     uint capacity = uint(emitter.Slots.y);
+    uint budget = min(uint(emitter.Slots.z), capacity);
     uint lane = gl_LocalInvocationID.x;
-    if (lane == 0u)
-        remainingBudget = min(uint(emitter.Slots.z), capacity);
+    uint phase = sim.pad0 >> 1u;
+    if (phase == 2u)
+    {
+        uint blocks = (capacity + 63u) / 64u;
+        if (lane == 0u) remainingBudget = 0u;
+        barrier();
+        for (uint chunk = 0u; chunk < blocks; chunk += 64u)
+        {
+            uint block = chunk + lane;
+            uint count = block < blocks ? deadBlocks[block] : 0u;
+            uint prefix = inclusivePrefix(count);
+            if (block < blocks) deadBlocks[block] = remainingBudget + prefix - count;
+            barrier();
+            if (lane == 0u) remainingBudget += deadPrefix[63];
+            barrier();
+        }
+        return;
+    }
+    if (phase == 1u || phase == 3u)
+    {
+        uint block = gl_WorkGroupID.x;
+        uint ordinal = block * 64u + lane;
+        bool valid = ordinal < capacity;
+        uint slot = uint(emitter.Slots.x) + ((uint(emitter.Slots.w) + ordinal) % capacity);
+        GpuParticle particle = GpuParticle(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0));
+        bool dead = false;
+        if (valid)
+        {
+            particle = phase == 1u ? integrateParticle(emitter, slot) : particles[slot];
+            dead = particle.SizeSeedEmitterFlags.w < 0.5;
+        }
+        if (phase == 1u && budget == 0u)
+        {
+            if (valid) particles[slot] = particle;
+            return;
+        }
+        uint rank = inclusivePrefix(dead ? 1u : 0u);
+        if (phase == 1u)
+        {
+            if (valid) particles[slot] = particle;
+            if (lane == 0u) deadBlocks[block] = deadPrefix[63];
+        }
+        else if (valid && dead && deadBlocks[block] + rank <= budget)
+            particles[slot] = spawnParticle(emitter, slot);
+        return;
+    }
+    // Small emitters keep one dispatch, using the same integration and block-local prefix.
+    if (lane == 0u) remainingBudget = budget;
     barrier();
     for (uint chunk = 0u; chunk < capacity; chunk += 64u)
     {
@@ -186,54 +282,17 @@ void main()
         bool dead = false;
         if (valid)
         {
-            if (emitter.State.z <= 0.5)
-                particle = particles[slot];
-            if (particle.SizeSeedEmitterFlags.w > 0.5)
-            {
-                particle.PositionAndAge.w += emitter.State.x;
-                if (particle.PositionAndAge.w >= particle.VelocityAndLifetime.w)
-                    particle.SizeSeedEmitterFlags.w = 0.0;
-                else
-                {
-                    float drag;
-                    vec3 force = acceleration(emitter, particle.PositionAndAge.xyz, drag);
-                    particle.VelocityAndLifetime.xyz = (particle.VelocityAndLifetime.xyz + force * emitter.State.x)
-                        * exp(-drag * emitter.State.x);
-                    particle.PositionAndAge.xyz += particle.VelocityAndLifetime.xyz * emitter.State.x;
-                    if (sim.pad0 != 0u)
-                    {
-                        // KillBelowFloor: pad1 carries the floor height (float bits); expire descending particles below it.
-                        float floorY = uintBitsToFloat(sim.pad1);
-                        bool worldSpace = emitter.SizeCone.w > 0.5;
-                        float worldY = worldSpace ? particle.PositionAndAge.y
-                            : (emitter.World * vec4(particle.PositionAndAge.xyz, 1.0)).y;
-                        float worldVelY = worldSpace ? particle.VelocityAndLifetime.y
-                            : (emitter.World * vec4(particle.VelocityAndLifetime.xyz, 0.0)).y;
-                        if (worldY < floorY && worldVelY < 0.0)
-                            particle.SizeSeedEmitterFlags.w = 0.0;
-                    }
-                }
-            }
+            particle = integrateParticle(emitter, slot);
             dead = particle.SizeSeedEmitterFlags.w < 0.5;
         }
-        deadPrefix[lane] = dead ? 1u : 0u;
-        barrier();
-        for (uint offset = 1u; offset < 64u; offset <<= 1u)
-        {
-            uint preceding = lane >= offset ? deadPrefix[lane - offset] : 0u;
-            barrier();
-            deadPrefix[lane] += preceding;
-            barrier();
-        }
+        uint rank = inclusivePrefix(dead ? 1u : 0u);
         if (valid)
         {
-            if (dead && deadPrefix[lane] <= remainingBudget)
-                particle = spawnParticle(emitter, slot);
+            if (dead && rank <= remainingBudget) particle = spawnParticle(emitter, slot);
             particles[slot] = particle;
         }
         barrier();
-        if (lane == 0u)
-            remainingBudget -= min(remainingBudget, deadPrefix[63]);
+        if (lane == 0u) remainingBudget -= min(remainingBudget, deadPrefix[63]);
         barrier();
     }
 }

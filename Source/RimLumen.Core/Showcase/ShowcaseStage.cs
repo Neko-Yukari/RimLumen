@@ -327,7 +327,7 @@ public static class ShowcaseStage
                         pawn.Position = safeEdgeCell;
                         pawn.Notify_Teleported(endCurrentJob: false, resetTweenedPos: true);
                     }
-                    else if (thing.Spawned && !thing.Destroyed)
+                    else if (thing.Spawned && !thing.Destroyed && thing.def.destroyable)
                     {
                         thing.Destroy(DestroyMode.Vanish);
                     }

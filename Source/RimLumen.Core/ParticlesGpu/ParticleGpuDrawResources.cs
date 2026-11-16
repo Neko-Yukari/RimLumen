@@ -64,18 +64,18 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         return device.CreateDescriptorSetLayout(new DescriptorSetLayoutEx.CreateInfo { Bindings = bindings }, device.VkAllocator);
     }
 
-    // One compute set per frame: particle/emitter/field storage buffers, dispatched once per emitter.
+    // One compute set per frame: particle/emitter/field/dead-block storage buffers.
     internal static unsafe VkDescriptorPool CreateComputePool(DeviceEx device)
     {
         VkDescriptorPoolSize* sizes = stackalloc VkDescriptorPoolSize[1];
-        sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageBuffer, DescriptorCount = 3 };
+        sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageBuffer, DescriptorCount = 4 };
         return device.CreateDescriptorPool(new VkDescriptorPoolCreateInfo
         {
             MaxSets = 1, PoolSizeCount = 1, PoolSizes = sizes
         }, device.VkAllocator);
     }
 
-    internal static unsafe void WriteBuffers(DeviceEx device, VkDescriptorSet set, int[] bindings,
+    internal static unsafe void WriteBuffers(DeviceEx device, VkDescriptorSet set,
         GpuComputeBuffer[] buffers, VkDescriptorType type)
     {
         VkDescriptorBufferInfo* infos = stackalloc VkDescriptorBufferInfo[buffers.Length];
@@ -85,7 +85,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             infos[i] = new VkDescriptorBufferInfo { Buffer = buffers[i].Buffer, Offset = ByteSize.Zero, Range = buffers[i].Size };
             writes[i] = new VkWriteDescriptorSet
             {
-                DstSet = set, DstBinding = bindings[i], DescriptorCount = 1, DescriptorType = type, BufferInfo = infos + i
+                DstSet = set, DstBinding = i, DescriptorCount = 1, DescriptorType = type, BufferInfo = infos + i
             };
         }
         device.UpdateDescriptorSets(new ReadOnlySpan<VkWriteDescriptorSet>(writes, buffers.Length), default(ReadOnlySpan<VkCopyDescriptorSet>));
@@ -97,7 +97,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
     //   _LumenDraw/_LumenCameraRight/_LumenCameraUp/_LumenProjection/_LumenDepthUv/_LumenVertical through the arena (never by
     //   mutating the cached Material); drops draws after one Log.Error when the capture needs more than
     //   MaxActiveMaterials distinct materials.
-    internal void AppendDraws(ParticleFrame snapshot, ParticleGpuFrame resources, GpuComputeBuffer particles,
+    internal void AppendDraws(ParticleFrame snapshot, ParticleGpuFrame resources,
         Texture sceneDepth, Texture[] textures, bool[] texturePresent, List<FinalDrawItem> draws,
         DrawItemFactory maker, DrawPropertyArena arena, int queueOrder, ulong frameIndex)
     {
@@ -105,12 +105,6 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         CameraBillboardBasis.Extract(snapshot.Context.ViewMatrix, out Vector3 right, out Vector3 up, out float yScaleRatio);
         Matrix4x4 projection = snapshot.Context.ProjectionMatrix;
         var depthUv = new Vector4(1f / snapshot.Context.ViewportWidth, 1f / snapshot.Context.ViewportHeight, 0, 0);
-        InstanceStorageBinding[] storage =
-        {
-            new(ParticlesPropertyId, particles),
-            new(EmittersPropertyId, resources.Emitters),
-            new(CurvesPropertyId, resources.Curves)
-        };
         var cameraRight = new Vector4(right, 0);
         var cameraUp = new Vector4(up, yScaleRatio);
         var projectionPacked = new Vector4(projection.M33, projection.M34, projection.M43, projection.M44);
@@ -137,7 +131,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             properties[4] = DrawProperty.Vector(DepthUvPropertyId, depthUv);
             properties[5] = DrawProperty.Vector(VerticalPropertyId, emitter.IsVertical3D
                 ? new Vector4(verticalMode, emitter.BaseY, vanillaMoteY, 0f) : Vector4.Zero);
-            InstancedDrawInfo instancing = InstancedDrawInfo.Direct(instances, storage);
+            InstancedDrawInfo instancing = resources.DrawInstances(i, instances);
             var command = new MeshDrawCommand(quad, material, range, Matrix4x4.Identity, 0,
                 RimLumenRenderHost.LumenRenderPassId, instancing);
             FinalDrawItem? draw = maker.TryMake(in command, arena, UnityEngine.Shader.GlobalKeywordKey, queueOrder + i);
@@ -145,6 +139,14 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             draws.Add(draw);
         }
     }
+
+    internal static InstanceStorageBinding[] CreateStorageBindings(GpuComputeBuffer particles,
+        GpuComputeBuffer emitters, GpuComputeBuffer curves) => new[]
+    {
+        new InstanceStorageBinding(ParticlesPropertyId, particles),
+        new InstanceStorageBinding(EmittersPropertyId, emitters),
+        new InstanceStorageBinding(CurvesPropertyId, curves)
+    };
 
     // Static state only: emitter index, camera vectors and depth UVs are per-draw DrawProperties.
     private Material? MaterialFor(LumenBlendMode blend, Texture texture, Texture sceneDepth, ulong frameIndex)
@@ -255,8 +257,17 @@ internal sealed class ParticleGpuFrame : IDisposable
     internal readonly VkDescriptorPool Pool;
     internal readonly GpuComputeBuffer Emitters, Fields, Curves;
     internal readonly int EmitterCapacity, FieldCapacity;
+    internal readonly ParticleEmitterFrame[] SimulationEmitters;
+    internal readonly Texture[] Textures;
+    internal readonly bool[] TexturePresent;
+    internal readonly GpuComputeBuffer[] ComputeBuffers;
+    private readonly GpuEmitterParams[] parameters;
+    private readonly int[] curveInstanceIds;
+    private readonly InstanceStorageBinding[] storageBindings;
+    private readonly InstancedDrawInfo?[] instancing;
 
-    internal ParticleGpuFrame(EngineApplication app, int emitterCount, int fieldCount)
+    internal ParticleGpuFrame(EngineApplication app, int emitterCount, int fieldCount,
+        GpuComputeBuffer particles, GpuComputeBuffer deadBlocks)
     {
         device = app.Device;
         EmitterCapacity = Math.Max(1, emitterCount);
@@ -265,18 +276,40 @@ internal sealed class ParticleGpuFrame : IDisposable
         Emitters = GpuComputeBuffer.Create(device, app.GraphicsDevice!.Allocator, "Lumen.Emitters", (long)EmitterCapacity * 208);
         Fields = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Fields", (long)FieldCapacity * 48);
         Curves = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Curves", (long)EmitterCapacity * 64 * 32);
+        SimulationEmitters = new ParticleEmitterFrame[EmitterCapacity];
+        Textures = new Texture[EmitterCapacity];
+        TexturePresent = new bool[EmitterCapacity];
+        parameters = new GpuEmitterParams[EmitterCapacity];
+        curveInstanceIds = new int[EmitterCapacity];
+        Array.Fill(curveInstanceIds, -1);
+        ComputeBuffers = new[] { particles, Emitters, Fields, deadBlocks };
+        storageBindings = ParticleGpuDrawResources.CreateStorageBindings(particles, Emitters, Curves);
+        instancing = new InstancedDrawInfo?[EmitterCapacity];
     }
 
-    internal void Upload(ParticleFrame frame)
+    internal InstancedDrawInfo DrawInstances(int row, int count)
+    {
+        InstancedDrawInfo? draw = instancing[row];
+        if (draw is null) instancing[row] = draw = InstancedDrawInfo.Direct(count, storageBindings);
+        else draw.ReconfigureDirect(count, storageBindings);
+        return draw;
+    }
+
+    internal void Upload(ParticleFrame frame, ReadOnlySpan<ParticleEmitterFrame> emitters)
     {
         device.ResetDescriptorPool(Pool, 0);
-        var emitters = new GpuEmitterParams[frame.Emitters.Length];
         for (int i = 0; i < emitters.Length; i++)
         {
-            emitters[i] = frame.Emitters[i].Parameters;
-            Curves.Upload<GpuCurveSample>(frame.Emitters[i].Curves, (long)i * 64 * 32);
+            ParticleEmitterFrame emitter = emitters[i];
+            parameters[i] = emitter.Parameters;
+            if (curveInstanceIds[i] != emitter.InstanceId)
+            {
+                if (emitter.InstanceId >= 0)
+                    Curves.Upload<GpuCurveSample>(emitter.Curves, (long)i * 64 * 32);
+                curveInstanceIds[i] = emitter.InstanceId;
+            }
         }
-        Emitters.Upload<GpuEmitterParams>(emitters);
+        Emitters.Upload<GpuEmitterParams>(parameters.AsSpan(0, emitters.Length));
         if (frame.Fields.Length > 0) Fields.Upload<GpuForceField>(frame.Fields);
     }
 

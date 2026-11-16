@@ -18,7 +18,14 @@ public static class RimLumenRenderHost
 
     public static bool EnableVanillaAdditiveBloom { get; set; } = true;
 
-    public static float ParticleDensityScale { get; set; } = 1.0f;
+    // Ensures: stored value is within [0.1, 1.0]; the simulators read it without re-clamping.
+    public static float ParticleDensityScale
+    {
+        get => particleDensityScale;
+        set => particleDensityScale = System.Math.Clamp(value, 0.1f, 1.0f);
+    }
+
+    private static float particleDensityScale = 1.0f;
 
     public static ShaderPackSpec ActiveShaderPack { get; private set; } = ShaderPackSpec.Default;
 

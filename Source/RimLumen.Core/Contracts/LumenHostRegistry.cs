@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace RimLumen.Core.Contracts;
 
@@ -7,6 +8,7 @@ public static class LumenHostRegistry
 {
     private static readonly object Sync = new();
     private static readonly List<ILumenFrameContributor> Contributors = new();
+    private static ILumenFrameContributor[] contributorSnapshot = Array.Empty<ILumenFrameContributor>();
     private static readonly List<ILumenAssetProvider> AssetProviders = new();
 
     public static ILumenVfxService? VfxService { get; private set; }
@@ -22,6 +24,7 @@ public static class LumenHostRegistry
             if (!Contributors.Contains(contributor))
             {
                 Contributors.Add(contributor);
+                Volatile.Write(ref contributorSnapshot, Contributors.ToArray());
             }
         }
     }
@@ -30,17 +33,19 @@ public static class LumenHostRegistry
     {
         lock (Sync)
         {
-            Contributors.Remove(contributor);
+            if (Contributors.Remove(contributor))
+                Volatile.Write(ref contributorSnapshot, Contributors.ToArray());
         }
     }
 
     public static ILumenFrameContributor[] GetContributorsSnapshot()
     {
-        lock (Sync)
-        {
-            return Contributors.Count == 0 ? Array.Empty<ILumenFrameContributor>() : Contributors.ToArray();
-        }
+        ILumenFrameContributor[] snapshot = Volatile.Read(ref contributorSnapshot);
+        return snapshot.Length == 0 ? Array.Empty<ILumenFrameContributor>() : (ILumenFrameContributor[])snapshot.Clone();
     }
+
+    // Public callers keep owning their copies; the pipeline only borrows the immutable published contents.
+    internal static ReadOnlySpan<ILumenFrameContributor> GetSharedContributorsSnapshot() => Volatile.Read(ref contributorSnapshot);
 
     public static void RegisterGpuParticleEngine(ILumenGpuParticleEngine engine)
     {
