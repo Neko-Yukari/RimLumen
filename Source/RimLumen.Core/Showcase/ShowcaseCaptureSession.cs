@@ -29,11 +29,7 @@ internal static class ShowcaseCaptureSession
         IScreenCaptureBackend? backend = null;
         try
         {
-            backend = ScreenCaptureBackend.Current ?? throw new InvalidOperationException("Screen capture backend unavailable.");
-            if (!backend.RequestCapture())
-            {
-                throw new InvalidOperationException("Swapchain transfer readback unsupported.");
-            }
+            backend = RequestCapture();
             armed = true;
         }
         catch (Exception ex)
@@ -51,11 +47,7 @@ internal static class ShowcaseCaptureSession
         int exitCode = 1;
         try
         {
-            if (!backend!.TryReadScreen(out byte[] rgba, out int width, out int height))
-            {
-                throw new InvalidOperationException("TryReadScreen returned false for showcase capture.");
-            }
-            ShowcasePngEncoder.WriteRgba(pngPath, rgba, width, height);
+            ReadAndWriteCapture(backend!, pngPath, out int width, out int height);
             Log.Message($"[RimLumen] Showcase captured PNG ({width}x{height}): {pngPath}");
             exitCode = 0;
         }
@@ -67,6 +59,21 @@ internal static class ShowcaseCaptureSession
         {
             ShutdownWithExitCode(map, exitCode);
         }
+    }
+
+    internal static IScreenCaptureBackend RequestCapture()
+    {
+        IScreenCaptureBackend backend = ScreenCaptureBackend.Current ?? throw new InvalidOperationException("Screen capture backend unavailable.");
+        if (!backend.RequestCapture()) throw new InvalidOperationException("Swapchain transfer readback unsupported.");
+        return backend;
+    }
+
+    internal static byte[] ReadAndWriteCapture(IScreenCaptureBackend backend, string pngPath, out int width, out int height)
+    {
+        if (!backend.TryReadScreen(out byte[] rgba, out width, out height))
+            throw new InvalidOperationException("TryReadScreen returned false for showcase capture.");
+        ShowcasePngEncoder.WriteRgba(pngPath, rgba, width, height);
+        return rgba;
     }
 
     private static void ShutdownWithExitCode(Map map, int exitCode)

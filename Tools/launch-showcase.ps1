@@ -5,6 +5,9 @@ param(
     [string]$CaptureAndQuit = '',
     [string]$Benchmark = '',
     [string]$ValidationSave = '',
+    [string]$GlowAB = '',
+    # Optional 'intensity,threshold' override of the Standard pack's bloom for -GlowAB.
+    [string]$GlowABBloom = '',
     [switch]$NoBuild,
     [switch]$Detach,
     [switch]$CleanupJunction,
@@ -79,6 +82,15 @@ if ($PSBoundParameters.ContainsKey('ValidationSave')) {
         $ValidationSave -match '[/\\{}<>:*|!@#$%^&?]' -or $ValidationSave.EndsWith('.') -or
         $ValidationSave -ne $ValidationSave.Trim()) {
         throw '-ValidationSave requires a valid save name (1-40 characters, no path or trailing dot/space).'
+    }
+}
+
+if ($PSBoundParameters.ContainsKey('GlowAB')) {
+    if ($CaptureAndQuit -or $Benchmark -or $ValidationSave -or $Detach) {
+        throw '-GlowAB cannot be combined with -CaptureAndQuit, -Benchmark, -ValidationSave or -Detach.'
+    }
+    if ([string]::IsNullOrWhiteSpace($GlowAB)) {
+        throw '-GlowAB requires an output directory.'
     }
 }
 
@@ -173,6 +185,44 @@ try {
             throw "Showcase benchmark JSON was not created or is empty: $resolvedJson"
         }
         Write-Host "SHOWCASE BENCH OK: $resolvedJson ($((Get-Item -LiteralPath $resolvedJson).Length) bytes)"
+    }
+    elseif ($GlowAB) {
+        $glowDir = [IO.Path]::GetFullPath($GlowAB)
+        New-Item -ItemType Directory -Path $glowDir -Force | Out-Null
+        $glowFiles = @('glow_on.png', 'glow_off.png', 'glow_on2.png', 'diff.png')
+        foreach ($name in $glowFiles) {
+            $path = Join-Path $glowDir $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        }
+        $start.CreateNoWindow = $true
+        foreach ($arg in @(
+            '-NoWindow',
+            '-NoCrashDialog',
+            '-quicktest',
+            '-WindowSize=1920,1080',
+            "-savedatafolder=$profile",
+            "-rimlumen-glow-ab=$glowDir"
+        )) {
+            $start.ArgumentList.Add($arg)
+        }
+        if ($GlowABBloom) { $start.ArgumentList.Add("-rimlumen-glow-ab-bloom=$GlowABBloom") }
+        $process = [Diagnostics.Process]::Start($start)
+        Write-Host "Started headless RimWorld glow A/B PID=$($process.Id); timeout=${TimeoutSeconds}s"
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $process.Kill($true)
+            $process.WaitForExit()
+            throw "RimWorld glow A/B timed out after ${TimeoutSeconds}s; process tree killed."
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "RimWorld glow A/B exited with code $($process.ExitCode)"
+        }
+        foreach ($name in $glowFiles) {
+            $path = Join-Path $glowDir $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) {
+                throw "Glow A/B PNG was not created or is empty: $path"
+            }
+            Write-Host "GLOW A/B OK: $path ($((Get-Item -LiteralPath $path).Length) bytes)"
+        }
     }
     elseif ($ValidationSave) {
         $savePath = Join-Path $profile "Saves/$ValidationSave.rws"

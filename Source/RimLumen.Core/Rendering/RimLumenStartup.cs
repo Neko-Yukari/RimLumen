@@ -40,6 +40,7 @@ internal static class RimLumenStartup
             return;
         }
 #if !RIMLUMEN_SHIP_RELEASE
+        if (ShowcaseGlowABSession.TryStart(commandLineArgs)) return;
         if (ShowcaseValidationSave.TryStart(commandLineArgs)) return;
         if (ShowcaseBenchmarkSession.TryParseOutputPath(commandLineArgs, out string benchmarkJsonPath))
         {
