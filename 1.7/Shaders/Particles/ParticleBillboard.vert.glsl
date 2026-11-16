@@ -37,7 +37,7 @@ void main()
     float size = particle.SizeSeedEmitterFlags.x * mix(a.Size.x, b.Size.x, blend);
     vColor = particle.StartColor * mix(a.Color, b.Color, blend);
     vColor.rgb *= emitter.Appearance.z * emitter.State.w;
-    // Appearance.w (BloomWeight) is reserved until the HDR pass exposes a separate bloom channel.
+    // Appearance.w is reserved (currently zero).
 
     vec3 center = particle.PositionAndAge.xyz;
     vec3 velocity = particle.VelocityAndLifetime.xyz;

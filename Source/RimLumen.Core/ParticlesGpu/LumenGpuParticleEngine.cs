@@ -53,22 +53,14 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
     public string Name => "RimLumen.GpuParticles";
     public bool HasActiveWork => !disposed && instances.Count != 0;
 
-    // Requires: main thread, positive emitter capacity.
+    // Requires: main thread; spec passed LumenAssetRules validation.
     // Ensures: reserves slots without allocating GPU resources while idle.
     public int CreateInstance(EmitterSpec spec, Matrix4x4 initialWorldTransform)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         ArgumentNullException.ThrowIfNull(spec);
-        if (spec.MaxParticles <= 0) throw new ArgumentOutOfRangeException(nameof(spec.MaxParticles));
-        if (spec.FlipbookTilesX <= 0 || spec.FlipbookTilesY <= 0)
-            throw new ArgumentOutOfRangeException(nameof(spec.FlipbookTilesX), "Flipbook dimensions must be positive.");
-        if (!Enum.IsDefined(spec.Shape) || !Enum.IsDefined(spec.BlendMode) || !Enum.IsDefined(spec.BillboardMode))
-            throw new ArgumentOutOfRangeException(nameof(spec), "Unknown particle shape or render mode.");
         if (spec.BillboardMode == LumenBillboardMode.Mesh)
             throw new NotSupportedException("L2 GPU particles support Camera, Horizontal and StretchedVelocity billboards, not Mesh.");
-        if (!float.IsFinite(spec.StartLifetimeMax) || spec.StartLifetimeMax <= 0 ||
-            !float.IsFinite(spec.StartLifetimeMin) || spec.StartLifetimeMin <= 0 || spec.StartLifetimeMin > spec.StartLifetimeMax)
-            throw new ArgumentOutOfRangeException(nameof(spec.StartLifetimeMax));
         var scheduler = new EmissionScheduler(spec);
         var curves = new GpuCurveSample[64];
         GpuCurveAtlasPacker.Pack(spec.SizeOverLifetime, spec.ColorOverLifetime, curves);
@@ -211,9 +203,9 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
                 Shape = new Vector4((float)spec.Shape, spec.ShapeExtents.X, spec.ShapeExtents.Y, spec.ShapeExtents.Z),
                 Ranges = new Vector4(spec.StartSpeedMin, spec.StartSpeedMax, spec.StartLifetimeMin, spec.StartLifetimeMax),
                 SizeCone = new Vector4(spec.StartSizeMin, spec.StartSizeMax, spec.ConeAngleDegrees * (MathF.PI / 180), spec.WorldSpaceSimulation ? 1 : 0),
-                StartColor = spec.StartColorLinear,
+                StartColor = spec.StartColor,
                 Flipbook = new Vector4(spec.FlipbookTilesX, spec.FlipbookTilesY, spec.FlipbookCycles, (float)spec.BillboardMode),
-                Appearance = new Vector4(spec.VelocityStretchFactor, spec.LengthScale, spec.HdrIntensity, spec.BloomWeight),
+                Appearance = new Vector4(spec.VelocityStretchFactor, spec.LengthScale, spec.HdrIntensity, 0f),
                 Tables = new Vector4(row, fieldOffset, spec.ForceFields.Length, instance.Id & 0x00ffffff),
                 State = new Vector4(dt, spec.SoftParticleFadeDistance, 0, instance.Intensity)
             };

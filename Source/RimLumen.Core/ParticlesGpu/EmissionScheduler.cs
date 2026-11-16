@@ -14,16 +14,13 @@ public sealed class EmissionScheduler
     private double fractional;
     private bool started;
 
+    // Requires: spec passed LumenAssetRules validation.
     public EmissionScheduler(EmitterSpec spec)
     {
-        if (!float.IsFinite(spec.Duration) || spec.Duration <= 0f)
-            throw new ArgumentOutOfRangeException(nameof(spec), "Duration must be finite and positive.");
-        if (!float.IsFinite(spec.RateOverTime) || spec.RateOverTime < 0f)
-            throw new ArgumentOutOfRangeException(nameof(spec), "Emission rate must be finite and nonnegative.");
         foreach (var burst in spec.Bursts)
         {
-            if (!float.IsFinite(burst.Time) || burst.Time < 0f || burst.Time > spec.Duration || burst.Count < 0)
-                throw new ArgumentOutOfRangeException(nameof(spec), "Burst times must be within duration and counts nonnegative.");
+            if (burst.Time > spec.Duration)
+                throw new ArgumentOutOfRangeException(nameof(spec), "Burst time must not exceed duration.");
         }
         duration = spec.Duration;
         rate = spec.RateOverTime;

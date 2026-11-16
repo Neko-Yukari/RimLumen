@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Assets;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Scene;
 using Verse;
@@ -37,10 +38,13 @@ public static class RimLumenApi
     }
 
     // Requires: asset is non-null with non-empty EffectId.
-    // Ensures: registers or replaces asset in the native catalog.
+    /// <summary>Validates and registers or replaces an asset in the native catalog.
+    /// Treat the asset and its nested arrays as immutable once registered/resolved; replace it with a new instance to reload.
+    /// </summary>
     public static void RegisterEffect(EffectAsset asset)
     {
         ArgumentNullException.ThrowIfNull(asset);
+        LumenAssetRules.Validate(asset, $"effect '{asset.EffectId}'");
         LumenSceneBootstrap.EnsureInitialized();
         LumenSceneBootstrap.Catalog.Register(asset);
     }

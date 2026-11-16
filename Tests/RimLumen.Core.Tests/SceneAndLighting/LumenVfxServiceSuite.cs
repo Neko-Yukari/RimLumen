@@ -148,7 +148,7 @@ public static class LumenVfxServiceSuite
         GlowAssert.Equal(1, Array.FindAll(after, x => ReferenceEquals(x, service)).Length);
         GlowAssert.Equal(1, Array.FindAll(after, x => ReferenceEquals(x, simulator)).Length);
         VfxAssert.Check(Array.IndexOf(after, service) < Array.IndexOf(after, simulator), "Service updates land before simulation");
-        var asset = new EffectAsset { EffectId = "b3.bootstrap" };
+        var asset = new EffectAsset { EffectId = "b3.bootstrap", Nodes = new[] { new EffectNodeSpec { Name = "root" } } };
         catalog.Register(asset);
         VfxAssert.Check(LumenHostRegistry.TryResolveAsset(asset.EffectId, out var resolved) && ReferenceEquals(asset, resolved),
             "Bootstrap catalog is reachable through the host registry");

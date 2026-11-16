@@ -192,6 +192,21 @@ internal static class TranslationTests
     private static ValueData Curve(float start, float end) => Data(("mode", Number(1)), ("curveMultiplier", Number(2)),
         ("curve", Data(("keys", Array(Key(1, end, end - start), Key(0, start, end - start))))));
 
+    internal static void PointLightHdrSplit()
+    {
+        var particles = Particles();
+        particles.members.Single(m => m.name == "main").value.fields.Add(Member("startColor", Vector(2f, 1f, 0f, 1f)));
+        particles.members.Add(Member("lights", Data(("enabled", Number(1)), ("ratio", Number(1)), ("intensity", Constant(2f)))));
+        var asset = new RimUnityPrefabTranslator().Translate("hdr.light", Prefab(particles), _ => null, _ => null, out _);
+        PointLightSpec light = asset.Nodes.Single().PointLight!.Value;
+        float intensity = CurveEvaluator.Evaluate(light.IntensityOverTime!, 0f);
+        Check.True(light.ColorRgb.X <= 1f && light.ColorRgb.Y <= 1f && light.ColorRgb.Z <= 1f, "point light colour must be normalized");
+        Check.Near(1f, light.ColorRgb.X, "HDR red normalized");
+        Check.Near(9.9076915f, light.ColorRgb.X * intensity, "original HDR red emission");
+        Check.Near(2f, light.ColorRgb.Y * intensity, "original green emission");
+        Check.Near(0f, light.ColorRgb.Z * intensity, "original blue emission");
+    }
+
     internal static void Values()
     {
         Vector4 linear = RimUnityValueConversion.ToLinearColor(new Vector4(0.5f, 0.04045f, 2, 0.25f));

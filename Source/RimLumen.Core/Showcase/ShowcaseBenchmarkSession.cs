@@ -376,7 +376,7 @@ internal static class ShowcaseBenchmarkSession
                         Bursts = new[] { (0f, count) },
                         Shape = LumenShapeKind.Box, ShapeExtents = new Vector3(3f, 0.15f, 3f),
                         StartLifetimeMin = 120f, StartLifetimeMax = 120f, StartSizeMin = 0.15f, StartSizeMax = 0.3f,
-                        StartSpeedMin = 0.1f, StartSpeedMax = 0.2f, StartColorLinear = new Vector4(1f, 0.4f, 0.1f, 1f),
+                        StartSpeedMin = 0.1f, StartSpeedMax = 0.2f, StartColor = new Vector4(1f, 0.4f, 0.1f, 1f),
                         HdrIntensity = 4f, SoftParticleFadeDistance = 0.5f,
                         ForceFields = new[]
                         {

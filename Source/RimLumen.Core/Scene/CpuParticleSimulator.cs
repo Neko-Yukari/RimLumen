@@ -475,7 +475,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             var spec = emitter.Spec;
             float age = Math.Clamp(particle.Age / particle.Lifetime, 0f, 1f);
             particle.Size = particle.StartSize * CurveEvaluator.Evaluate(spec.SizeOverLifetime, age) * spec.LengthScale;
-            Vector4 color = spec.StartColorLinear * GradientEvaluator.Evaluate(spec.ColorOverLifetime, age);
+            Vector4 color = spec.StartColor * GradientEvaluator.Evaluate(spec.ColorOverLifetime, age);
             float intensity = spec.HdrIntensity * emitter.IntensityMultiplier;
             particle.Color = new Vector4(color.X * intensity, color.Y * intensity, color.Z * intensity, color.W);
             int tiles = spec.FlipbookTilesX * spec.FlipbookTilesY;

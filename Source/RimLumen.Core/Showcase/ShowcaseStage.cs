@@ -507,7 +507,7 @@ public static class ShowcaseStage
                     StartSpeedMax = 0.08f,
                     StartSizeMin = 1.35f,
                     StartSizeMax = 1.75f,
-                    StartColorLinear = new Vector4(1.0f, 0.34f, 0.04f, 1.0f),
+                    StartColor = new Vector4(1.0f, 0.34f, 0.04f, 1.0f),
                     HdrIntensity = 3.2f,
                     SizeOverLifetime = new ScalarCurve(new[]
                     {
@@ -557,7 +557,7 @@ public static class ShowcaseStage
                     StartSpeedMax = 10.5f,
                     StartSizeMin = 0.11f,
                     StartSizeMax = 0.18f,
-                    StartColorLinear = Vector4.One,
+                    StartColor = Vector4.One,
                     HdrIntensity = 2.4f,
                     BillboardMode = LumenBillboardMode.StretchedVelocity,
                     VelocityStretchFactor = 0.22f,
@@ -609,7 +609,7 @@ public static class ShowcaseStage
                     StartSpeedMax = 0.55f,
                     StartSizeMin = 0.35f,
                     StartSizeMax = 0.70f,
-                    StartColorLinear = new Vector4(0.15f, 0.75f, 1.0f, 1.0f),
+                    StartColor = new Vector4(0.15f, 0.75f, 1.0f, 1.0f),
                     HdrIntensity = 5.5f,
                     SizeOverLifetime = new ScalarCurve(new[]
                     {
@@ -662,7 +662,7 @@ public static class ShowcaseStage
                     StartSpeedMax = 0.05f,
                     StartSizeMin = 0.55f,
                     StartSizeMax = 0.85f,
-                    StartColorLinear = new Vector4(0.25f, 1.0f, 0.60f, 0.92f),
+                    StartColor = new Vector4(0.25f, 1.0f, 0.60f, 0.92f),
                     HdrIntensity = 2.4f,
                     SoftParticleFadeDistance = softFadeDistance,
                     ColorOverLifetime = new ColorGradient(new[]
@@ -705,7 +705,7 @@ public static class ShowcaseStage
                     StartSpeedMax = 0.6f,
                     StartSizeMin = 0.08f,
                     StartSizeMax = 0.15f,
-                    StartColorLinear = Vector4.One,
+                    StartColor = Vector4.One,
                     HdrIntensity = 1.45f,
                     SoftParticleFadeDistance = 0.5f,
                     ColorOverLifetime = new ColorGradient(new[]

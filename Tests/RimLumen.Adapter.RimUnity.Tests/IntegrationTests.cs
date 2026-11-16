@@ -70,11 +70,11 @@ internal static class IntegrationTests
                 Check.True(e.MaxParticles > 0, id + " maxParticles");
                 Check.True(e.MaxParticles >= e.StartLifetimeMin, id + " ordering sanity " + e.Name);
                 foreach (float v in new[] { e.Duration, e.RateOverTime, e.StartLifetimeMin, e.StartLifetimeMax, e.StartSpeedMin, e.StartSpeedMax,
-                    e.StartSizeMin, e.StartSizeMax, e.StartColorLinear.X, e.StartColorLinear.Y, e.StartColorLinear.Z, e.StartColorLinear.W,
+                    e.StartSizeMin, e.StartSizeMax, e.StartColor.X, e.StartColor.Y, e.StartColor.Z, e.StartColor.W,
                     e.HdrIntensity, e.ConeAngleDegrees, e.SoftParticleFadeDistance })
                     Check.True(float.IsFinite(v), id + " finite emitter " + e.Name);
                 Check.True(e.Bursts.All(b => float.IsFinite(b.Time) && b.Count >= 0), id + " finite bursts " + e.Name);
-                Check.True(e.ColorOverLifetime.Stops.All(s => float.IsFinite(s.Time) && float.IsFinite(s.RgbaLinear.X) && float.IsFinite(s.RgbaLinear.W)),
+                Check.True(e.ColorOverLifetime.Stops.All(s => float.IsFinite(s.Time) && float.IsFinite(s.Rgba.X) && float.IsFinite(s.Rgba.W)),
                     id + " finite gradient " + e.Name);
             }
             Log.Add($"{id}: nodes={asset.Nodes.Length} report={report.Nodes.Count} native={asset.Nodes.Count(n => n.Emitter is not null)} " +

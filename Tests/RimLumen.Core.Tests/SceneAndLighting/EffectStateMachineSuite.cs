@@ -395,7 +395,8 @@ public static class EffectStateMachineSuite
         };
         GlowAssert.Throws<InvalidDataException>(() => emptyXmlState.ToEffectAsset());
         var service = VfxTestData.Service(registered);
-        GlowAssert.Throws<InvalidDataException>(() => service.Play(new LumenPlayRequest { EffectId = registered.EffectId }));
+        using var rejectedState = service.Play(new LumenPlayRequest { EffectId = registered.EffectId });
+        VfxAssert.Check(!rejectedState.IsAlive, "Invalid provider state graph is rejected before Play.");
         GlowAssert.Equal(0, service.LiveHandleCount);
         var nanDefault = new EffectAsset
         {
@@ -403,7 +404,8 @@ public static class EffectStateMachineSuite
             States = new[] { new EffectStateSpec { Name = "a", Duration = 1f } },
         };
         service = VfxTestData.Service(nanDefault);
-        GlowAssert.Throws<InvalidDataException>(() => service.Play(new LumenPlayRequest { EffectId = nanDefault.EffectId }));
+        using var rejectedDuration = service.Play(new LumenPlayRequest { EffectId = nanDefault.EffectId });
+        VfxAssert.Check(!rejectedDuration.IsAlive && service.LiveHandleCount == 0, "Invalid provider duration cannot create a live handle.");
     }
 
     // The tornado of docs/api.md (state machine section): spawn -> sustain (loop) -> collapse (stopState).

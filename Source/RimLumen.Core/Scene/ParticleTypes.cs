@@ -19,7 +19,7 @@ public readonly struct ParticleVertex
 
 /// <summary>
 /// Read-only snapshot of one live L1 particle. Values are the post-integration state of the last
-/// <c>CaptureMainThread</c>; <see cref="Color"/> already includes StartColorLinear, the colour
+/// <c>CaptureMainThread</c>; <see cref="Color"/> already includes StartColor, the colour
 /// curve, <c>HdrIntensity</c> and the runtime intensity multiplier, and <see cref="Size"/> already
 /// includes StartSize, the size curve and <c>LengthScale</c>.
 /// </summary>

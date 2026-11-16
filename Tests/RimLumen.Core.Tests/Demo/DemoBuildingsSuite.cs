@@ -57,7 +57,7 @@ public static class DemoBuildingsSuite
             NativeTestData.Check(HasGravityDown(burst), $"{id}: L2 burst gravity pulls toward -Y");
             NativeTestData.Check(HasCurl(burst), $"{id}: L2 burst has curl turbulence");
             NativeTestData.Close(8f, burst.HdrIntensity, $"{id}: HDR burst intensity");
-            NativeTestData.Check(burst.ColorOverLifetime.Stops[^1].RgbaLinear.W == 0f, $"{id}: sparks fade to alpha 0");
+            NativeTestData.Check(burst.ColorOverLifetime.Stops[^1].Rgba.W == 0f, $"{id}: sparks fade to alpha 0");
 
             EffectNodeSpec sparkleNode = asset.Nodes[2];
             EmitterSpec sparkle = sparkleNode.Emitter!;
@@ -76,7 +76,7 @@ public static class DemoBuildingsSuite
             NativeTestData.Close(0f, curve.Keys[^1].Value, $"{id}: flash is gone before the handle is retired");
             NativeTestData.Check(curve.Keys[^1].Time <= RimLumenDemoEffects.FireworkVisibleSeconds, $"{id}: flash ends inside the visible window");
 
-            hues[i] = burst.ColorOverLifetime.Stops[1].RgbaLinear;
+            hues[i] = burst.ColorOverLifetime.Stops[1].Rgba;
         }
 
         NativeTestData.Check(hues[0].X > 0.9f && hues[0].Z < 0.3f, "gold variant is warm");
@@ -105,7 +105,7 @@ public static class DemoBuildingsSuite
         NativeTestData.Check(HasGravityDown(jet), "jet falls back down");
         NativeTestData.Check(HasCurl(jet), "jet wobbles");
         NativeTestData.Check(jet.SoftParticleFadeDistance > 0f, "jet fades against geometry");
-        NativeTestData.Check(jet.ColorOverLifetime.Stops[^1].RgbaLinear.W == 0f, "jet droplets fade to alpha 0");
+        NativeTestData.Check(jet.ColorOverLifetime.Stops[^1].Rgba.W == 0f, "jet droplets fade to alpha 0");
 
         EffectNodeSpec mistNode = asset.Nodes[1];
         EmitterSpec mist = mistNode.Emitter!;

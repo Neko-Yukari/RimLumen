@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using RimLumen.Core.Assets;
 
 namespace RimLumen.Core.Contracts;
 
@@ -10,6 +11,7 @@ public static class LumenHostRegistry
     private static readonly List<ILumenFrameContributor> Contributors = new();
     private static ILumenFrameContributor[] contributorSnapshot = Array.Empty<ILumenFrameContributor>();
     private static readonly List<ILumenAssetProvider> AssetProviders = new();
+    private static readonly LumenAssetValidationCache ValidatedAssets = new();
 
     public static ILumenVfxService? VfxService { get; private set; }
     public static ILumenGpuParticleEngine? GpuParticleEngine { get; private set; }
@@ -80,7 +82,11 @@ public static class LumenHostRegistry
             {
                 if (AssetProviders[i].TryResolveEffect(effectId, out asset) && asset is not null)
                 {
-                    return true;
+                    bool valid = ValidatedAssets.TryValidate(asset, AssetProviders[i], out string? rejection);
+                    if (rejection is not null) Verse.Log.Error(rejection);
+                    if (valid) return true;
+                    asset = null;
+                    return false;
                 }
             }
         }

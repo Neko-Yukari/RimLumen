@@ -1,5 +1,7 @@
 using System;
 using System.Numerics;
+using System.IO;
+using RimLumen.Core.Assets;
 using System.Runtime.InteropServices;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.ParticlesGpu;
@@ -59,20 +61,22 @@ public static class ParticleDataTests
     }
 
     [LumenFact]
-    public static void CurveRowRejectsMissingUnorderedAndNonfiniteData()
+    public static void AssetBoundaryRejectsMalformedCurvesAndPackerRejectsShortDestination()
     {
-        var samples = new GpuCurveSample[64];
         var color = ColorGradient.Constant(Vector4.One);
         Throws<ArgumentException>(() => GpuCurveAtlasPacker.Pack(ScalarCurve.Constant(1f), color, new GpuCurveSample[63]));
-        Throws<ArgumentException>(() => GpuCurveAtlasPacker.Pack(new ScalarCurve(Array.Empty<CurveKey>()), color, samples));
-        Throws<ArgumentException>(() => GpuCurveAtlasPacker.Pack(ScalarCurve.Constant(1f), new ColorGradient(Array.Empty<ColorStop>()), samples));
-        Throws<ArgumentException>(() => GpuCurveAtlasPacker.Pack(new ScalarCurve(new[] { new CurveKey(0f, 1f), new CurveKey(0f, 2f) }), color, samples));
-        Throws<ArgumentException>(() => GpuCurveAtlasPacker.Pack(new ScalarCurve(new[] { new CurveKey(1f, 1f), new CurveKey(0f, 2f) }), color, samples));
-        Throws<ArgumentException>(() => GpuCurveAtlasPacker.Pack(new ScalarCurve(new[] { new CurveKey(0f, 1f, OutTangent: float.NaN) }), color, samples));
-        Throws<ArgumentException>(() => GpuCurveAtlasPacker.Pack(ScalarCurve.Constant(float.PositiveInfinity), color, samples));
-        Throws<ArgumentException>(() => GpuCurveAtlasPacker.Pack(ScalarCurve.Constant(1f), ColorGradient.Constant(new Vector4(float.NaN)), samples));
-        Throws<ArgumentException>(() => GpuCurveAtlasPacker.Pack(ScalarCurve.Constant(1f), new ColorGradient(new[] { new ColorStop(2f, Vector4.One) }), samples));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", SizeOverLifetime = new ScalarCurve(Array.Empty<CurveKey>()) }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", ColorOverLifetime = new ColorGradient(Array.Empty<ColorStop>()) }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", SizeOverLifetime = new ScalarCurve(new[] { new CurveKey(0f, 1f), new CurveKey(0f, 2f) }) }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", SizeOverLifetime = new ScalarCurve(new[] { new CurveKey(1f, 1f), new CurveKey(0f, 2f) }) }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", SizeOverLifetime = new ScalarCurve(new[] { new CurveKey(0f, 1f, OutTangent: float.NaN) }) }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", SizeOverLifetime = ScalarCurve.Constant(float.PositiveInfinity) }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", ColorOverLifetime = ColorGradient.Constant(new Vector4(float.NaN)) }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", ColorOverLifetime = new ColorGradient(new[] { new ColorStop(2f, Vector4.One) }) }));
     }
+
+    private static void Validate(EmitterSpec emitter)
+        => LumenAssetRules.Validate(new EffectAsset { EffectId = "particle.data", Nodes = new[] { new EffectNodeSpec { Name = "root", Emitter = emitter } } }, "particle.data");
 
     [LumenFact]
     public static void AllocatorReturnsExclusiveContiguousRangesAndReusesReleasedSlots()
@@ -207,15 +211,15 @@ public static class ParticleDataTests
     }
 
     [LumenFact]
-    public static void SchedulerRejectsMalformedSpecAndDelta()
+    public static void AssetBoundaryAndSchedulerRejectMalformedSpecAndDelta()
     {
-        Throws<ArgumentOutOfRangeException>(() => new EmissionScheduler(new EmitterSpec { Name = "bad", Duration = 0f }));
-        Throws<ArgumentOutOfRangeException>(() => new EmissionScheduler(new EmitterSpec { Name = "bad", Duration = float.NaN }));
-        Throws<ArgumentOutOfRangeException>(() => new EmissionScheduler(new EmitterSpec { Name = "bad", RateOverTime = -1f }));
-        Throws<ArgumentOutOfRangeException>(() => new EmissionScheduler(new EmitterSpec { Name = "bad", RateOverTime = float.PositiveInfinity }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", Duration = 0f }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", Duration = float.NaN }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", RateOverTime = -1f }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", RateOverTime = float.PositiveInfinity }));
         Throws<ArgumentOutOfRangeException>(() => new EmissionScheduler(new EmitterSpec { Name = "bad", Bursts = new[] { (2f, 1) } }));
-        Throws<ArgumentOutOfRangeException>(() => new EmissionScheduler(new EmitterSpec { Name = "bad", Bursts = new[] { (0f, -1) } }));
-        Throws<ArgumentOutOfRangeException>(() => new EmissionScheduler(new EmitterSpec { Name = "bad", Bursts = new[] { (float.NaN, 1) } }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", Bursts = new[] { (0f, -1) } }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", Bursts = new[] { (float.NaN, 1) } }));
         var scheduler = new EmissionScheduler(new EmitterSpec { Name = "valid", Bursts = new[] { (0f, 2) } });
         Throws<ArgumentOutOfRangeException>(() => scheduler.Advance(-1f, true));
         Throws<ArgumentOutOfRangeException>(() => scheduler.Advance(float.NaN, true));

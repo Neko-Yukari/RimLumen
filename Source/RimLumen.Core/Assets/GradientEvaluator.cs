@@ -6,15 +6,15 @@ namespace RimLumen.Core.Assets;
 
 /// <summary>
 /// Zero-allocation evaluator for <see cref="ColorGradient"/>. Interpolation is linear in the
-/// RGBA components (the stops are already linear-space values).
+/// RGBA components in the vanilla scene's stored encoding; alpha is coverage.
 /// </summary>
 public static class GradientEvaluator
 {
     // Requires: gradient is non-null.
     // Ensures: gradient.Stops.Length == 0 -> Vector4.Zero.
-    // Ensures: gradient.Stops.Length == 1 -> Stops[0].RgbaLinear for every time.
-    // Ensures: the first-stop test has priority: time <= Stops[0].Time -> Stops[0].RgbaLinear;
-    //          otherwise time >= Stops[^1].Time -> Stops[^1].RgbaLinear
+    // Ensures: gradient.Stops.Length == 1 -> Stops[0].Rgba for every time.
+    // Ensures: the first-stop test has priority: time <= Stops[0].Time -> Stops[0].Rgba;
+    //          otherwise time >= Stops[^1].Time -> Stops[^1].Rgba
     //          (so a degenerate domain with first.Time == last.Time always yields the first stop).
     // Ensures: otherwise component-wise lerp between the bracketing stops; equal adjacent times use the left stop.
     public static Vector4 Evaluate(ColorGradient gradient, float time)
@@ -27,12 +27,12 @@ public static class GradientEvaluator
 
         if (stops.Length == 1 || stops[0].Time == stops[^1].Time || time <= stops[0].Time)
         {
-            return stops[0].RgbaLinear;
+            return stops[0].Rgba;
         }
 
         if (time >= stops[^1].Time)
         {
-            return stops[^1].RgbaLinear;
+            return stops[^1].Rgba;
         }
 
         int right = 1;
@@ -46,10 +46,10 @@ public static class GradientEvaluator
         float dt = rightStop.Time - leftStop.Time;
         if (dt == 0f)
         {
-            return leftStop.RgbaLinear;
+            return leftStop.Rgba;
         }
 
-        return Vector4.Lerp(leftStop.RgbaLinear, rightStop.RgbaLinear, (time - leftStop.Time) / dt);
+        return Vector4.Lerp(leftStop.Rgba, rightStop.Rgba, (time - leftStop.Time) / dt);
     }
 
     // Requires: gradient is non-null; destination.Length > 0.

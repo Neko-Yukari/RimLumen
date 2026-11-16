@@ -18,6 +18,7 @@ internal static class Program
             ("Canonical GravityDrag L1/L2 fields only", TranslationTests.Gravity),
             ("Transitive subEmitter ownership", TranslationTests.SubEmitterClosure),
             ("Curves, gradients and HDR", TranslationTests.Values),
+            ("Point light HDR split", TranslationTests.PointLightHdrSplit),
             ("Catalog required, gzip payloads, aliases, shared owner and traversal", FileTests.Catalog),
             ("RUTX DXT1/BC7 mips, gzip and malformed payloads", FileTests.Textures),
             ("Core assembly architectural independence", IntegrationTests.CoreIndependence),

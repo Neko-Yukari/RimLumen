@@ -94,7 +94,7 @@ public sealed class RimUnityPrefabTranslator
         var lifetime = CurveRange(Field(main, "startLifetime"), 5f);
         var speed = CurveRange(Field(main, "startSpeed"), 5f);
         var size = CurveRange(Field(main, "startSize"), 1f);
-        Vector4 color = ToColorGradient(Field(main, "startColor")).Stops[0].RgbaLinear;
+        Vector4 color = ToColorGradient(Field(main, "startColor")).Stops[0].Rgba;
         ResourceData? material = null;
         ShaderData? shader = null;
         ValueData? materialRef = Member(renderer?.members, "sharedMaterial");
@@ -111,11 +111,11 @@ public sealed class RimUnityPrefabTranslator
         color = ExtractHdrIntensity(color, out float hdr);
         ColorGradient lifetimeColors = Enabled(colorModule) ? ToColorGradient(Field(colorModule, "color")) : ColorGradient.Constant(Vector4.One);
         float gradientHdr = lifetimeColors.Stops.Aggregate(1f, (peak, stop) =>
-            MathF.Max(peak, MathF.Max(stop.RgbaLinear.X, MathF.Max(stop.RgbaLinear.Y, stop.RgbaLinear.Z))));
+            MathF.Max(peak, MathF.Max(stop.Rgba.X, MathF.Max(stop.Rgba.Y, stop.Rgba.Z))));
         if (gradientHdr > 1f)
         {
             lifetimeColors = new ColorGradient(lifetimeColors.Stops.Select(stop => new ColorStop(stop.Time,
-                new Vector4(stop.RgbaLinear.X / gradientHdr, stop.RgbaLinear.Y / gradientHdr, stop.RgbaLinear.Z / gradientHdr, stop.RgbaLinear.W))).ToArray());
+                new Vector4(stop.Rgba.X / gradientHdr, stop.Rgba.Y / gradientHdr, stop.Rgba.Z / gradientHdr, stop.Rgba.W))).ToArray());
             hdr *= gradientHdr;
         }
         LumenBlendMode blend = LumenBlendMode.AlphaBlend;
@@ -157,7 +157,9 @@ public sealed class RimUnityPrefabTranslator
                 throw new NotSupportedException("Particle light ratio cannot be represented by PointLightSpec.");
             float range = CurveRange(Field(lights, "range"), 1f).Max;
             float intensity = CurveRange(Field(lights, "intensity"), 1f).Max;
-            light = new PointLightSpec(range, 0, new Vector3(color.X, color.Y, color.Z) * hdr, ScalarCurve.Constant(intensity));
+            Vector3 lightColor = new Vector3(color.X, color.Y, color.Z) * hdr;
+            float lightHdr = MathF.Max(1f, MathF.Max(lightColor.X, MathF.Max(lightColor.Y, lightColor.Z)));
+            light = new PointLightSpec(range, 0, lightColor / lightHdr, ScalarCurve.Constant(intensity * lightHdr));
         }
         return new EmitterSpec
         {
@@ -169,7 +171,7 @@ public sealed class RimUnityPrefabTranslator
             Shape = shapeKind, ShapeExtents = extents, ConeAngleDegrees = Number(Field(shape, "angle"), 25f),
             StartLifetimeMin = lifetime.Min, StartLifetimeMax = lifetime.Max,
             StartSpeedMin = speed.Min, StartSpeedMax = speed.Max, StartSizeMin = size.Min, StartSizeMax = size.Max,
-            StartColorLinear = color, HdrIntensity = hdr,
+            StartColor = color, HdrIntensity = hdr,
             SizeOverLifetime = Enabled(sizeModule) ? ToScalarCurve(Field(sizeModule, "size")) : ScalarCurve.Constant(1),
             ColorOverLifetime = lifetimeColors,
             ForceFields = forces, TextureKey = textureKey, BlendMode = blend,

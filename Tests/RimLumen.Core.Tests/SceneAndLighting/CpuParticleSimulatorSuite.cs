@@ -441,7 +441,7 @@ public static class CpuParticleSimulatorSuite
             Name = "appearance", StartLifetimeMin = 4f, StartLifetimeMax = 4f,
             StartSizeMin = 2f, StartSizeMax = 2f, LengthScale = 3f,
             SizeOverLifetime = new ScalarCurve(new[] { new CurveKey(0f, 1f), new CurveKey(1f, 3f) }),
-            StartColorLinear = new Vector4(2f, 4f, 6f, 1f), HdrIntensity = 2f,
+            StartColor = new Vector4(2f, 4f, 6f, 1f), HdrIntensity = 2f,
             ColorOverLifetime = new ColorGradient(new[] { new ColorStop(0f, Vector4.Zero), new ColorStop(1f, Vector4.One) }),
             FlipbookTilesX = 2, FlipbookTilesY = 2,
         }, Matrix4x4.Identity, false);
@@ -547,7 +547,7 @@ public static class CpuParticleSimulatorSuite
         var sim = new CpuParticleSimulator();
         int id = sim.AcquireEmitter(new EmitterSpec
         {
-            Name = "hdr-alpha", StartColorLinear = new Vector4(1f, 2f, 3f, 0.4f), HdrIntensity = 4f,
+            Name = "hdr-alpha", StartColor = new Vector4(1f, 2f, 3f, 0.4f), HdrIntensity = 4f,
         }, Matrix4x4.Identity, false);
         sim.SetEmitterParams(id, false, 1f, 2f);
         sim.EmitBurst(id, 1);

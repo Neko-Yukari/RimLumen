@@ -160,11 +160,11 @@ public static class RimUnityValueConversion
 
     private static Vector4 EvaluateGradient(ColorStop[] colors, (float Time, float Alpha)[] alphas, float time, bool fixedMode)
     {
-        Vector4 color = colors.Length == 0 ? Vector4.One : colors[0].RgbaLinear;
+        Vector4 color = colors.Length == 0 ? Vector4.One : colors[0].Rgba;
         for (int i = 1; i < colors.Length; i++)
         {
-            if (time >= colors[i].Time) { color = colors[i].RgbaLinear; continue; }
-            if (!fixedMode) color = Vector4.Lerp(colors[i - 1].RgbaLinear, colors[i].RgbaLinear,
+            if (time >= colors[i].Time) { color = colors[i].Rgba; continue; }
+            if (!fixedMode) color = Vector4.Lerp(colors[i - 1].Rgba, colors[i].Rgba,
                 Fraction(time, colors[i - 1].Time, colors[i].Time));
             break;
         }

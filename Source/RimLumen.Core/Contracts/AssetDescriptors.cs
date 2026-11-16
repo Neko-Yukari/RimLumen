@@ -61,7 +61,8 @@ public sealed class ScalarCurve
     public static ScalarCurve Constant(float value) => new(new[] { new CurveKey(0f, 1f) }, value);
 }
 
-public readonly record struct ColorStop(float Time, Vector4 RgbaLinear);
+// Colour uses vanilla scene stored encoding (no sRGB conversion); 1 = full brightness, >1 = HDR; alpha = coverage.
+public readonly record struct ColorStop(float Time, Vector4 Rgba);
 
 public sealed class ColorGradient
 {
@@ -72,7 +73,7 @@ public sealed class ColorGradient
         Stops = stops ?? Array.Empty<ColorStop>();
     }
 
-    public static ColorGradient Constant(Vector4 rgbaLinear) => new(new[] { new ColorStop(0f, rgbaLinear) });
+    public static ColorGradient Constant(Vector4 rgba) => new(new[] { new ColorStop(0f, rgba) });
 }
 
 public readonly record struct ForceFieldSpec(
@@ -103,7 +104,7 @@ public sealed class EmitterSpec
     public float StartSpeedMax { get; init; }
     public float StartSizeMin { get; init; } = 1f;
     public float StartSizeMax { get; init; } = 1f;
-    public Vector4 StartColorLinear { get; init; } = Vector4.One;
+    public Vector4 StartColor { get; init; } = Vector4.One;
 
     public ScalarCurve SizeOverLifetime { get; init; } = ScalarCurve.Constant(1f);
     public ColorGradient ColorOverLifetime { get; init; } = ColorGradient.Constant(Vector4.One);
@@ -122,10 +123,13 @@ public sealed class EmitterSpec
     public float HdrIntensity { get; init; } = 1f;
     // Expires a particle that is descending (world vy < 0) below the effect's play-origin height.
     public bool KillBelowFloor { get; init; }
-    public float BloomWeight { get; init; } = 1f;
     public LumenParticleTier PreferredTier { get; init; } = LumenParticleTier.L2_GpuCompute;
 }
 
+// Radii [0,40] cells: vanilla GlowGrid.RegisterCustomGlower clamps [0,40] (Assembly-CSharp:69649),
+// and CompProperties_Glower.ConfigErrors rejects >40 (:344536). Colour components are [0,1]; ColorInt stores 1/255 steps.
+// MapGlowerDriver's 0.05-cell radius / 4/255 colour steps are RimLumen re-register (re-flood) thresholds,
+// not vanilla storage precision: they prevent steady lights from re-flooding every frame. Curve time is seconds.
 public readonly record struct PointLightSpec(
     float GlowRadius,
     float OverlightRadius,
@@ -182,6 +186,8 @@ public sealed class EffectAsset
     public string? StopState { get; init; }
 }
 
+/// <summary>Supplies assets validated at resolution. Treat each returned asset and its nested arrays as immutable
+/// once resolved; hot reload must return a new EffectAsset instance so validation runs again.</summary>
 public interface ILumenAssetProvider
 {
     // Requires: effectId is non-empty.

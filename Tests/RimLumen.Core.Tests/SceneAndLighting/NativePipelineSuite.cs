@@ -93,7 +93,7 @@ public static class NativePipelineSuite
         NativeTestData.Close(2.5f, emitter.StartLifetimeMax, "startLifetime shorthand max");
         NativeTestData.Close(4f, emitter.StartSpeedMax, "startSpeed shorthand");
         NativeTestData.Close(0.5f, emitter.StartSizeMin, "startSize shorthand");
-        NativeTestData.Check(emitter.StartColorLinear == new Vector4(1f, 0.5f, 0.25f, 0.75f), "startColorLinear RGBA");
+        NativeTestData.Check(emitter.StartColor == new Vector4(1f, 0.5f, 0.25f, 0.75f), "startColor RGBA");
         NativeTestData.Close(0.75f, CurveEvaluator.Evaluate(emitter.SizeOverLifetime, 0.5f), "sizeOverLifetime keys");
         NativeTestData.Close(0.5f, GradientEvaluator.Evaluate(emitter.ColorOverLifetime, 0.5f).Y, "colorOverLifetime stops");
         NativeTestData.Check(emitter.ForceFields.Length == 1, "One force field");
@@ -111,14 +111,13 @@ public static class NativePipelineSuite
         NativeTestData.Close(2f, emitter.LengthScale, "lengthScale");
         NativeTestData.Close(0.25f, emitter.SoftParticleFadeDistance, "softParticleFadeDistance");
         NativeTestData.Close(3f, emitter.HdrIntensity, "hdrIntensity");
-        NativeTestData.Close(0.5f, emitter.BloomWeight, "bloomWeight");
         NativeTestData.Check(emitter.PreferredTier == LumenParticleTier.L1_NativeCpu, "preferredTier");
         NativeTestData.Check(emitter.KillBelowFloor, "killBelowFloor");
 
         PointLightSpec light = node.PointLight ?? throw new InvalidOperationException("Point light missing");
         NativeTestData.Close(6f, light.GlowRadius, "glowRadius");
         NativeTestData.Close(1.5f, light.OverlightRadius, "overlightRadius");
-        NativeTestData.Check(light.ColorRgb == new Vector3(1f, 0.5f, 0.25f), "colorRgb");
+        NativeTestData.Check(light.ColorRgb == new Vector3(1f, 0.5f, 0.25f), "color");
         NativeTestData.Check(light.IntensityOverTime is not null, "Intensity rides on the curve multiplier");
         NativeTestData.Close(2f, CurveEvaluator.Evaluate(light.IntensityOverTime!, 0.1f), "intensity");
 
@@ -315,9 +314,8 @@ public static class NativePipelineSuite
                         startSpeedMax = 3f,
                         startSizeMin = 0.5f,
                         startSizeMax = 1f,
-                        startColorLinear = new UColor(1f, 0.5f, 0.25f, 1f),
+                        startColor = new UColor(1f, 0.5f, 0.25f, 1f),
                         hdrIntensity = 2f,
-                        bloomWeight = 0.5f,
                         shape = LumenShapeKind.Cone,
                         shapeExtents = new UVector3(1f, 1f, 1f),
                         coneAngleDegrees = 30f,
@@ -335,8 +333,8 @@ public static class NativePipelineSuite
                         sizeOverLifetime = new List<LumenCurveKeyXml> { new() { time = 0f, value = 1f }, new() { time = 1f, value = 0.5f } },
                         colorOverLifetime = new List<LumenGradientStopXml>
                         {
-                            new() { time = 0f, rgbaLinear = new UColor(1f, 1f, 1f, 1f) },
-                            new() { time = 1f, rgbaLinear = new UColor(0f, 0f, 0f, 0f) },
+                            new() { time = 0f, color = new UColor(1f, 1f, 1f, 1f) },
+                            new() { time = 1f, color = new UColor(0f, 0f, 0f, 0f) },
                         },
                         forceFields = new List<LumenForceFieldXml>
                         {
@@ -345,7 +343,7 @@ public static class NativePipelineSuite
                     },
                     pointLight = new LumenPointLightXml
                     {
-                        colorLinear = new UColor(1f, 0.5f, 0.25f, 1f),
+                        color = new UColor(1f, 0.5f, 0.25f, 1f),
                         radiusCells = 6f,
                         overlightRadius = 1.5f,
                         intensity = 2f,
@@ -372,7 +370,7 @@ public static class NativePipelineSuite
         NativeTestData.Close(6f, emitter.RateOverTime, "rateOverTime");
         NativeTestData.Check(emitter.Bursts.Length == 1 && emitter.Bursts[0].Count == 2, "bursts");
         NativeTestData.Check(emitter.Shape == LumenShapeKind.Cone && emitter.ConeAngleDegrees == 30f, "shape/cone angle");
-        NativeTestData.Check(emitter.StartColorLinear == new Vector4(1f, 0.5f, 0.25f, 1f), "startColorLinear");
+        NativeTestData.Check(emitter.StartColor == new Vector4(1f, 0.5f, 0.25f, 1f), "startColor");
         NativeTestData.Close(0.75f, CurveEvaluator.Evaluate(emitter.SizeOverLifetime, 0.5f), "sizeOverLifetime");
         NativeTestData.Close(0.5f, GradientEvaluator.Evaluate(emitter.ColorOverLifetime, 0.5f).X, "colorOverLifetime");
         NativeTestData.Check(emitter.ForceFields.Length == 1 && emitter.ForceFields[0].Kind == ForceFieldKind.Vortex, "force field");
@@ -650,9 +648,8 @@ public static class NativePipelineSuite
         NativeTestData.Close(json.StartSpeedMax, xml.StartSpeedMax, "startSpeedMax default");
         NativeTestData.Close(json.StartSizeMin, xml.StartSizeMin, "startSizeMin default");
         NativeTestData.Close(json.StartSizeMax, xml.StartSizeMax, "startSizeMax default");
-        NativeTestData.Check(xml.StartColorLinear == json.StartColorLinear, "startColorLinear default");
+        NativeTestData.Check(xml.StartColor == json.StartColor, "startColor default");
         NativeTestData.Close(json.HdrIntensity, xml.HdrIntensity, "hdrIntensity default");
-        NativeTestData.Close(json.BloomWeight, xml.BloomWeight, "bloomWeight default");
         NativeTestData.Check(xml.Shape == json.Shape, "shape default");
         NativeTestData.Close(json.ShapeExtents.X, xml.ShapeExtents.X, "shapeExtents default");
         NativeTestData.Close(json.ConeAngleDegrees, xml.ConeAngleDegrees, "coneAngleDegrees default");
@@ -703,7 +700,7 @@ public static class NativePipelineSuite
             "startLifetime": 2.5,
             "startSpeed": 4,
             "startSize": 0.5,
-            "startColorLinear": [1, 0.5, 0.25, 0.75],
+            "startColor": [1, 0.5, 0.25, 0.75],
             "sizeOverLifetime": [[0, 1], [1, 0.5]],
             "colorOverLifetime": [[0, [1, 1, 1, 1]], [1, [0, 0, 0, 0]]],
             "forceFields": [ { "kind": "Vortex", "centerOrAxis": [0, 1, 0], "radius": 3, "strength": 2, "frequency": 0.5 } ],
@@ -717,11 +714,10 @@ public static class NativePipelineSuite
             "lengthScale": 2,
             "softParticleFadeDistance": 0.25,
             "hdrIntensity": 3,
-            "bloomWeight": 0.5,
             "preferredTier": "L1_NativeCpu",
             "killBelowFloor": true
           },
-          "pointLight": { "glowRadius": 6, "overlightRadius": 1.5, "colorRgb": [1, 0.5, 0.25], "intensity": 2 }
+          "pointLight": { "glowRadius": 6, "overlightRadius": 1.5, "color": [1, 0.5, 0.25], "intensity": 2 }
         },
         { "name": "child", "parentIndex": 0, "localPosition": [0, 1, 0] }
       ],

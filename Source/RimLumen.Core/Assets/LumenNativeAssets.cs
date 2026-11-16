@@ -128,6 +128,7 @@ public sealed class LumenEffectDef : Def
 
     private static EmitterSpec ToEmitterSpec(LumenEmitterXml xml, string nodeName, string path)
     {
+        xml.RejectLegacyFields(path + ".emitter");
         var emitter = new EmitterSpec
         {
             Name = string.IsNullOrEmpty(xml.name) ? nodeName : xml.name!,
@@ -146,7 +147,7 @@ public sealed class LumenEffectDef : Def
             StartSpeedMax = xml.startSpeedMax,
             StartSizeMin = xml.startSizeMin,
             StartSizeMax = xml.startSizeMax,
-            StartColorLinear = ToVector4(xml.startColorLinear),
+            StartColor = ToVector4(xml.startColor),
             SizeOverLifetime = xml.sizeOverLifetime is { Count: > 0 }
                 ? new ScalarCurve(ToCurveKeys(xml.sizeOverLifetime, path + ".sizeOverLifetime"))
                 : ScalarCurve.Constant(1f),
@@ -164,7 +165,6 @@ public sealed class LumenEffectDef : Def
             LengthScale = xml.lengthScale,
             SoftParticleFadeDistance = xml.softParticleFadeDistance,
             HdrIntensity = xml.hdrIntensity,
-            BloomWeight = xml.bloomWeight,
             PreferredTier = xml.preferredTier,
             KillBelowFloor = xml.killBelowFloor,
         };
@@ -173,6 +173,7 @@ public sealed class LumenEffectDef : Def
 
     private static PointLightSpec ToPointLightSpec(LumenPointLightXml xml, string path)
     {
+        xml.RejectLegacyFields(path + ".pointLight");
         // PointLightSpec carries no intensity column: the map glower driver multiplies the colour by
         // Evaluate(IntensityOverTime) * runtime multiplier, so the authored intensity rides on the curve's multiplier.
         ScalarCurve? intensity;
@@ -188,7 +189,7 @@ public sealed class LumenEffectDef : Def
         return new PointLightSpec(
             xml.radiusCells,
             xml.overlightRadius,
-            new Vector3(xml.colorLinear.r, xml.colorLinear.g, xml.colorLinear.b),
+            new Vector3(xml.color.r, xml.color.g, xml.color.b),
             intensity);
     }
 
@@ -225,11 +226,6 @@ public sealed class LumenEffectDef : Def
         for (int i = 0; i < keys.Count; i++)
         {
             LumenCurveKeyXml key = keys[i] ?? throw new InvalidDataException($"{path}[{i}] is null.");
-            if (i > 0 && key.time < keys[i - 1].time)
-            {
-                throw new InvalidDataException($"{path}: keys must be ordered by non-decreasing time; key {i} ({key.time}) follows {keys[i - 1].time}.");
-            }
-
             result[i] = new CurveKey(key.time, key.value);
         }
 
@@ -242,12 +238,8 @@ public sealed class LumenEffectDef : Def
         for (int i = 0; i < stops.Count; i++)
         {
             LumenGradientStopXml stop = stops[i] ?? throw new InvalidDataException($"{path}[{i}] is null.");
-            if (i > 0 && stop.time < stops[i - 1].time)
-            {
-                throw new InvalidDataException($"{path}: stops must be ordered by non-decreasing time; stop {i} ({stop.time}) follows {stops[i - 1].time}.");
-            }
-
-            result[i] = new ColorStop(stop.time, ToVector4(stop.rgbaLinear));
+            stop.RejectLegacyFields($"{path}[{i}]");
+            result[i] = new ColorStop(stop.time, ToVector4(stop.color));
         }
 
         return result;
@@ -309,9 +301,21 @@ public sealed class LumenEmitterXml
     public float startSpeedMax = 0f;
     public float startSizeMin = 1f;
     public float startSizeMax = 1f;
-    public UnityEngine.Color startColorLinear = UnityEngine.Color.white;
+    public UnityEngine.Color startColor = UnityEngine.Color.white;
+    private string? startColorLinear = null;
+    private string? bloomWeight = null;
+    private string? hdrMultiplier = null;
+
+    internal void RejectLegacyFields(string path)
+    {
+        if (bloomWeight is not null)
+            throw new InvalidDataException($"{path}: 'bloomWeight' was removed.");
+        if (hdrMultiplier is not null)
+            throw new InvalidDataException($"{path}: 'hdrMultiplier' was removed; use hdrIntensity.");
+        if (startColorLinear is not null)
+            throw new InvalidDataException($"{path}: 'startColorLinear' renamed to startColor.");
+    }
     public float hdrIntensity = 1f;
-    public float bloomWeight = 1f;
     public LumenShapeKind shape = LumenShapeKind.Point;
     public UnityEngine.Vector3 shapeExtents = UnityEngine.Vector3.one;
     public float coneAngleDegrees = 25f;
@@ -365,7 +369,14 @@ public sealed class LumenCurveKeyXml
 public sealed class LumenGradientStopXml
 {
     public float time;
-    public UnityEngine.Color rgbaLinear = UnityEngine.Color.white;
+    public UnityEngine.Color color = UnityEngine.Color.white;
+    private string? rgbaLinear = null;
+
+    internal void RejectLegacyFields(string path)
+    {
+        if (rgbaLinear is not null)
+            throw new InvalidDataException($"{path}: 'rgbaLinear' renamed to color.");
+    }
 }
 
 public sealed class LumenForceFieldXml
@@ -380,7 +391,17 @@ public sealed class LumenForceFieldXml
 
 public sealed class LumenPointLightXml
 {
-    public UnityEngine.Color colorLinear = UnityEngine.Color.white;
+    public UnityEngine.Color color = UnityEngine.Color.white;
+    private string? colorLinear = null;
+    private string? colorRgb = null;
+
+    internal void RejectLegacyFields(string path)
+    {
+        if (colorLinear is not null)
+            throw new InvalidDataException($"{path}: 'colorLinear' renamed to color.");
+        if (colorRgb is not null)
+            throw new InvalidDataException($"{path}: 'colorRgb' renamed to color.");
+    }
     public float radiusCells = 5f;
     public float overlightRadius;
     public float intensity = 1f;
@@ -396,8 +417,9 @@ internal static class LumenAssetRules
     // Ensures: throws InvalidDataException naming <paramref name="source"/> when the asset cannot be played:
     //          empty EffectId, no nodes, an empty node name, a parent index that is neither -1 nor an
     //          earlier node (the only cycle-free ordering the runtime accepts), a non-positive particle
-    //          budget, a non-positive or inverted lifetime range, a flipbook grid below 1 tile, or a states /
-    //          initialState / stopState / timeline-event state reference that EffectStateGraph.For rejects.
+    //          budget/duration/lifetime, an invalid flipbook grid or enum, empty/nonfinite/unordered curves,
+    //          particle curve times outside [0,1], light curve times below zero seconds, light radii outside [0,40],
+    //          light colour outside [0,1], or state references that EffectStateGraph.For rejects.
     public static void Validate(EffectAsset asset, string source)
     {
         if (string.IsNullOrEmpty(asset.EffectId))
@@ -440,9 +462,19 @@ internal static class LumenAssetRules
                 ValidateEmitter(emitter, $"{path} ('{node.Name}').emitter");
             }
 
-            if (node.PointLight is { } light && (!float.IsFinite(light.GlowRadius) || light.GlowRadius < 0f))
+            if (node.PointLight is { } light)
             {
-                throw new InvalidDataException($"{path} ('{node.Name}').pointLight: glowRadius must be finite and >= 0, got {light.GlowRadius}.");
+                string lightPath = $"{path} ('{node.Name}').pointLight";
+                if (!float.IsFinite(light.GlowRadius) || light.GlowRadius < 0f || light.GlowRadius > 40f)
+                    throw new InvalidDataException($"{lightPath}: glowRadius must be in [0,40], got {light.GlowRadius}.");
+                if (!float.IsFinite(light.OverlightRadius) || light.OverlightRadius < 0f || light.OverlightRadius > 40f)
+                    throw new InvalidDataException($"{lightPath}: overlightRadius must be in [0,40], got {light.OverlightRadius}.");
+                Vector3 color = light.ColorRgb;
+                if (!float.IsFinite(color.X) || !float.IsFinite(color.Y) || !float.IsFinite(color.Z) ||
+                    color.X < 0f || color.X > 1f || color.Y < 0f || color.Y > 1f || color.Z < 0f || color.Z > 1f)
+                    throw new InvalidDataException($"{lightPath}: color components must be in [0,1].");
+                if (light.IntensityOverTime is { } intensity)
+                    ValidateCurve(intensity, lightPath + ".intensityOverTime", normalized: false);
             }
         }
 
@@ -469,6 +501,29 @@ internal static class LumenAssetRules
         EffectStateGraph.For(asset, source);
     }
 
+    private static void ValidateCurve(ScalarCurve curve, string path, bool normalized)
+    {
+        if (curve.Keys.Length == 0)
+            throw new InvalidDataException($"{path}: at least one key is required.");
+        if (!float.IsFinite(curve.Multiplier))
+            throw new InvalidDataException($"{path}: multiplier must be finite.");
+        for (int i = 0; i < curve.Keys.Length; i++)
+        {
+            CurveKey key = curve.Keys[i];
+            ValidateTime(key.Time, i > 0 ? curve.Keys[i - 1].Time : -1f, $"{path}[{i}]", normalized);
+            if (!float.IsFinite(key.Value) || !float.IsFinite(key.InTangent) || !float.IsFinite(key.OutTangent))
+                throw new InvalidDataException($"{path}[{i}]: value and tangents must be finite.");
+        }
+    }
+
+    private static void ValidateTime(float time, float previous, string path, bool normalized)
+    {
+        if (!float.IsFinite(time) || time < 0f || (normalized && time > 1f))
+            throw new InvalidDataException($"{path}.time: must be finite and {(normalized ? "in [0,1] (normalized lifetime)" : ">= 0 (seconds)")}.");
+        if (time <= previous)
+            throw new InvalidDataException($"{path}.time: keys/stops must have strictly increasing time.");
+    }
+
     private static void ValidateEmitter(EmitterSpec emitter, string path)
     {
         if (emitter.MaxParticles <= 0)
@@ -491,9 +546,29 @@ internal static class LumenAssetRules
             throw new InvalidDataException($"{path}: flipbookTilesX/Y must be >= 1, got {emitter.FlipbookTilesX}x{emitter.FlipbookTilesY}.");
         }
 
-        if (!float.IsFinite(emitter.Duration) || emitter.Duration < 0f)
+        if (!float.IsFinite(emitter.Duration) || emitter.Duration <= 0f)
         {
-            throw new InvalidDataException($"{path}: duration must be finite and >= 0, got {emitter.Duration}.");
+            throw new InvalidDataException($"{path}: duration must be finite and > 0, got {emitter.Duration}.");
+        }
+
+        if (!Enum.IsDefined(emitter.Shape))
+            throw new InvalidDataException($"{path}: unknown shape {emitter.Shape}.");
+        if (!Enum.IsDefined(emitter.BlendMode))
+            throw new InvalidDataException($"{path}: unknown blendMode {emitter.BlendMode}.");
+        if (!Enum.IsDefined(emitter.BillboardMode))
+            throw new InvalidDataException($"{path}: unknown billboardMode {emitter.BillboardMode}.");
+
+        ValidateCurve(emitter.SizeOverLifetime, path + ".sizeOverLifetime", normalized: true);
+        ColorStop[] stops = emitter.ColorOverLifetime.Stops;
+        if (stops.Length == 0)
+            throw new InvalidDataException($"{path}.colorOverLifetime: at least one stop is required.");
+        for (int i = 0; i < stops.Length; i++)
+        {
+            ColorStop stop = stops[i];
+            ValidateTime(stop.Time, i > 0 ? stops[i - 1].Time : -1f, $"{path}.colorOverLifetime[{i}]", normalized: true);
+            Vector4 rgba = stop.Rgba;
+            if (!float.IsFinite(rgba.X) || !float.IsFinite(rgba.Y) || !float.IsFinite(rgba.Z) || !float.IsFinite(rgba.W))
+                throw new InvalidDataException($"{path}.colorOverLifetime[{i}].color: components must be finite.");
         }
 
         if (!float.IsFinite(emitter.RateOverTime) || emitter.RateOverTime < 0f)
@@ -673,15 +748,15 @@ public static class LumenJsonAssetLoader
         "name", "maxParticles", "duration", "looping", "worldSpaceSimulation", "rateOverTime", "bursts",
         "shape", "shapeExtents", "coneAngleDegrees", "startLifetime", "startLifetimeMin", "startLifetimeMax",
         "startSpeed", "startSpeedMin", "startSpeedMax", "startSize", "startSizeMin", "startSizeMax",
-        "startColorLinear", "sizeOverLifetime", "colorOverLifetime", "forceFields", "textureKey",
+        "startColor", "sizeOverLifetime", "colorOverLifetime", "forceFields", "textureKey",
         "flipbookTilesX", "flipbookTilesY", "flipbookCycles", "blendMode", "billboardMode",
-        "velocityStretchFactor", "lengthScale", "softParticleFadeDistance", "hdrIntensity", "bloomWeight",
+        "velocityStretchFactor", "lengthScale", "softParticleFadeDistance", "hdrIntensity",
         "preferredTier", "killBelowFloor",
     };
 
     private static readonly string[] PointLightProperties =
     {
-        "glowRadius", "overlightRadius", "colorRgb", "colorLinear", "intensity", "intensityOverTime",
+        "glowRadius", "overlightRadius", "color", "intensity", "intensityOverTime",
     };
 
     private static readonly string[] BurstProperties = { "time", "count" };
@@ -702,7 +777,7 @@ public static class LumenJsonAssetLoader
 
     private static readonly string[] GradientProperties = { "stops" };
 
-    private static readonly string[] GradientStopProperties = { "time", "rgbaLinear", "color" };
+    private static readonly string[] GradientStopProperties = { "time", "color" };
 
     private static EffectNodeSpec ParseNode(JsonElement element, string path)
     {
@@ -764,7 +839,7 @@ public static class LumenJsonAssetLoader
             StartSpeedMax = speed ?? scope.Float("startSpeedMax", 0f),
             StartSizeMin = size ?? scope.Float("startSizeMin", 1f),
             StartSizeMax = size ?? scope.Float("startSizeMax", 1f),
-            StartColorLinear = scope.ColorRgba("startColorLinear", Vector4.One),
+            StartColor = scope.ColorRgba("startColor", Vector4.One),
             SizeOverLifetime = scope.TryGet("sizeOverLifetime", out JsonElement sizeElement) ? ParseCurve(sizeElement, path + ".sizeOverLifetime") : ScalarCurve.Constant(1f),
             ColorOverLifetime = scope.TryGet("colorOverLifetime", out JsonElement colorElement) ? ParseGradient(colorElement, path + ".colorOverLifetime") : ColorGradient.Constant(Vector4.One),
             ForceFields = ParseForceFields(scope, path),
@@ -778,7 +853,6 @@ public static class LumenJsonAssetLoader
             LengthScale = scope.Float("lengthScale", 1f),
             SoftParticleFadeDistance = scope.Float("softParticleFadeDistance", 0.5f),
             HdrIntensity = scope.Float("hdrIntensity", 1f),
-            BloomWeight = scope.Float("bloomWeight", 1f),
             PreferredTier = scope.Enum("preferredTier", LumenParticleTier.L2_GpuCompute),
             KillBelowFloor = scope.Bool("killBelowFloor", false),
         };
@@ -793,16 +867,8 @@ public static class LumenJsonAssetLoader
 
         var scope = new JsonScope(element, path);
         scope.Check(PointLightProperties);
-        Vector3 rgb;
-        if (scope.Has("colorRgb"))
-        {
-            rgb = scope.Vector3("colorRgb", Vector3.One);
-        }
-        else
-        {
-            Vector4 linear = scope.ColorRgba("colorLinear", Vector4.One);
-            rgb = new Vector3(linear.X, linear.Y, linear.Z);
-        }
+        Vector4 color = scope.ColorRgba("color", Vector4.One);
+        Vector3 rgb = new(color.X, color.Y, color.Z);
 
         float intensity = scope.Float("intensity", 1f);
         ScalarCurve? overTime = null;
@@ -1073,11 +1139,6 @@ public static class LumenJsonAssetLoader
                 throw new InvalidDataException($"{keyPath}: expected [time, value] or {{ time, value }}.");
             }
 
-            if (index > 0 && key.Time < keys[index - 1].Time)
-            {
-                throw new InvalidDataException($"{path}: keys must be ordered by non-decreasing time; key {index} ({key.Time}) follows {keys[index - 1].Time}.");
-            }
-
             keys[index++] = key;
         }
 
@@ -1135,19 +1196,12 @@ public static class LumenJsonAssetLoader
             {
                 var scope = new JsonScope(stopElement, stopPath);
                 scope.Check(GradientStopProperties);
-                Vector4 rgba = scope.Has("rgbaLinear")
-                    ? scope.ColorRgba("rgbaLinear", Vector4.One)
-                    : scope.ColorRgba("color", Vector4.One);
+                Vector4 rgba = scope.ColorRgba("color", Vector4.One);
                 stop = new ColorStop(scope.Float("time", 0f), rgba);
             }
             else
             {
-                throw new InvalidDataException($"{stopPath}: expected [time, color] or {{ time, rgbaLinear }}.");
-            }
-
-            if (index > 0 && stop.Time < stops[index - 1].Time)
-            {
-                throw new InvalidDataException($"{path}: stops must be ordered by non-decreasing time; stop {index} ({stop.Time}) follows {stops[index - 1].Time}.");
+                throw new InvalidDataException($"{stopPath}: expected [time, color] or {{ time, color }}.");
             }
 
             stops[index++] = stop;
@@ -1245,6 +1299,16 @@ public static class LumenJsonAssetLoader
 
                 if (!known)
                 {
+                    if (name.Equals("bloomWeight", StringComparison.OrdinalIgnoreCase) || name.Equals("hdrMultiplier", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException($"{path}: '{name}' was removed.");
+                    string? renamed = name.ToLowerInvariant() switch
+                    {
+                        "startcolorlinear" => "startColor",
+                        "rgbalinear" or "colorlinear" or "colorrgb" => "color",
+                        _ => null,
+                    };
+                    if (renamed is not null)
+                        throw new InvalidDataException($"{path}: '{name}' renamed to {renamed}.");
                     throw new InvalidDataException($"{path}: unknown property '{name}' (known: {string.Join(", ", allowed)}).");
                 }
             }
