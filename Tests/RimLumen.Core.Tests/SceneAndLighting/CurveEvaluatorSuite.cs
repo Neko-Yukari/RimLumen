@@ -43,7 +43,7 @@ public static class CurveEvaluatorSuite
     }
 
     [LumenFact]
-    public static void BracketsMultipleKeysAndUsesFirstAtDuplicateTime()
+    public static void BracketsMultipleKeysAndUsesLastAtInteriorDuplicateTime()
     {
         var curve = new ScalarCurve(new[]
         {
@@ -58,22 +58,22 @@ public static class CurveEvaluatorSuite
             new CurveKey(0f, 0f), new CurveKey(2f, 8f),
             new CurveKey(2f, 20f), new CurveKey(4f, 40f),
         });
-        AssertClose(8f, CurveEvaluator.Evaluate(duplicate, 2f));
+        AssertClose(20f, CurveEvaluator.Evaluate(duplicate, 2f));
         AssertClose(30f, CurveEvaluator.Evaluate(duplicate, 3f));
     }
 
     [LumenFact]
-    public static void DegenerateDomainAlwaysUsesFirstKey()
+    public static void DegenerateDomainAlwaysUsesLastKey()
     {
         var curve = new ScalarCurve(new[] { new CurveKey(2f, 3f), new CurveKey(2f, 9f) }, 2f);
-        AssertClose(6f, CurveEvaluator.Evaluate(curve, -10f));
-        AssertClose(6f, CurveEvaluator.Evaluate(curve, 2f));
-        AssertClose(6f, CurveEvaluator.Evaluate(curve, 10f));
+        AssertClose(18f, CurveEvaluator.Evaluate(curve, -10f));
+        AssertClose(18f, CurveEvaluator.Evaluate(curve, 2f));
+        AssertClose(18f, CurveEvaluator.Evaluate(curve, 10f));
         Span<float> lut = stackalloc float[3];
         CurveEvaluator.BakeScalarLut(curve, lut);
         foreach (float value in lut)
         {
-            AssertClose(6f, value);
+            AssertClose(18f, value);
         }
     }
 

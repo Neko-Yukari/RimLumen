@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Lighting;
 using RimLumen.Core.ParticlesGpu;
+using RimLumen.Core.Rendering;
 
 namespace RimLumen.Core.Scene;
 
@@ -18,6 +19,7 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     public const long PoolExhaustedWarningCooldownMs = 10_000;
 
     private readonly List<EffectInstanceHandle> handles = new();
+    private readonly HashSet<string> warnedUnknownEffects = new(StringComparer.Ordinal);
     // Per-frame scratch: how many queued events each handle raises this frame (fixed before any handler runs).
     private int[] eventBatches = Array.Empty<int>();
     private bool hasWarnedPoolExhausted;
@@ -54,7 +56,7 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     public Func<ILumenGpuParticleEngine?>? GpuEngineProvider { get; set; }
 
     // Ensures: per-map glower resolver, read on every Play and every frame. Default resolves through
-    //          LumenMapLightingRegistry.TryResolve, which treats a negative index as "most recent map".
+    //          LumenMapLightingRegistry.TryResolve with the exact map uniqueID normalized at Play.
     public Func<int, MapGlowerDriver?>? GlowerDriverProvider { get; set; }
 
     internal Func<long> ClockMsProvider { get; set; } = static () => Environment.TickCount64;
@@ -63,16 +65,17 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     // Ensures: always "LumenVfxService".
     public string Name => "LumenVfxService";
 
-    // Ensures: IsHdrActive and IsSceneDepthAvailable report whether the pipeline's HDR renderer is
-    //          attached (RGBA16F colour plus read-only scene depth); IsGpuComputeAvailable reports whether the L2 resolver
-    //          yields an engine; MaxGpuParticlesPerFrame is 4096 with an engine and 0 without.
+    // Ensures: HDR/depth are the render host's last recorded frame facts, not renderer installation state.
+    //          IsGpuComputeAvailable reports a resolved L2 backend (not a dispatch this frame);
+    //          MaxGpuParticlesPerFrame is the shared slot limit, not the active particle count.
     public LumenCapabilities Capabilities
     {
         get
         {
-            bool hdr = Simulator.HdrRendererAttached;
-            bool gpu = GpuEngineProvider?.Invoke() is not null;
-            return new LumenCapabilities(hdr, hdr, gpu, gpu ? 4096 : 0);
+            LumenCapabilities frame = RimLumenRenderHost.Capabilities;
+            ILumenGpuParticleEngine? engine = GpuEngineProvider?.Invoke();
+            return new LumenCapabilities(frame.IsHdrActive, frame.IsSceneDepthAvailable, engine is not null,
+                engine?.Capacity ?? 0);
         }
     }
 
@@ -89,20 +92,31 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     }
 
     // Requires: called on the main thread; request.EffectId is non-empty.
-    // Ensures: resolves request.EffectId through LumenHostRegistry.TryResolveAsset; a miss returns an
+    // Ensures: resolves request.EffectId through LumenHostRegistry; a miss returns an
     //          inert handle (IsAlive false, every member a safe no-op) that is not tracked as live.
+    //          Unknown ids warn once per id for this service; rejected provider assets keep their registry error only.
     //          A hit creates an EffectInstanceHandle, binds each node emitter to the L2 engine when the
     //          emitter prefers L2 and an engine resolves, otherwise to CpuParticleSimulator, and returns it.
     //          The handle enters request.InitialState, or the asset's initial state when it is null.
-    //          Throws InvalidDataException for an asset whose states do not validate (EffectStateGraph.For) and
-    //          ArgumentException for a request.InitialState the asset does not declare.
+    //          Provider assets rejected by registry validation (including invalid state graphs) return an inert handle.
+    //          Throws ArgumentException for a request.InitialState the validated asset does not declare. MapIndex -1 is
+    //          resolved once to Find.CurrentMap.uniqueID; with no current map it throws InvalidOperationException.
+    //          Other negative ids throw ArgumentOutOfRangeException. Explicit ids never read CurrentMap.
     public ILumenEffectHandle Play(in LumenPlayRequest request)
     {
-        if (!LumenHostRegistry.TryResolveAsset(request.EffectId, out var asset) || asset is null)
+        LumenAssetResolution resolution = LumenHostRegistry.ResolveAsset(request.EffectId, out var asset);
+        if (resolution != LumenAssetResolution.Found)
+        {
+            if (ShouldWarnUnknownEffect(request.EffectId, resolution))
+                Verse.Log.Warning($"[RimLumen] Unknown effect '{request.EffectId}'; skipping Play (warned once per id).");
             return InertHandle.Instance;
+        }
+        int mapIndex = LumenPlayMap.ResolveMapIndex(request.MapIndex,
+            request.MapIndex == -1 ? Verse.Find.CurrentMap?.uniqueID : null);
+        LumenPlayRequest normalized = request with { MapIndex = mapIndex };
         try
         {
-            var handle = new EffectInstanceHandle(this, asset, request);
+            var handle = new EffectInstanceHandle(this, asset!, normalized);
             handles.Add(handle);
             return handle;
         }
@@ -112,6 +126,9 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
             return InertHandle.Instance;
         }
     }
+
+    internal bool ShouldWarnUnknownEffect(string effectId, LumenAssetResolution resolution)
+        => resolution == LumenAssetResolution.NotFound && warnedUnknownEffects.Add(effectId);
 
     private void WarnPoolExhausted(string effectId)
     {

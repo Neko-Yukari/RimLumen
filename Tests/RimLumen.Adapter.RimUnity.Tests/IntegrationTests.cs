@@ -1,6 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using System.Text.Json;
+using RimUnity.Serialization;
+using static RimLumen.Adapter.RimUnity.Tests.Export;
 using System.Numerics;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Scene;
@@ -25,6 +29,26 @@ internal static class IntegrationTests
 
     private static ulong frame;
     private static readonly List<string> Log = new();
+
+    internal static void WotfTierReport()
+    {
+        var catalog = new RimUnityPackageCatalog(Wotf, WotfData);
+        var translator = new RimUnityPrefabTranslator();
+        foreach (var entry in Expected)
+        {
+            var asset = translator.Translate(entry.Path, catalog, catalog.Find(entry.Path)!, out var report);
+            for (int i = 0; i < asset.Nodes.Length; i++)
+            {
+                var classification = report.Nodes.SingleOrDefault(node => node.NodeIndex == i);
+                Console.WriteLine("TIER " + JsonSerializer.Serialize(new
+                {
+                    Effect = entry.Path, Index = i, Name = asset.Nodes[i].Name,
+                    NodeId = classification?.NodeId ?? string.Empty,
+                    Tier = classification?.Tier.ToString() ?? "N/A", Reasons = classification?.Reasons ?? System.Array.Empty<string>()
+                }));
+            }
+        }
+    }
 
     internal static void WotfIntegration()
     {
@@ -104,7 +128,7 @@ internal static class IntegrationTests
         Check.Equal(recording.Capabilities, hybrid.Capabilities, "capabilities delegated");
         LumenHostRegistry.RegisterVfxService(hybrid);
 
-        var request = new LumenPlayRequest { EffectId = "Effects/Probe", OriginWorld = new Vector3(3, 0, 4) };
+        var request = new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/Probe", OriginWorld = new Vector3(3, 0, 4) };
         var handle = LumenHostRegistry.VfxService!.Play(request);
         Check.True(ReferenceEquals(recording.Last, handle), "no-L0 hybrid returns the direct inner handle");
         Check.Equal(0, spy.Plays, "no-L0 never calls external");
@@ -123,7 +147,7 @@ internal static class IntegrationTests
         Check.True(!handle.IsAlive, "stop false kills probe handle");
         Check.Equal(0, LumenSceneBootstrap.Simulator.LiveParticleCount, "stop false releases probe particles");
 
-        var lightningRequest = new LumenPlayRequest { EffectId = "Effects/Lightning" };
+        var lightningRequest = new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/Lightning" };
         var lightning = LumenHostRegistry.VfxService!.Play(lightningRequest);
         int lightningFinished = 0;
         lightning.Finished += () => lightningFinished++;
@@ -148,14 +172,14 @@ internal static class IntegrationTests
         Check.Equal(1, lightningFinished, "composite Finished raised exactly once");
 
         int beforeLinger = spy.Plays;
-        var linger = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { EffectId = "Effects/Linger" });
+        var linger = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/Linger" });
         Check.Equal(beforeLinger + 1, spy.Plays, "Linger delegates its four L0 nodes");
         Check.Equal(4, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), "Linger L0 count");
         Check.Equal(0, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, "Linger has no native emitters");
         linger.Dispose();
 
         int beforeOrbit = spy.Plays;
-        var orbit = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { EffectId = "Effects/Orbit" });
+        var orbit = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/Orbit" });
         Check.Equal(beforeOrbit + 1, spy.Plays, "Orbit delegates external subset");
         Check.Equal(2, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), "Orbit L0 count");
         Check.Equal(1, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, "Orbit retains only its representable native node");
@@ -167,7 +191,7 @@ internal static class IntegrationTests
         foreach (var remaining in new[] { ("Effects/FireTornado", 1), ("Effects/Rune", 4), ("Effects/Tornado", 34) })
         {
             int plays = spy.Plays;
-            using var externalOnly = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { EffectId = remaining.Item1 });
+            using var externalOnly = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { MapIndex = 111, EffectId = remaining.Item1 });
             Check.Equal(plays + 1, spy.Plays, remaining.Item1 + " external delegation");
             Check.Equal(remaining.Item2, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), remaining.Item1 + " external node count");
             Check.Equal(0, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, remaining.Item1 + " no duplicate native emitter");
@@ -176,11 +200,58 @@ internal static class IntegrationTests
         }
         Console.WriteLine("HYBRID all7 played; Lightning native=0/L0=6, Orbit native=1/L0=2; lifecycle forwarded; no-L0 direct handle");
 
-        var inert = LumenHostRegistry.VfxService.Play(new LumenPlayRequest { EffectId = "Effects/DoesNotExist" });
+        var inert = LumenHostRegistry.VfxService.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/DoesNotExist" });
         Check.True(!inert.IsAlive, "missing effect stays inert");
 
         Console.WriteLine(string.Join("; ", Log));
         Console.WriteLine($"WotF textures={provider.Textures.ResolvedTextureKeys.Count}");
+    }
+
+    internal static void RejectedHybrid()
+    {
+        using var temp = new TestDirectory();
+        var native = Particles();
+        native.id = "native.ps";
+        native.members.Add(Member("sizeOverLifetime", Data(("enabled", Number(1)), ("size", Data(("mode", Number(1)),
+            ("curveMultiplier", Number(1)), ("curve", Data(("keys", Array(
+                Data(("time", Number(-.5f)), ("value", Number(1))), Data(("time", Number(1)), ("value", Number(2))))))))))));
+        var external = Particles();
+        external.id = "external.ps";
+        external.members.Add(Member("collision", Data(("enabled", Number(1)))));
+        var prefab = new PrefabData { nodes = [Node("native", native), Node("external", external, "native")] };
+        var manifest = new Manifest { assets = [
+            new AssetRecord { id = "rejected.hybrid", path = "Effects/Rejected", file = "prefab.json", type = "Prefab" },
+            new AssetRecord { id = "valid.external", path = "Effects/External", file = "external.json", type = "Prefab" }
+        ] };
+        var json = new JsonSerializerOptions { IncludeFields = true };
+        File.WriteAllText(Path.Combine(temp.Root, "prefab.json"), JsonSerializer.Serialize(prefab, json));
+        File.WriteAllText(Path.Combine(temp.Root, "external.json"), JsonSerializer.Serialize(Prefab(external), json));
+        File.WriteAllText(Path.Combine(temp.Root, "catalog.json"), JsonSerializer.Serialize(manifest, json));
+        var provider = new RimUnityAssetProvider();
+        provider.RegisterPackageRoot("Hybrid.Rejected", temp.Root);
+        LumenHostRegistry.RegisterAssetProvider(provider);
+        LumenSceneBootstrap.EnsureInitialized();
+        var spy = new SpyExternalPlayer();
+        var hybrid = new RimUnityHybridVfxService(LumenSceneBootstrap.Service, provider, spy);
+        using var handle = hybrid.Play(new LumenPlayRequest { EffectId = "Hybrid.Rejected:Effects/Rejected" });
+        Check.Equal(0, spy.Plays, "registry rejection must not start external subset");
+        Check.True(!handle.IsAlive, "rejected native remains inert");
+        var finishedInner = new FinishedInner();
+        var validHybrid = new RimUnityHybridVfxService(finishedInner, provider, spy);
+        using var valid = validHybrid.Play(new LumenPlayRequest { EffectId = "Hybrid.Rejected:Effects/External" });
+        Check.Equal(1, spy.Plays, "valid all-external asset still starts external when native is already finished");
+        Check.True(valid.IsAlive, "external lifetime is independent of finished native");
+    }
+
+    private sealed class FinishedInner : ILumenVfxService
+    {
+        public LumenCapabilities Capabilities => LumenSceneBootstrap.Service.Capabilities;
+        public ILumenEffectHandle Play(in LumenPlayRequest request)
+        {
+            var handle = new SpyHandle();
+            handle.Stop(false);
+            return handle;
+        }
     }
 
     private static EffectAsset Resolve(RimUnityAssetProvider provider, string id)

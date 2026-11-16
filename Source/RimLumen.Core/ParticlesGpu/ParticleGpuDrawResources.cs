@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using Brutal;
 using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
@@ -266,6 +267,8 @@ internal sealed class ParticleGpuFrame : IDisposable
     private readonly InstanceStorageBinding[] storageBindings;
     private readonly InstancedDrawInfo?[] instancing;
 
+    internal static long EmitterBufferBytes(int emitterCapacity) => (long)emitterCapacity * Marshal.SizeOf<GpuEmitterParams>();
+
     internal ParticleGpuFrame(EngineApplication app, int emitterCount, int fieldCount,
         GpuComputeBuffer particles, GpuComputeBuffer deadBlocks)
     {
@@ -273,7 +276,7 @@ internal sealed class ParticleGpuFrame : IDisposable
         EmitterCapacity = Math.Max(1, emitterCount);
         FieldCapacity = Math.Max(1, fieldCount);
         Pool = ParticleGpuDrawResources.CreateComputePool(device);
-        Emitters = GpuComputeBuffer.Create(device, app.GraphicsDevice!.Allocator, "Lumen.Emitters", (long)EmitterCapacity * 208);
+        Emitters = GpuComputeBuffer.Create(device, app.GraphicsDevice!.Allocator, "Lumen.Emitters", EmitterBufferBytes(EmitterCapacity));
         Fields = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Fields", (long)FieldCapacity * 48);
         Curves = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Curves", (long)EmitterCapacity * 64 * 32);
         SimulationEmitters = new ParticleEmitterFrame[EmitterCapacity];

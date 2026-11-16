@@ -39,6 +39,11 @@ vec3 sphereDirection(inout uint state)
     return vec3(radius * cos(angle), y, radius * sin(angle));
 }
 
+vec3 rotateShape(vec4 quaternion, vec3 value)
+{
+    return value + 2.0 * cross(quaternion.xyz, cross(quaternion.xyz, value) + quaternion.w * value);
+}
+
 GpuParticle spawnParticle(GpuEmitterParams emitter, uint slot)
 {
     uint seed = uint(emitter.Tables.w) ^ sim.frameSeed ^ (slot * 0x27d4eb2du);
@@ -73,6 +78,9 @@ GpuParticle spawnParticle(GpuEmitterParams emitter, uint slot)
         float z = randomUnit(seed);
         position = (vec3(x, y, z) * 2.0 - 1.0) * extents;
     }
+    // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468, ParticleSystem.Shapes.cs:84-86: shape-only TRS.
+    position = rotateShape(emitter.ShapeRotation, position * emitter.ShapeScale.xyz) + emitter.ShapePosition.xyz;
+    direction = rotateShape(emitter.ShapeRotation, direction);
     float speed = mix(emitter.Ranges.x, emitter.Ranges.y, randomUnit(seed));
     vec3 velocity = direction * speed;
     if (emitter.SizeCone.w > 0.5)
@@ -84,7 +92,8 @@ GpuParticle spawnParticle(GpuEmitterParams emitter, uint slot)
     particle.PositionAndAge = vec4(position, 0.0);
     particle.VelocityAndLifetime = vec4(velocity, mix(emitter.Ranges.z, emitter.Ranges.w, randomUnit(seed)));
     particle.StartColor = emitter.StartColor;
-    particle.SizeSeedEmitterFlags = vec4(mix(emitter.SizeCone.x, emitter.SizeCone.y, randomUnit(seed)),
+    float sizeScale = emitter.SizeCone.w > 0.5 ? emitter.Appearance.w : 1.0;
+    particle.SizeSeedEmitterFlags = vec4(mix(emitter.SizeCone.x, emitter.SizeCone.y, randomUnit(seed)) * sizeScale,
         float(seed & 0x00ffffffu), float(sim.emitterIndex), 1.0);
     return particle;
 }
@@ -136,8 +145,10 @@ vec3 acceleration(GpuEmitterParams emitter, vec3 position, out float drag)
         else if (kind == 1u)
         {
             vec3 axis = lumenDirection(axisOrCenter, vec3(0.0, 1.0, 0.0));
-            // Center is the simulation origin. Parameters.x pulls inward (negative pushes), y lifts along axis.
-            vec3 radial = position - dot(position, axis) * axis;
+            // Local origin follows the node even for world-space particles; the authored axis does not rotate.
+            vec3 center = emitter.SizeCone.w > 0.5 ? (emitter.World * vec4(0.0, 0.0, 0.0, 1.0)).xyz : vec3(0.0);
+            vec3 relative = position - center;
+            vec3 radial = relative - dot(relative, axis) * axis;
             float distanceToAxis = length(radial);
             float weight = radius > 0.0 ? max(0.0, 1.0 - distanceToAxis / radius) : 1.0;
             vec3 radialDirection = lumenDirection(radial, vec3(0.0));
@@ -158,7 +169,8 @@ vec3 acceleration(GpuEmitterParams emitter, vec3 position, out float drag)
         }
         else if (kind == 3u)
         {
-            vec3 delta = axisOrCenter - position;
+            vec3 center = emitter.SizeCone.w > 0.5 ? (emitter.World * vec4(axisOrCenter, 1.0)).xyz : axisOrCenter;
+            vec3 delta = center - position;
             float distanceToCenter = length(delta);
             float weight = radius > 0.0 ? max(0.0, 1.0 - distanceToCenter / radius) : 1.0;
             total += lumenDirection(delta, vec3(0.0)) * (strength * weight);

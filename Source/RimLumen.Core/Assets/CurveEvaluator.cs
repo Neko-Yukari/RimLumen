@@ -11,12 +11,15 @@ public static class CurveEvaluator
     // Requires: curve is non-null.
     // Ensures: curve.Keys.Length == 0 -> 0f (Multiplier is not applied to the empty case).
     // Ensures: curve.Keys.Length == 1 -> curve.Keys[0].Value * curve.Multiplier, for every time.
-    // Ensures: the first-key test has priority: time <= curve.Keys[0].Time -> curve.Keys[0].Value * curve.Multiplier.
-    // Ensures: otherwise time >= curve.Keys[^1].Time -> curve.Keys[^1].Value * curve.Multiplier
-    //          (so a degenerate domain with first.Time == last.Time always yields the first key's value).
+    // Mirrors pinned RimUnity AnimationCurve.cs:23,30-35 (45ca90987f7d3721715b45c021cab986ee14c468):
+    // Ensures: a degenerate domain (first.Time == last.Time, including 2 or >=3 equal keys) -> curve.Keys[^1].Value * curve.Multiplier for every time.
+    // Ensures: otherwise time <= curve.Keys[0].Time -> curve.Keys[0].Value * curve.Multiplier (duplicated first key returns the FIRST).
+    // Ensures: otherwise time >= curve.Keys[^1].Time -> curve.Keys[^1].Value * curve.Multiplier (duplicated final key returns the LAST).
     // Ensures: otherwise cubic Hermite interpolation on the bracketing pair, using the left key's
     //          OutTangent and the right key's InTangent as value-per-second slopes, multiplied by
-    //          curve.Multiplier. Keys must be sorted by Time; equal adjacent times use the left value.
+    //          curve.Multiplier. Keys must be non-decreasing in Time. An interior exact repeated time
+    //          selects the LAST equal key, so the left-hand segment ends at the FIRST equal key.
+    //          Not universally right-continuous: the two endpoint exceptions above return FIRST/LAST.
     public static float Evaluate(ScalarCurve curve, float time)
     {
         var keys = curve.Keys;
@@ -25,7 +28,12 @@ public static class CurveEvaluator
             return 0f;
         }
 
-        if (keys.Length == 1 || keys[0].Time == keys[^1].Time || time <= keys[0].Time)
+        if (keys.Length == 1 || keys[0].Time >= keys[^1].Time)
+        {
+            return keys[^1].Value * curve.Multiplier;
+        }
+
+        if (time <= keys[0].Time)
         {
             return keys[0].Value * curve.Multiplier;
         }
@@ -35,19 +43,18 @@ public static class CurveEvaluator
             return keys[^1].Value * curve.Multiplier;
         }
 
-        int right = 1;
-        while (right < keys.Length - 1 && time > keys[right].Time)
+        // Upstream binary search: lo ends at the last key whose Time <= time.
+        int lo = 0, hi = keys.Length - 1;
+        while (hi - lo > 1)
         {
-            right++;
+            int mid = (lo + hi) / 2;
+            if (keys[mid].Time <= time) lo = mid;
+            else hi = mid;
         }
 
-        var leftKey = keys[right - 1];
-        var rightKey = keys[right];
+        var leftKey = keys[lo];
+        var rightKey = keys[hi];
         float dt = rightKey.Time - leftKey.Time;
-        if (dt == 0f)
-        {
-            return leftKey.Value * curve.Multiplier;
-        }
 
         float t = (time - leftKey.Time) / dt;
         float t2 = t * t;

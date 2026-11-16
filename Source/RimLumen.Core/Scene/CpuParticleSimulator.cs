@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Rendering;
+using RimLumen.Core.ParticlesGpu;
 
 namespace RimLumen.Core.Scene;
 
@@ -19,18 +20,21 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     private sealed class Emitter
     {
         public required EmitterSpec Spec;
+        public required GpuCurveSample[] Curves;
         public Matrix4x4 Transform;
         public EmissionState State;
         public float RateMultiplier;
         public float IntensityMultiplier = 1f;
         public double Time;
         public double RateRemainder;
+        public long BurstRemainder;
         public bool Started;
         public bool RealTime;
         public int MapIndex;
         public int Group;
         public uint RandomState;
         public int LiveCount;
+        public int PendingBurst;
         public bool IsVertical3D;
         public float BaseY;
     }
@@ -65,7 +69,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         {
             if (particleCount > 0) return true;
             foreach (int id in emitterIds)
-                if (emitters[id].State == EmissionState.Emitting) return true;
+                if (emitters[id].State == EmissionState.Emitting || emitters[id].PendingBurst > 0) return true;
             return false;
         }
     }
@@ -96,7 +100,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     //          LiveParticles order in Vertices/Indices.
     public IReadOnlyList<L1SubBatch> SubBatches => subBatches;
 
-    // Requires: spec is non-null; spec.MaxParticles > 0; worldTransform is finite.
+    // Requires: spec is non-null; spec.MaxParticles > 0; worldTransform is finite; rateMultiplier is finite and >= 0.
     // Ensures: reserves capacity, seeds a deterministic per-emitter PRNG from (seed, emitterId),
     //          returns a non-negative emitter id that stays valid until ReleaseEmitter.
     // Ensures: realTime == true makes this emitter advance on context.UnscaledDeltaTime when that is
@@ -105,8 +109,11 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     {
         int id = nextId++;
         uint random = Hash(unchecked((uint)seed) ^ unchecked((uint)id + 0x9E3779B9u));
+        var curves = new GpuCurveSample[GpuCurveAtlasPacker.SamplesPerRow];
+        GpuCurveAtlasPacker.Pack(spec.SizeOverLifetime, spec.ColorOverLifetime, curves);
         emitters.Add(id, new Emitter
         {
+            Curves = curves,
             Spec = spec, Transform = worldTransform, RealTime = realTime, MapIndex = mapIndex, Group = GroupOf(spec),
             State = emitting ? EmissionState.Emitting : EmissionState.Paused,
             RateMultiplier = rateMultiplier, RandomState = random == 0 ? 1u : random,
@@ -138,6 +145,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         emitter.BaseY = baseY;
     }
 
+    // Requires: rateMultiplier is finite and >= 0 (validated by the public SetParam boundary).
     // Ensures: sets emission on/off plus the runtime rate/intensity multipliers. Turning emission off
     //          never kills live particles. Unknown ids are ignored.
     public void SetEmitterParams(int emitterId, bool emitting, float rateMultiplier, float intensityMultiplier)
@@ -149,14 +157,15 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     }
 
     // Requires: count >= 0.
-    // Ensures: spawns min(count, spec.MaxParticles - liveOfThisEmitter) particles immediately from the
-    //          emitter's shape with the same deterministic PRNG stream as timed emission.
-    // Ensures: the global particle-density scale thins the burst (never below one particle per non-zero burst).
+    // Ensures: queues a pulse for the next capture, admitted after expired particles reclaim their slots.
+    //          Newly admitted particles have age zero; pausing or restarting does not discard accepted pulses.
+    // Ensures: global particle density uses this emitter's shared burst carry at enqueue time.
     public void EmitBurst(int emitterId, int count)
     {
         if (emitters.TryGetValue(emitterId, out var emitter) && emitter.State != EmissionState.Draining)
         {
-            Spawn(emitterId, emitter, ParticleEmissionBudget.ScaleBurst(count, RimLumenRenderHost.ParticleDensityScale));
+            emitter.PendingBurst = (int)Math.Min((long)emitter.PendingBurst
+                + ParticleEmissionBudget.AccumulateBurst(ref emitter.BurstRemainder, count, RimLumenRenderHost.ParticleDensityScale), emitter.Spec.MaxParticles);
         }
     }
 
@@ -168,9 +177,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         if (!emitters.TryGetValue(emitterId, out var emitter) || emitter.State == EmissionState.Draining) return;
         emitter.Time = 0d;
         emitter.RateRemainder = 0d;
+        emitter.BurstRemainder = 0;
         emitter.Started = false;
         emitter.State = EmissionState.Emitting;
     }
+
+    internal bool IsEmitterAlive(int emitterId) => emitters.ContainsKey(emitterId);
 
     // Ensures: live particle count owned by this emitter; 0 for unknown ids.
     public int GetLiveParticleCount(int emitterId)
@@ -184,11 +196,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         emitter.State = EmissionState.Draining;
         if (immediate)
         {
+            emitter.PendingBurst = 0;
             for (int i = particleCount - 1; i >= 0; i--)
                 if (particles[i].EmitterId == emitterId) RemoveParticle(i);
             BuildBatch();
         }
-        if (emitter.LiveCount == 0) RemoveEmitter(emitterId);
+        if (emitter.LiveCount == 0 && emitter.PendingBurst == 0) RemoveEmitter(emitterId);
     }
 
     // Requires: main thread; context.DeltaTime >= 0.
@@ -207,14 +220,29 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     public void CaptureMainThread(in LumenCaptureContext context)
     {
         activeMapIndex = context.CurrentMapIndex;
-        int existingCount = particleCount;
         float dt = context.DeltaTime;
         float unscaledDt = context.UnscaledDeltaTime;
         float density = RimLumenRenderHost.ParticleDensityScale;
+        for (int i = 0; i < particleCount; i++)
+        {
+            ref var particle = ref particles[i];
+            Emitter owner = emitters[particle.EmitterId];
+            float particleDt = owner.RealTime && unscaledDt > 0f ? unscaledDt : dt;
+            particle.Age += particleDt;
+            if (particle.Age >= particle.Lifetime) continue;
+            ApplyForces(ref particle, owner, particleDt);
+            particle.Position += particle.Velocity * particleDt;
+            if (owner.Spec.KillBelowFloor && IsDescendingBelow(owner, particle, owner.BaseY))
+                particle.Age = particle.Lifetime;
+        }
+        for (int i = particleCount - 1; i >= 0; i--)
+            if (particles[i].Age >= particles[i].Lifetime) RemoveParticle(i);
         foreach (int id in emitterIds)
         {
             var emitter = emitters[id];
             var spec = emitter.Spec;
+            Spawn(id, emitter, emitter.PendingBurst);
+            emitter.PendingBurst = 0;
             float emitterDt = emitter.RealTime && unscaledDt > 0f ? unscaledDt : dt;
             bool looping = spec.Looping && spec.Duration > 0f;
             bool limited = !spec.Looping && spec.Duration > 0f;
@@ -236,26 +264,13 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                         : (start < burst.Time && emissionEnd >= burst.Time ? 1 : 0);
                     if (looping && (burst.Time < 0 || burst.Time > spec.Duration)) crossings = 0;
                     if (!emitter.Started && burst.Time == 0f && emitterDt > 0f) crossings++;
-                    if (crossings > 0)
-                        Spawn(id, emitter, (int)Math.Min(crossings * ParticleEmissionBudget.ScaleBurst(burst.Count, density), spec.MaxParticles));
+                    for (double occurrence = 0; occurrence < crossings; occurrence++)
+                        Spawn(id, emitter, ParticleEmissionBudget.AccumulateBurst(ref emitter.BurstRemainder, burst.Count, density));
                 }
             }
             if (limited && end >= spec.Duration) emitter.State = EmissionState.Paused;
             if (emitterDt > 0f) emitter.Started = true;
         }
-        for (int i = 0; i < existingCount; i++)
-        {
-            ref var particle = ref particles[i];
-            Emitter owner = emitters[particle.EmitterId];
-            float particleDt = owner.RealTime && unscaledDt > 0f ? unscaledDt : dt;
-            ApplyForces(ref particle, owner, particleDt);
-            particle.Position += particle.Velocity * particleDt;
-            particle.Age += particleDt;
-            if (owner.Spec.KillBelowFloor && IsDescendingBelow(owner, particle, owner.BaseY))
-                particle.Age = particle.Lifetime;
-        }
-        for (int i = particleCount - 1; i >= 0; i--)
-            if (particles[i].Age >= particles[i].Lifetime) RemoveParticle(i);
         for (int i = emitterIds.Count - 1; i >= 0; i--)
         {
             int id = emitterIds[i];
@@ -318,22 +333,23 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             float size = float.Lerp(spec.StartSizeMin, spec.StartSizeMax, Random(emitter));
             float speed = float.Lerp(spec.StartSpeedMin, spec.StartSpeedMax, Random(emitter));
             float u = Random(emitter), v = Random(emitter), w = Random(emitter);
-            Vector3 position = Vector3.Zero, direction = Vector3.UnitZ;
+            Vector3 position = Vector3.Zero, direction = Vector3.UnitY;
             float angle = 2f * MathF.PI * u;
             switch (spec.Shape)
             {
                 case LumenShapeKind.Sphere:
-                    float z = 2f * v - 1f;
-                    float ring = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
-                    direction = new Vector3(ring * MathF.Cos(angle), ring * MathF.Sin(angle), z);
-                    position = direction * (MathF.Cbrt(w) * spec.ShapeExtents.X);
+                    float y = 2f * v - 1f;
+                    float ring = MathF.Sqrt(MathF.Max(0f, 1f - y * y));
+                    direction = new Vector3(ring * MathF.Cos(angle), y, ring * MathF.Sin(angle));
+                    position = direction * MathF.Cbrt(w) * spec.ShapeExtents;
                     break;
                 case LumenShapeKind.CircleXZ:
                     direction = new Vector3(MathF.Cos(angle), 0f, MathF.Sin(angle));
-                    position = direction * (MathF.Sqrt(v) * spec.ShapeExtents.X);
+                    position = direction * MathF.Sqrt(v) * spec.ShapeExtents;
                     break;
                 case LumenShapeKind.Cone:
-                    float cos = float.Lerp(1f, MathF.Cos(spec.ConeAngleDegrees * MathF.PI / 180f), v);
+                    position = new Vector3(MathF.Cos(angle), 0f, MathF.Sin(angle)) * MathF.Sqrt(v) * spec.ShapeExtents;
+                    float cos = float.Lerp(1f, MathF.Cos(spec.ConeAngleDegrees * MathF.PI / 180f), w);
                     float sin = MathF.Sqrt(MathF.Max(0f, 1f - cos * cos));
                     direction = new Vector3(sin * MathF.Cos(angle), cos, sin * MathF.Sin(angle));
                     break;
@@ -341,11 +357,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                     position = new Vector3(2f * u - 1f, 2f * v - 1f, 2f * w - 1f) * spec.ShapeExtents;
                     break;
             }
+            ParticleShapeTransform.Apply(spec, ref position, ref direction);
             if (spec.WorldSpaceSimulation)
             {
                 position = Vector3.Transform(position, emitter.Transform);
-                direction = NormalizeOr(Vector3.TransformNormal(direction, emitter.Transform),
-                    spec.Shape == LumenShapeKind.Cone ? Vector3.UnitY : Vector3.UnitZ);
+                direction = Vector3.TransformNormal(direction, emitter.Transform);
+                size *= ParticleAppearanceMath.SizeScale(emitter.Transform);
             }
             particles[particleCount++] = new CpuParticle
             {
@@ -367,9 +384,6 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         return position.Y < floorY && velocity.Y < 0f;
     }
 
-    private static Vector3 NormalizeOr(Vector3 value, Vector3 fallback)
-        => value.LengthSquared() > 1e-10f ? Vector3.Normalize(value) : fallback;
-
     private int GroupOf(EmitterSpec spec)
     {
         var key = (spec.TextureKey, spec.BlendMode, spec.SoftParticleFadeDistance);
@@ -384,53 +398,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
 
     private static void ApplyForces(ref CpuParticle particle, Emitter emitter, float dt)
     {
-        foreach (var field in emitter.Spec.ForceFields)
-        {
-            switch (field.Kind)
-            {
-                case ForceFieldKind.GravityDrag:
-                    if (field.CenterOrAxis != Vector3.Zero || field.Strength != 0f)
-                    {
-                        particle.Velocity = (particle.Velocity + field.CenterOrAxis * (field.Strength * dt))
-                            * MathF.Exp(-MathF.Max(0f, field.Parameters.X) * dt);
-                    }
-                    else
-                    {
-                        particle.Velocity.Y -= field.Parameters.X * dt;
-                        particle.Velocity *= MathF.Max(0f, 1f - field.Parameters.Y * dt);
-                    }
-                    break;
-                case ForceFieldKind.Vortex:
-                    Vector3 axis = NormalizeOr(field.CenterOrAxis, Vector3.UnitY);
-                    Vector3 r = particle.Position - field.CenterOrAxis;
-                    Vector3 radial = r - axis * Vector3.Dot(r, axis);
-                    Vector3 tangent = NormalizeOr(Vector3.Cross(axis, radial), Vector3.Zero);
-                    particle.Velocity += (tangent - NormalizeOr(radial, Vector3.Zero) * field.Parameters.X) * (field.Strength * dt);
-                    break;
-                case ForceFieldKind.PointAttractor:
-                    Vector3 delta = field.CenterOrAxis - particle.Position;
-                    float distance = delta.Length();
-                    if (distance < field.Radius && distance > 1e-5f)
-                        particle.Velocity += delta / distance * (field.Strength * (1f - distance / field.Radius) * dt);
-                    break;
-                case ForceFieldKind.CurlTurbulence:
-                    Vector3 worldPosition = emitter.Spec.WorldSpaceSimulation ? particle.Position : Vector3.Transform(particle.Position, emitter.Transform);
-                    Vector3 sample = worldPosition * field.Frequency;
-                    Vector3 gradient = new(ValueNoise(sample), ValueNoise(sample + new Vector3(17, 31, 47)),
-                        ValueNoise(sample + new Vector3(59, 71, 89)));
-                    particle.Velocity += Vector3.Cross(gradient, Vector3.UnitY) * (field.Strength * dt);
-                    break;
-            }
-        }
-    }
-
-    private static float ValueNoise(Vector3 point)
-    {
-        uint x = unchecked((uint)(int)MathF.Floor(point.X));
-        uint y = unchecked((uint)(int)MathF.Floor(point.Y));
-        uint z = unchecked((uint)(int)MathF.Floor(point.Z));
-        uint hash = Hash(x ^ unchecked(y * 0x9E3779B9u) ^ unchecked(z * 0x85EBCA6Bu));
-        return (hash >> 8) * (2f / 16777216f) - 1f;
+        Vector3 force = ParticleForceMath.Acceleration(emitter.Spec, emitter.Transform, particle.Position, out float drag);
+        particle.Velocity = (particle.Velocity + force * dt) * MathF.Exp(-drag * dt);
     }
 
     private void BuildBatch()
@@ -474,8 +443,13 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             var emitter = emitters[particle.EmitterId];
             var spec = emitter.Spec;
             float age = Math.Clamp(particle.Age / particle.Lifetime, 0f, 1f);
-            particle.Size = particle.StartSize * CurveEvaluator.Evaluate(spec.SizeOverLifetime, age) * spec.LengthScale;
-            Vector4 color = spec.StartColor * GradientEvaluator.Evaluate(spec.ColorOverLifetime, age);
+            float samplePosition = age * (GpuCurveAtlasPacker.SamplesPerRow - 1);
+            int lower = (int)samplePosition;
+            GpuCurveSample a = emitter.Curves[lower], b = emitter.Curves[Math.Min(lower + 1, GpuCurveAtlasPacker.SamplesPerRow - 1)];
+            float blend = samplePosition - lower;
+            particle.Size = particle.StartSize * float.Lerp(a.Size.X, b.Size.X, blend)
+                * (spec.WorldSpaceSimulation ? 1f : ParticleAppearanceMath.SizeScale(emitter.Transform));
+            Vector4 color = spec.StartColor * Vector4.Lerp(a.Color, b.Color, blend);
             float intensity = spec.HdrIntensity * emitter.IntensityMultiplier;
             particle.Color = new Vector4(color.X * intensity, color.Y * intensity, color.Z * intensity, color.W);
             int tiles = spec.FlipbookTilesX * spec.FlipbookTilesY;
@@ -494,27 +468,29 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             float halfWidth = particle.Size * 0.5f, halfHeight = halfWidth;
             if (spec.BillboardMode == LumenBillboardMode.Horizontal)
             {
-                right = NormalizeOr(new Vector3(cameraRight.X, 0f, cameraRight.Z), Vector3.UnitX);
-                up = NormalizeOr(Vector3.Cross(Vector3.UnitY, right), Vector3.UnitZ);
+                right = Vector3.UnitX;
+                up = Vector3.UnitZ;
             }
             else if (spec.BillboardMode == LumenBillboardMode.StretchedVelocity)
             {
                 CameraBillboardBasis.ComputeStretchedAxes(cameraRight, cameraUp, yScaleRatio, velocity, out right, out up,
                     scaleVelocityY: !emitter.IsVertical3D);
-                halfHeight *= 1f + spec.VelocityStretchFactor * velocity.Length();
+                halfHeight = (particle.Size * spec.LengthScale + spec.VelocityStretchFactor * velocity.Length()) * 0.5f;
             }
             right *= halfWidth;
             up *= halfHeight;
             float u0 = (float)(particle.FlipbookFrame % spec.FlipbookTilesX) / spec.FlipbookTilesX;
+            // Vanilla MeshMakerPlanes.NewPlaneMesh has uv (0,1) at +Z (v=1 is image top);
+            // RimUnity ParticleSystemRenderer.cs TextureSheet uses 1f - (row+1)/numTilesY.
             float v0 = 1f - (float)(particle.FlipbookFrame / spec.FlipbookTilesX + 1) / spec.FlipbookTilesY;
             float u1 = u0 + 1f / spec.FlipbookTilesX, v1 = v0 + 1f / spec.FlipbookTilesY;
             if (activeMapIndex >= 0 && emitter.MapIndex >= 0 && emitter.MapIndex != activeMapIndex) continue;
             int slot = groupCursors[emitter.Group]++;
             int vertex = slot * 4, index = slot * 6;
-            vertices[vertex] = new(position - right - up, new Vector2(u0, v0), particle.Color);
-            vertices[vertex + 1] = new(position + right - up, new Vector2(u1, v0), particle.Color);
-            vertices[vertex + 2] = new(position + right + up, new Vector2(u1, v1), particle.Color);
-            vertices[vertex + 3] = new(position - right + up, new Vector2(u0, v1), particle.Color);
+            vertices[vertex] = new(position - right - up, new Vector2(u0, v0), particle.Color, Vector2.Zero);
+            vertices[vertex + 1] = new(position + right - up, new Vector2(u1, v0), particle.Color, Vector2.UnitX);
+            vertices[vertex + 2] = new(position + right + up, new Vector2(u1, v1), particle.Color, Vector2.One);
+            vertices[vertex + 3] = new(position - right + up, new Vector2(u0, v1), particle.Color, Vector2.UnitY);
             indices[index] = (uint)vertex;
             indices[index + 1] = (uint)vertex + 1;
             indices[index + 2] = (uint)vertex + 2;

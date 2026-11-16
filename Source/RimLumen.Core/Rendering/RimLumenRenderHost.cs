@@ -18,11 +18,16 @@ public static class RimLumenRenderHost
 
     public static bool EnableVanillaAdditiveBloom { get; set; } = true;
 
-    // Ensures: stored value is within [0.1, 1.0]; the simulators read it without re-clamping.
+    // Ensures: finite input silently clamps to [0.1, 1.0]; nonfinite input throws ArgumentOutOfRangeException
+    // without replacing the prior value. Simulators read the stored value without re-clamping.
     public static float ParticleDensityScale
     {
         get => particleDensityScale;
-        set => particleDensityScale = System.Math.Clamp(value, 0.1f, 1.0f);
+        set
+        {
+            if (!float.IsFinite(value)) throw new ArgumentOutOfRangeException(nameof(value));
+            particleDensityScale = System.Math.Clamp(value, 0.1f, 1.0f);
+        }
     }
 
     private static float particleDensityScale = 1.0f;

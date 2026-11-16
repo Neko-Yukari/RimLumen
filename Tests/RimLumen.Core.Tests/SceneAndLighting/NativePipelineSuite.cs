@@ -40,6 +40,38 @@ public static class NativePipelineSuite
     }
 
     [LumenFact]
+    public static void F8ExplicitFiniteForceStrengthMatchesXmlIncludingZeroAndNegative()
+    {
+        const string json = """{ "nodes": [{ "name": "root", "emitter": { "forceFields": [ { "kind": "GravityDrag", "centerOrAxis": [2,0,0], "strength": 1 }, { "kind": "GravityDrag", "centerOrAxis": [2,0,0], "strength": 0 }, { "kind": "GravityDrag", "centerOrAxis": [2,0,0], "strength": 2.5 }, { "kind": "GravityDrag", "centerOrAxis": [2,0,0], "strength": -2 } ] } }] }""";
+        EffectAsset parsed = LumenJsonAssetLoader.Parse(json, "strength-json");
+        EffectAsset xml = new LumenEffectDef
+        {
+            defName = "strength-xml",
+            nodes = new List<LumenNodeXml> { new()
+            {
+                name = "root", emitter = new LumenEmitterXml
+                {
+                    forceFields = new List<LumenForceFieldXml>
+                    {
+                        new() { kind = ForceFieldKind.GravityDrag, centerOrAxis = new UVector3(2, 0, 0), strength = 1f },
+                        new() { kind = ForceFieldKind.GravityDrag, centerOrAxis = new UVector3(2, 0, 0), strength = 0f },
+                        new() { kind = ForceFieldKind.GravityDrag, centerOrAxis = new UVector3(2, 0, 0), strength = 2.5f },
+                        new() { kind = ForceFieldKind.GravityDrag, centerOrAxis = new UVector3(2, 0, 0), strength = -2f },
+                    },
+                },
+            } },
+        }.ToEffectAsset();
+        EmitterSpec jsonEmitter = parsed.Nodes[0].Emitter!;
+        EmitterSpec xmlEmitter = xml.Nodes[0].Emitter!;
+        NativeTestData.Check(jsonEmitter.ForceFields.AsSpan().SequenceEqual(xmlEmitter.ForceFields),
+            "JSON and XML force field structures must agree for explicit zero, positive and negative finite strength");
+        NativeTestData.Close(3f, ParticleForceMath.Acceleration(jsonEmitter, Matrix4x4.Identity, Vector3.Zero, out _).X,
+            "all authored fields contribute their intended force");
+        NativeTestData.Close(3f, ParticleForceMath.Acceleration(xmlEmitter, Matrix4x4.Identity, Vector3.Zero, out _).X,
+            "XML fields contribute the same force");
+    }
+
+    [LumenFact]
     public static void RemovedSpacePlaneNamesFailAtTheParser()
     {
         // The removed values 1 and 2, and a name outside the two remaining planes.
@@ -418,11 +450,11 @@ public static class NativePipelineSuite
         };
 
         var frozenService = NativeTestData.Service(asset);
-        using var frozen = frozenService.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var frozen = frozenService.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         NativeTestData.Step(frozenService, 0.5f, 0.5f);
         int frozenCount = frozenService.Simulator.LiveParticleCount;
         NativeTestData.Check(frozenCount == 2, $"Half a second at rate 4 spawns two particles, got {frozenCount}");
-        float frozenZ = frozenService.Simulator.LiveParticles[0].Position.Z;
+        float frozenY = frozenService.Simulator.LiveParticles[0].Position.Y;
         float frozenAge = frozenService.Simulator.LiveParticles[0].Age;
         float frozenPlayback = ((EffectInstanceHandle)frozen).PlaybackTime;
 
@@ -432,23 +464,23 @@ public static class NativePipelineSuite
         }
 
         NativeTestData.Check(frozenService.Simulator.LiveParticleCount == frozenCount, "No spawns while paused");
-        NativeTestData.Check(frozenService.Simulator.LiveParticles[0].Position.Z == frozenZ, "Scaled-time particle did not move");
+        NativeTestData.Check(frozenService.Simulator.LiveParticles[0].Position.Y == frozenY, "Scaled-time particle did not move");
         NativeTestData.Check(frozenService.Simulator.LiveParticles[0].Age == frozenAge, "Scaled-time particle did not age");
         NativeTestData.Check(((EffectInstanceHandle)frozen).PlaybackTime == frozenPlayback, "Playback time frozen");
         NativeTestData.Check(frozen.IsAlive, "Handle stays alive while paused");
         NativeTestData.Check(frozenService.Simulator.Vertices.Length == frozenCount * 4, "Paused particles still emit vertices");
 
         var realTimeService = NativeTestData.Service(asset);
-        using var realTime = realTimeService.Play(new LumenPlayRequest { EffectId = asset.EffectId, RealTime = true });
+        using var realTime = realTimeService.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, RealTime = true });
         NativeTestData.Step(realTimeService, 0.5f, 0.5f);
         NativeTestData.Check(realTimeService.Simulator.LiveParticleCount == frozenCount, "Same spawn at the same start");
-        float startZ = realTimeService.Simulator.LiveParticles[0].Position.Z;
+        float startY = realTimeService.Simulator.LiveParticles[0].Position.Y;
         for (int frame = 0; frame < 6; frame++)
         {
             NativeTestData.Step(realTimeService, 0f, 1f / 60f);
         }
 
-        NativeTestData.Close(startZ + 0.1f, realTimeService.Simulator.LiveParticles[0].Position.Z, "Real-time particle moved on unscaled time");
+        NativeTestData.Close(startY + 0.1f, realTimeService.Simulator.LiveParticles[0].Position.Y, "Real-time particle moved on unscaled time");
         NativeTestData.Close(frozenPlayback + 0.1f, ((EffectInstanceHandle)realTime).PlaybackTime, "Real-time playback advanced");
         NativeTestData.Check(realTimeService.Simulator.LiveParticleCount == frozenCount, "0.1s at rate 4 adds no particle");
     }
@@ -476,11 +508,11 @@ public static class NativePipelineSuite
                 },
             };
             var service = NativeTestData.Service(asset);
-            using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, RealTime = realTime });
+            using var handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, RealTime = realTime });
             NativeTestData.Step(service, deltaTime, unscaledDeltaTime);
             NativeTestData.Step(service, deltaTime, unscaledDeltaTime);
             NativeTestData.Check(service.Simulator.LiveParticleCount == 1, "Burst spawned exactly one particle");
-            return service.Simulator.LiveParticles[0].Position.Z;
+            return service.Simulator.LiveParticles[0].Position.Y;
         }
 
         float normal = ScaledDistance(realTime: false, deltaTime: 0.1f, unscaledDeltaTime: 0f);
@@ -607,7 +639,7 @@ public static class NativePipelineSuite
             }, Matrix4x4.Identity, emitting: false);
             simulator.EmitBurst(single, 1);
             NativeTestData.Step(simulator, 0f, 0f);
-            NativeTestData.Check(simulator.GetLiveParticleCount(single) == 1, "A single-particle burst never disappears");
+            NativeTestData.Check(simulator.GetLiveParticleCount(single) == 1, "A fresh count1 burst at half density admits ceil(.5)=1");
 
             var rateSimulator = new CpuParticleSimulator();
             rateSimulator.AcquireEmitter(new EmitterSpec

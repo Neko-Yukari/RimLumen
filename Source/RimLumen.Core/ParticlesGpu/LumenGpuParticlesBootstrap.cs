@@ -8,7 +8,7 @@ using Waylith.Rendering;
 namespace RimLumen.Core.ParticlesGpu;
 
 [StaticConstructorOnStartup]
-public static class LumenGpuParticlesBootstrap
+internal static class LumenGpuParticlesBootstrap
 {
     private static readonly object gate = new();
     private static LumenGpuParticleEngine? engine;

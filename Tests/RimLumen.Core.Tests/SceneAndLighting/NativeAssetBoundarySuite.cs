@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Reflection;
+using System.Xml;
 using RimLumen.Core.Api;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Compat;
@@ -77,8 +78,8 @@ public static class NativeAssetBoundarySuite
         => RejectJson("\"emitter\": { \"duration\": 0 }", "duration", "> 0");
 
     [LumenFact]
-    public static void D8DuplicateParticleScalarKeys()
-        => RejectJson("\"emitter\": { \"sizeOverLifetime\": [[0,1],[0,2]] }", "sizeOverLifetime", "strictly increasing");
+    public static void D8DescendingParticleScalarKeys()
+        => RejectJson("\"emitter\": { \"sizeOverLifetime\": [[0,1],[0.5,2],[0.4,3]] }", "sizeOverLifetime", "non-decreasing");
 
     [LumenFact]
     public static void D8DuplicateParticleGradientStops()
@@ -97,8 +98,8 @@ public static class NativeAssetBoundarySuite
         => RejectJson("\"pointLight\": { \"intensityOverTime\": [[-0.1,1]] }", "intensityOverTime", ">= 0");
 
     [LumenFact]
-    public static void D8PointLightDuplicateSeconds()
-        => RejectJson("\"pointLight\": { \"intensityOverTime\": [[2,1],[2,0]] }", "intensityOverTime", "strictly increasing");
+    public static void D8PointLightDescendingSeconds()
+        => RejectJson("\"pointLight\": { \"intensityOverTime\": [[2,1],[3,2],[2.5,0]] }", "intensityOverTime", "non-decreasing");
 
     [LumenFact]
     public static void D8PointLightGlowRadiusBounds()
@@ -159,6 +160,84 @@ public static class NativeAssetBoundarySuite
         NativeTestData.Close(1f, CurveEvaluator.Evaluate(asset.Nodes[0].PointLight!.Value.IntensityOverTime!, 2.2f), "point light seconds");
     }
 
+    [LumenFact]
+    public static void F1XmlNumericSpacePlaneMustBeDefined()
+    {
+        var document = new XmlDocument();
+        document.LoadXml("<li><spacePlane>1</spacePlane></li>");
+        LumenNodeXml node = Verse.DirectXmlToObject.ObjectFromXml<LumenNodeXml>(document.DocumentElement!, false);
+        RejectXml(node, "spacePlane", "unknown");
+    }
+
+    [LumenFact]
+    public static void F1XmlNumericPreferredTierMustBeDefined()
+        => RejectXml(new LumenNodeXml { emitter = new LumenEmitterXml { preferredTier = Enum.Parse<LumenParticleTier>("255") } }, "preferredTier", "unknown");
+
+    [LumenFact]
+    public static void F1XmlNumericForceKindMustBeDefined()
+        => RejectXml(new LumenNodeXml { emitter = new LumenEmitterXml { forceFields = new List<LumenForceFieldXml>
+        {
+            new() { kind = Enum.Parse<ForceFieldKind>("255"), strength = 1f },
+        } } }, "forceFields[0].kind", "unknown");
+
+    [LumenFact]
+    public static void F1XmlExistingEmitterEnumGuardsRejectNumericValues()
+    {
+        RejectXml(new LumenNodeXml { emitter = new LumenEmitterXml { shape = Enum.Parse<LumenShapeKind>("255") } }, "shape", "unknown");
+        RejectXml(new LumenNodeXml { emitter = new LumenEmitterXml { blendMode = Enum.Parse<LumenBlendMode>("255") } }, "blendMode", "unknown");
+        RejectXml(new LumenNodeXml { emitter = new LumenEmitterXml { billboardMode = Enum.Parse<LumenBillboardMode>("255") } }, "billboardMode", "unknown");
+    }
+
+    [LumenFact]
+    public static void F1JsonNumericEnumsRejectThroughTheSharedBoundary()
+    {
+        RejectJson("\"spacePlane\": 1", "spacePlane", "unknown");
+        RejectJson("\"emitter\": { \"preferredTier\": 255 }", "preferredTier", "unknown");
+        RejectJson("\"emitter\": { \"shape\": 255 }", "shape", "unknown");
+        RejectJson("\"emitter\": { \"blendMode\": 255 }", "blendMode", "unknown");
+        RejectJson("\"emitter\": { \"billboardMode\": 255 }", "billboardMode", "unknown");
+        RejectJson("\"emitter\": { \"forceFields\": [{ \"kind\": 255, \"strength\": 1 }] }", "forceFields[0].kind", "unknown");
+    }
+
+    [LumenFact]
+    public static void F8JsonForceStrengthIsRequiredAndNamesAsset()
+        => RejectJson("\"emitter\": { \"forceFields\": [{ \"kind\": \"GravityDrag\" }] }", "forceFields[0].strength", "required");
+
+    [LumenFact]
+    public static void F8XmlForceStrengthIsRequiredAndNamesAsset()
+        => RejectXml(new LumenNodeXml { emitter = new LumenEmitterXml { forceFields = new List<LumenForceFieldXml>
+        {
+            new() { kind = ForceFieldKind.GravityDrag },
+        } } }, "forceFields[0].strength", "required");
+
+    [LumenFact]
+    public static void F8RealXmlLoaderPreservesPresentNullableStrength()
+    {
+        var document = new XmlDocument();
+        document.LoadXml("<li><kind>GravityDrag</kind><centerOrAxis>(2,0,0)</centerOrAxis><strength>1</strength></li>");
+        LumenForceFieldXml field = Verse.DirectXmlToObject.ObjectFromXml<LumenForceFieldXml>(document.DocumentElement!, false);
+        EffectAsset asset = new LumenEffectDef
+        {
+            defName = "nullable-strength",
+            nodes = new List<LumenNodeXml> { new() { emitter = new LumenEmitterXml
+            {
+                forceFields = new List<LumenForceFieldXml> { field },
+            } } },
+        }.ToEffectAsset();
+        NativeTestData.Close(2f, ParticleForceMath.Acceleration(asset.Nodes[0].Emitter!, Matrix4x4.Identity, Vector3.Zero, out _).X,
+            "real XML present strength reaches force evaluation unchanged");
+    }
+
+    [LumenFact]
+    public static void F8ExplicitNonfiniteStrengthIsNotReportedMissing()
+    {
+        RejectJson("\"emitter\": { \"forceFields\": [{ \"kind\": \"GravityDrag\", \"strength\": 1e100 }] }", "strength", "finite");
+        RejectXml(new LumenNodeXml { emitter = new LumenEmitterXml { forceFields = new List<LumenForceFieldXml>
+        {
+            new() { kind = ForceFieldKind.GravityDrag, strength = float.NaN },
+        } } }, "strength", "finite");
+    }
+
     private static void ValidateEmitter(EmitterSpec emitter)
         => LumenAssetRules.Validate(new EffectAsset { EffectId = "boundary", Nodes = new[] { new EffectNodeSpec { Name = "root", Emitter = emitter } } }, "programmatic");
 
@@ -200,6 +279,8 @@ public static class NativeAssetBoundarySuite
         {
             NativeTestData.Check(error.Message.Contains(field, StringComparison.Ordinal) && error.Message.Contains(message, StringComparison.Ordinal),
                 $"Expected '{field}' and '{message}', got: {error.Message}");
+            if (message == "required")
+                NativeTestData.Check(error.Message.Contains("boundary", StringComparison.Ordinal), $"Missing asset identity: {error.Message}");
             return;
         }
         throw new InvalidOperationException($"Expected rejection of '{field}': {message}.");

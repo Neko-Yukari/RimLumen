@@ -127,6 +127,7 @@ foreach ($relative in @(
         'About/Preview.png',
         'LoadFolders.xml',
         'README.md',
+        'THIRD_PARTY_NOTICES.md',
         'docs/api.md',
         '1.7/Compat/RimUnity/Assemblies/RimLumen.Adapter.RimUnity.dll')) {
     Copy-ToPackage $relative
@@ -179,6 +180,7 @@ foreach ($required in @(
         'About/About.xml',
         'About/Preview.png',
         'LoadFolders.xml',
+        'THIRD_PARTY_NOTICES.md',
         'docs/api.md',
         'Languages/English/Keyed/RimLumen.xml',
         'Languages/ChineseSimplified/Keyed/RimLumen.xml',

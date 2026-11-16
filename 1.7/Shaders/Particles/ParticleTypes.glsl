@@ -1,7 +1,7 @@
 #ifndef LUMEN_PARTICLE_TYPES
 #define LUMEN_PARTICLE_TYPES
 
-// std430 matches the sequential C# structs: 64 / 208 / 48 / 32 bytes.
+// std430 matches the sequential C# structs: 64 / 256 / 48 / 32 bytes.
 struct GpuParticle
 {
     vec4 PositionAndAge;
@@ -25,6 +25,9 @@ struct GpuEmitterParams
     vec4 Appearance;
     vec4 Tables;
     vec4 State;
+    vec4 ShapePosition;
+    vec4 ShapeRotation;
+    vec4 ShapeScale;
 };
 
 struct GpuForceField

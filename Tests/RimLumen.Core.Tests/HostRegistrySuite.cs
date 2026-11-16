@@ -61,8 +61,9 @@ public static class HostRegistrySuite
         LumenHostRegistry.RegisterAssetProvider(provider);
         try
         {
-            Require(!LumenHostRegistry.TryResolveAsset(invalid.EffectId, out var first) && first is null, "Invalid provider asset must fail resolve without falling through.");
-            Require(!LumenHostRegistry.TryResolveAsset(invalid.EffectId, out var second) && second is null, "Repeated invalid resolve must still fail.");
+            Require(LumenHostRegistry.ResolveAsset(invalid.EffectId, out var first) == LumenAssetResolution.Rejected && first is null, "Invalid provider asset must report rejection without falling through.");
+            Require(LumenHostRegistry.ResolveAsset(invalid.EffectId, out var second) == LumenAssetResolution.Rejected && second is null, "Cached invalid asset must remain rejected, not become unknown.");
+            Require(!LumenHostRegistry.TryResolveAsset(invalid.EffectId, out var rejected) && rejected is null, "Public bool resolve must preserve rejection behavior.");
             provider.Register(new EffectAsset { EffectId = invalid.EffectId, Nodes = new[] { new EffectNodeSpec { Name = "replacement" } } });
             Require(LumenHostRegistry.TryResolveAsset(invalid.EffectId, out var replacement) && replacement!.Nodes[0].Name == "replacement", "New asset instance must validate independently of cached rejection.");
         }
@@ -100,10 +101,19 @@ public static class HostRegistrySuite
         LumenHostRegistry.RegisterAssetProvider(provider);
         try
         {
-            Require(LumenHostRegistry.TryResolveAsset(asset.EffectId, out var first) && ReferenceEquals(first, asset), "Valid provider asset must resolve.");
+            Require(LumenHostRegistry.ResolveAsset(asset.EffectId, out var first) == LumenAssetResolution.Found && ReferenceEquals(first, asset), "Valid provider asset must report found.");
             Require(LumenHostRegistry.TryResolveAsset(asset.EffectId, out var second) && ReferenceEquals(second, asset), "Valid cached asset must resolve.");
         }
         finally { provider.Clear(); }
+    }
+
+    [LumenFact]
+    public static void ProviderBoundaryReportsUnknownIdWithoutAnAsset()
+    {
+        Require(LumenHostRegistry.ResolveAsset("provider.f10.missing", out var asset) == LumenAssetResolution.NotFound && asset is null,
+            "An unknown id must be distinguished from a rejected provider asset.");
+        Require(!LumenHostRegistry.TryResolveAsset("provider.f10.missing", out var missing) && missing is null,
+            "Public bool resolve must preserve unknown-id behavior.");
     }
 
     private static void Require(bool condition, string message)

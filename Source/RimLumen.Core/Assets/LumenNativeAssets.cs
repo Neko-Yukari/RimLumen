@@ -140,6 +140,9 @@ public sealed class LumenEffectDef : Def
             Bursts = ToBursts(xml.bursts, path),
             Shape = xml.shape,
             ShapeExtents = new Vector3(xml.shapeExtents.x, xml.shapeExtents.y, xml.shapeExtents.z),
+            ShapePosition = new Vector3(xml.shapePosition.x, xml.shapePosition.y, xml.shapePosition.z),
+            ShapeRotation = LumenAssetRules.NormalizeRotation(new Quaternion(xml.shapeRotation.x, xml.shapeRotation.y, xml.shapeRotation.z, xml.shapeRotation.w), path + ".emitter.shapeRotation"),
+            ShapeScale = new Vector3(xml.shapeScale.x, xml.shapeScale.y, xml.shapeScale.z),
             ConeAngleDegrees = xml.coneAngleDegrees,
             StartLifetimeMin = xml.startLifetimeMin,
             StartLifetimeMax = xml.startLifetimeMax,
@@ -261,7 +264,7 @@ public sealed class LumenEffectDef : Def
                 new Vector3(field.centerOrAxis.x, field.centerOrAxis.y, field.centerOrAxis.z),
                 new Vector3(field.parameters.x, field.parameters.y, field.parameters.z),
                 field.radius,
-                field.strength,
+                field.strength ?? throw new InvalidDataException($"{path}.forceFields[{i}].strength: required."),
                 field.frequency);
         }
 
@@ -318,6 +321,10 @@ public sealed class LumenEmitterXml
     public float hdrIntensity = 1f;
     public LumenShapeKind shape = LumenShapeKind.Point;
     public UnityEngine.Vector3 shapeExtents = UnityEngine.Vector3.one;
+    public UnityEngine.Vector3 shapePosition;
+    // DirectXmlToObject supports ParseHelper's (x,y,z,w) Unity quaternion format (Assembly-CSharp:20720,21002,142245).
+    public UnityEngine.Quaternion shapeRotation = UnityEngine.Quaternion.identity;
+    public UnityEngine.Vector3 shapeScale = UnityEngine.Vector3.one;
     public float coneAngleDegrees = 25f;
     public LumenBillboardMode billboardMode = LumenBillboardMode.Camera;
     public float velocityStretchFactor;
@@ -384,7 +391,7 @@ public sealed class LumenForceFieldXml
     public ForceFieldKind kind;
     public UnityEngine.Vector3 centerOrAxis;
     public UnityEngine.Vector3 parameters;
-    public float strength = 1f;
+    public float? strength;
     public float frequency = 1f;
     public float radius = 5f;
 }
@@ -457,6 +464,8 @@ internal static class LumenAssetRules
                 throw new InvalidDataException($"{path} ('{node.Name}'): localScale must be finite.");
             }
 
+            ValidateEnum(node.SpacePlane, $"{path} ('{node.Name}').spacePlane");
+
             if (node.Emitter is { } emitter)
             {
                 ValidateEmitter(emitter, $"{path} ('{node.Name}').emitter");
@@ -501,6 +510,12 @@ internal static class LumenAssetRules
         EffectStateGraph.For(asset, source);
     }
 
+    private static void ValidateEnum<TEnum>(TEnum value, string path) where TEnum : struct, Enum
+    {
+        if (!Enum.IsDefined(value))
+            throw new InvalidDataException($"{path}: unknown {typeof(TEnum).Name} value {value} (known: {string.Join(", ", Enum.GetNames<TEnum>())}).");
+    }
+
     private static void ValidateCurve(ScalarCurve curve, string path, bool normalized)
     {
         if (curve.Keys.Length == 0)
@@ -510,18 +525,28 @@ internal static class LumenAssetRules
         for (int i = 0; i < curve.Keys.Length; i++)
         {
             CurveKey key = curve.Keys[i];
-            ValidateTime(key.Time, i > 0 ? curve.Keys[i - 1].Time : -1f, $"{path}[{i}]", normalized);
+            ValidateTime(key.Time, i > 0 ? curve.Keys[i - 1].Time : -1f, $"{path}[{i}]", normalized, allowEqual: true);
             if (!float.IsFinite(key.Value) || !float.IsFinite(key.InTangent) || !float.IsFinite(key.OutTangent))
                 throw new InvalidDataException($"{path}[{i}]: value and tangents must be finite.");
         }
     }
 
-    private static void ValidateTime(float time, float previous, string path, bool normalized)
+    // Scalar CurveKeys allow equal times (D22); ColorGradient stops remain strict.
+    private static void ValidateTime(float time, float previous, string path, bool normalized, bool allowEqual)
     {
         if (!float.IsFinite(time) || time < 0f || (normalized && time > 1f))
             throw new InvalidDataException($"{path}.time: must be finite and {(normalized ? "in [0,1] (normalized lifetime)" : ">= 0 (seconds)")}.");
-        if (time <= previous)
-            throw new InvalidDataException($"{path}.time: keys/stops must have strictly increasing time.");
+        if (allowEqual ? time < previous : time <= previous)
+            throw new InvalidDataException($"{path}.time: {(allowEqual ? "keys must have non-decreasing time" : "stops must have strictly increasing time")}.");
+    }
+
+    // Parser-only normalization; preserve the existing localRotation degeneracy threshold.
+    internal static Quaternion NormalizeRotation(Quaternion rotation, string path)
+    {
+        float lengthSquared = rotation.LengthSquared();
+        if (!(lengthSquared > 1e-8f) || !float.IsFinite(lengthSquared))
+            throw new InvalidDataException($"{path}: quaternion {rotation} must be finite and nondegenerate.");
+        return Quaternion.Normalize(rotation);
     }
 
     private static void ValidateEmitter(EmitterSpec emitter, string path)
@@ -551,12 +576,22 @@ internal static class LumenAssetRules
             throw new InvalidDataException($"{path}: duration must be finite and > 0, got {emitter.Duration}.");
         }
 
-        if (!Enum.IsDefined(emitter.Shape))
-            throw new InvalidDataException($"{path}: unknown shape {emitter.Shape}.");
-        if (!Enum.IsDefined(emitter.BlendMode))
-            throw new InvalidDataException($"{path}: unknown blendMode {emitter.BlendMode}.");
-        if (!Enum.IsDefined(emitter.BillboardMode))
-            throw new InvalidDataException($"{path}: unknown billboardMode {emitter.BillboardMode}.");
+        Vector3 position = emitter.ShapePosition;
+        if (!float.IsFinite(position.X) || !float.IsFinite(position.Y) || !float.IsFinite(position.Z))
+            throw new InvalidDataException($"{path}.shapePosition: components must be finite.");
+        Vector3 scale = emitter.ShapeScale;
+        if (!float.IsFinite(scale.X) || !float.IsFinite(scale.Y) || !float.IsFinite(scale.Z))
+            throw new InvalidDataException($"{path}.shapeScale: components must be finite (zero and negative scales are allowed).");
+        float rotationLengthSquared = emitter.ShapeRotation.LengthSquared();
+        // Absolute squared-norm tolerance 1e-5 admits Quaternion.Normalize float roundoff without accepting scaled rotations.
+        // C# assets must already be unit rotations: never mutate an immutable programmatic spec to normalize it.
+        if (!float.IsFinite(rotationLengthSquared) || MathF.Abs(rotationLengthSquared - 1f) > 1e-5f)
+            throw new InvalidDataException($"{path}.shapeRotation: quaternion must be finite, nondegenerate and unit (|lengthSquared - 1| <= 1e-5).");
+
+        ValidateEnum(emitter.PreferredTier, path + ".preferredTier");
+        ValidateEnum(emitter.Shape, path + ".shape");
+        ValidateEnum(emitter.BlendMode, path + ".blendMode");
+        ValidateEnum(emitter.BillboardMode, path + ".billboardMode");
 
         ValidateCurve(emitter.SizeOverLifetime, path + ".sizeOverLifetime", normalized: true);
         ColorStop[] stops = emitter.ColorOverLifetime.Stops;
@@ -565,7 +600,7 @@ internal static class LumenAssetRules
         for (int i = 0; i < stops.Length; i++)
         {
             ColorStop stop = stops[i];
-            ValidateTime(stop.Time, i > 0 ? stops[i - 1].Time : -1f, $"{path}.colorOverLifetime[{i}]", normalized: true);
+            ValidateTime(stop.Time, i > 0 ? stops[i - 1].Time : -1f, $"{path}.colorOverLifetime[{i}]", normalized: true, allowEqual: false);
             Vector4 rgba = stop.Rgba;
             if (!float.IsFinite(rgba.X) || !float.IsFinite(rgba.Y) || !float.IsFinite(rgba.Z) || !float.IsFinite(rgba.W))
                 throw new InvalidDataException($"{path}.colorOverLifetime[{i}].color: components must be finite.");
@@ -594,16 +629,19 @@ internal static class LumenAssetRules
             }
         }
 
-        foreach (ForceFieldSpec field in emitter.ForceFields)
+        for (int i = 0; i < emitter.ForceFields.Length; i++)
         {
+            ForceFieldSpec field = emitter.ForceFields[i];
+            ValidateEnum(field.Kind, $"{path}.forceFields[{i}].kind");
+
             if (!float.IsFinite(field.Radius) || field.Radius < 0f)
             {
-                throw new InvalidDataException($"{path}: force field radius must be finite and >= 0, got {field.Radius}.");
+                throw new InvalidDataException($"{path}.forceFields[{i}].radius: must be finite and >= 0, got {field.Radius}.");
             }
 
             if (!float.IsFinite(field.Strength) || !float.IsFinite(field.Frequency))
             {
-                throw new InvalidDataException($"{path}: force field strength/frequency must be finite.");
+                throw new InvalidDataException($"{path}.forceFields[{i}].strength/frequency: must be finite.");
             }
         }
     }
@@ -668,7 +706,7 @@ public static class LumenJsonAssetLoader
             int index = 0;
             foreach (JsonElement nodeElement in nodesElement.EnumerateArray())
             {
-                nodes[index] = ParseNode(nodeElement, $"asset.nodes[{index}]");
+                nodes[index] = ParseNode(nodeElement, $"effect '{effectId}'.nodes[{index}]");
                 index++;
             }
 
@@ -746,7 +784,7 @@ public static class LumenJsonAssetLoader
     private static readonly string[] EmitterProperties =
     {
         "name", "maxParticles", "duration", "looping", "worldSpaceSimulation", "rateOverTime", "bursts",
-        "shape", "shapeExtents", "coneAngleDegrees", "startLifetime", "startLifetimeMin", "startLifetimeMax",
+        "shape", "shapeExtents", "shapePosition", "shapeRotation", "shapeScale", "coneAngleDegrees", "startLifetime", "startLifetimeMin", "startLifetimeMax",
         "startSpeed", "startSpeedMin", "startSpeedMax", "startSize", "startSizeMin", "startSizeMax",
         "startColor", "sizeOverLifetime", "colorOverLifetime", "forceFields", "textureKey",
         "flipbookTilesX", "flipbookTilesY", "flipbookCycles", "blendMode", "billboardMode",
@@ -832,6 +870,9 @@ public static class LumenJsonAssetLoader
             Bursts = ParseBursts(scope, path),
             Shape = scope.Enum("shape", LumenShapeKind.Point),
             ShapeExtents = scope.Vector3("shapeExtents", Vector3.One),
+            ShapePosition = scope.Vector3("shapePosition", Vector3.Zero),
+            ShapeRotation = scope.Rotation("shapeRotation", Quaternion.Identity),
+            ShapeScale = scope.Vector3("shapeScale", Vector3.One),
             ConeAngleDegrees = scope.Float("coneAngleDegrees", 25f),
             StartLifetimeMin = lifetime ?? scope.Float("startLifetimeMin", 1f),
             StartLifetimeMax = lifetime ?? scope.Float("startLifetimeMax", 1f),
@@ -960,7 +1001,7 @@ public static class LumenJsonAssetLoader
                 field.Vector3("centerOrAxis", Vector3.Zero),
                 field.Vector3("parameters", Vector3.Zero),
                 field.Float("radius", 5f),
-                field.Float("strength", 0f),
+                field.OptionalFloat("strength") ?? throw new InvalidDataException($"{fieldPath}.strength: required."),
                 field.Float("frequency", 1f));
             index++;
         }
@@ -1371,7 +1412,7 @@ public static class LumenJsonAssetLoader
                 : throw new InvalidDataException($"{path}.{name}: expected a string, got {value.ValueKind} '{value}'.");
         }
 
-        // Ensures: accepts an enum member name (case-insensitive) or its integer value.
+        // Parses a member name or representable integer; LumenAssetRules checks defined values once.
         public TEnum Enum<TEnum>(string name, TEnum fallback) where TEnum : struct, System.Enum
         {
             if (!TryGetProperty(element, name, out JsonElement value) || value.ValueKind == JsonValueKind.Null)
@@ -1379,13 +1420,13 @@ public static class LumenJsonAssetLoader
                 return fallback;
             }
 
-            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out int number))
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out _) &&
+                System.Enum.TryParse(value.GetRawText(), out TEnum fromNumber))
             {
-                var fromNumber = (TEnum)System.Enum.ToObject(typeof(TEnum), number);
-                return System.Enum.IsDefined(fromNumber) ? fromNumber : throw new InvalidDataException($"{path}.{name}: {number} is not a valid {typeof(TEnum).Name} value (known: {string.Join(", ", System.Enum.GetNames(typeof(TEnum)))}).");
+                return fromNumber;
             }
 
-            if (value.ValueKind == JsonValueKind.String && System.Enum.TryParse(value.GetString(), ignoreCase: true, out TEnum parsed) && System.Enum.IsDefined(parsed))
+            if (value.ValueKind == JsonValueKind.String && System.Enum.TryParse(value.GetString(), ignoreCase: true, out TEnum parsed))
             {
                 return parsed;
             }
@@ -1449,13 +1490,7 @@ public static class LumenJsonAssetLoader
                 JsonValueKind.Object => ObjectQuaternion(new JsonScope(value, valuePath)),
                 _ => throw new InvalidDataException($"{valuePath}: expected [x, y, z, w] or {{ x, y, z, w }}, got {value.ValueKind}."),
             };
-            float lengthSquared = result.LengthSquared();
-            if (!(lengthSquared > 1e-8f) || !float.IsFinite(lengthSquared))
-            {
-                throw new InvalidDataException($"{valuePath}: quaternion {result} is degenerate.");
-            }
-
-            return Quaternion.Normalize(result);
+            return LumenAssetRules.NormalizeRotation(result, valuePath);
         }
 
         private static Quaternion ObjectQuaternion(JsonScope scope)

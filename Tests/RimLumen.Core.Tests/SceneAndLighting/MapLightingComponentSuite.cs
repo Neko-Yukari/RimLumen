@@ -102,7 +102,7 @@ public static class MapLightingComponentSuite
     }
 
     [LumenFact]
-    public static void TwoMapComponentsUnregisterIndependentlyWithoutPositiveKeyFallback()
+    public static void TwoMapComponentsUnregisterIndependentlyWithoutMapFallback()
     {
         using var first = new LumenMapLightingComponent(new Map { uniqueID = 111 });
         using var second = new LumenMapLightingComponent(new Map { uniqueID = 222 });
@@ -110,7 +110,7 @@ public static class MapLightingComponentSuite
         second.FinalizeInit();
         AssertResolves(111, first.Driver);
         AssertResolves(222, second.Driver);
-        AssertResolves(-1, second.Driver);
+        GlowAssert.Equal(false, LumenMapLightingRegistry.TryResolve(-1, out _));
         GlowAssert.Equal(false, LumenMapLightingRegistry.TryResolve(999, out var missing));
         GlowAssert.Equal(true, missing is null);
 
@@ -121,7 +121,7 @@ public static class MapLightingComponentSuite
         GlowAssert.Equal(false, LumenMapLightingRegistry.TryResolve(111, out missing));
         GlowAssert.Equal(true, missing is null);
         AssertResolves(222, second.Driver);
-        AssertResolves(-1, second.Driver);
+        GlowAssert.Equal(false, LumenMapLightingRegistry.TryResolve(-1, out _));
 
         second.MapRemoved();
         second.Dispose();
@@ -158,7 +158,7 @@ public static class MapLightingComponentSuite
     }
 
     [LumenFact]
-    public static void RegistryPrefersExactKeysAndTracksRecencyAndReplacementByInstance()
+    public static void RegistryUsesExactKeysAndTracksReplacementByInstance()
     {
         using var unsaved = new MapGlowerDriver(new RecordingGlowGridSink());
         using var first = new MapGlowerDriver(new RecordingGlowGridSink());
@@ -174,17 +174,17 @@ public static class MapLightingComponentSuite
             LumenMapLightingRegistry.Register(202, second);
             GlowAssert.Equal(3, LumenMapLightingRegistry.Count);
             AssertResolves(101, first);
-            AssertResolves(-1, second);
-            AssertResolves(-2, second);
+            AssertResolves(-1, unsaved);
+            GlowAssert.Equal(false, LumenMapLightingRegistry.TryResolve(-2, out resolved));
             GlowAssert.Equal(false, LumenMapLightingRegistry.TryResolve(999, out resolved));
             GlowAssert.Equal(true, resolved is null);
             LumenMapLightingRegistry.Register(101, first);
             GlowAssert.Equal(3, LumenMapLightingRegistry.Count);
-            AssertResolves(-2, first);
+            GlowAssert.Equal(false, LumenMapLightingRegistry.TryResolve(-2, out resolved));
             LumenMapLightingRegistry.Register(101, replacement);
             GlowAssert.Equal(3, LumenMapLightingRegistry.Count);
             AssertResolves(101, replacement);
-            AssertResolves(-2, replacement);
+            GlowAssert.Equal(false, LumenMapLightingRegistry.TryResolve(-2, out resolved));
             LumenMapLightingRegistry.Unregister(101, first);
             LumenMapLightingRegistry.Unregister(101, first);
             LumenMapLightingRegistry.Unregister(999, replacement);
@@ -195,7 +195,7 @@ public static class MapLightingComponentSuite
             GlowAssert.Equal(2, LumenMapLightingRegistry.Count);
             GlowAssert.Equal(false, LumenMapLightingRegistry.TryResolve(101, out resolved));
             GlowAssert.Equal(true, resolved is null);
-            AssertResolves(-1, second);
+            AssertResolves(-1, unsaved);
             LumenMapLightingRegistry.Unregister(202, second);
             GlowAssert.Equal(false, LumenMapLightingRegistry.TryResolve(999, out resolved));
             GlowAssert.Equal(true, resolved is null);

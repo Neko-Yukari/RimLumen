@@ -64,7 +64,8 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
 - Keys use camelCase, are **case-insensitive**, and allow `//` comments and trailing commas.
 - **Unknown keys throw an error** to catch typos early (keys prefixed with `$` or `_` are ignored for documentation metadata).
 - Vectors accept `[x, y, z]`, `{ "x": ..., "y": ..., "z": ... }`, or a single number (uniform `x = y = z`).
-- Colors are linear RGBA, accepting `[r, g, b, a]`, `[r, g, b]` (where `a = 1`), or `{ "r": ..., "g": ..., "b": ..., "a": ... }`.
+- Colors use the vanilla scene's stored encoding with no sRGB conversion: particle RGB `1.0` is vanilla full brightness, RGB values above `1` can drive HDR, alpha is coverage, and `hdrIntensity` scales RGB only; point-light RGB must be in `[0,1]`. Accepted forms are `[r, g, b, a]`, `[r, g, b]` (where `a = 1`), or `{ "r": ..., "g": ..., "b": ..., "a": ... }`.
+- Removed or renamed legacy keys are rejected with an error naming the new key or the removal: `startColorLinear` is renamed to `startColor`; gradient-stop `rgbaLinear` and point-light `colorLinear` / `colorRgb` are renamed to `color`; `bloomWeight` and `hdrMultiplier` were removed. No compatibility alias is provided.
 - Enums accept either member name strings (case-insensitive) or integer values.
 - Writing a single number for `startLifetime`, `startSpeed`, or `startSize` sets `Min = Max`; you can also write `...Min` / `...Max` separately.
 
@@ -100,7 +101,7 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
         "startSpeedMax": 0,
         "startSizeMin": 1.0,
         "startSizeMax": 1.0,
-        "startColorLinear": [1, 1, 1, 1],
+        "startColor": [1, 1, 1, 1],
         "sizeOverLifetime": [[0, 1], [1, 0]],
         "colorOverLifetime": [[0, [1, 1, 1, 1]], [1, [1, 0.3, 0.1, 0]]],
         "forceFields": [
@@ -123,13 +124,12 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
         "lengthScale": 1,
         "softParticleFadeDistance": 0.5,
         "hdrIntensity": 1,
-        "bloomWeight": 1,
         "killBelowFloor": false
       },
       "pointLight": {
         "glowRadius": 5,
         "overlightRadius": 0,
-        "colorRgb": [1, 1, 1],
+        "color": [1, 1, 1],
         "intensity": 1,
         "intensityOverTime": [[0, 1], [1, 0]]
       }
@@ -148,10 +148,25 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
 
 - **Root**: `nodes` must be non-empty; `defaultDuration` must be finite and `>= 0`.
 - **Node hierarchy (`EffectNodeSpec`)**: `parentIndex` must be `-1` (attached to root) or strictly less than the current node index `[0, i)`, structurally preventing parent-child cycles. If `localRotation` (`[x, y, z, w]` or `{ x, y, z, w }`) is omitted, `localYawDegrees` rotates around world `+Y`.
-- **Curves (`sizeOverLifetime` / `intensityOverTime`)**: Supports three forms—a single number (constant), an array `[[time, value], ...]` (non-decreasing `time`), or an object `{ "keys": [...], "multiplier": 1 }`. Keyframes may optionally include tangents `[time, value, inTangent, outTangent]`.
-- **Gradients (`colorOverLifetime`)**: Supports a stop array `[[time, [r,g,b,a]], ...]` or an object `{ "stops": [{ "time": 0, "rgbaLinear": [r,g,b,a] }] }`, also requiring non-decreasing `time`.
-- **`pointLight`**: JSON supports `colorRgb` or `colorLinear` (both use linear RGB components); radius keys are `glowRadius` and `overlightRadius` (in map cells).
+- **Scalar curves (`sizeOverLifetime` / `intensityOverTime`)**: Use a single number (constant), an array `[[time, value], ...]`, or an object `{ "keys": [...], "multiplier": 1 }`. Keyframes may include tangents as `[time, value, inTangent, outTangent]`. Times must be finite and non-decreasing: particle-curve time is normalized lifetime `[0,1]`, while point-light curve time is seconds since node activation and must be nonnegative.
+
+  Values and tangents must be finite; tangents are slopes per unit of curve time. Distinct times use cubic Hermite interpolation, followed by multiplication by `multiplier`.
+
+  A time may occur twice or more. If all key times are equal, every time evaluates to the last value. Otherwise, `t <= first` gives the first value and `t >= last` gives the last. At an interior repeated time, the left-hand limit is the group's first value, the exact time gives its last value, and subsequent interpolation starts from that value toward the next key. If the first time is repeated, the exact first time still gives the first value, so the rule is not universally right-continuous.
+
+  For example, `[[0, 0], [0.5, 1], [0.5, 2], [0.5, 3], [1, 4]]` approaches `1` from the left of `0.5`, evaluates to `3` at `0.5`, and then interpolates from `3` toward `4`. The same rule applies to a pair of repeated keys. Source: [RimUnity `AnimationCurve.cs:23,30-35` at pinned revision `45ca90987f7d3721715b45c021cab986ee14c468`](https://github.com/chezhou9413/RimUnity/blob/45ca90987f7d3721715b45c021cab986ee14c468/Source/RimUnity/Animation/AnimationCurve.cs#L23-L35).
+
+  For particle size curves, both L1 and L2 use the same 64-sample lookup table (LUT): samples are at `i/63` (`i = 0…63`), including both endpoints, with interpolation between adjacent samples. A step can be smoothed across a sample interval of width `1/63`; exact preservation is not guaranteed. Point-light curves are evaluated directly in seconds, not through the particle LUT.
+- **Gradients (`colorOverLifetime`)**: Supports a stop array `[[time, [r,g,b,a]], ...]` or an object `{ "stops": [{ "time": 0, "color": [r,g,b,a] }] }`, requiring strictly increasing `time`.
+- **`pointLight`**: The JSON colour key is `color` (RGBA); radius keys are `glowRadius` and `overlightRadius` (in map cells).
+- **Force-field `strength`**: Required explicitly in JSON, XML, and C#. Omission rejects the asset; no default is used.
 - **`timelineEvents` / `states` / `initialState` / `stopState`**: see the next section, "State Machine".
+- **Particle density setting**: The public setter `RimLumenRenderHost.ParticleDensityScale` accepts a range of `0.1`–`1.0`; finite values outside it are silently clamped without logging, while NaN and positive or negative infinity throw `ArgumentOutOfRangeException`. The settings slider is continuous and displays a rounded whole percentage. Density `1` is exact; after clamping to `d`, the effective burst density is `floor(d * 65536) / 65536`.
+- **Particle density and bursts**: Each emitter keeps its own `Int64` accumulator `a`, initially `0`, in units of `1/65536` particle. Compute `q = floor(density * 65536)`; for every nonzero burst, apply `a += count * q`, `n = ceil(a / 65536)` using integer arithmetic, then `a -= n * 65536`. Here `n` is the request budget; `a <= 0` and may be negative. The effective density is `floor(density * 65536) / 65536`, never above the authored value; density `1` is exact and has no `0.999` threshold.
+
+  At density `0.25`, four consecutive bursts with `count = 1` yield budgets `1, 0, 0, 0`; eight such bursts total `2`. Two consecutive bursts with `count = 7` yield `2, 2`. At density `0.1`, `q = 6553`, so ten `count = 1` bursts accumulate `65530` and request `1`; at density `0.2`, five such bursts request `1`. The cumulative request budget uses the effective density: `ceil(sum(count * q) / 65536)`. A budget is not an actual particle count: requests dropped for insufficient capacity or free slots are not replayed.
+
+  Bursts are scaled once when queued on the CPU; GPU Capture does not scale them again. `Play`, explicit `Restart`, and `GoTo` state re-entry reset `a` to `0`; loop wrap does not. For example, at density `0.25`, one `count = 1` burst per loop requests `2` particles over eight loops. Continuous rate emission uses a separate `double` fractional carry, floors the accumulated count and retains the remainder. The runtime `rate` multiplier does not scale bursts.
 
 ### 4. State Machine (`states`)
 
@@ -248,7 +263,7 @@ Step by step:
 | `1.0` | `spawn` | `touchdown` raises `Notify("touchdown")` |
 | `1.5` | `sustain` | Duration elapsed, enter `next`: `StateChanged("sustain")`; `funnel` and `debris` restart their schedules, `dust` stops new emission |
 | `2.0`, `4.0`, ... | `sustain` | 0.5 s into each 2 s cycle, `gust` pulses 40 particles on `debris` |
-| `Stop()` called | `collapse` | `StateChanged("collapse")`; `collapse` bursts 400 particles, funnel and debris stop new emission; `GoTo` is ignored from now on |
+| `Stop()` called | `collapse` | `StateChanged("collapse")`; `collapse` bursts 400 particles, funnel and debris stop new emission; `GoTo` for declared states is ignored from now on; undeclared states still throw |
 | `Stop` + `0.3 s` | `collapse` | `Notify("impact")` |
 | `Stop` + `1.2 s` | fading | New emission stops, lights fade, particles finish their lifetime |
 | Last particle gone | ended | `IsAlive == false`, `Finished` is raised |
@@ -261,8 +276,10 @@ You can define `RimLumen.Core.Assets.LumenEffectDef` in any mod's `Defs/**/*.xml
 
 1. **ID**: Uses `<defName>`, registering both the bare short name and `<packageId>:<defName>`.
 2. **Node fields**: Adds `<heightOffset>` (added to `localPosition.y`), `localScale` is a single float scalar, and `localRotation` quaternion is omitted (use `<localYawDegrees>`).
-3. **Point light keys**: Uses `<radiusCells>` (matching JSON `glowRadius`), `<overlightRadius>`, `<colorLinear>` (RimWorld `Color` syntax `(r, g, b, a)`), `<intensity>`, and `<intensityOverTime>` (`<keys>` made of `<li><time>..</time><value>..</value></li>`).
+3. **Point light keys**: Uses `<radiusCells>` (matching JSON `glowRadius`), `<overlightRadius>`, `<color>` (RimWorld `Color` syntax `(r, g, b, a)`), `<intensity>`, and `<intensityOverTime>` (`<keys>` made of `<li><time>..</time><value>..</value></li>`).
 4. **List fields**: `<states>`, `<timelineEvents>` and a state's `<nodes>` are `<li>` lists; state fields are `<name>`, `<nodes>`, `<duration>`, `<loop>`, `<next>`, event fields are `<time>`, `<eventName>`, `<targetNodeIndex>`, `<state>`, `<notify>`; the root also takes `<defaultDuration>`, `<initialState>` and `<stopState>`. Meanings and defaults match the "State Machine" section above.
+
+Legacy XML keys are rejected too: `<startColorLinear>` is renamed to `<startColor>`; gradient-stop `<rgbaLinear>` and point-light `<colorLinear>` / `<colorRgb>` are renamed to `<color>`; `<bloomWeight>` and `<hdrMultiplier>` were removed.
 
 ```xml
 <Defs>
@@ -298,7 +315,7 @@ You can define `RimLumen.Core.Assets.LumenEffectDef` in any mod's `Defs/**/*.xml
           </forceFields>
         </emitter>
         <pointLight>
-          <colorLinear>(1, 0.55, 0.15, 1)</colorLinear>
+          <color>(1, 0.55, 0.15, 1)</color>
           <radiusCells>6</radiusCells>
           <intensity>1.4</intensity>
         </pointLight>
@@ -404,7 +421,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 });
 ```
 
-- If `EffectId` does not exist, `Play` does not throw; it returns an inert handle with `IsAlive == false` whose methods are safe no-ops.
+- If `EffectId` does not exist, `Play` returns an inert handle with `IsAlive == false` whose methods are no-ops, and logs `Log.Warning` once per ID per service instance. An asset rejected by validation also returns an inert handle; it retains the registry's validation error without adding an "unknown ID" warning.
 
 ### 3. Handle Controls (`ILumenEffectHandle`)
 
@@ -412,11 +429,11 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 | --- | --- |
 | `bool IsAlive` | `true` while playing or fading/draining; becomes `false` once all particles and point lights are cleaned up. |
 | `void Trigger(string name)` | Fires every timeline event with that name now, whatever its state and time (target-node pulse, `Notify`), and restarts the emission schedule of every node with that name until the next state entry decides again; the current state is unchanged. Unmatched names do nothing; no effect after fading out or death. L1 and L2 behave identically. |
-| `void GoTo(string stateName)` | Enters that state now (going to the current state restarts it). Throws `ArgumentException` for a state the asset does not declare; no effect after `Stop(true)`, while fading out, or once dead. |
+| `void GoTo(string stateName)` | Enters that state now (going to the current state restarts it). On an asset-backed handle, an undeclared state name always throws `ArgumentException`, including after `Stop(true)`, while draining, or once dead; a declared state is entered only while playing before `Stop(true)`, otherwise it has no effect. `Stop(false)` tears down immediately; `GoTo` on an inert handle is always a no-op. |
 | `event Action<string> Notify` | Raised with the event name when a timeline event with `notify: true` fires (on its time or through `Trigger`). |
 | `event Action<string> StateChanged` | Raised with the state name each time a declared state is entered, including the initial state. |
 | `event Action Finished` | Raised once when `IsAlive` becomes `false`, for any reason (played out, `Stop`, `Dispose`). |
-| `void SetParam(string name, float value)` | Updates runtime scalar parameters. Three built-in names take effect immediately: `intensity` (scales particle and light brightness), `rate` (scales L1 emission rate), and `scale` (multiplies root scale). Other names are stored without affecting simulation. |
+| `void SetParam(string name, float value)` | Updates runtime scalar parameters. Three built-in names take effect immediately: `intensity` (scales particle and light brightness), `rate` (scales only continuous L1 and L2 emission, not `bursts`; must be finite and nonnegative or throws `ArgumentOutOfRangeException`; zero pauses only continuous emission), and `scale` (multiplies root scale). Other names are stored without affecting simulation. |
 | `void Stop(bool allowFadeOut = true)` | When `true`: if the asset has a `stopState`, enters it and plays it to its end; then stops new emission, fades point lights over `0.25s`, and lets live particles finish their lifetime before reclamation. Without a `stopState` the fade starts at once. When `false`, immediately destroys all particles and lights. Repeated calls do nothing. |
 | `void Dispose()` | Equivalent to `Stop(false)`, idempotent. Always dispose long-lived handles in `Thing.DeSpawn` or when a map is destroyed. |
 
@@ -432,7 +449,7 @@ An emitter's `textureKey` is resolved on the main thread in the following order:
 
 1. Check textures explicitly registered via `LumenTextureRegistry.Register(string key, Waylith.Rendering.Texture texture)`.
 2. Otherwise call vanilla `ContentFinder<UnityEngine.Texture2D>.Get(key, reportFailure: false)` to load from a mod's `Textures/` directory (for example `"RimLumen/Effects/Spark"`).
-3. If still missing, fall back to the procedural soft circle and log one warning per missing `key`.
+3. If still missing, fall back to the procedural soft circle and log one warning per missing `key`. An unspecified `textureKey` also uses the procedural circle. Its alpha is `max(0, 1 - r²)²`, where `r` is the fragment's radial coordinate; it is independent of the flipbook atlas UV and does not change per frame.
 
 > Never call texture registration from worker threads or render callbacks.
 
@@ -452,7 +469,7 @@ Custom `bloomPrefilterShader`, `bloomDownShader` and `bloomUpShader` apply only 
 
 In the installed vanilla / DLC static inventory, ritual candle clusters at 3155 bloom at 3169 before weather FogOverlay 3169 and SunShadow 3170; orbital / power beams and endpoints at 3177 bloom at 3178 after FogOfWar 3175 and before the Gravship grab and Darkness 3180; grav-field 3181, grav engine 3185, thruster flame 3201 and Noctol eyes 4000 bloom at map end. The inventory has no eligible draws in `[3169, 3174]` or `[3178, 3179]`. The last group's bloom is later than the 3201 Screen and 3251 VoidNode grabs and is not included in them; ordering is not guaranteed for all overlays, grabs or third-party draws. This is a static ordering contract; in-game behaviour has not been verified.
 
-To opt a custom `ShaderDef` out of automatic HDR redraw, attach `<li Class="RimLumen.Core.Compat.LumenEmissiveModExtension"><EnableHdrBloom>false</EnableHdrBloom></li>`. (Note: `HdrMultiplier` on that extension class is not yet wired into redraw intensity scaling; only `EnableHdrBloom` takes effect.)
+To opt a custom `ShaderDef` out of automatic HDR redraw, attach `<li Class="RimLumen.Core.Compat.LumenEmissiveModExtension"><EnableHdrBloom>false</EnableHdrBloom></li>`. (`HdrMultiplier` was removed; writing `<hdrMultiplier>` fails Def validation. Only `EnableHdrBloom` takes effect.)
 
 ---
 
@@ -460,8 +477,8 @@ To opt a custom `ShaderDef` out of automatic HDR redraw, attach `<li Class="RimL
 
 When `Chezhou.RimUnity` is active, `RimLumen.Adapter.RimUnity` reads its exported `catalog.json`, prefab JSON (including `.json.gz`), and `.rutex` textures, automatically routing each particle node:
 
-- **Native HDR / GPU (or CPU)**: basic shapes, curves, gradients, textures, flipbooks, rate-over-time emission, and deterministic bursts.
-- **Retained on RimUnity (`L0_ExternalCpu`)**: nodes using `trails`, `subEmitters` (including sub-emitter dependencies), `collision`, `trigger`, `renderMode.Mesh`, linear `velocityOverLifetime`, `rotationOverLifetime`, curve-based `forceOverLifetime`, `lights.ratio != 1`, probabilistic bursts, or shapes not yet modeled in Core (such as non-zero-radius base cones, shells, rings, meshes, or local shape offsets).
+- **Native HDR / GPU (or CPU)**: supported basic shapes with shape-local position, rotation, and scale (TRS), curves, gradients, textures, flipbooks, rate-over-time emission, and deterministic bursts.
+- **Retained on RimUnity (`L0_ExternalCpu`)**: nodes using `trails`, `subEmitters` (including sub-emitter dependencies), `collision`, `trigger`, `renderMode.Mesh`, `renderMode.Vertical` or an unknown `renderMode`, a Linear color-space material (`material.linearColorSpace`), linear `velocityOverLifetime`, `rotationOverLifetime`, curve-based `forceOverLifetime`, any enabled `lights` module (including `ratio = 1`), probabilistic bursts, or shapes not yet modeled in Core (such as non-zero-radius base cones, shells, rings, or meshes).
 
 Callers using `RimLumenApi.Play` do not need to care which backend handles each node; a single `ILumenEffectHandle` controls both sides together.
 

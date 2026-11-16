@@ -44,11 +44,23 @@ public sealed class RimUnityPrefabTranslator
             ComponentData? particles = source.components?.SingleOrDefault(component => component.type == "RimUnity.ParticleSystem");
             ComponentData? renderer = source.components?.SingleOrDefault(component => component.type == "RimUnity.ParticleSystemRenderer");
             EmitterSpec? emitter = null;
-            PointLightSpec? light = null;
             if (particles is not null)
             {
+                ResourceData? material = null;
+                ValueData? materialRef = Member(renderer?.members, "sharedMaterial");
+                if (materialRef?.kind == "asset")
+                {
+                    material = resourceResolver(materialRef.text) ?? throw new InvalidDataException("Missing material: " + materialRef.text);
+                    if (material.type != "Material") throw new InvalidDataException("Renderer asset is not a Material: " + materialRef.text);
+                }
                 var classification = Classifier.Classify(particles, renderer);
                 var reasons = new List<string>(classification.Reasons);
+                if (string.Equals(material?.colorSpace, "Linear", StringComparison.OrdinalIgnoreCase))
+                {
+                    classification.Tier = LumenParticleTier.L0_ExternalCpu;
+                    reasons.RemoveAll(reason => reason.EndsWith("L2ParticleThreshold", StringComparison.Ordinal));
+                    reasons.Add("material.linearColorSpace");
+                }
                 if (subEmitterTargets.Contains(particles.id))
                 {
                     classification.Tier = LumenParticleTier.L0_ExternalCpu;
@@ -56,7 +68,7 @@ public sealed class RimUnityPrefabTranslator
                     reasons.Add("subEmitters.dependency");
                 }
                 if (active[i] && particles.enabled && renderer?.enabled != false && classification.Tier != LumenParticleTier.L0_ExternalCpu)
-                    emitter = ConvertEmitter(source.name, particles, renderer, classification.Tier, resourceResolver, shaderResolver, out light);
+                    emitter = ConvertEmitter(source.name, particles, renderer, classification.Tier, material, shaderResolver);
                 classifications.Add(new RimUnityNodeTranslation(i, source.id, classification.Tier, reasons));
                 ValueData? main = Member(particles.members, "main");
                 duration = MathF.Max(duration, Number(Field(main, "duration"), 5f) + CurveRange(Field(main, "startLifetime"), 5f).Max);
@@ -69,7 +81,7 @@ public sealed class RimUnityPrefabTranslator
                 LocalPosition = new Vector3(source.position[0], source.position[1], source.position[2]),
                 LocalRotation = new Quaternion(source.rotation[0], source.rotation[1], source.rotation[2], source.rotation[3]),
                 LocalScale = new Vector3(source.scale[0], source.scale[1], source.scale[2]),
-                Emitter = emitter, PointLight = light,
+                Emitter = emitter,
             };
         }
         report = new RimUnityTranslationReport
@@ -81,8 +93,7 @@ public sealed class RimUnityPrefabTranslator
     }
 
     private static EmitterSpec ConvertEmitter(string name, ComponentData particles, ComponentData? renderer,
-        LumenParticleTier tier, Func<string, ResourceData?> resourceResolver, Func<string, ShaderData?> shaderResolver,
-        out PointLightSpec? light)
+        LumenParticleTier tier, ResourceData? material, Func<string, ShaderData?> shaderResolver)
     {
         ValueData? main = Member(particles.members, "main");
         ValueData? emission = Member(particles.members, "emission");
@@ -95,18 +106,16 @@ public sealed class RimUnityPrefabTranslator
         var speed = CurveRange(Field(main, "startSpeed"), 5f);
         var size = CurveRange(Field(main, "startSize"), 1f);
         Vector4 color = ToColorGradient(Field(main, "startColor")).Stops[0].Rgba;
-        ResourceData? material = null;
         ShaderData? shader = null;
-        ValueData? materialRef = Member(renderer?.members, "sharedMaterial");
-        if (materialRef?.kind == "asset")
+        if (material is not null)
         {
-            material = resourceResolver(materialRef.text) ?? throw new InvalidDataException("Missing material: " + materialRef.text);
-            if (material.type != "Material") throw new InvalidDataException("Renderer asset is not a Material: " + materialRef.text);
             ValueData? shaderRef = Member(material.members, "shader");
             if (shaderRef?.kind == "asset")
                 shader = shaderResolver(shaderRef.text) ?? throw new InvalidDataException("Missing shader: " + shaderRef.text);
             Vector4 tint = Vector(Member(material.members, "_Color"), Vector4.One);
-            color *= ToLinearColor(tint, !string.Equals(material.colorSpace, "Linear", StringComparison.OrdinalIgnoreCase));
+            // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468, ParticleSystem.Simulation.cs:110-116:
+            // vertex factors retain stored values. Native HDR deliberately does not reproduce Color32 clipping.
+            color *= tint;
         }
         color = ExtractHdrIntensity(color, out float hdr);
         ColorGradient lifetimeColors = Enabled(colorModule) ? ToColorGradient(Field(colorModule, "color")) : ColorGradient.Constant(Vector4.One);
@@ -134,6 +143,8 @@ public sealed class RimUnityPrefabTranslator
         }
         LumenShapeKind shapeKind = LumenShapeKind.Point;
         Vector3 extents = Vector3.One;
+        Vector3 shapePosition = Vector3.Zero, shapeScale = Vector3.One;
+        Quaternion shapeRotation = Quaternion.Identity;
         if (Enabled(shape, true))
         {
             int kind = Integer(Field(shape, "shapeType"), 4);
@@ -144,23 +155,23 @@ public sealed class RimUnityPrefabTranslator
                 5 => LumenShapeKind.Box,
                 _ => throw new NotSupportedException("Unsupported particle shape: " + kind),
             };
+            Vector4 position = Vector(Field(shape, "position"), Vector4.Zero);
+            Vector4 rotation = Vector(Field(shape, "rotation"), Vector4.Zero);
             Vector4 scale = Vector(Field(shape, "scale"), Vector4.One);
-            extents = shapeKind == LumenShapeKind.Box ? new Vector3(scale.X, scale.Y, scale.Z) * 0.5f
-                : new Vector3(Number(Field(shape, "radius"), 1f));
+            shapePosition = new Vector3(position.X, position.Y, position.Z);
+            shapeScale = new Vector3(scale.X, scale.Y, scale.Z);
+            shapeRotation = global::RimUnity.Quaternion.ToNumerics(global::RimUnity.Quaternion.Euler(rotation.X, rotation.Y, rotation.Z));
+            extents = shapeKind == LumenShapeKind.Box ? new Vector3(0.5f) : new Vector3(Number(Field(shape, "radius"), 1f));
         }
-        var forces = ConvertForces(particles, tier);
-        light = null;
-        ValueData? lights = Member(particles.members, "lights");
-        if (Enabled(lights))
+        // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468, Source/RimUnity/Particles/ParticleSystem.Shapes.cs:12,84-86.
+        // Core +Y -> Unity +Z before the authored shape rotation; B * diag(sx,sz,sy) = diag(sx,sy,sz) * B.
+        // Sphere already samples XYZ isotropically; only point/box/cone need the emission-axis basis change.
+        if (shapeKind != LumenShapeKind.Sphere)
         {
-            if (Number(Field(lights, "ratio"), 1f) != 1f)
-                throw new NotSupportedException("Particle light ratio cannot be represented by PointLightSpec.");
-            float range = CurveRange(Field(lights, "range"), 1f).Max;
-            float intensity = CurveRange(Field(lights, "intensity"), 1f).Max;
-            Vector3 lightColor = new Vector3(color.X, color.Y, color.Z) * hdr;
-            float lightHdr = MathF.Max(1f, MathF.Max(lightColor.X, MathF.Max(lightColor.Y, lightColor.Z)));
-            light = new PointLightSpec(range, 0, lightColor / lightHdr, ScalarCurve.Constant(intensity * lightHdr));
+            shapeRotation *= Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2f);
+            shapeScale = new Vector3(shapeScale.X, shapeScale.Z, shapeScale.Y);
         }
+        var forces = ConvertForces(particles);
         return new EmitterSpec
         {
             Name = name, PreferredTier = tier, Duration = duration,
@@ -169,6 +180,7 @@ public sealed class RimUnityPrefabTranslator
             RateOverTime = Enabled(emission, true) ? CurveRange(Field(emission, "rateOverTime"), 10f).Max : 0,
             Bursts = Enabled(emission, true) ? ConvertBursts(Field(emission, "bursts"), duration) : Array.Empty<(float, int)>(),
             Shape = shapeKind, ShapeExtents = extents, ConeAngleDegrees = Number(Field(shape, "angle"), 25f),
+            ShapePosition = shapePosition, ShapeRotation = shapeRotation, ShapeScale = shapeScale,
             StartLifetimeMin = lifetime.Min, StartLifetimeMax = lifetime.Max,
             StartSpeedMin = speed.Min, StartSpeedMax = speed.Max, StartSizeMin = size.Min, StartSizeMax = size.Max,
             StartColor = color, HdrIntensity = hdr,
@@ -180,8 +192,9 @@ public sealed class RimUnityPrefabTranslator
             FlipbookCycles = Enabled(sheet) ? Number(Field(sheet, "cycleCount"), 1) : 1,
             BillboardMode = Integer(Member(renderer?.members, "renderMode")) switch
             {
-                1 => LumenBillboardMode.StretchedVelocity, 2 => LumenBillboardMode.Horizontal,
-                4 => LumenBillboardMode.Mesh, _ => LumenBillboardMode.Camera,
+                0 => LumenBillboardMode.Camera, 1 => LumenBillboardMode.StretchedVelocity, 2 => LumenBillboardMode.Horizontal,
+                4 => LumenBillboardMode.Mesh,
+                var mode => throw new NotSupportedException("Unsupported particle render mode: " + mode),
             },
             VelocityStretchFactor = Number(Member(renderer?.members, "velocityScale")),
             LengthScale = Number(Member(renderer?.members, "lengthScale"), 2f), SoftParticleFadeDistance = softFade,
@@ -208,7 +221,7 @@ public sealed class RimUnityPrefabTranslator
         return result.OrderBy(burst => burst.Item1).ToArray();
     }
 
-    private static ForceFieldSpec[] ConvertForces(ComponentData particles, LumenParticleTier tier)
+    private static ForceFieldSpec[] ConvertForces(ComponentData particles)
     {
         var forces = new List<ForceFieldSpec>();
         ValueData? main = Member(particles.members, "main");
@@ -237,7 +250,7 @@ public sealed class RimUnityPrefabTranslator
             float strength = axis.Length();
             if (strength != 0 || radial != 0)
                 forces.Add(new ForceFieldSpec(ForceFieldKind.Vortex, strength > 0 ? axis / strength : Vector3.UnitY,
-                    new Vector3(tier == LumenParticleTier.L2_GpuCompute ? -radial : -radial / (strength > 0 ? strength : 1), 0, 0),
+                    new Vector3(-radial, 0, 0),
                     0, strength > 0 ? strength : 1));
         }
         ValueData? noise = Member(particles.members, "noise");

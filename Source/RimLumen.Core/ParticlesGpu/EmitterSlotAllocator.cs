@@ -3,14 +3,14 @@ using System.Collections.Generic;
 
 namespace RimLumen.Core.ParticlesGpu;
 
-public readonly record struct EmitterSlotRange(int Offset, int Capacity);
+internal readonly record struct EmitterSlotRange(int Offset, int Capacity);
 
 public sealed class ParticlePoolExhaustedException : InvalidOperationException
 {
     public ParticlePoolExhaustedException(string message) : base(message) { }
 }
 
-public sealed class EmitterSlotAllocator
+internal sealed class EmitterSlotAllocator
 {
     // 1M slots * 64 bytes/particle = 64 MB device-local SSBO (under half of Vulkan 1.2's 128 MB minimum
     // maxStorageBufferRange) and stays exact in IEEE-754 float slot fields (< 2^24).

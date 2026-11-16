@@ -64,7 +64,8 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 - 键名采用 camelCase，解析时**大小写不敏感**，允许 `//` 注释和尾逗号。
 - **未知键名会直接报错**，用于尽早暴露拼写错误。
 - 向量支持 `[x, y, z]`、`{ "x": ..., "y": ..., "z": ... }` 或单个数字（等比 `x = y = z`）。
-- 颜色为线性 RGBA，支持 `[r, g, b, a]` 或 `[r, g, b]`（此时 `a = 1`）。
+- 颜色使用原版场景的存储编码，不做 sRGB 转换；粒子 RGB 的 `1.0` 为原版满亮度，`>1` 可用于 HDR，alpha 表示覆盖度，`hdrIntensity` 只缩放 RGB；点光颜色 RGB 必须在 `[0,1]` 内。支持 `[r, g, b, a]`、`[r, g, b]`（此时 `a = 1`）或 `{ "r": ..., "g": ..., "b": ..., "a": ... }`。
+- 已移除或改名的旧键会被拒绝，错误信息指出新键或移除状态：`startColorLinear` 改名为 `startColor`；渐变停靠点 `rgbaLinear`、点光 `colorLinear` / `colorRgb` 改名为 `color`；`bloomWeight` 与 `hdrMultiplier` 已移除。不提供兼容别名。
 - 枚举支持名称字符串或整数。
 - `startLifetime`、`startSpeed`、`startSize` 写单个数字时等价于 `Min = Max`，也可以分开写 `...Min` / `...Max`。
 
@@ -100,7 +101,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
         "startSpeedMax": 0,
         "startSizeMin": 1.0,
         "startSizeMax": 1.0,
-        "startColorLinear": [1, 1, 1, 1],
+        "startColor": [1, 1, 1, 1],
         "sizeOverLifetime": [[0, 1], [1, 0]],
         "colorOverLifetime": [[0, [1, 1, 1, 1]], [1, [1, 0.3, 0.1, 0]]],
         "forceFields": [
@@ -123,13 +124,12 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
         "lengthScale": 1,
         "softParticleFadeDistance": 0.5,
         "hdrIntensity": 1,
-        "bloomWeight": 1,
         "killBelowFloor": false
       },
       "pointLight": {
         "glowRadius": 5,
         "overlightRadius": 0,
-        "colorRgb": [1, 1, 1],
+        "color": [1, 1, 1],
         "intensity": 1,
         "intensityOverTime": [[0, 1], [1, 0]]
       }
@@ -148,10 +148,25 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 
 - **根节点**：`nodes` 必须非空；`defaultDuration` 必须有限且 `>= 0`。
 - **节点层级（`EffectNodeSpec`）**：`parentIndex` 必须为 `-1`（挂在根节点下）或严格小于当前节点索引 `[0, i)`，以此从结构上禁止循环父子引用。若不写 `localRotation`（JSON 支持四元数或 `[x,y,z,w]`），可用 `localYawDegrees` 绕世界 `+Y` 旋转。
-- **曲线（`sizeOverLifetime` / `intensityOverTime`）**：支持三种写法——单数值（常量）、数组 `[[time, value], ...]`（时间必须非递减）、对象 `{ "keys": [...], "multiplier": 1 }`。关键帧还可选带切线 `[time, value, inTangent, outTangent]`。
-- **渐变（`colorOverLifetime`）**：支持颜色数组（单色常量）或停靠点数组 `[[time, [r,g,b,a]], ...]` 或对象 `{ "stops": [{ "time": 0, "rgbaLinear": [r,g,b,a] }] }`，同样要求 `time` 非递减。
-- **`pointLight`**：JSON 下颜色支持 `colorRgb` 或 `colorLinear`（二者均取线性 RGB 分量），半径键为 `glowRadius` 与 `overlightRadius`（单位：地图格）。
+- **标量曲线（`sizeOverLifetime` / `intensityOverTime`）**：可写为单数值（常量）、数组 `[[time, value], ...]`，或对象 `{ "keys": [...], "multiplier": 1 }`。关键帧也可写为 `[time, value, inTangent, outTangent]`。时间必须有限且非递减；粒子曲线的时间是归一化寿命 `[0,1]`，点光曲线的时间是从节点激活起算的秒数，且不小于 0。
+
+  值和切线必须有限；切线是每单位曲线时间的变化率。不同时间之间采用三次 Hermite 插值，结果再乘以 `multiplier`。
+
+  时间可以重复两次或更多次。若所有关键帧时间相同，任意时刻均取最后一个值。否则，`t <= first` 取首值，`t >= last` 取末值；在内部重复时间处，左极限是该组第一个值，恰好到达时取该组最后一个值，此后从该值向下一关键帧插值。首个时间恰好重复时仍取首值，因此不能将整个规则称为右连续。
+
+  例如 `[[0, 0], [0.5, 1], [0.5, 2], [0.5, 3], [1, 4]]`：接近 `0.5` 的左极限为 `1`，在 `0.5` 时为 `3`，随后从 `3` 向 `4` 插值。两个重复帧同样适用该规则。来源：[RimUnity `AnimationCurve.cs:23,30-35`，固定版本 `45ca90987f7d3721715b45c021cab986ee14c468`](https://github.com/chezhou9413/RimUnity/blob/45ca90987f7d3721715b45c021cab986ee14c468/Source/RimUnity/Animation/AnimationCurve.cs#L23-L35)。
+
+  粒子尺寸曲线由 L1 和 L2 使用相同的 64 点查找表（LUT）：采样点为 `i/63`（`i = 0…63`），包含两端，再对相邻样本插值。阶跃可能在宽度为 `1/63` 的采样区间内被平滑，不能保证精确保留。点光曲线按秒直接求值，不使用该粒子查找表。
+- **渐变（`colorOverLifetime`）**：支持颜色数组（单色常量）或停靠点数组 `[[time, [r,g,b,a]], ...]` 或对象 `{ "stops": [{ "time": 0, "color": [r,g,b,a] }] }`，要求 `time` 严格递增。
+- **`pointLight`**：JSON 下颜色键为 `color`（RGBA），半径键为 `glowRadius` 与 `overlightRadius`（单位：地图格）。
+- **力场 `strength`**：JSON、XML 与 C# 均须显式提供；省略时拒绝资产，不使用默认值。
 - **`timelineEvents` / `states` / `initialState` / `stopState`**：见下一节「状态机」。
+- **粒子密度设置**：公开 setter `RimLumenRenderHost.ParticleDensityScale` 接受范围为 `0.1`～`1.0`；范围外的有限值静默截到边界，不记录日志，NaN 和正负无穷抛出 `ArgumentOutOfRangeException`。设置滑条连续取值，显示时四舍五入为整数百分比。密度 `1` 精确；截断后的密度为 `d` 时，脉冲有效密度为 `floor(d * 65536) / 65536`。
+- **粒子密度与脉冲**：每个发射器保存独立的 `Int64` 累积量 `a`，初值为 `0`，单位为 `1/65536` 粒子。先计算 `q = floor(density * 65536)`；每次非零脉冲依次计算 `a += count * q`、`n = ceil(a / 65536)`（用整数运算）和 `a -= n * 65536`。`n` 是本次请求预算，`a <= 0` 且可以为负。有效密度为 `floor(density * 65536) / 65536`，永不高于设定值；密度为 `1` 时精确，不使用 `0.999` 阈值。
+
+  密度为 `0.25` 时，连续四次 `count = 1` 的预算为 `1, 0, 0, 0`；连续八次总计为 `2`。连续两次 `count = 7` 的预算为 `2, 2`。密度为 `0.1` 时，`q = 6553`，十次 `count = 1` 累计 `65530`，总请求为 `1`；密度为 `0.2` 时，五次 `count = 1` 的总请求为 `1`。累计请求预算按有效密度计算，为 `ceil(sum(count * q) / 65536)`。预算不是实际粒子数：容量或空闲槽位不足时，丢弃的请求不会补发。
+
+  脉冲在 CPU 侧入队时只计算一次，GPU Capture 不再缩放。`Play`、显式 `Restart` 和 `GoTo` 状态重新进入会将 `a` 重置为 `0`；循环回绕不会重置。例如，密度为 `0.25` 时，每个循环一次 `count = 1`，八个循环的总请求为 `2`。连续发射率使用独立的 `double` 小数余量，向下取整并保留余数；运行时 `rate` 倍率不缩放脉冲。
 
 ### 4. 状态机（`states`）
 
@@ -248,7 +263,7 @@ tornado.Stop();                                      // 进入 collapse，播完
 | `1.0` | `spawn` | `touchdown` 触发 `Notify("touchdown")` |
 | `1.5` | `sustain` | 到时进入 `next`：`StateChanged("sustain")`；`funnel`、`debris` 从头开始发射计划，`dust` 停止新发射 |
 | `2.0`、`4.0`…… | `sustain` | 每个 2s 周期的第 0.5s 触发 `gust`，向 `debris` 补发 40 粒 |
-| 调用 `Stop()` | `collapse` | `StateChanged("collapse")`；`collapse` 喷出 400 粒，漏斗与碎片停止新发射；此后 `GoTo` 被忽略 |
+| 调用 `Stop()` | `collapse` | `StateChanged("collapse")`；`collapse` 喷出 400 粒，漏斗与碎片停止新发射；此后指向已声明状态的 `GoTo` 被忽略；未声明状态仍报错 |
 | `Stop` 后 `0.3s` | `collapse` | `Notify("impact")` |
 | `Stop` 后 `1.2s` | 淡出 | 停止新发射，点光淡出，粒子跑完寿命 |
 | 最后一粒消失 | 已结束 | `IsAlive == false`，触发 `Finished` |
@@ -261,8 +276,10 @@ tornado.Stop();                                      // 进入 collapse，播完
 
 1. **ID**：使用 `<defName>`，同样会同时注册裸短名与 `<packageId>:<defName>`。
 2. **节点字段**：额外提供 `<heightOffset>`（会累加到 `localPosition.y`），`localScale` 为单个浮点标量，不提供 `localRotation` 四元数（用 `<localYawDegrees>`）。
-3. **点光键名**：使用 `<radiusCells>`（对应 JSON 的 `glowRadius`）、`<overlightRadius>`、`<colorLinear>`（环世界 `Color` 语法 `(r, g, b, a)`）、`<intensity>` 与 `<intensityOverTime>`（`<keys>` 由 `<li><time>..</time><value>..</value></li>` 组成）。
+3. **点光键名**：使用 `<radiusCells>`（对应 JSON 的 `glowRadius`）、`<overlightRadius>`、`<color>`（环世界 `Color` 语法 `(r, g, b, a)`）、`<intensity>` 与 `<intensityOverTime>`（`<keys>` 由 `<li><time>..</time><value>..</value></li>` 组成）。
 4. **列表字段**：`<states>`、`<timelineEvents>` 与状态的 `<nodes>` 用 `<li>` 列表；状态字段为 `<name>`、`<nodes>`、`<duration>`、`<loop>`、`<next>`，事件字段为 `<time>`、`<eventName>`、`<targetNodeIndex>`、`<state>`、`<notify>`；根上另有 `<defaultDuration>`、`<initialState>`、`<stopState>`。含义与默认值同上一节「状态机」。
+
+旧键同样被拒绝：`<startColorLinear>` 改名为 `<startColor>`；渐变停靠点 `<rgbaLinear>`、点光 `<colorLinear>` / `<colorRgb>` 改名为 `<color>`；`<bloomWeight>` 与 `<hdrMultiplier>` 已移除。
 
 ```xml
 <Defs>
@@ -298,7 +315,7 @@ tornado.Stop();                                      // 进入 collapse，播完
           </forceFields>
         </emitter>
         <pointLight>
-          <colorLinear>(1, 0.55, 0.15, 1)</colorLinear>
+          <color>(1, 0.55, 0.15, 1)</color>
           <radiusCells>6</radiusCells>
           <intensity>1.4</intensity>
         </pointLight>
@@ -404,7 +421,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 });
 ```
 
-- 如果 `EffectId` 不存在，`Play` 不会抛异常，而是返回一个 `IsAlive == false` 的静默空句柄，所有调用安全无副作用。
+- 如果 `EffectId` 不存在，`Play` 返回 `IsAlive == false` 的空句柄，句柄方法无效果；每个服务实例对同一 ID 只记录一次 `Log.Warning`。资产存在但被校验拒绝时也返回空句柄，沿用注册表的校验错误，不追加“未知 ID”警告。
 
 ### 3. 句柄控制（`ILumenEffectHandle`）
 
@@ -412,11 +429,11 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 | --- | --- |
 | `bool IsAlive` | 播放中或淡出排空期间为 `true`，全部粒子与点光清理完毕后变为 `false`。 |
 | `void Trigger(string name)` | 立即触发所有同名时间轴事件（不论所属状态与时间：目标节点脉冲、`Notify`），并让同名节点从头开始发射计划，直到下一次进入状态时重新决定；不改变当前状态。名字无匹配时无效果；淡出后与死亡后无效果。L1 与 L2 行为一致。 |
-| `void GoTo(string stateName)` | 立即进入该状态（重入当前状态即重启它）。资产未声明该状态时抛 `ArgumentException`；`Stop(true)` 之后、淡出与死亡后无效果。 |
+| `void GoTo(string stateName)` | 立即进入该状态（重入当前状态即重启它）。对绑定资产的句柄，未声明的状态名始终抛 `ArgumentException`，即使已调用 `Stop(true)`、正在排空或已经死亡；声明过的状态只在播放中且未调用 `Stop(true)` 时进入，否则无效果。`Stop(false)` 立即销毁；空句柄的 `GoTo` 始终无效果。 |
 | `event Action<string> Notify` | `notify: true` 的时间轴事件触发时回调事件名（按时间触发或经 `Trigger`）。 |
 | `event Action<string> StateChanged` | 每次进入声明过的状态时回调状态名，包括初始状态。 |
 | `event Action Finished` | `IsAlive` 变为 `false` 时回调一次，无论原因（播完、`Stop`、`Dispose`）。 |
-| `void SetParam(string name, float value)` | 实时修改运行时参数。当前内置三个立即生效的参数名：`intensity`（缩放粒子和点光亮度）、`rate`（缩放 L1 发射速率）、`scale`（乘算根节点缩放）。其他名字会被记录下来但不会影响模拟。 |
+| `void SetParam(string name, float value)` | 实时修改运行时参数。当前内置三个立即生效的参数名：`intensity`（缩放粒子和点光亮度）、`rate`（只缩放 L1 与 L2 的连续发射速率，不缩放 `bursts`；须为有限的非负值，否则抛 `ArgumentOutOfRangeException`；0 只暂停连续发射）、`scale`（乘算根节点缩放）。其他名字会被记录下来但不会影响模拟。 |
 | `void Stop(bool allowFadeOut = true)` | `true` 时：资产有 `stopState` 则进入它并播完；随后停止新发射、点光在 `0.25s` 内淡出、空中粒子跑完寿命后回收。没有 `stopState` 时立即开始淡出。`false` 时立刻切断所有粒子与点光。重复调用无效果。 |
 | `void Dispose()` | 等价于 `Stop(false)`，幂等。在 `Thing.DeSpawn` 或地图销毁时务必调用，避免长期持有句柄。 |
 
@@ -432,7 +449,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 
 1. 先查 `LumenTextureRegistry.Register(string key, Waylith.Rendering.Texture texture)` 显式注册过的贴图；
 2. 未命中时，调用游戏原版 `ContentFinder<UnityEngine.Texture2D>.Get(key, reportFailure: false)` 加载模组 `Textures/` 目录下的图片（例如 `"RimLumen/Effects/Spark"`）；
-3. 仍找不到时，退回程序化默认圆斑，并且每个缺失的 `key` 只在日志打印一次警告。
+3. 仍找不到时，退回程序化默认圆斑，并且每个缺失的 `key` 只在日志打印一次警告。未指定 `textureKey` 时也使用程序化圆斑。其 alpha 为 `max(0, 1 - r²)²`，`r` 为片元内的径向坐标；它与序列帧 atlas UV 独立，不随帧变化。
 
 > 不要在多线程或渲染回调里调用贴图注册。
 
@@ -452,7 +469,7 @@ RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled
 
 已安装原版及 DLC 的静态清单中，3155 仪式蜡烛在 3169 组增强，位于天气雾 3169 和太阳阴影 3170 之前；3177 轨道 / 电力光束及端点在 3178 组增强，位于战争迷雾 3175 之后、Gravship 抓取及 Darkness 3180 之前；3181 重力场、3185 引擎、3201 推进火焰和 4000 Noctol 眼睛在地图末尾增强。清单中 `[3169, 3174]` 和 `[3178, 3179]` 没有符合条件的绘制。末组 Bloom 晚于 3201 Screen 和 3251 VoidNode 抓取，因此不包含在这两次抓取中；不保证所有覆盖层、抓取或第三方绘制顺序。这些是静态顺序契约，实机表现尚未验证。
 
-如果在自定义 `ShaderDef` 上不想被自动重画增强，可以挂载 `<li Class="RimLumen.Core.Compat.LumenEmissiveModExtension"><EnableHdrBloom>false</EnableHdrBloom></li>` 进行逐 `ShaderDef` 排除。（注：该扩展类中的 `HdrMultiplier` 字段当前尚未接入重画强度调节，仅 `EnableHdrBloom` 生效。）
+如果在自定义 `ShaderDef` 上不想被自动重画增强，可以挂载 `<li Class="RimLumen.Core.Compat.LumenEmissiveModExtension"><EnableHdrBloom>false</EnableHdrBloom></li>` 进行逐 `ShaderDef` 排除。（`HdrMultiplier` 字段已移除，写 `<hdrMultiplier>` 会在 Def 校验时报错；只有 `EnableHdrBloom` 生效。）
 
 ---
 
@@ -460,8 +477,8 @@ RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled
 
 当游戏同时启用 `Chezhou.RimUnity` 时，`RimLumen.Adapter.RimUnity` 会读取其导出的 `catalog.json`、预制体 JSON（含 `.json.gz`）和 `.rutex` 贴图，并将粒子节点按功能自动分流：
 
-- **转入原生 HDR / GPU（或 CPU）**：基础形状、曲线、渐变、贴图、序列帧、周期发射及确定性脉冲。
-- **保留在原 RimUnity 播放器混播（`L0_ExternalCpu`）**：节点启用了 `trails`、`subEmitters`（含子发射器依赖）、`collision`、`trigger`、`renderMode.Mesh`、线性 `velocityOverLifetime`、`rotationOverLifetime`、变化曲线 `forceOverLifetime`、非 `1` 的 `lights.ratio`、概率脉冲，或使用了核心暂未建模的形状（如非零底面半径圆锥、球壳、圆环、网格形状或局部形状偏移）。
+- **转入原生 HDR / GPU（或 CPU）**：受支持的基础形状及其形状局部位置、旋转、缩放（TRS）、曲线、渐变、贴图、序列帧、周期发射及确定性脉冲。
+- **保留在原 RimUnity 播放器混播（`L0_ExternalCpu`）**：节点启用了 `trails`、`subEmitters`（含子发射器依赖）、`collision`、`trigger`、`renderMode.Mesh`、`renderMode.Vertical` 或未知 `renderMode`、Linear 色彩空间材质（`material.linearColorSpace`）、线性 `velocityOverLifetime`、`rotationOverLifetime`、变化曲线 `forceOverLifetime`、任何启用的 `lights` 模块（含 `ratio = 1`）、概率脉冲，或使用了核心暂未建模的形状（如非零底面半径圆锥、球壳、圆环或网格形状）。
 
 上层调用 `RimLumenApi.Play` 时无需感知背后走哪一路，同一个 `ILumenEffectHandle` 会同时接管两端生命周期。
 

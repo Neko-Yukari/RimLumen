@@ -10,7 +10,7 @@ using Waylith.Rendering.Compute;
 namespace RimLumen.Core.ParticlesGpu;
 
 // Lives under Showcase/ so the release build strips it with the rest of the benchmark harness.
-public sealed partial class LumenGpuParticleEngine
+internal sealed partial class LumenGpuParticleEngine
 {
     // Requires: main thread. Benchmark-only synchronous readback; the normal simulation path never calls it.
     // Ensures: counts particles whose lifetime slot is occupied across the engine's allocated ranges.

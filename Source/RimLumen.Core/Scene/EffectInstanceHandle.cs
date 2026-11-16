@@ -85,7 +85,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                 if (spec.PreferredTier == LumenParticleTier.L2_GpuCompute && engine is not null)
                 {
                     gpuIds[i] = engine.CreateInstance(spec, nodeWorldMatrices[i], request.MapIndex, request.RealTime);
-                    if (!initialNodes[i]) engine.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], false);
+                    if (!initialNodes[i]) engine.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], false, 1f, 1f);
                 }
                 else
                 {
@@ -169,12 +169,15 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         if (state == PlaybackState.Playing && !stopRequested) EnterState(index);
     }
 
-    // Requires: name is non-empty; value is finite.
+    // Requires: name is non-empty; values other than rate are finite.
+    // Ensures: rate accepts only finite nonnegative values; otherwise throws ArgumentOutOfRangeException.
     // Ensures: "intensity" scales light colour and particle vertex colour, "rate" scales emission rate,
     //          "scale" multiplies the root scale. Unknown names are recorded and retrievable through
     //          TryGetParam without affecting simulation. Safe no-op once the handle is dead.
     public void SetParam(string name, float value)
     {
+        if (name == "rate" && (!float.IsFinite(value) || value < 0f))
+            throw new ArgumentOutOfRangeException(nameof(value), value, "Rate must be finite and nonnegative.");
         if (IsAlive) parameters[name] = value;
     }
 
@@ -182,7 +185,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     //          current state) and lets it play to its end, ignoring later GoTo calls; the effect then drains.
     //          Without a StopState the effect drains at once. Draining stops new emission, fades the point lights
     //          out over LightFadeSeconds and lets live particles finish; the handle becomes dead once nothing is
-    //          left: an L1 emitter once its live particle count reaches 0, an L2 emitter once
+    //          left: an L1 emitter once its accepted pulses and live particles finish, an L2 emitter once
     //          ILumenGpuParticleEngine.IsInstanceAlive turns false after DestroyInstance(id, false).
     //          allowFadeOut == false tears down emitters and lights now, also while draining. Repeated calls are no-ops.
     public void Stop(bool allowFadeOut = true)
@@ -240,12 +243,12 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                 {
                     owner.Simulator.SetEmitterTransform(cpuIds[i], nodeWorldMatrices[i]);
                     owner.Simulator.SetEmitterParams(cpuIds[i], emitting, parameters["rate"], intensity);
-                    if (state == PlaybackState.Draining && owner.Simulator.GetLiveParticleCount(cpuIds[i]) == 0) cpuIds[i] = -1;
+                    if (state == PlaybackState.Draining && !owner.Simulator.IsEmitterAlive(cpuIds[i])) cpuIds[i] = -1;
                 }
                 if (gpuIds[i] >= 0)
                 {
                     if (state == PlaybackState.Draining && !engine!.IsInstanceAlive(gpuIds[i])) gpuIds[i] = -1;
-                    else engine!.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], emitting, intensity);
+                    else engine!.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], emitting, intensity, parameters["rate"]);
                 }
             }
             UpdateLights(intensity);
@@ -353,7 +356,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         nodeActive[index] = false;
         nodeDeactivatedAt[index] = playbackTime;
         if (cpuIds[index] >= 0) owner.Simulator.SetEmitterParams(cpuIds[index], false, parameters["rate"], parameters["intensity"]);
-        if (gpuIds[index] >= 0) engine!.UpdateInstance(gpuIds[index], nodeWorldMatrices[index], false, parameters["intensity"]);
+        if (gpuIds[index] >= 0) engine!.UpdateInstance(gpuIds[index], nodeWorldMatrices[index], false, parameters["intensity"], parameters["rate"]);
     }
 
     private void BeginDrain()
@@ -366,7 +369,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             if (cpuIds[i] >= 0)
             {
                 owner.Simulator.ReleaseEmitter(cpuIds[i], immediate: false);
-                if (owner.Simulator.GetLiveParticleCount(cpuIds[i]) == 0) cpuIds[i] = -1;
+                if (!owner.Simulator.IsEmitterAlive(cpuIds[i])) cpuIds[i] = -1;
             }
             if (gpuIds[i] >= 0) engine!.DestroyInstance(gpuIds[i], immediate: false);
         }

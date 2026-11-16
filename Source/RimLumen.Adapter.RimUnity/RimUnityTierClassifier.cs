@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Numerics;
 using RimLumen.Core.Contracts;
 using RimUnity.Serialization;
 using static RimLumen.Adapter.RimUnity.RimUnityValueConversion;
@@ -21,7 +20,10 @@ public sealed class RimUnityTierClassifier
         var reasons = new List<string>();
         foreach (string module in new[] { "trails", "subEmitters", "collision", "trigger" })
             if (Enabled(Member(particleSystem.members, module))) reasons.Add(module);
-        if (Integer(Member(renderer?.members, "renderMode")) == 4) reasons.Add("renderMode.Mesh");
+        int renderMode = Integer(Member(renderer?.members, "renderMode"));
+        if (renderMode == 4) reasons.Add("renderMode.Mesh");
+        else if (renderMode == 3) reasons.Add("renderMode.Vertical");
+        else if (renderMode is not (0 or 1 or 2)) reasons.Add("renderMode." + renderMode);
         ValueData? velocity = Member(particleSystem.members, "velocityOverLifetime");
         if (Enabled(velocity) && (Nonzero(Field(velocity, "x")) || Nonzero(Field(velocity, "y")) || Nonzero(Field(velocity, "z"))))
             reasons.Add("velocityOverLifetime.linear");
@@ -30,7 +32,7 @@ public sealed class RimUnityTierClassifier
         if (Enabled(force) && (Varying(Field(force, "x")) || Varying(Field(force, "y")) || Varying(Field(force, "z"))))
             reasons.Add("forceOverLifetime.curve");
         ValueData? lights = Member(particleSystem.members, "lights");
-        if (Enabled(lights) && Number(Field(lights, "ratio"), 1f) != 1f) reasons.Add("lights.ratio");
+        if (Enabled(lights)) reasons.Add("lights.perParticle");
 
         ValueData? main = Member(particleSystem.members, "main");
         ValueData? emission = Member(particleSystem.members, "emission");
@@ -48,25 +50,19 @@ public sealed class RimUnityTierClassifier
                     maxBurst = MathF.Max(maxBurst, CurveRange(Field(burst, "count"), Number(Field(burst, "maxCount"))).Max);
             }
         bool gpu = maxParticles >= L2ParticleThreshold || rate * maxLifetime + maxBurst >= L2ParticleThreshold;
-        AddShapeReasons(Member(particleSystem.members, "shape"), main, gpu, reasons);
+        AddShapeReasons(Member(particleSystem.members, "shape"), reasons);
         if (reasons.Count != 0) return (LumenParticleTier.L0_ExternalCpu, reasons);
         if (maxParticles >= L2ParticleThreshold) reasons.Add("maxParticles >= L2ParticleThreshold");
         if (rate * maxLifetime + maxBurst >= L2ParticleThreshold) reasons.Add("peakConcurrent >= L2ParticleThreshold");
         return (gpu ? LumenParticleTier.L2_GpuCompute : LumenParticleTier.L1_NativeCpu, reasons);
     }
 
-    private static void AddShapeReasons(ValueData? shape, ValueData? main, bool gpu, List<string> reasons)
+    private static void AddShapeReasons(ValueData? shape, List<string> reasons)
     {
         bool enabled = Enabled(shape, true);
         int kind = enabled ? Integer(Field(shape, "shapeType"), 4) : -1;
         if (enabled)
         {
-            Vector4 position = Vector(Field(shape, "position"), Vector4.Zero);
-            Vector4 rotation = Vector(Field(shape, "rotation"), Vector4.Zero);
-            Vector4 scale = Vector(Field(shape, "scale"), Vector4.One);
-            // Box extents preserve per-axis scale. Other native shapes have no independent shape-local transform.
-            if (position != Vector4.Zero || rotation != Vector4.Zero || (kind != 5 && scale != Vector4.One))
-                reasons.Add("shape.localTransform");
             if (kind is 4 or 7 or 8 or 9 && Number(Field(shape, "radius"), 1f) != 0)
                 reasons.Add("shape.coneRadius");
             if (kind is 10 or 11) reasons.Add("shape.circlePlane");
@@ -92,15 +88,6 @@ public sealed class RimUnityTierClassifier
             if (Boolean(Field(shape, "alignToDirection"))) reasons.Add("shape.alignToDirection");
             if (Field(shape, "texture") is { kind: not "null" }) reasons.Add("shape.texture");
         }
-        // Core GPU defaults to +Y for points/boxes/cones; Unity and the CPU path use +Z.
-        if (gpu && kind is -1 or 4 or 5 && NonzeroWithDefault(Field(main, "startSpeed"), 5f))
-            reasons.Add("shape.directionAxis");
-    }
-
-    private static bool NonzeroWithDefault(ValueData? value, float fallback)
-    {
-        var range = CurveRange(value, fallback);
-        return range.Min != 0 || range.Max != 0;
     }
 
     private static bool Nonzero(ValueData? value)

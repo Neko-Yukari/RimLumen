@@ -28,7 +28,8 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
     {
         new(VertexAttributeSemantic.Position, VertexAttributeFormat.Float32, 3, 0, 0),
         new(VertexAttributeSemantic.TexCoord0, VertexAttributeFormat.Float32, 2, 0, 12),
-        new(VertexAttributeSemantic.Color, VertexAttributeFormat.Float32, 4, 0, 20)
+        new(VertexAttributeSemantic.Color, VertexAttributeFormat.Float32, 4, 0, 20),
+        new(VertexAttributeSemantic.TexCoord1, VertexAttributeFormat.Float32, 2, 0, 36)
     };
     private static readonly int DrawPropertyId = Shader.PropertyToID("_LumenDraw");
     private static readonly int DepthPropertyId = Shader.PropertyToID("_LumenDepth");

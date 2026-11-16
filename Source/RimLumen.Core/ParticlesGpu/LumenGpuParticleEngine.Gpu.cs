@@ -15,7 +15,7 @@ using Waylith.Rendering.Compute;
 
 namespace RimLumen.Core.ParticlesGpu;
 
-public sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
+internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
 {
     private readonly HashSet<string> warnedTextures = new(StringComparer.Ordinal);
     private readonly ParticleFrameQueue pendingFrames = new();

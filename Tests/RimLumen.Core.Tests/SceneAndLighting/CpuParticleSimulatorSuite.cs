@@ -46,14 +46,15 @@ public static class CpuParticleSimulatorSuite
         Step(simulator, 0.25f);
         Check(simulator.GetLiveParticleCount(id) == 3, "Remainder emits two next frame");
         Close(0.25f, simulator.LiveParticles[0].Age);
-        Close(0.5f, simulator.LiveParticles[0].Position.Z);
+        Close(0.5f, simulator.LiveParticles[0].Position.Y);
         Close(0f, simulator.LiveParticles[1].Age);
         Step(simulator, 0.25f);
         Check(simulator.LiveParticleCount == 4, "Third frame emits one");
         Step(simulator, 0.25f);
         Check(simulator.LiveParticleCount == 5, "Fourth frame capped at five");
         simulator.EmitBurst(id, 100);
-        Check(simulator.LiveParticleCount == 5, "Explicit burst observes cap");
+        Step(simulator, 0f);
+        Check(simulator.LiveParticleCount == 5, "Explicit burst observes cap after capture admission");
         simulator.ReleaseEmitter(id, true);
         int second = simulator.AcquireEmitter(new EmitterSpec { Name = "reuse", MaxParticles = 8 }, Matrix4x4.Identity);
         simulator.EmitBurst(second, 8);
@@ -232,6 +233,8 @@ public static class CpuParticleSimulatorSuite
             ForceFields = new[] { new ForceFieldSpec(ForceFieldKind.Vortex, Vector3.UnitY, Vector3.Zero, 0f, 2f) },
         }, Matrix4x4.CreateTranslation(1f, 0f, 0f), false);
         simulator.EmitBurst(id, 1);
+        Step(simulator, 0f);
+        simulator.SetEmitterTransform(id, Matrix4x4.Identity);
         Step(simulator, 0.5f);
         Vector(new Vector3(1f, 0f, -0.5f), simulator.LiveParticles[0].Position);
         Vector(new Vector3(0f, 0f, -1f), simulator.LiveParticles[0].Velocity);
@@ -250,13 +253,16 @@ public static class CpuParticleSimulatorSuite
         int outside = simulator.AcquireEmitter(spec, Matrix4x4.CreateTranslation(3f, 0f, 0f), false);
         simulator.EmitBurst(inside, 1);
         simulator.EmitBurst(outside, 1);
+        Step(simulator, 0f);
+        simulator.SetEmitterTransform(inside, Matrix4x4.Identity);
+        simulator.SetEmitterTransform(outside, Matrix4x4.Identity);
         Step(simulator, 0.5f);
         Vector(new Vector3(0.5f, 0f, 0f), simulator.LiveParticles[0].Position);
         Vector(new Vector3(3f, 0f, 0f), simulator.LiveParticles[1].Position);
     }
 
     [LumenFact]
-    public static void GravityDragIsAppliedBeforePositionAndInFieldOrder()
+    public static void GravityDragSumsAccelerationAndDragBeforePosition()
     {
         var simulator = new CpuParticleSimulator();
         int id = simulator.AcquireEmitter(new EmitterSpec
@@ -265,14 +271,15 @@ public static class CpuParticleSimulatorSuite
             StartSpeedMin = 4f, StartSpeedMax = 4f,
             ForceFields = new[]
             {
-                new ForceFieldSpec(ForceFieldKind.GravityDrag, Vector3.Zero, new Vector3(8f, 1f, 0f), 0f, 0f),
-                new ForceFieldSpec(ForceFieldKind.GravityDrag, Vector3.Zero, new Vector3(2f, 0f, 0f), 0f, 0f),
+                new ForceFieldSpec(ForceFieldKind.GravityDrag, new Vector3(0f, -8f, 0f), new Vector3(1f, 0f, 0f), 0f, 1f),
+                new ForceFieldSpec(ForceFieldKind.GravityDrag, new Vector3(0f, -2f, 0f), new Vector3(1f, 0f, 0f), 0f, 1f),
             },
         }, Matrix4x4.Identity, false);
         simulator.EmitBurst(id, 1);
+        Step(simulator, 0f);
         Step(simulator, 0.5f);
-        Vector(new Vector3(0f, -3f, 2f), simulator.LiveParticles[0].Velocity);
-        Vector(new Vector3(0f, -1.5f, 1f), simulator.LiveParticles[0].Position);
+        Vector(new Vector3(0f, -0.36787945f, 0f), simulator.LiveParticles[0].Velocity);
+        Vector(new Vector3(0f, -0.18393973f, 0f), simulator.LiveParticles[0].Position);
     }
 
     [LumenFact]
@@ -289,6 +296,7 @@ public static class CpuParticleSimulatorSuite
             },
         }, Matrix4x4.Identity, false);
         simulator.EmitBurst(id, 1);
+        Step(simulator, 0f);
         float dt = 0.5f;
         Step(simulator, dt);
         Vector3 expectedVel = new Vector3(4f, -19.62f, -2f) * dt * MathF.Exp(-0.25f * dt);
@@ -302,6 +310,7 @@ public static class CpuParticleSimulatorSuite
         var simulator = new CpuParticleSimulator();
         int id = simulator.AcquireEmitter(new EmitterSpec { Name = "drain", RateOverTime = 8f }, Matrix4x4.Identity);
         simulator.EmitBurst(id, 1);
+        Step(simulator, 0f);
         simulator.ReleaseEmitter(id, false);
         Check(simulator.HasActiveWork && simulator.ActiveEmitterCount == 1, "Drain remains active");
         Step(simulator, 0.5f);
@@ -356,6 +365,7 @@ public static class CpuParticleSimulatorSuite
         int cone = simulator.AcquireEmitter(new EmitterSpec { Name = "cone", Shape = LumenShapeKind.Cone, ConeAngleDegrees = 60f, StartSpeedMin = 1f, StartSpeedMax = 1f }, Matrix4x4.Identity, false);
         int box = simulator.AcquireEmitter(new EmitterSpec { Name = "box", Shape = LumenShapeKind.Box, ShapeExtents = new Vector3(1f, 2f, 3f) }, Matrix4x4.Identity, false);
         simulator.EmitBurst(sphere, 256); simulator.EmitBurst(disc, 256); simulator.EmitBurst(cone, 256); simulator.EmitBurst(box, 256);
+        Step(simulator, 0f);
         for (int i = 0; i < 256; i++)
         {
             Check(simulator.LiveParticles[i].Position.Length() <= 2f, "Sphere radius");
@@ -390,30 +400,30 @@ public static class CpuParticleSimulatorSuite
     {
         var simulator = new CpuParticleSimulator();
         int horizontal = simulator.AcquireEmitter(new EmitterSpec { Name = "horizontal", BillboardMode = LumenBillboardMode.Horizontal, StartSizeMin = 2f, StartSizeMax = 2f }, Matrix4x4.CreateTranslation(0f, 5f, 0f), false);
-        int stretched = simulator.AcquireEmitter(new EmitterSpec { Name = "stretched", BillboardMode = LumenBillboardMode.StretchedVelocity, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 2f, StartSpeedMax = 2f, VelocityStretchFactor = 2f }, Matrix4x4.CreateRotationX(-MathF.PI / 2f), false);
+        int stretched = simulator.AcquireEmitter(new EmitterSpec { Name = "stretched", BillboardMode = LumenBillboardMode.StretchedVelocity, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 2f, StartSpeedMax = 2f, VelocityStretchFactor = 2f }, Matrix4x4.Identity, false);
         int mesh = simulator.AcquireEmitter(new EmitterSpec { Name = "mesh", BillboardMode = LumenBillboardMode.Mesh, StartSizeMin = 2f, StartSizeMax = 2f }, Matrix4x4.Identity, false);
         simulator.EmitBurst(horizontal, 1); simulator.EmitBurst(stretched, 1); simulator.EmitBurst(mesh, 1);
         Step(simulator, 0f);
-        Vector(new Vector3(-1f, 5f, 1f), simulator.Vertices[0].Position);
-        Vector(new Vector3(1f, 5f, 1f), simulator.Vertices[1].Position);
-        Vector(new Vector3(1f, 5f, -1f), simulator.Vertices[2].Position);
-        Vector(new Vector3(-1f, 5f, -1f), simulator.Vertices[3].Position);
-        Vector(new Vector3(0f, 4f, 0f), Vector3.Cross(
+        Vector(new Vector3(-1f, 5f, -1f), simulator.Vertices[0].Position);
+        Vector(new Vector3(1f, 5f, -1f), simulator.Vertices[1].Position);
+        Vector(new Vector3(1f, 5f, 1f), simulator.Vertices[2].Position);
+        Vector(new Vector3(-1f, 5f, 1f), simulator.Vertices[3].Position);
+        Vector(new Vector3(0f, -4f, 0f), Vector3.Cross(
             simulator.Vertices[1].Position - simulator.Vertices[0].Position,
             simulator.Vertices[2].Position - simulator.Vertices[0].Position));
-        Vector(new Vector3(-1f, -5f, 0f), simulator.Vertices[4].Position);
-        Vector(new Vector3(1f, 5f, 0f), simulator.Vertices[6].Position);
+        Vector(new Vector3(-1f, -3f, 0f), simulator.Vertices[4].Position);
+        Vector(new Vector3(1f, 3f, 0f), simulator.Vertices[6].Position);
         Vector(new Vector3(-1f, -1f, 0f), simulator.Vertices[8].Position);
         Step(simulator, 0f, Matrix4x4.CreateRotationY(-MathF.PI / 4f));
-        Vector(new Vector3(-MathF.Sqrt(2f), 5f, 0f), simulator.Vertices[0].Position);
-        Vector(new Vector3(0f, 5f, MathF.Sqrt(2f)), simulator.Vertices[1].Position);
-        Vector(new Vector3(MathF.Sqrt(2f), 5f, 0f), simulator.Vertices[2].Position);
-        Vector(new Vector3(0f, 5f, -MathF.Sqrt(2f)), simulator.Vertices[3].Position);
-        Vector(new Vector3(0f, 4f, 0f), Vector3.Cross(
+        Vector(new Vector3(-1f, 5f, -1f), simulator.Vertices[0].Position);
+        Vector(new Vector3(1f, 5f, -1f), simulator.Vertices[1].Position);
+        Vector(new Vector3(1f, 5f, 1f), simulator.Vertices[2].Position);
+        Vector(new Vector3(-1f, 5f, 1f), simulator.Vertices[3].Position);
+        Vector(new Vector3(0f, -4f, 0f), Vector3.Cross(
             simulator.Vertices[2].Position - simulator.Vertices[0].Position,
             simulator.Vertices[3].Position - simulator.Vertices[0].Position));
         Step(simulator, 0f, Matrix4x4.CreateRotationZ(MathF.PI / 2f));
-        Vector(new Vector3(-1f, 5f, 1f), simulator.Vertices[0].Position);
+        Vector(new Vector3(-1f, 5f, -1f), simulator.Vertices[0].Position);
     }
 
     [LumenFact]
@@ -423,13 +433,14 @@ public static class CpuParticleSimulatorSuite
         int local = simulator.AcquireEmitter(new EmitterSpec { Name = "local", WorldSpaceSimulation = false, StartSpeedMin = 2f, StartSpeedMax = 2f }, Matrix4x4.CreateTranslation(10f, 0f, 0f), false);
         int world = simulator.AcquireEmitter(new EmitterSpec { Name = "world", StartSpeedMin = 2f, StartSpeedMax = 2f }, Matrix4x4.CreateRotationY(MathF.PI / 2f) * Matrix4x4.CreateTranslation(10f, 0f, 0f), false);
         simulator.EmitBurst(local, 1); simulator.EmitBurst(world, 1);
+        Step(simulator, 0f);
         simulator.SetEmitterTransform(local, Matrix4x4.CreateTranslation(20f, 0f, 0f));
         simulator.SetEmitterTransform(world, Matrix4x4.CreateTranslation(20f, 0f, 0f));
         Step(simulator, 0.25f);
-        Vector(new Vector3(0f, 0f, 0.5f), simulator.LiveParticles[0].Position);
-        Vector(new Vector3(10.5f, 0f, 0f), simulator.LiveParticles[1].Position);
-        Vector(new Vector3(19.5f, -0.5f, 0.5f), simulator.Vertices[0].Position);
-        Vector(new Vector3(10f, -0.5f, 0f), simulator.Vertices[4].Position);
+        Vector(new Vector3(0f, 0.5f, 0f), simulator.LiveParticles[0].Position);
+        Vector(new Vector3(10f, 0.5f, 0f), simulator.LiveParticles[1].Position);
+        Vector(new Vector3(19.5f, 0f, 0f), simulator.Vertices[0].Position);
+        Vector(new Vector3(9.5f, 0f, 0f), simulator.Vertices[4].Position);
     }
 
     [LumenFact]
@@ -456,8 +467,8 @@ public static class CpuParticleSimulatorSuite
         Uv(new Vector2(1f, 1f), simulator.Vertices[2].Uv);
         Step(simulator, 1f);
         Check(simulator.LiveParticles[0].FlipbookFrame == 2, "Half lifetime frame two");
-        Close(12f, simulator.LiveParticles[0].Size);
-        Check(simulator.LiveParticles[0].Color == new Vector4(1f, 2f, 3f, 0.5f), "Linear color * HDR * multiplier");
+        Close(4f, simulator.LiveParticles[0].Size);
+        Check(simulator.LiveParticles[0].Color == new Vector4(1f, 2f, 3f, 0.5f), "Stored color * HDR * multiplier");
         Uv(new Vector2(0f, 0f), simulator.Vertices[0].Uv);
         Uv(new Vector2(0.5f, 0.5f), simulator.Vertices[2].Uv);
         Step(simulator, 1f);
@@ -476,6 +487,7 @@ public static class CpuParticleSimulatorSuite
             FlipbookTilesX = 2, FlipbookTilesY = 2, FlipbookCycles = 2f,
         }, Matrix4x4.Identity, false);
         simulator.EmitBurst(id, 1);
+        Step(simulator, 0f);
         var samples = new[]
         {
             (Dt: 0.5f, Frame: 1, Min: new Vector2(0.5f, 0.5f), Max: new Vector2(1f, 1f)),
@@ -516,14 +528,17 @@ public static class CpuParticleSimulatorSuite
             Name = "curl", RateOverTime = 4f, Looping = true, Duration = 1f, MaxParticles = 32,
             ForceFields = new[] { new ForceFieldSpec(ForceFieldKind.CurlTurbulence, Vector3.Zero, Vector3.Zero, 0f, 2f, 0.25f) },
         };
-        int id = simulator.AcquireEmitter(spec, Matrix4x4.Identity, false);
+        Matrix4x4 curlOrigin = Matrix4x4.CreateTranslation(0.4f, 0.6f, 0.8f);
+        int id = simulator.AcquireEmitter(spec, curlOrigin, false);
         simulator.EmitBurst(id, 1);
+        Step(simulator, 0f);
         Step(simulator, 0.25f);
         Vector3 firstVelocity = simulator.LiveParticles[0].Velocity;
-        Check(firstVelocity.LengthSquared() > 0f && firstVelocity.Y == 0f, "Curl produces transverse acceleration");
+        Check(firstVelocity.LengthSquared() > 0f && MathF.Abs(firstVelocity.Y) > 0.0001f, "Curl produces three-dimensional acceleration");
         simulator.ReleaseEmitter(id, true);
-        int later = simulator.AcquireEmitter(spec, Matrix4x4.Identity, false);
+        int later = simulator.AcquireEmitter(spec, curlOrigin, false);
         simulator.EmitBurst(later, 1);
+        Step(simulator, 0f);
         Step(simulator, 0.25f);
         Vector(firstVelocity, simulator.LiveParticles[0].Velocity);
         simulator.SetEmitterParams(later, true, 1f, 1f);
@@ -630,7 +645,7 @@ public static class CpuParticleSimulatorSuite
         Vector3 s2 = ToView(simulator.Vertices[6].Position);
         float streakViewWidth = (s1 - s0).Length();
         float streakViewLength = (s2 - s1).Length();
-        Check(MathF.Abs(streakViewWidth - 2f) < 1e-3f && streakViewLength >= 3.9f
+        Check(MathF.Abs(streakViewWidth - 2f) < 1e-3f && MathF.Abs(streakViewLength - 3f) < 1e-3f
             && MathF.Abs(s1.Z - s0.Z) < 1e-3f && MathF.Abs(s2.Z - s1.Z) < 1e-3f,
             $"IsoRim stretched particle collapsed or tilted in view space: width={streakViewWidth:F5}, length={streakViewLength:F5}");
     }
@@ -667,7 +682,7 @@ public static class CpuParticleSimulatorSuite
         int streakId = streak.AcquireEmitter(new EmitterSpec
         {
             Name = "iso-diagonal", BillboardMode = LumenBillboardMode.StretchedVelocity, Shape = LumenShapeKind.Cone,
-            ConeAngleDegrees = 0f, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 4f, StartSpeedMax = 4f,
+            ConeAngleDegrees = 0f, ShapeExtents = Vector3.Zero, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 4f, StartSpeedMax = 4f,
             VelocityStretchFactor = 0.25f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
         }, Matrix4x4.CreateRotationZ(-MathF.PI / 4f) * apex, false);
         streak.SetEmitterVerticalState(streakId, true, 0f);
@@ -677,7 +692,7 @@ public static class CpuParticleSimulatorSuite
         Vector2 expected = Vector2.Normalize(new Vector2(Vector3.Dot(velocity, camRight), Vector3.Dot(velocity, camUp)));
         Vector3 edge = ToView(streak.Vertices[2].Position) - ToView(streak.Vertices[1].Position);
         Vector2 actual = Vector2.Normalize(new Vector2(edge.X, edge.Y));
-        Check(MathF.Abs(edge.Length() - 4f) < 1e-3f && MathF.Abs(edge.Z) < 1e-3f
+        Check(MathF.Abs(edge.Length() - 3f) < 1e-3f && MathF.Abs(edge.Z) < 1e-3f
             && Vector2.Distance(expected, actual) < 1e-3f,
             $"Vertical3D streak direction {actual} (length {edge.Length():F4}) differs from the true 3D projection {expected}");
     }
@@ -699,7 +714,7 @@ public static class CpuParticleSimulatorSuite
         int streak = simulator.AcquireEmitter(new EmitterSpec
         {
             Name = "top-down-streak", BillboardMode = LumenBillboardMode.StretchedVelocity, Shape = LumenShapeKind.Cone,
-            ConeAngleDegrees = 0f, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 4f, StartSpeedMax = 4f,
+            ConeAngleDegrees = 0f, ShapeExtents = Vector3.Zero, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 4f, StartSpeedMax = 4f,
             VelocityStretchFactor = 0.25f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
         }, apex, false);
         simulator.SetEmitterVerticalState(free, true, 0f);
@@ -720,7 +735,7 @@ public static class CpuParticleSimulatorSuite
         Vector(new Vector3(3f, 4.8f, 7f), Center(4));
         Vector3 streakCenter = Center(8);
         Close(11.8f, streakCenter.Z);
-        Vector(new Vector3(0f, 0f, 4f), simulator.Vertices[10].Position - simulator.Vertices[9].Position);
+        Vector(new Vector3(0f, 0f, 3f), simulator.Vertices[10].Position - simulator.Vertices[9].Position);
     }
 
     [LumenFact]
@@ -777,7 +792,8 @@ public static class CpuParticleSimulatorSuite
             simulator.SetEmitterVerticalState(id, true, 0f);
             simulator.EmitBurst(id, 1);
         }
-        Check(simulator.LiveParticleCount == 5, "Five particles before the step");
+        Step(simulator, 0f);
+        Check(simulator.LiveParticleCount == 5, "Five particles admitted before the simulation step");
         Step(simulator, 0.5f);
         Check(simulator.GetLiveParticleCount(expires) == 0, "A descending world-space particle below the floor expires");
         Check(simulator.GetLiveParticleCount(local) == 0, "A descending local-space particle below the floor expires");
@@ -810,7 +826,7 @@ public static class CpuParticleSimulatorSuite
         LumenVfxService service = VfxTestData.Service(asset);
         using ILumenEffectHandle handle = service.Play(new LumenPlayRequest
         {
-            EffectId = asset.EffectId, OriginWorld = new Vector3(0f, 5f, 0f),
+            MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new Vector3(0f, 5f, 0f),
         });
         VfxTestData.Step(service, 0.1f);
         Check(service.Simulator.LiveParticleCount == 1, "The drop spawns 0.5 above the play origin");

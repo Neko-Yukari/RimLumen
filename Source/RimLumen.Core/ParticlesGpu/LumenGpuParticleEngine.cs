@@ -7,7 +7,7 @@ using RimLumen.Core.Scene;
 
 namespace RimLumen.Core.ParticlesGpu;
 
-public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, IDisposable
+internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, IDisposable
 {
     private enum InstanceState { Emitting, Draining, Remove }
 
@@ -21,6 +21,7 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
         public Matrix4x4 World;
         public bool Emitting = true;
         public float Intensity = 1f;
+        public float RateMultiplier = 1f;
         public bool Activated;
         public bool RealTime;
         public int MapIndex = -1;
@@ -50,6 +51,7 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
         allocator = new EmitterSlotAllocator(capacity);
     }
 
+    public int Capacity => capacity;
     public string Name => "RimLumen.GpuParticles";
     public bool HasActiveWork => !disposed && instances.Count != 0;
 
@@ -98,13 +100,14 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
     }
 
     // Requires: main thread, id from this engine.
-    // Ensures: next capture sees transform/emission/intensity changes.
-    public void UpdateInstance(int instanceId, in Matrix4x4 worldTransform, bool emitting, float intensityMultiplier = 1f)
+    // Ensures: next capture sees transform/emission/intensity/rate changes.
+    public void UpdateInstance(int instanceId, in Matrix4x4 worldTransform, bool emitting, float intensityMultiplier, float rateMultiplier)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!instances.TryGetValue(instanceId, out Instance? instance)) return;
         instance.World = worldTransform;
         instance.Intensity = intensityMultiplier;
+        instance.RateMultiplier = rateMultiplier;
         if (instance.State == InstanceState.Emitting)
         {
             instance.Emitting = emitting;
@@ -142,7 +145,8 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!instances.TryGetValue(instanceId, out Instance? instance) || instance.State != InstanceState.Emitting) return;
-        instance.PendingBurst = (int)Math.Min((long)instance.PendingBurst + Math.Max(0, count), instance.Slots.Capacity);
+        int accepted = instance.Scheduler.AcceptBurst(Math.Max(0, count), RimLumenRenderHost.ParticleDensityScale);
+        instance.PendingBurst = (int)Math.Min((long)instance.PendingBurst + accepted, instance.Slots.Capacity);
     }
 
     // Requires: main thread capture.
@@ -181,8 +185,8 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
             }
             EmitterSpec spec = instance.Spec;
             int budget = instance.State == InstanceState.Emitting && instance.Activated && dt > 0f
-                ? Math.Min(instance.Slots.Capacity, instance.Scheduler.Advance(dt, instance.Emitting, density)) : 0;
-            budget = Math.Min(instance.Slots.Capacity, budget + ParticleEmissionBudget.ScaleBurst(instance.PendingBurst, density));
+                ? Math.Min(instance.Slots.Capacity, instance.Scheduler.Advance(dt, instance.Emitting, density, instance.RateMultiplier)) : 0;
+            budget = Math.Min(instance.Slots.Capacity, budget + instance.PendingBurst);
             instance.PendingBurst = 0;
             int row = rows.Count;
             int fieldOffset = fields.Count;
@@ -205,9 +209,12 @@ public sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, ID
                 SizeCone = new Vector4(spec.StartSizeMin, spec.StartSizeMax, spec.ConeAngleDegrees * (MathF.PI / 180), spec.WorldSpaceSimulation ? 1 : 0),
                 StartColor = spec.StartColor,
                 Flipbook = new Vector4(spec.FlipbookTilesX, spec.FlipbookTilesY, spec.FlipbookCycles, (float)spec.BillboardMode),
-                Appearance = new Vector4(spec.VelocityStretchFactor, spec.LengthScale, spec.HdrIntensity, 0f),
+                Appearance = new Vector4(spec.VelocityStretchFactor, spec.LengthScale, spec.HdrIntensity, ParticleAppearanceMath.SizeScale(instance.World)),
                 Tables = new Vector4(row, fieldOffset, spec.ForceFields.Length, instance.Id & 0x00ffffff),
-                State = new Vector4(dt, spec.SoftParticleFadeDistance, 0, instance.Intensity)
+                State = new Vector4(dt, spec.SoftParticleFadeDistance, 0, instance.Intensity),
+                ShapePosition = new Vector4(spec.ShapePosition, 0f),
+                ShapeRotation = new Vector4(spec.ShapeRotation.X, spec.ShapeRotation.Y, spec.ShapeRotation.Z, spec.ShapeRotation.W),
+                ShapeScale = new Vector4(spec.ShapeScale, 0f)
             };
             rows.Add(new ParticleEmitterFrame(instance.Id, parameters, instance.Curves, spec.TextureKey, spec.BlendMode,
                 instance.MapIndex, instance.IsVertical3D, instance.BaseY, spec.KillBelowFloor));

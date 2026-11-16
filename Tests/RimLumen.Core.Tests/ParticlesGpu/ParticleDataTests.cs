@@ -67,7 +67,7 @@ public static class ParticleDataTests
         Throws<ArgumentException>(() => GpuCurveAtlasPacker.Pack(ScalarCurve.Constant(1f), color, new GpuCurveSample[63]));
         Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", SizeOverLifetime = new ScalarCurve(Array.Empty<CurveKey>()) }));
         Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", ColorOverLifetime = new ColorGradient(Array.Empty<ColorStop>()) }));
-        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", SizeOverLifetime = new ScalarCurve(new[] { new CurveKey(0f, 1f), new CurveKey(0f, 2f) }) }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", SizeOverLifetime = new ScalarCurve(new[] { new CurveKey(0.4f, 1f), new CurveKey(0f, 2f) }) }));
         Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", SizeOverLifetime = new ScalarCurve(new[] { new CurveKey(1f, 1f), new CurveKey(0f, 2f) }) }));
         Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", SizeOverLifetime = new ScalarCurve(new[] { new CurveKey(0f, 1f, OutTangent: float.NaN) }) }));
         Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", SizeOverLifetime = ScalarCurve.Constant(float.PositiveInfinity) }));
@@ -257,7 +257,7 @@ public static class ParticleDataTests
         Offset<GpuParticle>(nameof(GpuParticle.VelocityAndLifetime), 16);
         Offset<GpuParticle>(nameof(GpuParticle.StartColor), 32);
         Offset<GpuParticle>(nameof(GpuParticle.SizeSeedEmitterFlags), 48);
-        Equal(208, Marshal.SizeOf<GpuEmitterParams>());
+        Equal(256, Marshal.SizeOf<GpuEmitterParams>());
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.World), 0);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Slots), 64);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Shape), 80);
@@ -268,6 +268,9 @@ public static class ParticleDataTests
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Appearance), 160);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Tables), 176);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.State), 192);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ShapePosition), 208);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ShapeRotation), 224);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ShapeScale), 240);
         Equal(64, Marshal.SizeOf<Matrix4x4>());
         Offset<Matrix4x4>(nameof(Matrix4x4.M11), 0);
         Offset<Matrix4x4>(nameof(Matrix4x4.M21), 16);

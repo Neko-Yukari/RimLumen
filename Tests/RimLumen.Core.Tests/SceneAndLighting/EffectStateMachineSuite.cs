@@ -20,7 +20,7 @@ public static class EffectStateMachineSuite
             Nodes = new[] { new EffectNodeSpec { Name = "puff", Emitter = Burst("puff", 5, lifetime: 1f) } },
         };
         var service = VfxTestData.Service(asset);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal(5, service.Simulator.LiveParticleCount);
@@ -42,7 +42,7 @@ public static class EffectStateMachineSuite
             Nodes = new[] { new EffectNodeSpec { Name = "aura", Emitter = VfxTestData.Emitter(looping: true, tier: LumenParticleTier.L1_NativeCpu) } },
         };
         var service = VfxTestData.Service(asset);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         for (int i = 0; i < 12; i++) VfxTestData.Step(service, 0.25f);
         VfxAssert.Check(handle.IsEmitting, "a looping emitter keeps a stateless asset playing past defaultDuration");
         handle.Stop(true);
@@ -72,7 +72,7 @@ public static class EffectStateMachineSuite
             },
         };
         var service = VfxTestData.Service(asset);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal(2, service.Simulator.LiveParticleCount);
@@ -104,7 +104,7 @@ public static class EffectStateMachineSuite
             TimelineEvents = new[] { new TimelineEventSpec(0f, "c0", -1, "c", Notify: true) },
         };
         var service = VfxTestData.Service(asset);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         VfxTestData.Step(service, 1f);
         GlowAssert.Equal("state:a,state:b,state:c,notify:c0,finished", string.Join(",", log));
@@ -131,7 +131,7 @@ public static class EffectStateMachineSuite
             },
         };
         var service = VfxTestData.Service(asset);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         for (int i = 0; i < 6; i++) VfxTestData.Step(service, 0.5f);
         GlowAssert.Equal("state:idle,notify:tick,notify:tick,notify:tick", string.Join(",", log));
@@ -157,7 +157,7 @@ public static class EffectStateMachineSuite
             StopState = "outro",
         };
         var service = VfxTestData.Service(asset);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         GlowAssert.Throws<ArgumentException>(() => handle.GoTo("missing"));
         VfxTestData.Step(service, 0.25f);
@@ -191,7 +191,7 @@ public static class EffectStateMachineSuite
         var service = VfxTestData.Service(asset);
         var engine = new SpyGpuEngine();
         service.GpuEngineProvider = () => engine;
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         GlowAssert.Equal(1, engine.Restarts.Count);
         VfxTestData.Step(service, 0.25f);
@@ -216,7 +216,7 @@ public static class EffectStateMachineSuite
         var service = VfxTestData.Service(asset);
         var engine = new SpyGpuEngine();
         service.GpuEngineProvider = () => engine;
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         VfxTestData.Step(service, 0.5f);
         GlowAssert.Equal((0, false), engine.Destroys[^1]);
@@ -248,7 +248,7 @@ public static class EffectStateMachineSuite
             TimelineEvents = new[] { new TimelineEventSpec(0.25f, "switch", -1, "A", Notify: true) },
         };
         var service = VfxTestData.Service(asset);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         handle.Notify += _ => handle.GoTo("B");
         VfxTestData.Step(service, 0.25f);
@@ -273,7 +273,7 @@ public static class EffectStateMachineSuite
             },
         };
         var service = VfxTestData.Service(asset);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         handle.StateChanged += state =>
         {
@@ -299,8 +299,8 @@ public static class EffectStateMachineSuite
             TimelineEvents = new[] { new TimelineEventSpec(0.25f, "ping", -1, Notify: true) },
         };
         var service = VfxTestData.Service(asset);
-        using var first = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
-        using var second = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var first = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
+        using var second = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         int firstFinished = 0, secondFinished = 0;
         first.Finished += () => firstFinished++;
         second.Finished += () => secondFinished++;
@@ -395,7 +395,7 @@ public static class EffectStateMachineSuite
         };
         GlowAssert.Throws<InvalidDataException>(() => emptyXmlState.ToEffectAsset());
         var service = VfxTestData.Service(registered);
-        using var rejectedState = service.Play(new LumenPlayRequest { EffectId = registered.EffectId });
+        using var rejectedState = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = registered.EffectId });
         VfxAssert.Check(!rejectedState.IsAlive, "Invalid provider state graph is rejected before Play.");
         GlowAssert.Equal(0, service.LiveHandleCount);
         var nanDefault = new EffectAsset
@@ -404,7 +404,7 @@ public static class EffectStateMachineSuite
             States = new[] { new EffectStateSpec { Name = "a", Duration = 1f } },
         };
         service = VfxTestData.Service(nanDefault);
-        using var rejectedDuration = service.Play(new LumenPlayRequest { EffectId = nanDefault.EffectId });
+        using var rejectedDuration = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = nanDefault.EffectId });
         VfxAssert.Check(!rejectedDuration.IsAlive && service.LiveHandleCount == 0, "Invalid provider duration cannot create a live handle.");
     }
 
@@ -414,7 +414,7 @@ public static class EffectStateMachineSuite
     {
         EffectAsset asset = LumenJsonAssetLoader.Parse(TornadoJson, "Author.MyMod");
         var service = VfxTestData.Service(asset);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         for (int i = 0; i < 8; i++) VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal("state:spawn,notify:touchdown,state:sustain", string.Join(",", log));

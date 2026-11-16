@@ -1,5 +1,6 @@
 #version 450
 #include "ParticleMaterial.glsl"
+#include "ParticleDisc.glsl"
 
 layout(set = 2, binding = 4) uniform sampler2D _LumenParticleTexture; // @default = white
 layout(set = 2, binding = 5) uniform sampler2D _LumenSceneDepth; // @default = white
@@ -21,12 +22,10 @@ void main()
 {
     vec4 texel;
     if (material._LumenDraw.y > 0.5)
-        texel = texture(_LumenParticleTexture, vUv); // Texture binding must deliver linear RGB.
+        texel = texture(_LumenParticleTexture, vUv);
     else
     {
-        vec2 radial = vRadialUv * 2.0 - 1.0;
-        float coverage = max(0.0, 1.0 - dot(radial, radial));
-        texel = vec4(1.0, 1.0, 1.0, coverage * coverage);
+        texel = vec4(1.0, 1.0, 1.0, lumenParticleDiscCoverage(vRadialUv));
     }
     vec4 color = texel * vColor;
     if (material._LumenDraw.z > 0.5)

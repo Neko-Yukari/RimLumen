@@ -37,7 +37,8 @@ void main()
     float size = particle.SizeSeedEmitterFlags.x * mix(a.Size.x, b.Size.x, blend);
     vColor = particle.StartColor * mix(a.Color, b.Color, blend);
     vColor.rgb *= emitter.Appearance.z * emitter.State.w;
-    // Appearance.w is reserved (currently zero).
+    // Appearance.w = cbrt(abs(det(World3x3))); world-space size is baked at birth, local-space at draw.
+    if (emitter.SizeCone.w < 0.5) size *= emitter.Appearance.w;
 
     vec3 center = particle.PositionAndAge.xyz;
     vec3 velocity = particle.VelocityAndLifetime.xyz;
@@ -96,5 +97,8 @@ void main()
     uint rows = uint(emitter.Flipbook.y);
     uint frameCount = columns * rows;
     uint frame = min(uint(fract(normalizedAge * emitter.Flipbook.z) * float(frameCount)), frameCount - 1u);
-    vUv = (quadUv + vec2(float(frame % columns), float(frame / columns))) / vec2(float(columns), float(rows));
+    // Vanilla MeshMakerPlanes.NewPlaneMesh has uv (0,1) at +Z (v=1 is image top);
+    // RimUnity ParticleSystemRenderer.cs TextureSheet uses 1f - (row+1)/numTilesY.
+    vec2 tileOrigin = vec2(float(frame % columns) / float(columns), 1.0 - float(frame / columns + 1u) / float(rows));
+    vUv = tileOrigin + quadUv / vec2(float(columns), float(rows));
 }

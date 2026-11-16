@@ -11,6 +11,62 @@ namespace RimLumen.Core.Tests.ParticlesGpu;
 public static class ParticleEngineTests
 {
     [LumenFact]
+    public static void P2A6RateParameterReachesGpuScheduler()
+    {
+        using var engine = new LumenGpuParticleEngine(32);
+        var asset = new EffectAsset
+        {
+            EffectId = "rate-param", DefaultDuration = 10f,
+            Nodes = new[] { new EffectNodeSpec { Name = "gpu", Emitter = new EmitterSpec
+            {
+                Name = "rate", MaxParticles = 32, Looping = true, Duration = 1f, RateOverTime = 4f,
+                StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+            } } },
+        };
+        var service = SceneAndLighting.VfxTestData.Service(asset);
+        service.GpuEngineProvider = () => engine;
+        using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7 });
+        handle.SetParam("rate", 3f);
+        SceneAndLighting.VfxTestData.Step(service, 0.25f);
+        engine.CaptureMainThread(Frame(0.25f));
+        Require(engine.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 3f, "Rate 4 times multiplier 3 for 0.25s must admit 3 particles, not 1.");
+        handle.SetParam("rate", 0f);
+        SceneAndLighting.VfxTestData.Step(service, 0.25f);
+        engine.CaptureMainThread(Frame(0.25f, 1));
+        Require(engine.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 0f, "Rate zero must stop scheduled rate emission.");
+    }
+
+    [LumenFact]
+    public static void ShapeLocalGpuUploadPreservesNodeAndShapeFramesSeparately()
+    {
+        using var engine = new LumenGpuParticleEngine(8);
+        var spec = new EmitterSpec
+        {
+            Name = "shape-upload", MaxParticles = 8, ShapePosition = new Vector3(1f, 2f, 3f),
+            ShapeRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f),
+            ShapeScale = new Vector3(5f, 6f, 7f),
+        };
+        engine.CreateInstance(spec, Matrix4x4.CreateTranslation(10f, 20f, 30f));
+        engine.CaptureMainThread(Frame(0));
+        GpuEmitterParams p = engine.CapturedFrame!.Emitters[0].Parameters;
+        Require(p.ShapePosition == new Vector4(1f, 2f, 3f, 0f) && p.ShapeScale == new Vector4(5f, 6f, 7f, 0f),
+            "Shape position/scale must upload in the node-local frame, not premultiply the node matrix.");
+        Require(p.ShapeRotation == new Vector4(0f, 0f, spec.ShapeRotation.Z, spec.ShapeRotation.W)
+            && p.World.M14 == 10f && p.World.M24 == 20f && p.World.M34 == 30f && p.Appearance.W == 1f,
+            "Quaternion xyzw and node matrix/size scale must remain independent.");
+    }
+
+    [LumenFact]
+    public static void P2A3fGpuCaptureCarriesDeterminantSizeScale()
+    {
+        using var engine = new LumenGpuParticleEngine(8);
+        engine.CreateInstance(Looping(), Matrix4x4.CreateScale(-2f, 4f, 8f));
+        engine.CaptureMainThread(Frame(0));
+        Require(MathF.Abs(engine.CapturedFrame!.Emitters[0].Parameters.Appearance.W - 4f) < 0.0001f,
+            "Appearance.w must carry cbrt(abs(det(World3x3))) = 4, including mirrored transforms.");
+    }
+
+    [LumenFact]
     public static void DensityBudgetsMatchCpuAcrossUnevenSubparticleSteps()
     {
         float originalDensity = RimLumenRenderHost.ParticleDensityScale;
@@ -69,7 +125,7 @@ public static class ParticleEngineTests
     }
 
     [LumenFact]
-    public static void DensityBurstBudgetsMatchCpuPerOccurrenceRounding()
+    public static void DensityBurstBudgetsMatchCpuSharedCeilingCarry()
     {
         float originalDensity = RimLumenRenderHost.ParticleDensityScale;
         try
@@ -86,9 +142,11 @@ public static class ParticleEngineTests
             using var gpu = new LumenGpuParticleEngine(64);
             gpu.CreateInstance(spec, Matrix4x4.Identity);
 
-            Require(DensityStep(cpu, gpu, 0.25f, 0) == 1, "A nonzero burst never scales below one.");
-            Require(DensityStep(cpu, gpu, 0.25f, 1) == 2, "Five at half density rounds to even, not up.");
-            Require(DensityStep(cpu, gpu, 1.5f, 2) == 8, "Each crossed burst is scaled before summing occurrences.");
+            Require(DensityStep(cpu, gpu, 0.25f, 0) == 1, "The fresh count1 at half density admits ceil(.5)=1 and retains -.5.");
+            Require(DensityStep(cpu, gpu, 0.25f, 1) == 2, "The next count5 consumes the shared carry: ceil(-.5+2.5)=2.");
+            int crossed = DensityStep(cpu, gpu, 1.5f, 2);
+            Console.WriteLine($"Shared burst carry frame2: CPU/GPU={crossed}, expected=7; cumulative authored counts19 * .5 -> ceil9.5=10, previous admitted3.");
+            Require(crossed == 7, "Crossed counts1,1,5,3,3 add13 at half density: ceil6.5=7 from zero carry, not independently rounded8.");
         }
         finally
         {
@@ -117,7 +175,7 @@ public static class ParticleEngineTests
         ParticleFrame previous = engine.CapturedFrame!;
 
         engine.DestroyInstance(first, immediate: true);
-        engine.UpdateInstance(second, Matrix4x4.CreateTranslation(7, 0, 0), emitting: true);
+        engine.UpdateInstance(second, Matrix4x4.CreateTranslation(7, 0, 0), emitting: true, 1f, 1f);
         engine.CaptureMainThread(Frame(0.125f, 1));
         ParticleFrame current = engine.CapturedFrame!;
 
@@ -150,7 +208,7 @@ public static class ParticleEngineTests
         engine.CaptureMainThread(Frame(0.5f, 1));
         Require(engine.HasActiveWork, "Particles must survive before maximum lifetime elapses.");
         engine.DestroyInstance(id);
-        engine.UpdateInstance(id, Matrix4x4.Identity, true);
+        engine.UpdateInstance(id, Matrix4x4.Identity, true, 1f, 1f);
         engine.CaptureMainThread(Frame(0.5f, 2));
         Require(!engine.HasActiveWork, "Repeated destroy/update must not restart a draining emitter.");
         int replacement = engine.CreateInstance(Looping(), Matrix4x4.Identity);
@@ -197,7 +255,7 @@ public static class ParticleEngineTests
         engine.DestroyInstance(id, true);
         engine.CaptureMainThread(Frame(0));
         engine.DestroyInstance(id);
-        engine.UpdateInstance(id, Matrix4x4.Identity, true);
+        engine.UpdateInstance(id, Matrix4x4.Identity, true, 1f, 1f);
         Require(!engine.HasActiveWork, "An expired handle must not recreate work.");
     }
 
@@ -244,7 +302,7 @@ public static class ParticleEngineTests
         };
         var service = SceneAndLighting.VfxTestData.Service(asset);
         service.GpuEngineProvider = () => engine;
-        using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         engine.CaptureMainThread(Frame(2f));
         engine.CaptureMainThread(Frame(2f, 1));
         Require(engine.HasActiveWork, "A node outside the initial state must not expire before its state is entered.");
@@ -272,7 +330,7 @@ public static class ParticleEngineTests
         };
         var service = SceneAndLighting.VfxTestData.Service(asset);
         service.GpuEngineProvider = () => engine;
-        using var handle = (Scene.EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (Scene.EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         SceneAndLighting.VfxTestData.Step(service, 1f);
         Require(!handle.IsEmitting, "The effect ended on this frame.");
         engine.CaptureMainThread(Frame(1f));

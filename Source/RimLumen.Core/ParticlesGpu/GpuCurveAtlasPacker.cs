@@ -4,7 +4,7 @@ using RimLumen.Core.Contracts;
 
 namespace RimLumen.Core.ParticlesGpu;
 
-public static class GpuCurveAtlasPacker
+internal static class GpuCurveAtlasPacker
 {
     public const int SamplesPerRow = 64;
 
@@ -29,22 +29,28 @@ public static class GpuCurveAtlasPacker
         }
     }
 
+    // Mirrors pinned RimUnity AnimationCurve.cs:23,30-35 (45ca90987f7d3721715b45c021cab986ee14c468).
     private static double Evaluate(CurveKey[] keys, double time)
     {
+        if (keys[0].Time >= keys[^1].Time) return keys[^1].Value;
         if (time <= keys[0].Time) return keys[0].Value;
-        for (int i = 1; i < keys.Length; i++)
+        if (time >= keys[^1].Time) return keys[^1].Value;
+        int lo = 0, hi = keys.Length - 1;
+        while (hi - lo > 1)
         {
-            if (time > keys[i].Time) continue;
-            var a = keys[i - 1];
-            var b = keys[i];
-            double width = (double)b.Time - a.Time;
-            double t = (time - a.Time) / width;
-            double t2 = t * t;
-            double t3 = t2 * t;
-            return (2 * t3 - 3 * t2 + 1) * a.Value + (t3 - 2 * t2 + t) * width * a.OutTangent +
-                   (-2 * t3 + 3 * t2) * b.Value + (t3 - t2) * width * b.InTangent;
+            int mid = (lo + hi) / 2;
+            if (keys[mid].Time <= time) lo = mid;
+            else hi = mid;
         }
-        return keys[^1].Value;
+
+        var a = keys[lo];
+        var b = keys[hi];
+        double width = (double)b.Time - a.Time;
+        double t = (time - a.Time) / width;
+        double t2 = t * t;
+        double t3 = t2 * t;
+        return (2 * t3 - 3 * t2 + 1) * a.Value + (t3 - 2 * t2 + t) * width * a.OutTangent +
+               (-2 * t3 + 3 * t2) * b.Value + (t3 - t2) * width * b.InTangent;
     }
 
     private static Vector4 Evaluate(ColorStop[] stops, double time)

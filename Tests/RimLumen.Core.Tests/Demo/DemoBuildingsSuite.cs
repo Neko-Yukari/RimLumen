@@ -133,7 +133,7 @@ public static class DemoBuildingsSuite
 
         using ILumenEffectHandle handle = service.Play(new LumenPlayRequest
         {
-            EffectId = asset.EffectId,
+            MapIndex = 111, EffectId = asset.EffectId,
             OriginWorld = new Vector3(10f, 0f, 20f),
             RealTime = false,
         });
@@ -173,7 +173,7 @@ public static class DemoBuildingsSuite
 
         using ILumenEffectHandle handle = service.Play(new LumenPlayRequest
         {
-            EffectId = asset.EffectId,
+            MapIndex = 111, EffectId = asset.EffectId,
             OriginWorld = new Vector3(4f, 0f, 6f),
         });
         var typed = (EffectInstanceHandle)handle;
@@ -196,7 +196,7 @@ public static class DemoBuildingsSuite
         var engine = new SpyGpuEngine();
         service.GpuEngineProvider = () => engine;
 
-        ILumenEffectHandle handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        ILumenEffectHandle handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         for (int i = 0; i < 10; i++) VfxTestData.Step(service, 0.05f);
         VfxAssert.Check(service.Simulator.ActiveEmitterCount == 2, "both L1 emitters are alive before the stop");
 
@@ -271,7 +271,7 @@ public static class DemoBuildingsSuite
     {
         var asset = RimLumenDemoEffects.CreateFireworkAsset(RimLumenDemoEffects.FireworkGoldId, 0);
         var service = VfxTestData.Service(asset);
-        using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         VfxTestData.Step(service, 0.016f);
         EmitterSpec spec = asset.Nodes[0].Emitter!;
         GlowAssert.Equal("launch_trail", spec.Name);

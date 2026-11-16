@@ -8,12 +8,14 @@ public readonly struct ParticleVertex
     public readonly Vector3 Position;
     public readonly Vector2 Uv;
     public readonly Vector4 Color;
+    public readonly Vector2 RadialUv;
 
-    public ParticleVertex(Vector3 position, Vector2 uv, Vector4 color)
+    public ParticleVertex(Vector3 position, Vector2 uv, Vector4 color, Vector2 radialUv)
     {
         Position = position;
         Uv = uv;
         Color = color;
+        RadialUv = radialUv;
     }
 }
 
@@ -21,7 +23,7 @@ public readonly struct ParticleVertex
 /// Read-only snapshot of one live L1 particle. Values are the post-integration state of the last
 /// <c>CaptureMainThread</c>; <see cref="Color"/> already includes StartColor, the colour
 /// curve, <c>HdrIntensity</c> and the runtime intensity multiplier, and <see cref="Size"/> already
-/// includes StartSize, the size curve and <c>LengthScale</c>.
+/// includes StartSize, the size curve and the emitter's determinant-based world size scale.
 /// </summary>
 public struct CpuParticle
 {
