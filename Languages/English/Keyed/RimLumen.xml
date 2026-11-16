@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LanguageData>
+  <RimLumen_EnhanceAdditiveGlow>Enhance vanilla and mod additive glow</RimLumen_EnhanceAdditiveGlow>
+  <RimLumen_EnhanceAdditiveGlowTooltip>Gives fire, explosions and energy shields HDR bloom automatically.\nTurning it off returns to zero-pixel-difference framework mode when no fullscreen shader pack is enabled (the image matches an installation without RimLumen pixel for pixel).</RimLumen_EnhanceAdditiveGlowTooltip>
+  <RimLumen_ParticleDensity>Global particle density: {0}%</RimLumen_ParticleDensity>
+  <RimLumen_EnableDemoBuildings>Enable demo recreation buildings: firework launcher and particle fountain</RimLumen_EnableDemoBuildings>
+  <RimLumen_EnableDemoBuildingsTooltip>Adds two zero-cost demo buildings to the Recreation build menu: a firework launcher and a particle fountain.</RimLumen_EnableDemoBuildingsTooltip>
+  <RimLumen_ShaderPacks>Shader packs and post-processing</RimLumen_ShaderPacks>
+  <RimLumen_ShaderPackError>Shader pack load/compile error (reverted to the safe default):\n{0}</RimLumen_ShaderPackError>
+  <RimLumen_CopyError>Copy error</RimLumen_CopyError>
+  <RimLumen_PackOptions>Shader pack options ({0})</RimLumen_PackOptions>
+  <RimLumen_ResetAll>Reset all defaults</RimLumen_ResetAll>
+  <RimLumen_ActivePack>Active shader pack:</RimLumen_ActivePack>
+  <RimLumen_BrokenPack>[Broken] {0} ({1}): {2}</RimLumen_BrokenPack>
+  <RimLumen_ReloadPack>Reload shader pack</RimLumen_ReloadPack>
+  <RimLumen_RescanPacks>Rescan directories</RimLumen_RescanPacks>
+  <RimLumen_ResetPack>Reset pack options</RimLumen_ResetPack>
+  <RimLumen_FeatureFullscreen>Fullscreen every frame</RimLumen_FeatureFullscreen>
+  <RimLumen_FeatureMapLight>Map roof/light field</RimLumen_FeatureMapLight>
+  <RimLumen_FeatureSceneDepth>Scene depth</RimLumen_FeatureSceneDepth>
+  <RimLumen_FeatureBloomLevels>Bloom: {0} levels</RimLumen_FeatureBloomLevels>
+  <RimLumen_FeatureNoBloom>No built-in bloom</RimLumen_FeatureNoBloom>
+  <RimLumen_FeaturePasses>{0} passes</RimLumen_FeaturePasses>
+  <RimLumen_PackSummary>Author: {0}  |  Features: {1}</RimLumen_PackSummary>
+  <RimLumen_PackDirectory>Place third-party shader packs in a mod's ShaderPacks/ folder or in the local directory: {0}</RimLumen_PackDirectory>
+  <RimLumen_EffectAssetsReloaded>RimLumen effect JSON rescan: {0} loaded, {1} failed. XML LumenEffectDef changes cannot be hot-reloaded; restart the game to load them. Only IDs from this scan are replaced; a bare ID shared with an XML or code-registered effect is overwritten by JSON. Already-playing instances are unchanged; stop and play again to use edited assets.</RimLumen_EffectAssetsReloaded>
+  <RimLumen_BloomIntensity>Bloom intensity</RimLumen_BloomIntensity>
+  <RimLumen_BloomIntensityTooltip>Controls the overall bloom contribution from HDR emitters and particles.</RimLumen_BloomIntensityTooltip>
+  <RimLumen_BloomThreshold>Bloom threshold</RimLumen_BloomThreshold>
+  <RimLumen_BloomThresholdTooltip>Pixels brighter than this threshold enter the bloom pyramid.</RimLumen_BloomThresholdTooltip>
+  <RimLumen_BloomKnee>Bloom soft knee</RimLumen_BloomKnee>
+  <RimLumen_BloomKneeTooltip>Controls the smooth bloom transition around the threshold.</RimLumen_BloomKneeTooltip>
+  <RimLumen_BloomScatter>Bloom scatter</RimLumen_BloomScatter>
+  <RimLumen_BloomScatterTooltip>Controls the low-frequency glow spread during multilevel upsampling.</RimLumen_BloomScatterTooltip>
+  <RimLumen_StandardPackName>Standard (default, non-invasive baseline)</RimLumen_StandardPackName>
+  <RimLumen_StandardPackDescription>RimLumen's built-in default HDR and five-level bloom pipeline. With additive glow enhancement off and no active effects, it preserves a zero-pixel-difference image.</RimLumen_StandardPackDescription>
+  <RimLumen_SourceBuiltIn>Built-in</RimLumen_SourceBuiltIn>
+  <RimLumen_SourceMod>Mod: {0}</RimLumen_SourceMod>
+  <RimLumen_SourceLocal>Local</RimLumen_SourceLocal>
+</LanguageData>

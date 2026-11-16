@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LanguageData>
+  <RimLumen_EnhanceAdditiveGlow>自动增强原版与第三方加色发光特效</RimLumen_EnhanceAdditiveGlow>
+  <RimLumen_EnhanceAdditiveGlowTooltip>开启后，火焰、爆炸、能量护盾等加色发光特效会自动获得 HDR 泛光。\n关闭后，在未开启全屏光影包时回到零像素差的纯框架模式（与未安装 RimLumen 时画面逐像素一致）。</RimLumen_EnhanceAdditiveGlowTooltip>
+  <RimLumen_ParticleDensity>全局粒子密度倍率：{0}%</RimLumen_ParticleDensity>
+  <RimLumen_EnableDemoBuildings>启用娱乐演示建筑：烟花发射器与粒子喷泉</RimLumen_EnableDemoBuildings>
+  <RimLumen_EnableDemoBuildingsTooltip>开启后，「娱乐」建造菜单会多出两座零成本演示建筑：烟花发射器与粒子喷泉。</RimLumen_EnableDemoBuildingsTooltip>
+  <RimLumen_ShaderPacks>光影包与后处理</RimLumen_ShaderPacks>
+  <RimLumen_ShaderPackError>光影包加载/编译错误（已回退安全默认）：\n{0}</RimLumen_ShaderPackError>
+  <RimLumen_CopyError>复制错误</RimLumen_CopyError>
+  <RimLumen_PackOptions>光影包参数调节（{0}）</RimLumen_PackOptions>
+  <RimLumen_ResetAll>恢复全部默认</RimLumen_ResetAll>
+  <RimLumen_ActivePack>当前光影包：</RimLumen_ActivePack>
+  <RimLumen_BrokenPack>[损坏] {0}（{1}）：{2}</RimLumen_BrokenPack>
+  <RimLumen_ReloadPack>热重载光影包</RimLumen_ReloadPack>
+  <RimLumen_RescanPacks>重新扫描目录</RimLumen_RescanPacks>
+  <RimLumen_ResetPack>重置本包参数</RimLumen_ResetPack>
+  <RimLumen_FeatureFullscreen>全屏每帧</RimLumen_FeatureFullscreen>
+  <RimLumen_FeatureMapLight>地图屋顶/灯照场</RimLumen_FeatureMapLight>
+  <RimLumen_FeatureSceneDepth>场景深度</RimLumen_FeatureSceneDepth>
+  <RimLumen_FeatureBloomLevels>泛光 {0} 级</RimLumen_FeatureBloomLevels>
+  <RimLumen_FeatureNoBloom>无内置泛光</RimLumen_FeatureNoBloom>
+  <RimLumen_FeaturePasses>{0} 趟渲染</RimLumen_FeaturePasses>
+  <RimLumen_PackSummary>作者：{0}  |  特性：{1}</RimLumen_PackSummary>
+  <RimLumen_PackDirectory>第三方光影包可放入模组的 ShaderPacks/ 或本地目录：{0}</RimLumen_PackDirectory>
+  <RimLumen_EffectAssetsReloaded>RimLumen 效果 JSON 重新扫描完成：载入 {0} 个，失败 {1} 个。XML LumenEffectDef 无法热重载，修改后需重启游戏。仅替换本次扫描得到的 ID；与 XML 或代码注册效果同名的裸 ID 会被 JSON 覆盖。已播放实例保持不变，停止后重新播放即可使用修改后的资产。</RimLumen_EffectAssetsReloaded>
+  <RimLumen_BloomIntensity>泛光强度</RimLumen_BloomIntensity>
+  <RimLumen_BloomIntensityTooltip>控制 HDR 发光体与粒子泛光的整体叠加强度。</RimLumen_BloomIntensityTooltip>
+  <RimLumen_BloomThreshold>起辉阈值</RimLumen_BloomThreshold>
+  <RimLumen_BloomThresholdTooltip>亮度超过该阈值的像素才会进入泛光金字塔。</RimLumen_BloomThresholdTooltip>
+  <RimLumen_BloomKnee>高光过渡膝宽</RimLumen_BloomKnee>
+  <RimLumen_BloomKneeTooltip>控制阈值附近的平滑起辉过渡宽度。</RimLumen_BloomKneeTooltip>
+  <RimLumen_BloomScatter>泛光扩散权重</RimLumen_BloomScatter>
+  <RimLumen_BloomScatterTooltip>控制多级升采样时低频光晕向四周扩散的权重。</RimLumen_BloomScatterTooltip>
+  <RimLumen_StandardPackName>标准（默认 · 零侵入基线）</RimLumen_StandardPackName>
+  <RimLumen_StandardPackDescription>RimLumen 内置默认 HDR 与 5 级泛光管线；关闭原版加色增强且无活动特效时保持逐像素零差。</RimLumen_StandardPackDescription>
+  <RimLumen_SourceBuiltIn>内置</RimLumen_SourceBuiltIn>
+  <RimLumen_SourceMod>模组：{0}</RimLumen_SourceMod>
+  <RimLumen_SourceLocal>本地</RimLumen_SourceLocal>
+</LanguageData>

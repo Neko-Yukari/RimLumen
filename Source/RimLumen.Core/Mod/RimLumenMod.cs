@@ -117,23 +117,19 @@ public sealed class RimLumenMod : Verse.Mod
         listing.Begin(viewRect);
 
         listing.CheckboxLabeled(
-            "自动增强原版与第三方加色发光特效 (Enhance vanilla & mod additive glow)",
+            "RimLumen_EnhanceAdditiveGlow".Translate(),
             ref Settings.EnhanceVanillaAdditiveGlow,
-            "开启后，火焰、爆炸、能量护盾等加色发光特效会自动获得 HDR 泛光。" +
-            "关闭后，在未开启全屏光影包时回到零像素差的纯框架模式（与未安装 RimLumen 时画面逐像素一致）。\n" +
-            "Gives fire, explosions and energy shields HDR bloom automatically. " +
-            "Turning it off returns to 0-pixel-diff mode when using a non-fullscreen shader pack.");
+            "RimLumen_EnhanceAdditiveGlowTooltip".Translate());
         listing.Gap(6f);
 
-        listing.Label($"全局粒子密度倍率 (Global particle density): {(int)Mathf.Round(Settings.ParticleDensityScale * 100f)}%");
+        listing.Label("RimLumen_ParticleDensity".Translate((int)Mathf.Round(Settings.ParticleDensityScale * 100f)));
         Settings.ParticleDensityScale = listing.Slider(Settings.ParticleDensityScale, 0.10f, 1.00f);
         listing.Gap(6f);
 
         listing.CheckboxLabeled(
-            "启用娱乐演示建筑：烟花发射器与粒子喷泉 (Enable demo joy buildings: Firework & Fountain)",
+            "RimLumen_EnableDemoBuildings".Translate(),
             ref Settings.EnableDemoBuildings,
-            "开启后，「娱乐」建造菜单会多出两座零成本演示建筑：烟花发射器与粒子喷泉。\n" +
-            "Adds two zero-cost demo buildings to the Recreation build menu: a firework launcher and a particle fountain.");
+            "RimLumen_EnableDemoBuildingsTooltip".Translate());
         bool settingsChanged = Settings.EnhanceVanillaAdditiveGlow != glowBefore
             || Settings.ParticleDensityScale != densityBefore
             || Settings.EnableDemoBuildings != demoBefore;
@@ -141,7 +137,7 @@ public sealed class RimLumenMod : Verse.Mod
         listing.GapLine(12f);
 
         Text.Font = GameFont.Medium;
-        listing.Label("光影包与后处理 (Shader Packs)");
+        listing.Label("RimLumen_ShaderPacks".Translate());
         Text.Font = GameFont.Small;
         listing.Gap(4f);
 
@@ -157,21 +153,26 @@ public sealed class RimLumenMod : Verse.Mod
             listing.Gap(4f);
             Color prev = GUI.color;
             GUI.color = new Color(1f, 0.45f, 0.45f);
-            listing.Label("光影包加载/编译错误（已回退安全默认）：" + TrimSingleLine(runtimeError, 220));
+            bool wordWrap = Text.WordWrap;
+            Text.WordWrap = true;
+            listing.Label("RimLumen_ShaderPackError".Translate(runtimeError));
+            Text.WordWrap = wordWrap;
             GUI.color = prev;
+            if (listing.ButtonText("RimLumen_CopyError".Translate()))
+                GUIUtility.systemCopyBuffer = runtimeError;
         }
 
         if (activeEntry.Options.Count > 0)
         {
             listing.GapLine(10f);
-            listing.Label($"光影包参数调节 ({activeEntry.Name})");
+            listing.Label("RimLumen_PackOptions".Translate(PackDisplayName(activeEntry)));
             listing.Gap(4f);
             foreach (ShaderPackOptionDefinition option in activeEntry.Options)
                 settingsChanged |= DrawOptionSlider(listing, activeEntry, option);
         }
 
         listing.GapLine(12f);
-        if (listing.ButtonText("恢复全部默认 (Reset All)"))
+        if (listing.ButtonText("RimLumen_ResetAll".Translate()))
             Settings.ResetAll();
 
         listing.End();
@@ -192,10 +193,10 @@ public sealed class RimLumenMod : Verse.Mod
 
         TextAnchor oldAnchor = Text.Anchor;
         Text.Anchor = TextAnchor.MiddleLeft;
-        Widgets.Label(labelRect, "当前光影包 (Active Pack):");
+        Widgets.Label(labelRect, "RimLumen_ActivePack".Translate());
         Text.Anchor = oldAnchor;
 
-        string buttonText = $"{activeEntry.Name}  [{activeEntry.SourceLabel}]";
+        string buttonText = $"{PackDisplayName(activeEntry)}  [{PackSourceLabel(activeEntry)}]";
         if (Widgets.ButtonText(buttonRect, buttonText))
         {
             var menu = new List<FloatMenuOption>(packs.Count);
@@ -203,11 +204,11 @@ public sealed class RimLumenMod : Verse.Mod
             {
                 if (pack.LoadError is not null)
                 {
-                    menu.Add(new FloatMenuOption($"[损坏] {pack.Name} ({pack.SourceLabel}): {TrimSingleLine(pack.LoadError, 60)}", null));
+                    menu.Add(new FloatMenuOption("RimLumen_BrokenPack".Translate(PackDisplayName(pack), PackSourceLabel(pack), TrimSingleLine(pack.LoadError, 60)), null));
                     continue;
                 }
                 ShaderPackEntry captured = pack;
-                menu.Add(new FloatMenuOption($"{captured.Name}  [{captured.SourceLabel}]", () =>
+                menu.Add(new FloatMenuOption($"{PackDisplayName(captured)}  [{PackSourceLabel(captured)}]", () =>
                 {
                     Settings.SelectedShaderPackId = captured.Id;
                     Settings.ApplyToRuntime();
@@ -222,14 +223,14 @@ public sealed class RimLumenMod : Verse.Mod
         Rect row = listing.GetRect(28f);
         float gap = 8f;
         float w = (row.width - gap * 2f) / 3f;
-        if (Widgets.ButtonText(new Rect(row.x, row.y, w, row.height), "热重载光影包 (Reload)"))
+        if (Widgets.ButtonText(new Rect(row.x, row.y, w, row.height), "RimLumen_ReloadPack".Translate()))
             Settings.ApplyToRuntime(forceReloadPack: true);
-        if (Widgets.ButtonText(new Rect(row.x + w + gap, row.y, w, row.height), "重新扫描目录 (Rescan)"))
+        if (Widgets.ButtonText(new Rect(row.x + w + gap, row.y, w, row.height), "RimLumen_RescanPacks".Translate()))
         {
             ShaderPackCatalog.GetAvailablePacks(rescan: true);
             Settings.ApplyToRuntime();
         }
-        if (Widgets.ButtonText(new Rect(row.x + (w + gap) * 2f, row.y, w, row.height), "重置本包参数 (Reset Pack)"))
+        if (Widgets.ButtonText(new Rect(row.x + (w + gap) * 2f, row.y, w, row.height), "RimLumen_ResetPack".Translate()))
         {
             Settings.ResetPackOverrides(activeEntry.Id);
             Settings.ApplyToRuntime();
@@ -239,23 +240,27 @@ public sealed class RimLumenMod : Verse.Mod
     private static void DrawPackSummary(Listing_Standard listing, ShaderPackEntry activeEntry)
     {
         var tags = new List<string>();
-        if (activeEntry.Spec.RunOnEmptyFrames) tags.Add("全屏每帧");
-        if (activeEntry.Spec.RequiresMapLightField) tags.Add("地图屋顶/灯照场");
-        if (activeEntry.Spec.RequiresSceneDepth) tags.Add("场景深度");
-        tags.Add(activeEntry.Spec.BloomMipLevels > 0 ? $"Bloom {activeEntry.Spec.BloomMipLevels}级" : "无内置Bloom");
-        if (activeEntry.Spec.Passes.Count > 0) tags.Add($"{activeEntry.Spec.Passes.Count} Pass");
+        if (activeEntry.Spec.RunOnEmptyFrames) tags.Add("RimLumen_FeatureFullscreen".Translate());
+        if (activeEntry.Spec.RequiresMapLightField) tags.Add("RimLumen_FeatureMapLight".Translate());
+        if (activeEntry.Spec.RequiresSceneDepth) tags.Add("RimLumen_FeatureSceneDepth".Translate());
+        tags.Add(activeEntry.Spec.BloomMipLevels > 0
+            ? "RimLumen_FeatureBloomLevels".Translate(activeEntry.Spec.BloomMipLevels)
+            : "RimLumen_FeatureNoBloom".Translate());
+        if (activeEntry.Spec.Passes.Count > 0) tags.Add("RimLumen_FeaturePasses".Translate(activeEntry.Spec.Passes.Count));
 
         Color prev = GUI.color;
         GUI.color = new Color(0.8f, 0.85f, 0.9f);
-        listing.Label($"作者: {activeEntry.Author}  |  特性: {string.Join(" / ", tags)}");
+        listing.Label("RimLumen_PackSummary".Translate(activeEntry.Author, string.Join(" / ", tags)));
         if (!string.IsNullOrWhiteSpace(activeEntry.Description))
-            listing.Label(activeEntry.Description);
+            listing.Label(activeEntry.Id == ShaderPackCatalog.DefaultPackId
+                ? activeEntry.Description.Translate().ToString()
+                : activeEntry.Description);
 
         string? localDir = ShaderPackCatalog.TryGetLocalUserPacksDirectory();
         if (!string.IsNullOrWhiteSpace(localDir))
         {
             GUI.color = new Color(0.68f, 0.72f, 0.78f);
-            listing.Label($"第三方光影包可放入 Mod 的 ShaderPacks/ 或本地目录: {localDir}");
+            listing.Label("RimLumen_PackDirectory".Translate(localDir));
         }
         GUI.color = prev;
     }
@@ -263,15 +268,18 @@ public sealed class RimLumenMod : Verse.Mod
     private static bool DrawOptionSlider(Listing_Standard listing, ShaderPackEntry entry, ShaderPackOptionDefinition option)
     {
         float current = ShaderPackCatalog.GetOptionValue(entry, option, Settings.PackParamOverrides);
+        string label = entry.Id == ShaderPackCatalog.DefaultPackId ? option.Label.Translate().ToString() : option.Label;
         if (!string.IsNullOrWhiteSpace(option.Tooltip))
         {
             Rect tipRect = listing.GetRect(22f);
-            Widgets.Label(tipRect, $"{option.Label}: {current:F2}");
-            TooltipHandler.TipRegion(tipRect, option.Tooltip);
+            Widgets.Label(tipRect, $"{label}: {current:F2}");
+            TooltipHandler.TipRegion(tipRect, entry.Id == ShaderPackCatalog.DefaultPackId
+                ? option.Tooltip.Translate().ToString()
+                : option.Tooltip);
         }
         else
         {
-            listing.Label($"{option.Label}: {current:F2}");
+            listing.Label($"{label}: {current:F2}");
         }
 
         float next = listing.Slider(current, option.MinValue, option.MaxValue);
@@ -281,6 +289,20 @@ public sealed class RimLumenMod : Verse.Mod
             Settings.PackParamOverrides[ShaderPackCatalog.MakeOverrideKey(entry.Id, option.Key)] = snapped;
         listing.Gap(2f);
         return changed;
+    }
+
+    private static string PackDisplayName(ShaderPackEntry entry) => entry.Id == ShaderPackCatalog.DefaultPackId
+        ? entry.Name.Translate().ToString()
+        : entry.Name;
+
+    private static string PackSourceLabel(ShaderPackEntry entry)
+    {
+        const string modPrefix = "RimLumen_SourceMod:";
+        if (entry.SourceLabel.StartsWith(modPrefix, StringComparison.Ordinal))
+            return "RimLumen_SourceMod".Translate(entry.SourceLabel[modPrefix.Length..]);
+        return entry.SourceLabel is "RimLumen_SourceBuiltIn" or "RimLumen_SourceLocal"
+            ? entry.SourceLabel.Translate().ToString()
+            : entry.SourceLabel;
     }
 
     private static string TrimSingleLine(string text, int maxChars)

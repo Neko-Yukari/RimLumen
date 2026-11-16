@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Linq;
 using RimLumen.Core.Contracts;
 
 namespace RimLumen.Core.Assets;
@@ -15,6 +16,8 @@ public sealed class InMemoryAssetCatalog : ILumenAssetProvider
 
     // Ensures: number of currently registered effects.
     public int Count => _assets.Count;
+
+    internal EffectAsset[] GetSnapshot() => _assets.Values.ToArray();
 
     // Requires: asset is non-null; asset.EffectId is non-empty.
     // Ensures: throws ArgumentException when EffectId is null/empty, or when

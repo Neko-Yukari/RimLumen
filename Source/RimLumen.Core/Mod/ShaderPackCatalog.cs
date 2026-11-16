@@ -15,22 +15,22 @@ public static class ShaderPackCatalog
 
     private static readonly IReadOnlyList<ShaderPackOptionDefinition> StandardOptions =
     [
-        new("bloomIntensity", "泛光强度 (Bloom intensity)", ShaderPackOptionTarget.BloomIntensity, 0.16f, 0.0f, 0.8f, 0.01f,
-            "控制 HDR 发光体与粒子泛光的整体叠加强度。"),
-        new("bloomThreshold", "起辉阈值 (Bloom threshold)", ShaderPackOptionTarget.BloomThreshold, 1.0f, 0.2f, 3.0f, 0.05f,
-            "亮度超过该阈值的像素才会进入泛光金字塔。"),
-        new("bloomKnee", "高光过渡膝宽 (Bloom knee)", ShaderPackOptionTarget.BloomKnee, 0.5f, 0.05f, 1.0f, 0.01f,
-            "控制阈值附近的平滑起辉过渡宽度。"),
-        new("bloomScatter", "泛光扩散权重 (Bloom scatter)", ShaderPackOptionTarget.BloomScatter, 0.65f, 0.2f, 0.95f, 0.01f,
-            "控制多级升采样时低频光晕向四周扩散的权重。"),
+        new("bloomIntensity", "RimLumen_BloomIntensity", ShaderPackOptionTarget.BloomIntensity, 0.16f, 0.0f, 0.8f, 0.01f,
+            "RimLumen_BloomIntensityTooltip"),
+        new("bloomThreshold", "RimLumen_BloomThreshold", ShaderPackOptionTarget.BloomThreshold, 1.0f, 0.2f, 3.0f, 0.05f,
+            "RimLumen_BloomThresholdTooltip"),
+        new("bloomKnee", "RimLumen_BloomKnee", ShaderPackOptionTarget.BloomKnee, 0.5f, 0.05f, 1.0f, 0.01f,
+            "RimLumen_BloomKneeTooltip"),
+        new("bloomScatter", "RimLumen_BloomScatter", ShaderPackOptionTarget.BloomScatter, 0.65f, 0.2f, 0.95f, 0.01f,
+            "RimLumen_BloomScatterTooltip"),
     ];
 
     public static ShaderPackEntry StandardEntry { get; } = new(
         DefaultPackId,
-        "Standard (默认 · 零侵入基线)",
+        "RimLumen_StandardPackName",
         "RimLumen",
-        "RimLumen 内置默认 HDR 与 5 级 Bloom 管线；关闭原版加色增强且无活动特效时保持逐像素零差。",
-        "内置",
+        "RimLumen_StandardPackDescription",
+        "RimLumen_SourceBuiltIn",
         null,
         ShaderPackSpec.Default,
         StandardOptions);
@@ -174,8 +174,8 @@ public static class ShaderPackCatalog
             string.Equals(m.PackageIdPlayerFacing, "NekoYukari.RimLumen", StringComparison.OrdinalIgnoreCase));
         if (self is not null)
         {
-            roots.Add((Path.Combine(self.RootDir, "1.7", "ShaderPacks"), "内置"));
-            roots.Add((Path.Combine(self.RootDir, "ShaderPacks"), "内置"));
+            roots.Add((Path.Combine(self.RootDir, "1.7", "ShaderPacks"), "RimLumen_SourceBuiltIn"));
+            roots.Add((Path.Combine(self.RootDir, "ShaderPacks"), "RimLumen_SourceBuiltIn"));
         }
 
         foreach (ModContentPack mod in mods)
@@ -183,13 +183,13 @@ public static class ShaderPackCatalog
             if (ReferenceEquals(mod, self))
                 continue;
             string label = string.IsNullOrWhiteSpace(mod.Name) ? mod.PackageIdPlayerFacing : mod.Name;
-            roots.Add((Path.Combine(mod.RootDir, "1.7", "ShaderPacks"), $"模组: {label}"));
-            roots.Add((Path.Combine(mod.RootDir, "ShaderPacks"), $"模组: {label}"));
+            roots.Add((Path.Combine(mod.RootDir, "1.7", "ShaderPacks"), $"RimLumen_SourceMod:{label}"));
+            roots.Add((Path.Combine(mod.RootDir, "ShaderPacks"), $"RimLumen_SourceMod:{label}"));
         }
 
         string? localDir = TryGetLocalUserPacksDirectory();
         if (!string.IsNullOrWhiteSpace(localDir))
-            roots.Add((localDir, "本地"));
+            roots.Add((localDir, "RimLumen_SourceLocal"));
 
         return ScanRoots(roots);
     }

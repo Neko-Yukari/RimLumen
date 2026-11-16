@@ -164,6 +164,7 @@ finally {
     }
 }
 
+Copy-FilesToPackage 'Languages'
 Copy-FilesToPackage '1.7/Defs'
 Copy-FilesToPackage '1.7/Textures'
 Copy-FilesToPackage '1.7/ShaderPacks'
@@ -179,6 +180,8 @@ foreach ($required in @(
         'About/Preview.png',
         'LoadFolders.xml',
         'docs/api.md',
+        'Languages/English/Keyed/RimLumen.xml',
+        'Languages/ChineseSimplified/Keyed/RimLumen.xml',
         '1.7/Assemblies/RimLumen.Core.dll',
         '1.7/Compat/RimUnity/Assemblies/RimLumen.Adapter.RimUnity.dll')) {
     if (-not (Test-Path -LiteralPath (Join-Path $outFull $required) -PathType Leaf)) {
@@ -208,7 +211,7 @@ foreach ($shaderDir in @('Particles', 'PostFx')) {
     }
 }
 
-foreach ($dataDir in @('1.7/Defs', '1.7/Textures', '1.7/ShaderPacks')) {
+foreach ($dataDir in @('Languages', '1.7/Defs', '1.7/Textures', '1.7/ShaderPacks')) {
     $srcData = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot $dataDir) -File -Recurse)
     if ($srcData.Count -eq 0) {
         $failures.Add("no files found in $dataDir")
