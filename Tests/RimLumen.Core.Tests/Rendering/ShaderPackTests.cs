@@ -94,6 +94,7 @@ public static class ShaderPackTests
                         new ShaderPackInputBinding(1, "bloom"),
                         new ShaderPackInputBinding(2, "scene"),
                         new ShaderPackInputBinding(3, "blur"),
+                        new ShaderPackInputBinding(4, "GLOW"),
                     ],
                     ShaderPackBlendMode.PremultipliedAlpha),
             ],
@@ -110,6 +111,7 @@ public static class ShaderPackTests
         Equal(new ShaderPackGraphValidator.PlannedInput(0, ShaderPackGraphValidator.InputKind.Hdr), plan.Passes[2].Inputs[0]);
         Equal(new ShaderPackGraphValidator.PlannedInput(1, ShaderPackGraphValidator.InputKind.Bloom), plan.Passes[2].Inputs[1]);
         Equal(new ShaderPackGraphValidator.PlannedInput(3, ShaderPackGraphValidator.InputKind.Target, 1), plan.Passes[2].Inputs[3]);
+        Equal(new ShaderPackGraphValidator.PlannedInput(4, ShaderPackGraphValidator.InputKind.Glow), plan.Passes[2].Inputs[4]);
     }
 
     [LumenFact]
@@ -177,7 +179,7 @@ public static class ShaderPackTests
         Throws<ArgumentException>(() => ShaderPackGraphValidator.Validate(new ShaderPackSpec { BloomMipLevels = 8 }));
 
         // Reserved target names and prefix
-        foreach (string badName in new[] { "hdr", "bloom", "scene", "depth", "mapLightField", "backbuffer", "prev:foo", "" })
+        foreach (string badName in new[] { "hdr", "glow", "bloom", "scene", "depth", "mapLightField", "backbuffer", "prev:foo", "" })
         {
             Throws<ArgumentException>(() => ShaderPackGraphValidator.Validate(new ShaderPackSpec
             {

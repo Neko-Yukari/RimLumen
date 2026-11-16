@@ -12,16 +12,21 @@ vec3 sanitizeHdr(vec3 c)
     return clamp(c, vec3(0.0), vec3(1024.0));
 }
 
+// Identity up to a peak of 1, so the layer adds exactly what was drawn. Above 1 the peak holds at 1 and the
+// excess whitens the colour toward white along its own hue instead of clipping per channel.
+vec3 compressHighlights(vec3 color)
+{
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak <= 1.0) return color;
+    float excess = peak - 1.0;
+    return mix(color / peak, vec3(1.0), excess / (excess + 4.0));
+}
+
 void main()
 {
     vec4 hdr = texture(hdrImage, uv);
     hdr.rgb = sanitizeHdr(hdr.rgb);
-    vec3 color = hdr.rgb + texture(bloomImage, uv).rgb * pc.value.x;
-    float peak = max(color.r, max(color.g, color.b));
-    float shoulder = max(peak - 1.0, 0.0);
-    float desaturation = shoulder / (shoulder + 4.0);
-    vec3 hue = color / max(peak, 0.00001);
-    vec3 mapped = mix(hue, vec3(1.0), desaturation) * (1.0 - exp(-peak));
+    vec3 mapped = compressHighlights(hdr.rgb + texture(bloomImage, uv).rgb * pc.value.x);
     // Zero by default; later distortion contributors can supply an explicit screen-space offset.
     vec2 offset = hdr.rg * pc.value.y * pc.value.zw;
     vec3 refracted = texture(sceneImage, uv + offset).rgb - texture(sceneImage, uv).rgb;

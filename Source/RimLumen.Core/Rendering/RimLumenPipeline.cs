@@ -37,6 +37,10 @@ internal sealed class RimLumenPipeline : IDisposable
     private ILumenFrameContributor[] activeContributors = Array.Empty<ILumenFrameContributor>();
     private readonly List<ILumenFrameContributor> activeContributorBuffer = new();
     private readonly List<string> featureNames = new();
+    private readonly OverlayMaskMaterials overlayMasks = new();
+    // Main thread: this frame's fog of war / darkness commands, re-pointed at their masks, with submission order and
+    // the vanilla material whose current properties each mask draw reads.
+    private readonly List<(int Order, Material Source, MeshDrawCommand Command)> maskCommands = new();
     private bool disposed;
 
     internal RimLumenPipeline(EngineApplication app)
@@ -184,16 +188,51 @@ internal sealed class RimLumenPipeline : IDisposable
         if (Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || Current.CameraDriver?.MyCamera == null)
             return null;
         MeshDrawSubmissionSnapshot snapshot = MeshDrawSubmission.CaptureFlushedSnapshot(App.GraphicsDevice!);
-        var draws = MeshDrawFrame.RentList();
+        // Both frames own their rented draws from here on; only a published PipelineFrame takes them over.
+        var mesh = new MeshDrawFrame(timing.FrameNumber, view, MeshDrawFrame.RentList(), MeshDrawFrame.RentList(), Vector3.UnitY);
+        // The vanilla scene keeps drawing the original glow; these copies only feed bloom and the `glow` pack input.
+        var glowMesh = new MeshDrawFrame(timing.FrameNumber, view, MeshDrawFrame.RentList(), MeshDrawFrame.RentList(), Vector3.UnitY);
+        try
+        {
+            Captured = CaptureFrame(in timing, snapshot, mesh, glowMesh);
+            return Captured;
+        }
+        catch (Exception)
+        {
+            mesh.Dispose();
+            glowMesh.Dispose();
+            throw;
+        }
+    }
+
+    // Ensures: a PipelineFrame owning mesh and glowMesh, or null after disposing both when the frame is skipped.
+    private PipelineFrame? CaptureFrame(in FrameTiming timing, MeshDrawSubmissionSnapshot snapshot, MeshDrawFrame mesh,
+        MeshDrawFrame glowMesh)
+    {
+        List<FinalDrawItem> draws = mesh.Draws;
+        List<FinalDrawItem> glowDraws = glowMesh.Draws;
+        maskCommands.Clear();
         DrawItemFactory maker = MeshDrawSubmission.DrawItemMaker ?? throw new InvalidOperationException("DrawItemFactory is unavailable.");
         for (int i = 0; i < snapshot.CommandCount; i++)
         {
             MeshDrawCommand command = snapshot.Commands[i];
-            if (command.PassId != RimLumenRenderHost.LumenRenderPassId)
+            bool vanillaGlow = command.PassId != RimLumenRenderHost.LumenRenderPassId;
+            if (vanillaGlow)
             {
                 if (!RimLumenRenderHost.EnableVanillaAdditiveBloom) continue;
                 try
                 {
+                    // Fog of war / darkness: the glow copies are only shown correctly with their mask, so a mask the
+                    // engine rejects (e.g. a mod's incompatible overlay shader) trips this same fail-safe.
+                    string? maskFragment = OverlayMaskMaterials.MaskFragmentFor(command.Material.Shader.Key);
+                    if (maskFragment != null)
+                    {
+                        maskCommands.Add((i, command.Material, new MeshDrawCommand(command.Mesh,
+                            overlayMasks.Get(command.Material, maskFragment), command.PropertyRange, command.Matrix,
+                            command.SubmeshIndex, RimLumenRenderHost.LumenRenderPassId, command.Instancing,
+                            OverlayMaskMaterials.MaskRenderQueue, command.Layer, command.Storage)));
+                        continue;
+                    }
                     FinalDrawItem? candidate = maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i);
                     if (candidate == null) continue;
                     bool keep = AdditiveEmissiveFilter.IsAdditiveEmissive(candidate.Binding.PipelineState, candidate.Binding.Shader.Key);
@@ -210,9 +249,13 @@ internal sealed class RimLumenPipeline : IDisposable
                     // Native RimLumen effects keep rendering; only the third-party/vanilla glow enhancement is dropped.
                     Log.Error($"[RimLumen] Vanilla additive compatibility fail-safe tripped; disabling vanilla glow enhancement: {ex}");
                     RimLumenRenderHost.EnableVanillaAdditiveBloom = false;
+                    // Drop the copies this frame already took too, so the tripping frame shows no enhancement either.
+                    foreach (FinalDrawItem copy in glowDraws) FinalDrawItem.Return(copy);
+                    glowDraws.Clear();
+                    maskCommands.Clear();
                     continue;
                 }
-                // Preserve the original MapMain submission; only this fresh HDR copy changes pass.
+                // Preserve the original MapMain submission; only this fresh glow copy changes pass.
                 command = new MeshDrawCommand(command.Mesh, command.Material, command.PropertyRange, command.Matrix,
                     command.SubmeshIndex, RimLumenRenderHost.LumenRenderPassId, command.Instancing,
                     command.RenderQueueOverride, command.Layer, command.Storage);
@@ -224,7 +267,7 @@ internal sealed class RimLumenPipeline : IDisposable
                 FinalDrawItem.Return(draw);
                 throw new InvalidOperationException("RimLumen routed materials must not write shared scene depth.");
             }
-            draws.Add(draw);
+            (vanillaGlow ? glowDraws : draws).Add(draw);
         }
         int unsupported = 0;
         foreach (PersistentDrawCallSource source in snapshot.PersistentSources)
@@ -242,20 +285,23 @@ internal sealed class RimLumenPipeline : IDisposable
         foreach (ILumenFrameContributor contributor in contributors)
             if (contributor is ILumenHdrDrawAppender appender)
                 appender.AppendHdrDraws(captureIndex, draws, maker, snapshot.PropertyArena, draws.Count, DepthProxy);
-        var mesh = new MeshDrawFrame(timing.FrameNumber, view, draws, MeshDrawFrame.RentList(), Vector3.UnitY);
 
         ShaderPackSpec activePack = RimLumenRenderHost.ActiveShaderPack;
         bool runOnEmptyFrames = activePack.RunOnEmptyFrames;
-        if (HdrFrameGate.Decide(contributors.Length > 0, draws.Count, runOnEmptyFrames) == HdrFrameMode.Skip)
+        int routedDrawCount = draws.Count + glowDraws.Count;
+        if (HdrFrameGate.Decide(contributors.Length > 0, routedDrawCount, runOnEmptyFrames) == HdrFrameMode.Skip)
         {
             mesh.Dispose();
+            glowMesh.Dispose();
             RimLumenRenderHost.SetFrameCapabilities(false, false);
             return null;
         }
         bool hasDirectHdr = HasDirectHdrContributor(contributors);
-        bool hasHdrDraws = HdrFrameGate.ShouldRenderHdr(draws.Count, hasDirectHdr);
-        bool renderHdr = HdrFrameGate.ShouldRenderHdr(draws.Count, hasDirectHdr, runOnEmptyFrames);
+        bool hasHdrDraws = HdrFrameGate.ShouldRenderHdr(routedDrawCount, hasDirectHdr);
+        bool renderHdr = HdrFrameGate.ShouldRenderHdr(routedDrawCount, hasDirectHdr, runOnEmptyFrames);
         if (!renderHdr) RimLumenRenderHost.SetFrameCapabilities(false, false);
+        // Fog of war and darkness cover the glow copies under them; overlays alone never keep a frame from skipping.
+        if (glowDraws.Count > 0) AppendOverlayMasks(glowDraws, maker, snapshot.PropertyArena);
 
         Map? map = Find.CurrentMap;
         int mapSizeX = map?.Size.x ?? 0;
@@ -283,9 +329,27 @@ internal sealed class RimLumenPipeline : IDisposable
             isPaused,
             in rtParams);
 
-        Captured = new PipelineFrame(captureIndex, mesh, contributors, depthParams, mapIndex, renderHdr,
+        return new PipelineFrame(captureIndex, mesh, glowMesh, contributors, depthParams, mapIndex, renderHdr,
             hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms);
-        return Captured;
+    }
+
+    private void AppendOverlayMasks(List<FinalDrawItem> target, DrawItemFactory maker, DrawPropertyArena arena)
+    {
+        foreach ((int order, Material source, MeshDrawCommand vanilla) in maskCommands)
+        {
+            // Vanilla updates the overlay materials in place (SkyManager rewrites FogOfWar's colour), so each mask
+            // draw carries the source's current properties, then vanilla's per-draw block, which wins on overlap.
+            ReadOnlySpan<DrawProperty> current = source.PropertiesForReading;
+            Span<DrawProperty> properties = arena.Allocate(current.Length + vanilla.PropertyRange.Count, out DrawPropertyRange range);
+            current.CopyTo(properties);
+            arena.GetProperties(vanilla.PropertyRange).CopyTo(properties[current.Length..]);
+            var command = new MeshDrawCommand(vanilla.Mesh, vanilla.Material, range, vanilla.Matrix, vanilla.SubmeshIndex,
+                vanilla.PassId, vanilla.Instancing, vanilla.RenderQueueOverride, vanilla.Layer, vanilla.Storage);
+            // The top queue plus the top host order sorts each mask after every copy, whose host order is 0.
+            FinalDrawItem? mask = maker.TryMake(in command, arena, UnityEngine.Shader.GlobalKeywordKey, order,
+                hostOrder: OverlayMaskMaterials.MaskHostOrder);
+            if (mask != null) target.Add(mask);
+        }
     }
 
     internal static bool HasDirectHdrContributor(IEnumerable<ILumenFrameContributor> frameContributors)
@@ -334,6 +398,7 @@ internal sealed class RimLumenPipeline : IDisposable
 internal sealed class PipelineFrame(
     ulong index,
     MeshDrawFrame mesh,
+    MeshDrawFrame glowMesh,
     ILumenFrameContributor[] contributors,
     Vector4 depthParams,
     int mapIndex,
@@ -351,7 +416,14 @@ internal sealed class PipelineFrame(
     internal int MapIndex { get; } = mapIndex;
     internal ulong Index { get; } = index;
     internal MeshDrawFrame Mesh { get; } = mesh;
+    internal MeshDrawFrame GlowMesh { get; } = glowMesh;
+    internal bool HasGlowDraws => GlowMesh.Draws.Count > 0;
     internal ILumenFrameContributor[] Contributors { get; } = contributors;
     internal Vector4 DepthParams { get; } = depthParams;
-    public void Dispose() => Mesh.Dispose();
+
+    public void Dispose()
+    {
+        Mesh.Dispose();
+        GlowMesh.Dispose();
+    }
 }

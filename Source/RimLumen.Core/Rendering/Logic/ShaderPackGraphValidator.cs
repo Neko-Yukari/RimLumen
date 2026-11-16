@@ -9,10 +9,10 @@ public static class ShaderPackGraphValidator
     private const string PrevPrefix = "prev:";
     private static readonly string[] ReservedSourceNames =
     [
-        "hdr", "bloom", "scene", "depth", "mapLightField", "backbuffer",
+        "hdr", "glow", "bloom", "scene", "depth", "mapLightField", "backbuffer",
     ];
 
-    internal enum InputKind { Hdr, Bloom, Scene, Depth, MapLightField, Target }
+    internal enum InputKind { Hdr, Glow, Bloom, Scene, Depth, MapLightField, Target }
 
     internal readonly record struct PlannedInput(int Binding, InputKind Kind, int TargetIndex = -1, int HistoryFramesAgo = 0);
 
@@ -191,6 +191,7 @@ public static class ShaderPackGraphValidator
         InputKind? kind = source switch
         {
             _ when string.Equals(source, "hdr", StringComparison.OrdinalIgnoreCase) => InputKind.Hdr,
+            _ when string.Equals(source, "glow", StringComparison.OrdinalIgnoreCase) => InputKind.Glow,
             _ when string.Equals(source, "bloom", StringComparison.OrdinalIgnoreCase) => InputKind.Bloom,
             _ when string.Equals(source, "scene", StringComparison.OrdinalIgnoreCase) => InputKind.Scene,
             _ when string.Equals(source, "depth", StringComparison.OrdinalIgnoreCase) => InputKind.Depth,

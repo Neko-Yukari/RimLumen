@@ -101,7 +101,7 @@ internal sealed class ShaderPackRuntime : IDisposable
             bloomDown[0] = new PostEffectPass(
                 "RimLumenBloomDown0",
                 plan.BloomPrefilterShaderPath,
-                new[] { 0, 2, 3, 4 },
+                new[] { 0, 1, 2, 3, 4 },
                 BlendState.Opaque,
                 pushConstantSize: 16,
                 maxPassesPerFrame: 1,
@@ -165,16 +165,19 @@ internal sealed class ShaderPackRuntime : IDisposable
         RenderTexture scene,
         in ShaderPackUniforms uniforms,
         bool hasHdrDraws,
+        bool hasGlowDraws,
         bool hasSceneDepth)
     {
         EnsurePlaceholdersAndTargets(ctx.CommandBuffer, scene.Width, scene.Height);
 
         RenderTexture depthTex = hasSceneDepth ? slot.DepthSnapshot : depth1x1!;
+        RenderTexture glowTex = hasGlowDraws ? slot.Glow : black1x1!;
         bool skipBuiltInBloom = plan.BloomMipLevels == 0 || (!hasHdrDraws && !plan.HasCustomBloomShader);
 
         if (!skipBuiltInBloom && slot.Down.Length > 0)
         {
             bloomDown[0].SetInput(0, slot.Color);
+            bloomDown[0].SetInput(1, glowTex);
             bloomDown[0].SetInput(2, scene);
             bloomDown[0].SetInput(3, depthTex);
             BindMapLightField(bloomDown[0], 4);
@@ -221,7 +224,7 @@ internal sealed class ShaderPackRuntime : IDisposable
             PostEffectPass pass = customOffscreenPasses[i];
             foreach (PlannedInput input in passSpec.Inputs)
             {
-                BindInputSource(pass, input, slot, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, writeOrdinal);
+                BindInputSource(pass, input, slot, glowTex, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, writeOrdinal);
             }
             pass.SetUniforms(in uniforms);
             RenderTexture output = ResolveWriteTarget(passSpec.OutputTargetIndex, ctx.SubmissionFrameIndex, writeOrdinal);
@@ -241,16 +244,18 @@ internal sealed class ShaderPackRuntime : IDisposable
         RenderTexture scene,
         in ShaderPackUniforms uniforms,
         bool hasHdrDraws,
+        bool hasGlowDraws,
         bool hasSceneDepth)
     {
         RenderTexture depthTex = hasSceneDepth ? slot.DepthSnapshot : depth1x1!;
+        RenderTexture glowTex = hasGlowDraws ? slot.Glow : black1x1!;
         bool skipBuiltInBloom = plan.BloomMipLevels == 0 || (!hasHdrDraws && !plan.HasCustomBloomShader);
         RenderTexture bloomTex = skipBuiltInBloom || slot.Bloom is null ? black1x1! : slot.Bloom;
 
         PlannedPass finalSpec = plan.Passes[^1];
         foreach (PlannedInput input in finalSpec.Inputs)
         {
-            BindInputSource(backbufferPass, input, slot, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
+            BindInputSource(backbufferPass, input, slot, glowTex, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
         }
         backbufferPass.SetUniforms(in uniforms);
         Vector4 finalPc = finalSpec.UsesBuiltInComposite
@@ -357,6 +362,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         PostEffectPass pass,
         PlannedInput input,
         HdrTargets.Slot slot,
+        RenderTexture glowTex,
         RenderTexture bloomTex,
         RenderTexture scene,
         RenderTexture depthTex,
@@ -366,6 +372,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         switch (input.Kind)
         {
             case InputKind.Hdr: pass.SetInput(input.Binding, slot.Color); return;
+            case InputKind.Glow: pass.SetInput(input.Binding, glowTex); return;
             case InputKind.Bloom: pass.SetInput(input.Binding, bloomTex); return;
             case InputKind.Scene: pass.SetInput(input.Binding, scene); return;
             case InputKind.Depth: pass.SetInput(input.Binding, depthTex); return;

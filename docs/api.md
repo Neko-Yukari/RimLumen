@@ -438,7 +438,11 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 
 ### 2. 原版加法发光自动增强的兼容现状
 
-RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled` 且 `DstColor == One`、`ColorOp == Add`、`SrcColor` 为 `SrcAlpha` 或 `One`、且不写深度）进行重画以进入 HDR 泛光，并内置排除了 5 个全屏/环境遮罩键：`GlowOverlay`、`OxygenOverlayIndoors`、`GravshipLensFlare`、`UnlitAdditive`、`MoteWater`。
+RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled` 且 `DstColor == One`、`ColorOp == Add`、`SrcColor` 为 `SrcAlpha` 或 `One`、且不写深度）额外画一份拷贝进入 HDR 泛光，并内置排除了 5 个全屏/环境遮罩键：`GlowOverlay`、`OxygenOverlayIndoors`、`GravshipLensFlare`、`UnlitAdditive`、`MoteWater`。
+
+原版绘制保持原样，发光核心仍由原版场景画出；拷贝只写入独立的 `glow` 目标，供内置 Bloom 预过滤和光影包的 `glow` 输入使用，不进入 `hdr` 层，也不参与合成的核心项。因此发光下方的地面不会被压暗。关闭该开关或触发其熔断后，原版发光不再有任何增强；没有其他原生 HDR 效果、且当前光影包不改写场景时，画面与原版一致。
+
+原版战争迷雾（`FogOfWar`）与 Anomaly 黑暗（`Darkness`）在原版场景里画在发光之上。RimLumen 用原版的网格、顶点色与当前材质参数把这两种覆盖层重画进 `glow` 目标，只重建它们对下方光的衰减：迷雾下保留 `1 - a`，黑暗下保留原版的衰减与染色（不含原版的去饱和）。因此 `glow` 与原版场景里同一处发光被压暗的程度一致：迷雾完全覆盖处不再透出泛光，黑暗下残余的亮度仍可能产生泛光。光影包无需处理。迷雾边缘外的发光，泛光仍会照常扩散到迷雾上。RimLumen 自己的 `hdr` 粒子目前不受这两种覆盖层遮挡。
 
 如果在自定义 `ShaderDef` 上不想被自动重画增强，可以挂载 `<li Class="RimLumen.Core.Compat.LumenEmissiveModExtension"><EnableHdrBloom>false</EnableHdrBloom></li>` 进行逐 `ShaderDef` 排除。（注：该扩展类中的 `HdrMultiplier` 字段当前尚未接入重画强度调节，仅 `EnableHdrBloom` 生效。）
 
@@ -620,7 +624,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 
 #### 静态 DAG 校验规则（`ShaderPackGraphValidator`）
 
-1. **保留源名**：`hdr`、`bloom`、`scene`、`depth`、`mapLightField`、`backbuffer` 为保留源名，不可作为自定义 `targets[].name`，也不能用 `prev:` 作为自定义目标前缀。
+1. **保留源名**：`hdr`、`glow`、`bloom`、`scene`、`depth`、`mapLightField`、`backbuffer` 为保留源名，不可作为自定义 `targets[].name`，也不能用 `prev:` 作为自定义目标前缀。
 2. **末尾唯一 `backbuffer`**：若 `passes` 非空，仅最后一个 Pass 必须输出到 `"backbuffer"`；其余所有离屏 Pass 必须输出到已声明的 `targets[].name`，且必须使用 `"blend": "Opaque"` 与非空 `shader`。
 3. **禁止采样 `backbuffer`**：任何 Pass 的 `inputs[].source` 均不能填 `"backbuffer"`。
 4. **无前向引用与无同帧自读**：采样普通 `target` 时，必须有排在当前 Pass 之前的 Pass 已向其写入；禁止在同一 Pass 中既写 `X` 又直接以 `X` 作为输入。
@@ -632,7 +636,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 即使 `runOnEmptyFrames` 为 `true`，当满足以下任一条件时，运行时仍会跳过内置 Bloom 降采样与升采样链，并将 `bloom` 输入源绑定为 1×1 全黑占位纹理 `black1x1`：
 
 - `bloomMipLevels == 0`；
-- 当前帧没有任何 HDR 绘制（`!hasHdrDraws`），**且**包未设置 `bloomPrefilterShader`、`bloomDownShader`、`bloomUpShader` 中的任意一个路径。
+- 当前帧没有任何 HDR 绘制（含原版发光拷贝，`!hasHdrDraws`），**且**包未设置 `bloomPrefilterShader`、`bloomDownShader`、`bloomUpShader` 中的任意一个路径。
 
 需要基于 `scene` / `depth` / `mapLightField` 在空帧计算自定义 Bloom 散射时，请至少指定一个自定义 Bloom 着色器（如 `bloomPrefilterShader`）并启用 `runOnEmptyFrames: true`。
 
@@ -649,11 +653,14 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 
 | 源名称 | 格式与滤波 | 未激活时的占位纹理 | 说明 |
 | --- | --- | --- | --- |
-| `hdr` | `R16G16B16A16SFloat` / `Linear` | — | 线性 HDR 粒子与发光绘制层（A 为遮罩/不透明度）。 |
+| `hdr` | `R16G16B16A16SFloat` / `Linear` | — | RimLumen 原生 HDR 绘制层：RGB 为预乘颜色；A 为原生 Alpha / 预乘粒子的覆盖度，加法粒子写 0。不含原版发光拷贝。不受原版战争迷雾与黑暗遮挡。 |
+| `glow` | `R16G16B16A16SFloat` / `Linear` | `black1x1`（全 0） | 原版及第三方加法发光的拷贝，未截断的叠加值。场景里已有这些发光的核心，合成时不要再把它加回场景；用于泛光、光晕、拖尾等。已按原版战争迷雾与黑暗衰减。A 未使用。 |
 | `bloom` | `R16G16B16A16SFloat` / `Linear` | `black1x1`（`R8G8B8A8UNorm` 全 0） | 内置多级 Bloom 金字塔输出。 |
 | `scene` | 场景主色彩格式 / `Linear` | — | Waylith 渲染的地图、角色与建筑主场景画面。 |
 | `depth` | `R32SFloat` / `Point` | `depth1x1`（`R32SFloat`，值为 `1.0`） | 由场景深度拷贝得到的线性可读颜色快照。 |
 | `mapLightField` | `R8G8B8A8UNorm` / `Linear` | `black1x1`（全 0） | 尺寸为 `mapSizeX x mapSizeZ` 的全图屋顶/光照/封闭度/迷雾场。 |
+
+`hdr`、`glow` 与 `scene` 的 RGB 使用同一种编码，可以直接相加，不需要做 gamma / 线性转换：场景目标是 `B8G8R8A8UNorm`，原版直接按存储值混合，RimLumen 的 HDR 目标用同样的着色器输出与混合方式，只是不截断。`1.0` 等于原版的满亮度，大于 `1.0` 的部分就是原版会截掉的额外亮度。
 
 #### 默认输入绑定（未使用 `passes` 自定义绑定时）
 
@@ -664,13 +671,13 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
   - `binding = 3`：`depth`
   - `binding = 4`：`mapLightField`
 - **自定义 `bloomPrefilterShader`**：
-  - `binding = 0`：`hdr`、`binding = 2`：`scene`、`binding = 3`：`depth`、`binding = 4`：`mapLightField`（注意：**没有 `binding = 1`**，请勿声明）。
+  - `binding = 0`：`hdr`、`binding = 1`：`glow`、`binding = 2`：`scene`、`binding = 3`：`depth`、`binding = 4`：`mapLightField`。
 - **自定义 `bloomDownShader`**：
   - `binding = 0`：上一级降采样纹理、`binding = 4`：`mapLightField`。
 - **自定义 `bloomUpShader`**：
   - `binding = 0`：更低分辨率升采样输入、`binding = 1`：同级降采样纹理、`binding = 4`：`mapLightField`。
 
-> 混合与 Alpha 提示：`passes` 为空时默认合成 Pass 固定使用 `PremultipliedAlpha` 混合到 Backbuffer。若你的合成着色器直接输出最终全屏图像（如含调色、雾效），请输出 `vec4(finalRgb, 1.0)` 或使用显式 `passes` 并设 `"blend": "Opaque"`；若只想把 HDR 粒子与 Bloom 叠加到场景之上，则输出 `vec4(mappedHdr, hdr.a)`。
+> 混合与 Alpha 提示：`passes` 为空时默认合成 Pass 固定使用 `PremultipliedAlpha` 混合到 Backbuffer。若你的合成着色器直接输出最终全屏图像（如含调色、雾效），请输出 `vec4(finalRgb, 1.0)` 或使用显式 `passes` 并设 `"blend": "Opaque"`；若只想把 HDR 粒子与 Bloom 叠加到场景之上，则输出 `vec4(mappedHdr, hdr.a)`：结果为 `mappedHdr + scene * (1 - hdr.a)`，`hdr` 与泛光都为空的像素保持场景原样。色调曲线由各包的合成着色器自行决定；内置默认合成在峰值不超过 1 时原样输出，超过 1 时峰值保持 1，超出部分沿原色相向白色压缩。
 
 > 数值安全提示：`hdr` 是 `RGBA16F`，大量加色粒子叠加后可能溢出成 `Inf`，个别驱动上还可能出现 `NaN`，而不同驱动对它们的处理不一致。凡是直接读取 `hdr` 的 Pass（自定义 prefilter、合成、亮度统计），尤其是写入 `persistent` 历史目标的 Pass，都应先把 `NaN`/`Inf` 置 0 并设上限，否则一个坏像素会被模糊扩散，或长期留在历史缓冲里。内置包的写法见 `Cinematic/Common.glslinc` 中的 `sanitizeHdr`。
 
@@ -704,7 +711,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 
 - **参数映射注意**：`options[].target` 指定的 `packParam0..3` 依次填入 `ubo.PackParam0.xyzw`，`packParam4..7` 填入 `ubo.PackParam1.xyzw`，以此类推。因此 `target` 为 `"packParam1"` 时在 GLSL 中应读取 `ubo.PackParam0.y`，而非 `ubo.PackParam1.x`。
 - **`EnvParams.w` 状态位掩码**：着色器中使用 `uint flags = uint(ubo.EnvParams.w + 0.5);` 解包：
-  - `1u`（bit 0）：`hasHdrDraws`（存在活动 HDR 绘制或直接 HDR 贡献者）
+  - `1u`（bit 0）：`hasHdrDraws`（存在活动 HDR 绘制、原版发光拷贝或直接 HDR 贡献者）
   - `2u`（bit 1）：`hasSceneDepth`（`depth` 绑定真实场景深度而非 `depth1x1`）
   - `4u`（bit 2）：`hasMapLightField`（`mapLightField` 已就绪且绑定真实地图光场）
   - `8u`（bit 3）：`isPaused`（游戏是否处于暂停状态）

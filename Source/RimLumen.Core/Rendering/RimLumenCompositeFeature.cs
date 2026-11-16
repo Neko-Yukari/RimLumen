@@ -52,7 +52,7 @@ internal sealed class RimLumenCompositeFeature : IRenderFeature
                 {
                     try
                     {
-                        owner.ShaderPack.RecordComposite(in ctx, slot, scene, in uniforms, payload.HasHdrDraws, payload.HasSceneDepth);
+                        owner.ShaderPack.RecordComposite(in ctx, slot, scene, in uniforms, payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
                     }
                     catch (Exception ex)
                     {

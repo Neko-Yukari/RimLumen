@@ -438,7 +438,11 @@ An emitter's `textureKey` is resolved on the main thread in the following order:
 
 ### 2. Automatic Vanilla Additive Glow Enhancement
 
-By default, RimLumen redraws vanilla and third-party additive draws (`Blend.Enabled`, `DstColor == One`, `ColorOp == Add`, `SrcColor` is `SrcAlpha` or `One`, and `!Depth.Write`) into the HDR bloom pass, with five built-in fullscreen/ambient shader exclusions: `GlowOverlay`, `OxygenOverlayIndoors`, `GravshipLensFlare`, `UnlitAdditive`, and `MoteWater`.
+By default, RimLumen draws an extra copy of vanilla and third-party additive draws (`Blend.Enabled`, `DstColor == One`, `ColorOp == Add`, `SrcColor` is `SrcAlpha` or `One`, and `!Depth.Write`) for HDR bloom, with five built-in fullscreen/ambient shader exclusions: `GlowOverlay`, `OxygenOverlayIndoors`, `GravshipLensFlare`, `UnlitAdditive`, and `MoteWater`.
+
+The vanilla draw is left untouched, so the vanilla scene still draws the glow core. The copy goes only into a separate `glow` target that feeds the built-in bloom prefilter and the `glow` pack input; it never enters the `hdr` layer or the composite's core term. The ground under a glow is therefore never darkened. Turning the toggle off, or its fail-safe tripping, removes every enhancement of vanilla glow; the image is vanilla when no other native HDR effect is active and the current pack does not rewrite the scene.
+
+Vanilla fog of war (`FogOfWar`) and Anomaly darkness (`Darkness`) draw over glows in the vanilla scene. RimLumen redraws both overlays into the `glow` target with vanilla's meshes, vertex colours and current material properties, rebuilding only how they attenuate light underneath: fog keeps `1 - a`, and darkness keeps vanilla's attenuation and tint (without vanilla's desaturation). `glow` is therefore dimmed as much as the same glow in the vanilla scene: fully fogged glow leaks no bloom, while what remains of a glow under darkness can still bloom. Packs need to do nothing. Bloom from a glow outside a fog edge still spreads over the fog as usual. RimLumen's own `hdr` particles are not covered by these overlays yet.
 
 To opt a custom `ShaderDef` out of automatic HDR redraw, attach `<li Class="RimLumen.Core.Compat.LumenEmissiveModExtension"><EnableHdrBloom>false</EnableHdrBloom></li>`. (Note: `HdrMultiplier` on that extension class is not yet wired into redraw intensity scaling; only `EnableHdrBloom` takes effect.)
 
@@ -620,7 +624,7 @@ When switching packs, `ShaderPackCatalog.ApplyOptionsToRuntime` resets the four 
 
 #### Static DAG Validation (`ShaderPackGraphValidator`)
 
-1. **Reserved names**: `hdr`, `bloom`, `scene`, `depth`, `mapLightField`, and `backbuffer` are reserved source names and cannot be used as `targets[].name`; target names also cannot begin with `prev:`.
+1. **Reserved names**: `hdr`, `glow`, `bloom`, `scene`, `depth`, `mapLightField`, and `backbuffer` are reserved source names and cannot be used as `targets[].name`; target names also cannot begin with `prev:`.
 2. **Single trailing `backbuffer`**: When `passes` is non-empty, only the final pass may—and must—output to `"backbuffer"`. All earlier offscreen passes must target a declared `targets[].name`, use `"blend": "Opaque"`, and specify a non-empty `shader`.
 3. **No `backbuffer` sampling**: No pass may list `"backbuffer"` in `inputs[].source`.
 4. **No forward references or same-pass self-reads**: Sampling a regular target requires an earlier pass in the array to have written it; a pass cannot read its own `output` directly in the same pass.
@@ -632,7 +636,7 @@ When switching packs, `ShaderPackCatalog.ApplyOptionsToRuntime` resets the four 
 Even when `runOnEmptyFrames` is `true`, the runtime skips the built-in Bloom downsample/upsample chain and binds a `1x1` black placeholder (`black1x1`) to `bloom` whenever either condition holds:
 
 - `bloomMipLevels == 0`;
-- There are no HDR draws on the current frame (`!hasHdrDraws`) **and** none of `bloomPrefilterShader`, `bloomDownShader`, or `bloomUpShader` is specified.
+- There are no HDR draws on the current frame, vanilla glow copies included (`!hasHdrDraws`), **and** none of `bloomPrefilterShader`, `bloomDownShader`, or `bloomUpShader` is specified.
 
 If your pack needs custom Bloom scattering on empty frames (e.g., from `scene`, `depth`, or `mapLightField`), specify at least one custom Bloom shader (such as `bloomPrefilterShader`) and set `runOnEmptyFrames: true`.
 
@@ -649,11 +653,14 @@ If your pack needs custom Bloom scattering on empty frames (e.g., from `scene`, 
 
 | Source Name | Format & Filter | Inactive Placeholder | Description |
 | --- | --- | --- | --- |
-| `hdr` | `R16G16B16A16SFloat` / `Linear` | — | Linear HDR particle and emissive draw target (A is mask/opacity). |
+| `hdr` | `R16G16B16A16SFloat` / `Linear` | — | RimLumen-native HDR draw layer: RGB is premultiplied colour; A is the coverage of native alpha / premultiplied particles, and additive particles write 0. Holds no vanilla glow copies. Not covered by vanilla fog of war or darkness. |
+| `glow` | `R16G16B16A16SFloat` / `Linear` | `black1x1` (zero) | Copies of vanilla and third-party additive glow, accumulated without clipping. The scene already contains their cores, so do not add this back onto the scene in a composite; use it for bloom, halos or streaks. Attenuated by vanilla fog of war and darkness. A is unused. |
 | `bloom` | `R16G16B16A16SFloat` / `Linear` | `black1x1` (`R8G8B8A8UNorm` zero) | Built-in multi-mip Bloom pyramid output. |
 | `scene` | Main scene format / `Linear` | — | Waylith's main scene color output (map, pawns, buildings, vanilla lighting). |
 | `depth` | `R32SFloat` / `Point` | `depth1x1` (`R32SFloat`, value `1.0`) | Color snapshot copied from scene depth for regular shader sampling. |
 | `mapLightField` | `R8G8B8A8UNorm` / `Linear` | `black1x1` (zero) | Map-sized (`mapSizeX x mapSizeZ`) roof, glow, enclosure, and fog-of-war texture. |
+
+The RGB of `hdr`, `glow` and `scene` share one encoding, so they add directly with no gamma or linear conversion: the scene target is `B8G8R8A8UNorm` and vanilla blends the stored values directly, while RimLumen's HDR targets use the same shader outputs and blend modes without clipping. `1.0` is vanilla full brightness; anything above `1.0` is the extra brightness vanilla clips.
 
 #### Default Input Bindings (When Not Overridden in `passes[]`)
 
@@ -664,13 +671,13 @@ If your pack needs custom Bloom scattering on empty frames (e.g., from `scene`, 
   - `binding = 3`: `depth`
   - `binding = 4`: `mapLightField`
 - **Custom `bloomPrefilterShader`**:
-  - `binding = 0`: `hdr`, `binding = 2`: `scene`, `binding = 3`: `depth`, `binding = 4`: `mapLightField` (note: **`binding = 1` is not bound**; do not declare it).
+  - `binding = 0`: `hdr`, `binding = 1`: `glow`, `binding = 2`: `scene`, `binding = 3`: `depth`, `binding = 4`: `mapLightField`.
 - **Custom `bloomDownShader`**:
   - `binding = 0`: previous downsample mip, `binding = 4`: `mapLightField`.
 - **Custom `bloomUpShader`**:
   - `binding = 0`: lower-resolution upsample input, `binding = 1`: same-level downsample mip, `binding = 4`: `mapLightField`.
 
-> Blend & alpha note: When `passes` is empty, the composite pass is hardcoded to `PremultipliedAlpha` blending onto the backbuffer. If your composite outputs the full scene (e.g., color grading or fog), output `vec4(finalRgb, 1.0)` or use an explicit `passes` entry with `"blend": "Opaque"`. If you only want to layer HDR particles and bloom over the untouched scene, output `vec4(mappedHdr, hdr.a)`.
+> Blend & alpha note: When `passes` is empty, the composite pass is hardcoded to `PremultipliedAlpha` blending onto the backbuffer. If your composite outputs the full scene (e.g., color grading or fog), output `vec4(finalRgb, 1.0)` or use an explicit `passes` entry with `"blend": "Opaque"`. If you only want to layer HDR particles and bloom over the untouched scene, output `vec4(mappedHdr, hdr.a)`: the result is `mappedHdr + scene * (1 - hdr.a)`, so pixels where both `hdr` and bloom are empty keep the scene unchanged. Each pack's composite shader owns its tone curve; the built-in default composite passes colour through unchanged while its peak is at most 1, and above 1 holds the peak at 1 and compresses the excess toward white along the colour's own hue.
 
 > Numeric safety note: `hdr` is `RGBA16F`; heavy additive overlap can overflow to `Inf`, some drivers can also produce `NaN`, and drivers handle both inconsistently. Any pass that reads `hdr` directly (custom prefilter, composite, luminance statistics), and especially one that writes a `persistent` history target, should zero `NaN`/`Inf` and cap the value first; otherwise one bad pixel spreads through blurs or stays in the history buffer. See `sanitizeHdr` in the built-in `Cinematic/Common.glslinc`.
 
@@ -704,7 +711,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 
 - **Parameter packing note**: `options[].target` values `packParam0..3` map to `ubo.PackParam0.xyzw`, `packParam4..7` map to `ubo.PackParam1.xyzw`, and so on. Thus `"target": "packParam1"` is read from `ubo.PackParam0.y`, not `ubo.PackParam1.x`.
 - **`EnvParams.w` bitmask**: Unpack with `uint flags = uint(ubo.EnvParams.w + 0.5);`:
-  - `1u` (bit 0): `hasHdrDraws` (at least one HDR draw or direct HDR contributor is active)
+  - `1u` (bit 0): `hasHdrDraws` (at least one HDR draw, vanilla glow copy or direct HDR contributor is active)
   - `2u` (bit 1): `hasSceneDepth` (`depth` holds a real scene depth snapshot rather than `depth1x1`)
   - `4u` (bit 2): `hasMapLightField` (`mapLightField` is ready and bound to the real map field)
   - `8u` (bit 3): `isPaused` (game clock is paused)

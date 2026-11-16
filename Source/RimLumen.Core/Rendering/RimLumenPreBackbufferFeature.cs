@@ -50,6 +50,8 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
     {
         private readonly RimLumenPipeline owner;
         private readonly MeshBatchRenderer renderer;
+        // A MeshBatchRenderer sorts and caches one MeshDrawFrame per frame number, so the glow frame needs its own.
+        private readonly MeshBatchRenderer glowRenderer;
         private readonly PostEffectPass depthCopy = new("RimLumenDepthCopy", "PostFx/RimLumenDepthCopy.frag.glsl", new[] { 0 });
         // Render thread only: what RecordHdr has opened in the command buffer, so the fail-safe can leave it balanced.
         private bool labelOpen;
@@ -59,6 +61,7 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
         {
             this.owner = owner;
             renderer = new MeshBatchRenderer(owner.App.GraphicsDevice!, owner.App.RenderContext!);
+            glowRenderer = new MeshBatchRenderer(owner.App.GraphicsDevice!, owner.App.RenderContext!);
         }
 
         public byte PassId => RimLumenRenderHost.LumenRenderPassId;
@@ -129,18 +132,18 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
             var barrierContext = new LumenBarrierContext { Frame = frame, FrameIndex = payload.Index };
             foreach (ILumenFrameContributor contributor in payload.Contributors)
                 contributor.RecordBufferBarriers(in barrierContext);
-            VkClearValue clear = default;
-            VkRenderPassBeginInfo begin = new()
+            if (payload.HasGlowDraws)
             {
-                RenderPass = frame.RenderPass, Framebuffer = frame.Framebuffer,
-                RenderArea = new VkRect2D(frame.Extent), ClearValueCount = 1, ClearValues = &clear
-            };
-            frame.CommandBuffer.BeginRenderPass(in begin, VkSubpassContents.Inline);
-            renderPassOpen = true;
-            VkViewport viewport = new() { Width = frame.Extent.Width, Height = frame.Extent.Height, MinDepth = 0, MaxDepth = 1 };
-            frame.CommandBuffer.SetViewport(0, new ReadOnlySpan<VkViewport>(in viewport));
-            VkRect2D scissor = new(frame.Extent);
-            frame.CommandBuffer.SetScissor(0, new ReadOnlySpan<VkRect2D>(in scissor));
+                var glowFrame = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer, owner.Targets.RenderPass,
+                    slot.GlowFramebuffer, slot.Glow.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat, scene.DepthFormat);
+                BeginTargetPass(in glowFrame);
+                glowRenderer.InvalidateCommandBufferBindings();
+                glowRenderer.RecordPass(in glowFrame, payload.GlowMesh, PassId);
+                glowFrame.CommandBuffer.EndRenderPass();
+                renderPassOpen = false;
+                slot.Glow.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
+            }
+            BeginTargetPass(in frame);
             var drawContext = new LumenHdrDrawContext
             {
                 Frame = frame, FrameIndex = payload.Index, HdrColorTarget = slot.Color,
@@ -165,7 +168,7 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
             ShaderPackSpec packSpec = owner.ShaderPack.Spec;
             try
             {
-                owner.ShaderPack.RecordOffscreen(in ctx, slot, scene, in uniforms, payload.HasHdrDraws, payload.HasSceneDepth);
+                owner.ShaderPack.RecordOffscreen(in ctx, slot, scene, in uniforms, payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
             }
             catch (Exception ex)
             {
@@ -180,10 +183,28 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
             owner.Recorded();
         }
 
+        // Ensures: a cleared HDR-format target is bound with full viewport and scissor; the caller ends the pass.
+        private unsafe void BeginTargetPass(in FrameContext frame)
+        {
+            VkClearValue clear = default;
+            VkRenderPassBeginInfo begin = new()
+            {
+                RenderPass = frame.RenderPass, Framebuffer = frame.Framebuffer,
+                RenderArea = new VkRect2D(frame.Extent), ClearValueCount = 1, ClearValues = &clear
+            };
+            frame.CommandBuffer.BeginRenderPass(in begin, VkSubpassContents.Inline);
+            renderPassOpen = true;
+            VkViewport viewport = new() { Width = frame.Extent.Width, Height = frame.Extent.Height, MinDepth = 0, MaxDepth = 1 };
+            frame.CommandBuffer.SetViewport(0, new ReadOnlySpan<VkViewport>(in viewport));
+            VkRect2D scissor = new(frame.Extent);
+            frame.CommandBuffer.SetScissor(0, new ReadOnlySpan<VkRect2D>(in scissor));
+        }
+
         public void OnRenderTargetRebuilt(IRenderTarget target)
         {
             owner.Targets.Dispose();
             renderer.OnRenderContextRebuilt(owner.App.RenderContext!);
+            glowRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
             depthCopy.Invalidate();
             owner.ShaderPack.InvalidateOffscreen();
         }
@@ -191,6 +212,7 @@ internal sealed class RimLumenPreBackbufferFeature : IRenderFeature, IEarlyMainT
         public void Dispose()
         {
             renderer.Dispose();
+            glowRenderer.Dispose();
             depthCopy.Dispose();
         }
     }
