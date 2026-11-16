@@ -15,7 +15,7 @@ public static class ParticleParitySuite
         int id = sim.AcquireEmitter(new EmitterSpec
         {
             Name = "explicit-full-pool", MaxParticles = 1, StartLifetimeMin = 0.5f, StartLifetimeMax = 0.5f,
-        }, Matrix4x4.Identity, false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
         sim.EmitBurst(id, 1);
         Step(sim, 0f);
         Require(sim.GetLiveParticleCount(id) == 1, "First capture admits the explicit pulse.");
@@ -30,7 +30,7 @@ public static class ParticleParitySuite
     public static void ReviewR1AcceptedPulsesSurvivePauseRestartAndDrainButNotImmediateRelease()
     {
         var sim = new CpuParticleSimulator();
-        int id = sim.AcquireEmitter(new EmitterSpec { Name = "pending", StartLifetimeMin = 1f, StartLifetimeMax = 1f }, Matrix4x4.Identity, false);
+        int id = sim.AcquireEmitter(new EmitterSpec { Name = "pending", StartLifetimeMin = 1f, StartLifetimeMax = 1f }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
         sim.EmitBurst(id, 1);
         Require(sim.LiveParticleCount == 0 && sim.HasActiveWork, "A pending pulse is active work, not yet a live particle.");
         sim.RestartEmitter(id);
@@ -41,7 +41,7 @@ public static class ParticleParitySuite
         Near(0f, sim.LiveParticles[0].Age);
         Step(sim, 1f);
         Require(sim.ActiveEmitterCount == 0 && !sim.HasActiveWork, "Draining emitter releases only after its new particle lifetime.");
-        int cancelled = sim.AcquireEmitter(new EmitterSpec { Name = "cancelled" }, Matrix4x4.Identity, false);
+        int cancelled = sim.AcquireEmitter(new EmitterSpec { Name = "cancelled" }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
         sim.EmitBurst(cancelled, 1);
         sim.ReleaseEmitter(cancelled, true);
         Step(sim, 0f);
@@ -57,9 +57,9 @@ public static class ParticleParitySuite
             RimLumen.Core.Rendering.RimLumenRenderHost.ParticleDensityScale = 0.25f;
             var spec = new EmitterSpec { Name = "carry", MaxParticles = 16, StartLifetimeMin = 10f, StartLifetimeMax = 10f };
             var cpu = new CpuParticleSimulator();
-            int cpuId = cpu.AcquireEmitter(spec, Matrix4x4.Identity, false);
+            int cpuId = cpu.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
             using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(16);
-            int gpuId = gpu.CreateInstance(spec, Matrix4x4.Identity);
+            int gpuId = gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
             int cpuBefore = 0;
             var outputs = new int[8];
             for (int i = 0; i < outputs.Length; i++)
@@ -78,9 +78,9 @@ public static class ParticleParitySuite
             Require(outputs.AsSpan().SequenceEqual(new[] { 1, 0, 0, 0, 1, 0, 0, 0 }) && cpu.LiveParticleCount == 2,
                 "Burst carry must ceil the accumulated total, not enforce min1 for each pulse.");
             var groupedCpu = new CpuParticleSimulator();
-            int groupedId = groupedCpu.AcquireEmitter(spec, Matrix4x4.Identity, false);
+            int groupedId = groupedCpu.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
             using var groupedGpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(16);
-            int groupedGpuId = groupedGpu.CreateInstance(spec, Matrix4x4.Identity);
+            int groupedGpuId = groupedGpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
             for (int i = 0; i < 8; i++)
             {
                 groupedCpu.EmitBurst(groupedId, 1); groupedGpu.EmitBurst(groupedGpuId, 1);
@@ -110,9 +110,9 @@ public static class ParticleParitySuite
             RimLumen.Core.Rendering.RimLumenRenderHost.ParticleDensityScale = 0.1f;
             var spec = new EmitterSpec { Name = "tenths", MaxParticles = 16, StartLifetimeMin = 10f, StartLifetimeMax = 10f };
             var cpu = new CpuParticleSimulator();
-            int cpuId = cpu.AcquireEmitter(spec, Matrix4x4.Identity, false);
+            int cpuId = cpu.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
             using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(16);
-            int gpuId = gpu.CreateInstance(spec, Matrix4x4.Identity);
+            int gpuId = gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
             for (int i = 0; i < 10; i++)
             {
                 cpu.EmitBurst(cpuId, 1); gpu.EmitBurst(gpuId, 1);
@@ -135,9 +135,9 @@ public static class ParticleParitySuite
             RimLumen.Core.Rendering.RimLumenRenderHost.ParticleDensityScale = 0.2f;
             var spec = new EmitterSpec { Name = "fifths", MaxParticles = 16, StartLifetimeMin = 20f, StartLifetimeMax = 20f };
             var cpu = new CpuParticleSimulator();
-            int cpuId = cpu.AcquireEmitter(spec, Matrix4x4.Identity, false);
+            int cpuId = cpu.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
             using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(16);
-            int gpuId = gpu.CreateInstance(spec, Matrix4x4.Identity);
+            int gpuId = gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
             for (int i = 0; i < 5; i++)
             {
                 cpu.EmitBurst(cpuId, 1); gpu.EmitBurst(gpuId, 1);
@@ -149,13 +149,13 @@ public static class ParticleParitySuite
             RimLumen.Core.Rendering.RimLumenRenderHost.ParticleDensityScale = 0.25f;
             var looping = new EmitterSpec
             {
-                Name = "carry-loop", MaxParticles = 16, Looping = true, Duration = 1f, Bursts = new[] { (0.5f, 1) },
+                Name = "carry-loop", MaxParticles = 16, Looping = true, Duration = 1f, Bursts = new[] { new ParticleBurstSpec(0.5f, 1) },
                 StartLifetimeMin = 20f, StartLifetimeMax = 20f,
             };
             var loopCpu = new CpuParticleSimulator();
-            loopCpu.AcquireEmitter(looping, Matrix4x4.Identity);
+            loopCpu.AcquireEmitter(looping, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u);
             using var loopGpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(16);
-            loopGpu.CreateInstance(looping, Matrix4x4.Identity);
+            loopGpu.CreateInstance(looping, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
             int totalGpu = 0;
             for (int i = 0; i < 8; i++)
             {
@@ -177,13 +177,13 @@ public static class ParticleParitySuite
             RimLumen.Core.Rendering.RimLumenRenderHost.ParticleDensityScale = 0.25f;
             var spec = new EmitterSpec
             {
-                Name = "shared-carry", MaxParticles = 8, Duration = 1f, Bursts = new[] { (0.25f, 1) },
+                Name = "shared-carry", MaxParticles = 8, Duration = 1f, Bursts = new[] { new ParticleBurstSpec(0.25f, 1) },
                 StartLifetimeMin = 10f, StartLifetimeMax = 10f,
             };
             var cpu = new CpuParticleSimulator();
-            int cpuId = cpu.AcquireEmitter(spec, Matrix4x4.Identity);
+            int cpuId = cpu.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u);
             using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
-            int gpuId = gpu.CreateInstance(spec, Matrix4x4.Identity);
+            int gpuId = gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
             cpu.EmitBurst(cpuId, 1); gpu.EmitBurst(gpuId, 1);
             Step(cpu, 0.25f); gpu.CaptureMainThread(BurstFrame(0.25f));
             Require(cpu.LiveParticleCount == 1 && gpu.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 1f,
@@ -212,7 +212,7 @@ public static class ParticleParitySuite
                 EffectId = "carry-goto", DefaultDuration = 10f,
                 Nodes = new[] { new EffectNodeSpec { Name = "node", Emitter = new EmitterSpec
                 {
-                    Name = "goto", MaxParticles = 8, Duration = 10f, Bursts = new[] { (9f, 1) },
+                    Name = "goto", MaxParticles = 8, Duration = 10f, Bursts = new[] { new ParticleBurstSpec(9f, 1) },
                     StartLifetimeMin = 10f, StartLifetimeMax = 10f,
                 } } },
                 States = new[] { new EffectStateSpec { Name = "active", Nodes = new[] { "node" }, Loop = true } },
@@ -231,6 +231,98 @@ public static class ParticleParitySuite
         finally { RimLumen.Core.Rendering.RimLumenRenderHost.ParticleDensityScale = original; }
     }
 
+    [LumenFact]
+    public static void Phase3PauseSkipsCrossedBurstAfterActivation()
+    {
+        var spec = new EmitterSpec
+        {
+            Name = "pause-crossed", Duration = 1f, MaxParticles = 8,
+            Bursts = new[] { new ParticleBurstSpec(0.5f, 2) },
+        };
+        var transform = new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity);
+        var cpu = new CpuParticleSimulator();
+        int cpuId = cpu.AcquireEmitter(spec, transform, 1u);
+        using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
+        int gpuId = gpu.CreateInstance(spec, transform, -1, false, 1u);
+        gpu.UpdateInstance(gpuId, transform, true, 1f, 1f);
+        Step(cpu, 0.25f);
+        gpu.CaptureMainThread(BurstFrame(0.25f));
+        Require(cpu.LiveParticleCount == 0 && gpu.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 0f, "No burst before pause.");
+        cpu.SetEmitterParams(cpuId, false, 1f, 1f);
+        gpu.UpdateInstance(gpuId, transform, false, 1f, 1f);
+        Require(cpu.HasActiveWork, "An activated paused clock with no particles must remain eligible for production capture.");
+        Step(cpu, 0.75f);
+        gpu.CaptureMainThread(BurstFrame(0.75f, 1));
+        Require(!cpu.HasActiveWork, "A completed nonloop clock without live or pending particles becomes idle.");
+        Require(cpu.LiveParticleCount == 0 && gpu.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 0f, "Paused burst is skipped.");
+        cpu.SetEmitterParams(cpuId, true, 1f, 1f);
+        gpu.UpdateInstance(gpuId, transform, true, 1f, 1f);
+        Step(cpu, 0.25f);
+        gpu.CaptureMainThread(BurstFrame(0.25f, 2));
+        Console.WriteLine($"pause-resume expected=0 CPU={cpu.LiveParticleCount} GPU={gpu.CapturedFrame!.Emitters[0].Parameters.Slots.Z}");
+        Require(cpu.LiveParticleCount == 0 && gpu.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 0f, "Resume must not replay the crossed burst.");
+    }
+
+    [LumenFact]
+    public static void Phase3PauseNeverActivatedLoopKeepsItsFullWindow()
+    {
+        var spec = new EmitterSpec
+        {
+            Name = "dormant-loop", Duration = 1f, Looping = true, MaxParticles = 8,
+            StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+            Bursts = new[] { new ParticleBurstSpec(0.5f, 2) },
+        };
+        var transform = new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity);
+        var cpu = new CpuParticleSimulator();
+        int cpuId = cpu.AcquireEmitter(spec, transform, 1u, emitting: false);
+        using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
+        int gpuId = gpu.CreateInstance(spec, transform, -1, false, 1u);
+        gpu.UpdateInstance(gpuId, transform, false, 1f, 1f);
+        Require(!cpu.HasActiveWork, "A dormant loop without live or pending particles stays inactive.");
+        Step(cpu, 0.75f); gpu.CaptureMainThread(BurstFrame(0.75f));
+        cpu.SetEmitterParams(cpuId, true, 1f, 1f);
+        cpu.SetEmitterParams(cpuId, false, 1f, 1f);
+        Require(cpu.HasActiveWork, "A loop activated then paused before its first capture still needs its clock advanced.");
+        cpu.SetEmitterParams(cpuId, true, 1f, 1f);
+        gpu.UpdateInstance(gpuId, transform, true, 1f, 1f);
+        Step(cpu, 0.5f); gpu.CaptureMainThread(BurstFrame(0.5f, 1));
+        Require(cpu.LiveParticleCount == 2 && gpu.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 2f,
+            "Never-activated looping emitters start at time zero on both backends.");
+        cpu.RestartEmitter(cpuId); gpu.RestartInstance(gpuId);
+        cpu.SetEmitterParams(cpuId, false, 1f, 1f);
+        gpu.UpdateInstance(gpuId, transform, false, 1f, 1f);
+        Step(cpu, 0.75f); gpu.CaptureMainThread(BurstFrame(0.75f, 2));
+        cpu.SetEmitterParams(cpuId, true, 1f, 1f);
+        gpu.UpdateInstance(gpuId, transform, true, 1f, 1f);
+        Step(cpu, 0.25f); gpu.CaptureMainThread(BurstFrame(0.25f, 3));
+        Require(cpu.LiveParticleCount == 2 && gpu.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 0f,
+            "Restart activates immediately, so a pause before the next update still skips crossed bursts.");
+    }
+
+    [LumenFact]
+    public static void Phase3BurstCapacityDropDoesNotReplayAfterPoolExpires()
+    {
+        var spec = new EmitterSpec
+        {
+            Name = "capacity-drop", Duration = 1f, MaxParticles = 3,
+            StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+            Bursts = new[] { new ParticleBurstSpec(0.25f, 5), new ParticleBurstSpec(0.5f, 7) },
+        };
+        var transform = new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity);
+        var cpu = new CpuParticleSimulator();
+        int cpuId = cpu.AcquireEmitter(spec, transform, 1u);
+        using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(3);
+        int gpuId = gpu.CreateInstance(spec, transform, -1, false, 1u);
+        cpu.EmitBurst(cpuId, 2); gpu.EmitBurst(gpuId, 2);
+        Step(cpu, 1f); gpu.CaptureMainThread(BurstFrame(1f));
+        Console.WriteLine($"capacity-drop expected=3 CPU-admitted={cpu.LiveParticleCount} GPU-budget={gpu.CapturedFrame!.Emitters[0].Parameters.Slots.Z}");
+        Require(cpu.LiveParticleCount == 3 && gpu.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 3f,
+            "Authored bursts and a pending pulse are admitted only up to capacity.");
+        Step(cpu, 10f); gpu.CaptureMainThread(BurstFrame(10f, 1));
+        Require(cpu.LiveParticleCount == 0 && gpu.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 0f,
+            "Dropped authored and explicit requests are not replenished after the full pool expires.");
+    }
+
     private static LumenCaptureContext BurstFrame(float dt, ulong index = 0) => new()
     {
         FrameIndex = index, ViewportWidth = 100, ViewportHeight = 100, LumenRenderPassId = 0,
@@ -245,12 +337,12 @@ public static class ParticleParitySuite
             Name = "pulse-density", MaxParticles = capacity, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
         };
         var cpu = new CpuParticleSimulator();
-        int cpuId = cpu.AcquireEmitter(spec, Matrix4x4.Identity, false);
+        int cpuId = cpu.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
         cpu.EmitBurst(cpuId, first);
         cpu.EmitBurst(cpuId, second);
         Step(cpu, 0f);
         using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(capacity);
-        int gpuId = gpu.CreateInstance(spec, Matrix4x4.Identity);
+        int gpuId = gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
         gpu.EmitBurst(gpuId, first);
         gpu.EmitBurst(gpuId, second);
         gpu.CaptureMainThread(new LumenCaptureContext
@@ -299,7 +391,7 @@ public static class ParticleParitySuite
             EffectId = "review-negative-rate", DefaultDuration = 10f,
             Nodes = new[] { new EffectNodeSpec { Name = "node", Emitter = new EmitterSpec
             {
-                Name = "rate-burst", MaxParticles = 8, RateOverTime = 4f, Bursts = new[] { (0.25f, 1) },
+                Name = "rate-burst", MaxParticles = 8, RateOverTime = 4f, Bursts = new[] { new ParticleBurstSpec(0.25f, 1) },
                 StartLifetimeMin = 10f, StartLifetimeMax = 10f,
             } } },
         };
@@ -376,7 +468,7 @@ public static class ParticleParitySuite
         {
             Name = "drag", StartSpeedMin = 2f, StartSpeedMax = 2f, StartLifetimeMin = 20f, StartLifetimeMax = 20f,
             ForceFields = new[] { new ForceFieldSpec(ForceFieldKind.GravityDrag, Vector3.Zero, new Vector3(2f, 99f, 0f), 0f, 0f) },
-        }, Matrix4x4.Identity, false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
         sim.EmitBurst(id, 1);
         Step(sim, 0f);
         Step(sim, 0.5f);
@@ -417,7 +509,7 @@ public static class ParticleParitySuite
             ForceFields = new[] { new ForceFieldSpec(ForceFieldKind.GravityDrag, Vector3.UnitY, Vector3.Zero, 0f, -10f) },
         };
         var cpu = new CpuParticleSimulator();
-        int id = cpu.AcquireEmitter(spec, Matrix4x4.CreateTranslation(0f, 2f, 0f), false);
+        int id = cpu.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.CreateTranslation(0f, 2f, 0f), Quaternion.Identity), 1u, false);
         cpu.EmitBurst(id, 1); Step(cpu, 0f); Step(cpu, 0.5f);
         CpuParticle before = cpu.LiveParticles[0];
         var paused = BurstFrame(0f) with { UnscaledDeltaTime = 0.5f };
@@ -429,7 +521,7 @@ public static class ParticleParitySuite
         cpu.CaptureMainThread(paused);
         Require(cpu.LiveParticleCount == 0, "A zero-dt capture still expires a descending particle below a moved floor.");
         using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
-        gpu.CreateInstance(spec, Matrix4x4.Identity, mapIndex: 7, realTime: false);
+        gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), mapIndex: 7, realTime: false, emissionSeed: 1u);
         gpu.CaptureMainThread(paused);
         Require(gpu.CapturedFrame!.Emitters[0].Parameters.State.X == 0f && gpu.CapturedFrame.Emitters[0].KillBelowFloor,
             "KillBelowFloor retains its compute work while the uploaded integration dt remains zero.");
@@ -483,10 +575,10 @@ public static class ParticleParitySuite
         int id = sim.AcquireEmitter(new EmitterSpec
         {
             Name = "force", StartLifetimeMin = 20f, StartLifetimeMax = 20f, ForceFields = new[] { field },
-        }, Matrix4x4.CreateTranslation(birthOrigin), false);
+        }, new LumenEmitterTransform(Matrix4x4.CreateTranslation(birthOrigin), Quaternion.Identity), 1u, false);
         sim.EmitBurst(id, 1);
         Step(sim, 0f);
-        sim.SetEmitterTransform(id, Matrix4x4.CreateTranslation(currentOrigin));
+        sim.SetEmitterTransform(id, new LumenEmitterTransform(Matrix4x4.CreateTranslation(currentOrigin), Quaternion.Identity));
         Step(sim, 0.5f);
         return sim.LiveParticles[0].Velocity;
     }
@@ -530,10 +622,10 @@ public static class ParticleParitySuite
         int id = sim.AcquireEmitter(new EmitterSpec
         {
             Name = "size-world", StartSizeMin = 2f, StartSizeMax = 2f,
-        }, Matrix4x4.CreateScale(-2f, 4f, 8f), false);
+        }, new LumenEmitterTransform(Matrix4x4.CreateScale(-2f, 4f, 8f), Quaternion.Identity), 1u, false);
         sim.EmitBurst(id, 1);
         Step(sim, 0f);
-        sim.SetEmitterTransform(id, Matrix4x4.CreateScale(1f));
+        sim.SetEmitterTransform(id, new LumenEmitterTransform(Matrix4x4.CreateScale(1f), Quaternion.Identity));
         Step(sim, 0f);
         Near(8f, sim.LiveParticles[0].StartSize);
         Near(8f, Vector3.Distance(sim.Vertices[0].Position, sim.Vertices[1].Position));
@@ -546,10 +638,10 @@ public static class ParticleParitySuite
         int id = sim.AcquireEmitter(new EmitterSpec
         {
             Name = "size-local", WorldSpaceSimulation = false, StartSizeMin = 2f, StartSizeMax = 2f,
-        }, Matrix4x4.CreateScale(1f), false);
+        }, new LumenEmitterTransform(Matrix4x4.CreateScale(1f), Quaternion.Identity), 1u, false);
         sim.EmitBurst(id, 1);
         Step(sim, 0f);
-        sim.SetEmitterTransform(id, Matrix4x4.CreateScale(-2f, 4f, 8f));
+        sim.SetEmitterTransform(id, new LumenEmitterTransform(Matrix4x4.CreateScale(-2f, 4f, 8f), Quaternion.Identity));
         Step(sim, 0f);
         Near(2f, sim.LiveParticles[0].StartSize);
         Near(8f, Vector3.Distance(sim.Vertices[0].Position, sim.Vertices[1].Position));
@@ -562,7 +654,7 @@ public static class ParticleParitySuite
         {
             Name = "quad", BillboardMode = mode, LengthScale = lengthScale, VelocityStretchFactor = 0.5f,
             StartSpeedMin = 2f, StartSpeedMax = 2f, StartSizeMin = 2f, StartSizeMax = 2f,
-        }, Matrix4x4.Identity, false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
         sim.EmitBurst(id, 1);
         Step(sim, 0f);
         return sim;
@@ -576,7 +668,7 @@ public static class ParticleParitySuite
         {
             Name = "radial", FlipbookTilesX = 2, FlipbookTilesY = 2,
             StartLifetimeMin = 4f, StartLifetimeMax = 4f,
-        }, Matrix4x4.Identity, false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
         sim.EmitBurst(id, 1);
         Step(sim, 0f);
         Require(sim.Vertices[0].Uv == new Vector2(0f, 0.5f) && sim.Vertices[0].RadialUv == Vector2.Zero,
@@ -598,7 +690,7 @@ public static class ParticleParitySuite
         {
             Name = "pool", MaxParticles = 1, Looping = true, Duration = 1f, RateOverTime = 2f,
             StartLifetimeMin = 0.5f, StartLifetimeMax = 0.5f,
-        }, Matrix4x4.Identity);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u);
         Step(sim, 0.5f);
         Step(sim, 0.5f);
         Require(sim.LiveParticleCount == 1, "The particle expiring this frame must free a slot for this frame's emission.");
@@ -652,7 +744,7 @@ public static class ParticleParitySuite
             {
                 new ColorStop(0f, Vector4.Zero), new ColorStop(0.5f, Vector4.One), new ColorStop(1f, Vector4.Zero),
             }),
-        }, Matrix4x4.Identity, false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
         sim.EmitBurst(id, 1);
         Step(sim, 0f);
         Step(sim, 1f);
@@ -671,7 +763,7 @@ public static class ParticleParitySuite
     private static CpuParticle Spawn(EmitterSpec spec, Matrix4x4 world)
     {
         var sim = new CpuParticleSimulator(123);
-        int id = sim.AcquireEmitter(spec, world, false);
+        int id = sim.AcquireEmitter(spec, new LumenEmitterTransform(world, Quaternion.Identity), 1u, false);
         sim.EmitBurst(id, 1);
         Step(sim, 0f);
         return sim.LiveParticles[0];

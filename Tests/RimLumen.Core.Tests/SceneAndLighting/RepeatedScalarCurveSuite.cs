@@ -97,7 +97,7 @@ public static class RepeatedScalarCurveSuite
         {
             Name = "repeat-lut", SizeOverLifetime = curve, StartSizeMin = 1f, StartSizeMax = 1f,
             StartLifetimeMin = 1f, StartLifetimeMax = 1f,
-        }, Matrix4x4.Identity, false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
         simulator.EmitBurst(id, 1);
         Step(simulator, 0f);
         Step(simulator, 31f / 63f);

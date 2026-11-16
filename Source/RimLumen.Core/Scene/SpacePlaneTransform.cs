@@ -47,6 +47,18 @@ public static class SpacePlaneTransform
         return degrees >= 360f ? 0f : degrees;
     }
 
+    // Requires: validated asset, unit rootRotation, and destination.Length >= asset.Nodes.Length.
+    // Ensures: composes parent rotation * local rotation without any scale; paired with BuildWorldMatrices.
+    internal static void BuildWorldRotations(EffectAsset asset, Quaternion rootRotation, Span<Quaternion> destination)
+    {
+        for (int i = 0; i < asset.Nodes.Length; i++)
+        {
+            var node = asset.Nodes[i];
+            Quaternion parent = node.ParentIndex < 0 ? rootRotation : destination[node.ParentIndex];
+            destination[i] = parent * node.LocalRotation;
+        }
+    }
+
     // Requires: asset is non-null; destination.Length >= asset.Nodes.Length; every
     //           Nodes[i].ParentIndex is -1 or in [0, i) (see InMemoryAssetCatalog.Register).
     // Ensures: destination[i] == BuildLocalMatrix(Nodes[i]) *

@@ -373,7 +373,7 @@ internal static class ShowcaseBenchmarkSession
                     {
                         Name = id, PreferredTier = LumenParticleTier.L2_GpuCompute, MaxParticles = count, Duration = 120f, Looping = true,
                         RateOverTime = count, WorldSpaceSimulation = false,
-                        Bursts = new[] { (0f, count) },
+                        Bursts = new[] { new ParticleBurstSpec(0f, count) },
                         Shape = LumenShapeKind.Box, ShapeExtents = new Vector3(3f, 0.15f, 3f),
                         StartLifetimeMin = 120f, StartLifetimeMax = 120f, StartSizeMin = 0.15f, StartSizeMax = 0.3f,
                         StartSpeedMin = 0.1f, StartSpeedMax = 0.2f, StartColor = new Vector4(1f, 0.4f, 0.1f, 1f),

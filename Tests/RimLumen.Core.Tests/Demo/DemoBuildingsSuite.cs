@@ -253,20 +253,20 @@ public static class DemoBuildingsSuite
     {
         EffectAsset asset = RimLumenDemoEffects.CreateFireworkAsset(RimLumenDemoEffects.FireworkGoldId, 0);
         EmitterSpec burst = asset.Nodes[1].Emitter!;
-        var scheduler = new EmissionScheduler(burst);
+        var scheduler = new EmissionScheduler(burst, 1u);
 
-        int beforeApex = 0;
+        double beforeApex = 0;
         for (int i = 0; i < 12; i++) beforeApex += scheduler.Advance(0.05f, emitting: true);
         GlowAssert.Equal(0, beforeApex);
 
-        int atApex = scheduler.Advance(0.05f, emitting: true);
+        double atApex = scheduler.Advance(0.05f, emitting: true);
         GlowAssert.Equal(1800, atApex);
 
-        int afterApex = 0;
+        double afterApex = 0;
         for (int i = 0; i < 10; i++) afterApex += scheduler.Advance(0.05f, emitting: true);
         GlowAssert.Equal(0, afterApex);
 
-        var trail = new EmissionScheduler(asset.Nodes[0].Emitter!);
+        var trail = new EmissionScheduler(asset.Nodes[0].Emitter!, 1u);
         VfxAssert.Check(trail.Advance(0.1f, emitting: true) > 0, "the launch trail emits by rate from the first frame");
     }
 

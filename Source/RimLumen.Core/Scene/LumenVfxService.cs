@@ -24,6 +24,7 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     private int[] eventBatches = Array.Empty<int>();
     private bool hasWarnedPoolExhausted;
     private long lastPoolExhaustedWarningMs;
+    private uint playSequence;
 
     internal sealed class InertHandle : ILumenEffectHandle
     {
@@ -116,7 +117,8 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
         LumenPlayRequest normalized = request with { MapIndex = mapIndex };
         try
         {
-            var handle = new EffectInstanceHandle(this, asset!, normalized);
+            uint playSeed = unchecked(++playSequence * 0x9E3779B9u);
+            var handle = new EffectInstanceHandle(this, asset!, normalized, playSeed);
             handles.Add(handle);
             return handle;
         }

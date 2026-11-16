@@ -43,16 +43,181 @@ internal static class TranslationTests
         var probabilistic = Particles();
         probabilistic.members.RemoveAll(m => m.name == "emission");
         probabilistic.members.Add(Member("emission", Data(("enabled", Number(1)), ("bursts", Array(Data(("probability", Number(0.5f)), ("count", Constant(3))))))));
-        Check.Reasons(["emission.bursts.probability"], classifier.Classify(probabilistic, null).Reasons, "probability reason");
+        Check.Reasons([], classifier.Classify(probabilistic, null).Reasons, "probability supported");
+        var burstAsset = new RimUnityPrefabTranslator().Translate("probability", Prefab(probabilistic), _ => null, _ => null, out _);
+        Check.Equal(.5f, burstAsset.Nodes[0].Emitter!.Bursts.Single().Probability, "probability preserved");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(burstAsset);
+        var burstValue = probabilistic.members.Single(m => m.name == "emission").value.fields.Single(m => m.name == "bursts").value.items.Single();
+        burstValue.fields.Add(Member("cycleCount", Number(0)));
+        burstValue.fields.Add(Member("repeatInterval", Number(2)));
+        var repeating = new RimUnityPrefabTranslator().Translate("repeating", Prefab(probabilistic), _ => null, _ => null, out _);
+        Check.Equal(3, repeating.Nodes[0].Emitter!.Bursts.Length, "zero cycles repeats below duration");
+        burstValue.fields.Single(m => m.name == "probability").value = Number(1.1f);
+        Check.Reasons(["emission.bursts.probability.domain"], classifier.Classify(probabilistic, null).Reasons, "invalid probability external");
+        burstValue.fields.Single(m => m.name == "probability").value = Number(.5f);
+        burstValue.fields.Single(m => m.name == "count").value = Data(("mode", Number(3)), ("constantMin", Number(1)), ("constantMax", Number(3)));
+        Check.Reasons(["emission.bursts.count.variable"], classifier.Classify(probabilistic, null).Reasons, "random burst count external");
         var combined = Particles();
         foreach (string module in new[] { "trails", "subEmitters", "collision", "trigger" }) combined.members.Add(Member(module, Data(("enabled", Number(1)))));
         Check.Reasons(["trails", "subEmitters", "collision", "trigger", "renderMode.Mesh"], classifier.Classify(combined, mesh).Reasons, "all blockers retained");
         Console.WriteLine("MATRIX small32=L1 highCurlVortex=L2 peak200=L2; structural=5; conservative=6; all-blockers=5 reasons");
     }
 
+    internal static void ActiveExportFields()
+    {
+        ValueData dual = Data(("mode", Number(2)), ("curveMultiplier", Number(1)),
+            ("curveMin", Data(("keys", Array(Key(0, 0, 0), Key(1, 0, 0))))),
+            ("curveMax", Data(("keys", Array(Key(0, 1, 0), Key(1, 1, 0))))));
+        (string Field, ValueData Value, string[] Reasons)[] cases =
+        [
+            ("startSizeX", dual, []), ("startSizeY", dual, []), ("startSizeZ", dual, []),
+            ("startRotationX", dual, []), ("startRotationY", dual, []), ("startRotationZ", dual, []),
+            ("startRotation", Constant(0), []),
+            ("startSize3D", Number(1), ["main.startSize3D"]),
+            ("startRotation3D", Number(1), ["main.startRotation3D"]),
+            ("startRotation", Constant(.25f), ["main.startRotation"])
+        ];
+        foreach (var test in cases)
+        {
+            var particles = Particles();
+            particles.members.Single(m => m.name == "main").value.fields.Add(Member(test.Field, test.Value));
+            var asset = new RimUnityPrefabTranslator().Translate("active." + test.Field, Prefab(particles), _ => null, _ => null, out var report);
+            Check.Reasons(test.Reasons, report.Nodes.Single().Reasons, "active field reasons");
+            Check.Equal(test.Reasons.Length == 0, asset.Nodes[0].Emitter is not null, "active field native ownership");
+        }
+        var disabled = Particles();
+        disabled.members.Single(m => m.name == "emission").value = Data(("enabled", Number(0)), ("rateOverTime", dual));
+        var inactiveAsset = new RimUnityPrefabTranslator().Translate("inactive.emission", Prefab(disabled), _ => null, _ => null, out var inactiveReport);
+        Check.Reasons([], inactiveReport.Nodes.Single().Reasons, "disabled emission ignores serialized dual curve");
+        Check.Near(0, inactiveAsset.Nodes[0].Emitter!.RateOverTime, "disabled emission rate");
+        disabled.members.Single(m => m.name == "emission").value.fields.Single(m => m.name == "enabled").value = Number(1);
+        new RimUnityPrefabTranslator().Translate("active.emission", Prefab(disabled), _ => null, _ => null, out var activeReport);
+        Check.Reasons(["emission.rateOverTime.dualCurve"], activeReport.Nodes.Single().Reasons, "enabled emission retains dual reason");
+    }
+
+    internal static void DeferredWeightedExports()
+    {
+        ValueData key = Key(0, 1, 0);
+        key.fields.Add(Member("weightedMode", Number(1)));
+        ValueData dual = Data(("mode", Number(2)), ("curveMultiplier", Number(1)),
+            ("curveMin", Data(("keys", Array(key)))), ("curveMax", Data(("keys", Array(key)))));
+        foreach (float probability in new[] { 0f, .5f })
+        {
+            ValueData burst = Burst(0, 0, 1);
+            burst.fields.Single(m => m.name == "count").value = dual;
+            burst.fields.Add(Member("probability", Number(probability)));
+            var asset = TranslateBursts(1, [burst], out var report);
+            Check.Reasons(["emission.bursts.count.dualCurve"], report.Nodes.Single().Reasons, "weighted deferred count classified before conversion");
+            Check.True(asset.Nodes[0].Emitter is null, "weighted count remains external without native evaluation");
+        }
+        foreach (string field in new[] { "startLifetime", "startSpeed", "startSize", "startRotation", "gravityModifier" })
+        {
+            var particles = Particles();
+            var main = particles.members.Single(m => m.name == "main").value;
+            main.fields.RemoveAll(m => m.name == field);
+            main.fields.Add(Member(field, dual));
+            var asset = new RimUnityPrefabTranslator().Translate("deferred." + field, Prefab(particles), _ => null, _ => null, out var report);
+            Check.Reasons(["main." + field + ".dualCurve"], report.Nodes.Single().Reasons, "selected weighted dual curve never evaluated natively");
+            Check.True(asset.Nodes[0].Emitter is null, "selected weighted curve external");
+        }
+        foreach (string module in new[] { "velocityOverLifetime", "forceOverLifetime", "noise" })
+        {
+            string field = module == "noise" ? "strength" : "x";
+            var particles = Particles();
+            particles.members.Add(Member(module, Data(("enabled", Number(1)), (field, dual))));
+            var asset = new RimUnityPrefabTranslator().Translate("deferred." + module, Prefab(particles), _ => null, _ => null, out var report);
+            Check.True(report.Nodes.Single().Reasons.Contains(module + "." + field + ".dualCurve"), "selected module dual reason retained");
+            Check.True(asset.Nodes[0].Emitter is null, "selected module external without weighted evaluation");
+        }
+        foreach (string field in new[] { "rateOverTime", "rateOverDistance" })
+        {
+            foreach (bool enabled in new[] { false, true })
+            {
+                var particles = Particles();
+                particles.members.Single(m => m.name == "emission").value = Data(("enabled", Number(enabled ? 1 : 0)), (field, dual));
+                var asset = new RimUnityPrefabTranslator().Translate("deferred." + field, Prefab(particles), _ => null, _ => null, out var report);
+                Check.Reasons(enabled ? ["emission." + field + ".dualCurve"] : [], report.Nodes.Single().Reasons, "distance/time active selection");
+                Check.Equal(!enabled, asset.Nodes[0].Emitter is not null, "distance/time external ownership");
+            }
+        }
+    }
+
+    internal static void BoundedImportedBursts()
+    {
+        (float Duration, float Time, float Interval, int Cycles, float[] Times)[] schedules =
+        [
+            (1, 0, .25f, 0, [0, .25f, .5f, .75f]),
+            (1, 0, .3f, 0, [0, .3f, .6f, .9f]),
+            (1, .1f, .3f, 4, [.1f, .4f, .7f]),
+            (1, 1, 0, 1, []),
+            (1, 0, -2, 1, [0]),
+            (1, 0, 0, 1, [0])
+        ];
+        foreach (var test in schedules)
+        {
+            EffectAsset asset = TranslateBursts(test.Duration, [Burst(test.Time, test.Interval, test.Cycles)], out var report);
+            Check.Reasons([], report.Nodes.Single().Reasons, "bounded schedule native");
+            Check.Equal(test.Times.Length, asset.Nodes[0].Emitter!.Bursts.Length, "strict endpoint count");
+            for (int i = 0; i < test.Times.Length; i++)
+                Check.Near(test.Times[i], asset.Nodes[0].Emitter!.Bursts[i].Time, "source occurrence phase");
+            RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        }
+        var loopAsset = TranslateBursts(1, [Burst(0, .3f, 0)], out _);
+        var sim = new RimLumen.Core.Scene.CpuParticleSimulator();
+        sim.AcquireEmitter(loopAsset.Nodes[0].Emitter!, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u);
+        CaptureBurstFrame(sim, .95f);
+        Check.Equal(4, sim.LiveParticleCount, "first nondividing loop");
+        CaptureBurstFrame(sim, .1f);
+        Check.Equal(5, sim.LiveParticleCount, "next loop restarts at zero phase");
+        CaptureBurstFrame(sim, .9f);
+        Check.Equal(8, sim.LiveParticleCount, "second nondividing loop");
+        var accepted = TranslateBursts(4096, [Burst(0, 1, 2048), Burst(2048, 1, 2048)], out _);
+        Check.Equal(4096, accepted.Nodes[0].Emitter!.Bursts.Length, "4096 total occurrences accepted");
+        var over = TranslateBursts(4097, [Burst(0, 1, 2048), Burst(2048, 1, 2049)], out var overReport);
+        Check.Reasons(["emission.bursts.occurrenceLimit"], overReport.Nodes.Single().Reasons, "4097 summed across definitions external");
+        Check.True(over.Nodes[0].Emitter is null, "overlimit never truncates into native ownership");
+        var zeroCycleOver = TranslateBursts(4097, [Burst(0, 1, 0)], out var zeroCycleReport);
+        Check.Reasons(["emission.bursts.occurrenceLimit"], zeroCycleReport.Nodes.Single().Reasons, "zero cycles use same total bound");
+        Check.True(zeroCycleOver.Nodes[0].Emitter is null, "zero-cycle overlimit external");
+        foreach (var burst in new[] { Burst(0, 0, 0), Burst(0, float.PositiveInfinity, 1), Burst(0, float.NaN, 1), Burst(float.NaN, 1, 1), Burst(-1, 1, 1), Burst(2, 1, 1) })
+        {
+            var invalid = TranslateBursts(1, [burst], out var report);
+            Check.Reasons(["emission.bursts.schedule.domain"], report.Nodes.Single().Reasons, "invalid schedule reason");
+            Check.True(invalid.Nodes[0].Emitter is null, "invalid schedule external");
+        }
+    }
+
+    private static ValueData Burst(float time, float interval, int cycles) => Data(("time", Number(time)),
+        ("repeatInterval", Number(interval)), ("cycleCount", Number(cycles)), ("count", Constant(1)));
+
+    private static EffectAsset TranslateBursts(float duration, ValueData[] bursts, out RimUnityTranslationReport report)
+    {
+        var particles = Particles(lifetime: 20f);
+        particles.members.Single(m => m.name == "main").value.fields.Single(m => m.name == "duration").value = Number(duration);
+        particles.members.Single(m => m.name == "emission").value = Data(("enabled", Number(1)), ("rateOverTime", Constant(0)), ("bursts", Array(bursts)));
+        return new RimUnityPrefabTranslator().Translate("burst.schedule", Prefab(particles), _ => null, _ => null, out report);
+    }
+
+    private static void CaptureBurstFrame(RimLumen.Core.Scene.CpuParticleSimulator sim, float dt) => sim.CaptureMainThread(new LumenCaptureContext
+    {
+        FrameIndex = 0, DeltaTime = dt, ViewportWidth = 64, ViewportHeight = 64,
+        ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
+    });
+
     internal static void RenderModeFallback()
     {
-        AssertRenderModeFallback(3, "renderMode.Vertical");
+        var vertical = Prefab(Particles());
+        vertical.nodes[0].components.Add(new ComponentData { id = "vertical", type = "RimUnity.ParticleSystemRenderer", members = [Member("renderMode", Number(3))] });
+        var asset = new RimUnityPrefabTranslator().Translate("vertical", vertical, _ => null, _ => null, out _);
+        Check.Equal(LumenBillboardMode.Vertical, asset.Nodes[0].Emitter!.BillboardMode, "vertical mode");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        vertical.nodes[0].components[1].members.Add(Member("alignment", Number(2)));
+        var precedence = new RimUnityPrefabTranslator().Translate("vertical.local", vertical, _ => null, _ => null, out _);
+        Check.Equal(LumenBillboardMode.Vertical, precedence.Nodes[0].Emitter!.BillboardMode, "vertical takes precedence over local");
+        vertical.nodes[0].components[1].members.Single(m => m.name == "renderMode").value = Number(0);
+        var local = new RimUnityPrefabTranslator().Translate("local", vertical, _ => null, _ => null, out _);
+        Check.Equal(LumenBillboardMode.Local, local.Nodes[0].Emitter!.BillboardMode, "local alignment on billboard");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(local);
         AssertRenderModeFallback(-1, "renderMode.-1");
         AssertRenderModeFallback(9, "renderMode.9");
     }
@@ -75,14 +240,10 @@ internal static class TranslationTests
     {
         (int Max, ValueData Shape, string[] Reasons)[] cases =
         [
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(4)), ("radius", Number(1)), ("angle", Number(0))), ["shape.coneRadius"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(4)), ("radius", Number(0)), ("angle", Number(25))), ["shape.coneDistribution"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(10))), ["shape.circlePlane"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(2))), ["shape.hemisphere"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("radiusThickness", Number(.5f))), ["shape.radiusThickness"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("arc", Number(180))), ["shape.arc"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("randomDirectionAmount", Number(.5f))), ["shape.direction"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("randomPositionAmount", Number(.5f))), ["shape.randomPosition"]),
+            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("radiusThickness", Number(1.1f))), ["shape.radiusThickness.domain"]),
+            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("arcMode", Number(1))), ["shape.arcMode"]),
+            (32, Data(("enabled", Number(1)), ("shapeType", Number(12)), ("radiusMode", Number(1))), ["shape.radiusMode"]),
+            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("randomPositionAmount", Number(-.5f))), ["shape.randomPositionAmount.domain"]),
             (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("alignToDirection", Number(1))), ["shape.alignToDirection"]),
         ];
         foreach (var test in cases)
@@ -93,6 +254,23 @@ internal static class TranslationTests
             Check.Equal(LumenParticleTier.L0_ExternalCpu, report.Nodes.Single().Tier, "unrepresentable shape");
             Check.Reasons(test.Reasons, report.Nodes.Single().Reasons, "exact shape reason");
             Check.True(asset.Nodes[0].Emitter is null && asset.Nodes[0].PointLight is null, "shape fallback external ownership");
+        }
+        (int Kind, LumenShapeKind Expected)[] supported =
+        [
+            (0, LumenShapeKind.Sphere), (1, LumenShapeKind.SphereShell), (2, LumenShapeKind.Hemisphere),
+            (3, LumenShapeKind.HemisphereShell), (4, LumenShapeKind.Cone), (5, LumenShapeKind.Box),
+            (7, LumenShapeKind.ConeShell), (8, LumenShapeKind.ConeVolume), (9, LumenShapeKind.ConeVolumeShell),
+            (10, LumenShapeKind.CircleXZ), (11, LumenShapeKind.CircleEdgeXZ), (12, LumenShapeKind.SingleSidedEdge),
+            (15, LumenShapeKind.BoxShell), (16, LumenShapeKind.BoxEdge), (17, LumenShapeKind.Donut), (18, LumenShapeKind.Rectangle)
+        ];
+        foreach (var test in supported)
+        {
+            var source = Particles();
+            source.members.Single(m => m.name == "shape").value = Data(("enabled", Number(1)), ("shapeType", Number(test.Kind)), ("arc", Number(90)));
+            var translated = new RimUnityPrefabTranslator().Translate("shape." + test.Kind, Prefab(source), _ => null, _ => null, out _);
+            Check.Equal(test.Expected, translated.Nodes[0].Emitter!.Shape, "shape kind");
+            Check.Near(90, translated.Nodes[0].Emitter!.ArcDegrees, "static arc");
+            RimLumen.Core.Api.RimLumenApi.RegisterEffect(translated);
         }
         // A zero-angle, zero-radius cone is representable on CPU; arbitrary box extents are retained.
         var cone = Particles();
@@ -111,6 +289,26 @@ internal static class TranslationTests
     {
         AssertShapeDirection(new Vector3(0, 0, 0), Vector3.UnitZ);
         AssertShapeDirection(new Vector3(90, 0, 0), -Vector3.UnitY);
+        var particles = Particles();
+        particles.members.Single(m => m.name == "shape").value = Data(("enabled", Number(1)), ("shapeType", Number(10)), ("arc", Number(90)));
+        var asset = new RimUnityPrefabTranslator().Translate("arc90", Prefab(particles), _ => null, _ => null, out _);
+        var emitter = asset.Nodes[0].Emitter!;
+        Check.True(Vector3.Distance(Vector3.UnitY, Vector3.Transform(-Vector3.UnitZ, emitter.ShapeRotation)) < 1e-6f,
+            "native 90 degree arc endpoint maps to source +Y");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        var sim = new RimLumen.Core.Scene.CpuParticleSimulator();
+        int id = sim.AcquireEmitter(emitter, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
+        sim.EmitBurst(id, 32);
+        sim.CaptureMainThread(new LumenCaptureContext
+        {
+            FrameIndex = 0, DeltaTime = 0, ViewportWidth = 1920, ViewportHeight = 1080,
+            ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
+        });
+        var live = sim.LiveParticles.ToArray();
+        Check.True(live.Length == 32, "circle burst admitted");
+        Check.True(live.All(p => p.Position.X >= -1e-5f && p.Position.Y >= -1e-5f && MathF.Abs(p.Position.Z) < 1e-5f),
+            "90 degree source arc occupies +X/+Y quadrant");
+        Check.True(live.Any(p => p.Position.Y > .01f), "source arc reaches +Y");
     }
 
     private static void AssertShapeDirection(Vector3 rotation, Vector3 unityDirection)
@@ -230,7 +428,7 @@ internal static class TranslationTests
             first = force;
 
             var sim = new RimLumen.Core.Scene.CpuParticleSimulator();
-            int emitterId = sim.AcquireEmitter(asset.Nodes.Single().Emitter!, Matrix4x4.Identity, emitting: false);
+            int emitterId = sim.AcquireEmitter(asset.Nodes.Single().Emitter!, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
             sim.EmitBurst(emitterId, 1);
             float dt = 0.5f;
             // D7: a particle born in this capture starts at age 0 and does not advance that frame.

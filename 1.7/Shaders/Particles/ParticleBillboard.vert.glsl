@@ -90,6 +90,34 @@ void main()
         }
         height = size * emitter.Appearance.y + length(velocity) * emitter.Appearance.x;
     }
+    else if (mode == 4u && verticalMode < 0.5)
+    {
+        vec3 rawRight = vec3(right.x, right.y * yScale, right.z);
+        vec3 rawUp = vec3(up.x, up.y * yScale, up.z);
+        vec3 forward = cross(rawRight, rawUp);
+        vec3 horizontal = cross(vec3(0.0, 1.0, 0.0), forward);
+        float horizontalLength = length(horizontal);
+        right = horizontalLength > 1e-6 ? horizontal / horizontalLength : normalize(rawRight);
+        up = vec3(0.0, 1.0, 0.0);
+    }
+    else if (mode == 5u)
+    {
+        vec4 q = emitter.WorldRotation;
+        vec3 x = vec3(1.0, 0.0, 0.0);
+        vec3 y = vec3(0.0, 1.0, 0.0);
+        right = x + 2.0 * cross(q.xyz, cross(q.xyz, x) + q.w * x);
+        up = y + 2.0 * cross(q.xyz, cross(q.xyz, y) + q.w * y);
+        if (verticalMode > 1.5)
+        {
+            right = vec3(right.x, 0.0, right.z + right.y);
+            up = vec3(up.x, 0.0, up.z + up.y);
+        }
+        else if (verticalMode > 0.5)
+        {
+            right.y /= yScale;
+            up.y /= yScale;
+        }
+    }
     vec3 worldPosition = center + right * (quadCorner.x * size) + up * (quadCorner.y * height);
     gl_Position = camera.ViewProj * vec4(worldPosition, 1.0);
 

@@ -500,7 +500,7 @@ public static class NativePipelineSuite
                         Emitter = new EmitterSpec
                         {
                             Name = "streak", PreferredTier = LumenParticleTier.L1_NativeCpu, MaxParticles = 4,
-                            Bursts = new[] { (0f, 1) }, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+                            Bursts = new[] { new ParticleBurstSpec(0f, 1) }, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
                             StartSpeedMin = 1f, StartSpeedMax = 1f,
                         },
                     },
@@ -530,17 +530,17 @@ public static class NativePipelineSuite
         {
             Name = "alpha", MaxParticles = 32, TextureKey = "tex/a", BlendMode = LumenBlendMode.Additive,
             StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-        }, Matrix4x4.Identity, emitting: false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
         int beta = simulator.AcquireEmitter(new EmitterSpec
         {
             Name = "beta", MaxParticles = 32, TextureKey = "tex/b", BlendMode = LumenBlendMode.AlphaBlend,
             StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-        }, Matrix4x4.Identity, emitting: false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
         int gamma = simulator.AcquireEmitter(new EmitterSpec
         {
             Name = "gamma", MaxParticles = 32, TextureKey = "tex/a", BlendMode = LumenBlendMode.Additive,
             StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-        }, Matrix4x4.Identity, emitting: false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
         simulator.EmitBurst(alpha, 2);
         simulator.EmitBurst(beta, 3);
         simulator.EmitBurst(gamma, 1);
@@ -601,10 +601,10 @@ public static class NativePipelineSuite
             MaterialTint = new Vector4(0.5f), ColorOverLifetime = ColorGradient.Constant(new Vector4(0.5f)), HdrIntensity = 2f };
         var tinted = new EmitterSpec { Name = "tinted", MaxParticles = 4, MaterialTint = new Vector4(0.25f) };
         var linear = new EmitterSpec { Name = "linear", MaxParticles = 4, MaterialTint = new Vector4(0.5f), ColorSpace = LumenColorSpace.Linear };
-        simulator.EmitBurst(simulator.AcquireEmitter(stored, Matrix4x4.Identity, emitting: false), 1);
-        simulator.EmitBurst(simulator.AcquireEmitter(tinted, Matrix4x4.Identity, emitting: false), 1);
-        simulator.EmitBurst(simulator.AcquireEmitter(linear, Matrix4x4.Identity, emitting: false), 1);
-        simulator.EmitBurst(simulator.AcquireEmitter(stored, Matrix4x4.Identity, emitting: false), 1);
+        simulator.EmitBurst(simulator.AcquireEmitter(stored, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false), 1);
+        simulator.EmitBurst(simulator.AcquireEmitter(tinted, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false), 1);
+        simulator.EmitBurst(simulator.AcquireEmitter(linear, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false), 1);
+        simulator.EmitBurst(simulator.AcquireEmitter(stored, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false), 1);
         NativeTestData.Step(simulator, 0f, 0f);
         NativeTestData.Check(simulator.SubBatches.Count == 3,
             $"Tint and colour space must split shared-texture draws; expected 3 groups, got {simulator.SubBatches.Count}");
@@ -625,12 +625,12 @@ public static class NativePipelineSuite
         {
             Name = "sharp", MaxParticles = 8, TextureKey = "tex/fade", SoftParticleFadeDistance = 0f,
             StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-        }, Matrix4x4.Identity, emitting: false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
         int soft = simulator.AcquireEmitter(new EmitterSpec
         {
             Name = "soft", MaxParticles = 8, TextureKey = "tex/fade", SoftParticleFadeDistance = 0.4f,
             StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-        }, Matrix4x4.Identity, emitting: false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
         simulator.EmitBurst(sharp, 1);
         simulator.EmitBurst(soft, 1);
         NativeTestData.Step(simulator, 0f, 0f);
@@ -651,7 +651,7 @@ public static class NativePipelineSuite
             int burst = simulator.AcquireEmitter(new EmitterSpec
             {
                 Name = "burst", MaxParticles = 64, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-            }, Matrix4x4.Identity, emitting: false);
+            }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
             simulator.EmitBurst(burst, 10);
             NativeTestData.Step(simulator, 0f, 0f);
             NativeTestData.Check(simulator.LiveParticleCount == 5, $"Half density turns a 10 burst into 5, got {simulator.LiveParticleCount}");
@@ -659,7 +659,7 @@ public static class NativePipelineSuite
             int single = simulator.AcquireEmitter(new EmitterSpec
             {
                 Name = "single", MaxParticles = 8, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-            }, Matrix4x4.Identity, emitting: false);
+            }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
             simulator.EmitBurst(single, 1);
             NativeTestData.Step(simulator, 0f, 0f);
             NativeTestData.Check(simulator.GetLiveParticleCount(single) == 1, "A fresh count1 burst at half density admits ceil(.5)=1");
@@ -669,7 +669,7 @@ public static class NativePipelineSuite
             {
                 Name = "rate", MaxParticles = 32, RateOverTime = 4f, Looping = true, Duration = 1f,
                 StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-            }, Matrix4x4.Identity);
+            }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u);
             NativeTestData.Step(rateSimulator, 1f, 1f);
             NativeTestData.Check(rateSimulator.LiveParticleCount == 2, $"Half density halves a 4/s rate, got {rateSimulator.LiveParticleCount}");
         }

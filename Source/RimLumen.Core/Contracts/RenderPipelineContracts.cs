@@ -136,25 +136,24 @@ public interface ILumenGpuParticleEngine : ILumenFrameContributor
     /// <summary>Total shared particle slots across this backend's instances/maps, not active-this-frame usage.</summary>
     int Capacity { get; }
 
-    // Requires: called on main thread; spec.MaxParticles > 0.
-    // Ensures: allocates or rents an L2 GPU emitter slot and returns its non-negative runtime id.
-    int CreateInstance(EmitterSpec spec, Matrix4x4 initialWorldTransform);
-
-    // Requires: mapIndex is a resolved non-negative RimWorld Map.uniqueID, not a map-list index.
-    // Ensures: owns that map for the instance lifetime; realTime uses unscaled seconds when positive.
-    int CreateInstance(EmitterSpec spec, Matrix4x4 initialWorldTransform, int mapIndex, bool realTime);
+    // Requires: validated spec/transform; mapIndex is a resolved RimWorld Map.uniqueID, not a map-list index;
+    // emissionSeed is the nonzero service-derived (play seed, node index) seed, never a backend id.
+    // Ensures: rents slots and owns the map; realTime uses unscaled seconds when positive. Scheduled-burst
+    // acceptance uses the shared CPU scheduler with this seed, independent of particle-birth randomness.
+    int CreateInstance(EmitterSpec spec, LumenEmitterTransform initialTransform, int mapIndex, bool realTime, uint emissionSeed);
 
     // Requires: rateMultiplier is finite and >= 0, validated by the caller's parameter boundary.
     // Ensures: updates transform, emission state, RGB intensity and scheduled particles/s multiplier for next capture.
     //          A zero rateMultiplier does not suppress authored or explicit bursts.
-    void UpdateInstance(int instanceId, in Matrix4x4 worldTransform, bool emitting, float intensityMultiplier, float rateMultiplier);
+    void UpdateInstance(int instanceId, in LumenEmitterTransform transform, bool emitting, float intensityMultiplier, float rateMultiplier);
 
     // Ensures: stops emission or reclaims GPU slot when particles expire.
     void DestroyInstance(int instanceId, bool immediate = false);
 
     // Requires: main thread.
     // Ensures: the instance emits again from the start of its schedule (time 0, rate remainder cleared, time-0
-    //          bursts pending), exactly like CpuParticleSimulator.RestartEmitter. Unknown or destroyed ids are ignored.
+    //          bursts pending, probability PRNG at its initial node seed), exactly like CpuParticleSimulator.RestartEmitter.
+    //          Accepted pending work remains; loop wrap never resets the stream. Unknown or destroyed ids are ignored.
     void RestartInstance(int instanceId);
 
     // Requires: main thread; count >= 0.

@@ -226,7 +226,7 @@ public static class ParticleShaderTests
     {
         string source = Read("ParticleTypes.glsl");
         CheckStruct<GpuParticle>(source, 64);
-        CheckStruct<GpuEmitterParams>(source, 256);
+        CheckStruct<GpuEmitterParams>(source, 320);
         CheckStruct<GpuForceField>(source, 48);
         CheckStruct<GpuCurveSample>(source, 32);
         Require(Marshal.SizeOf<GpuSimPushConstants>() == 16, "Compute push constants must be 16 bytes.");
@@ -394,9 +394,9 @@ public static class ParticleShaderTests
         byte[] fragment = Compile("ParticleBillboard.frag.glsl", RuntimeShaderStage.Fragment);
         var computeInstructions = Instructions(compute);
         var vertexInstructions = Instructions(vertex);
-        foreach (uint stride in new uint[] { 64, 256, 48, 4 })
+        foreach (uint stride in new uint[] { 64, 320, 48, 4 })
             Require(HasArrayStride(computeInstructions, stride), $"Compute SPIR-V missing {stride}-byte storage array stride.");
-        foreach (uint stride in new uint[] { 64, 256, 32 })
+        foreach (uint stride in new uint[] { 64, 320, 32 })
             Require(HasArrayStride(vertexInstructions, stride), $"Vertex SPIR-V missing {stride}-byte storage array stride.");
         Require(computeInstructions.Any(x => x[0] == 16 && x.Length >= 6 && x[2] == 17 && x[3] == 64 && x[4] == 1 && x[5] == 1),
             "SPIR-V workgroup must be LocalSize 64,1,1.");
@@ -410,7 +410,7 @@ public static class ParticleShaderTests
         CompileFile("PostFx/RimLumenBloomDown.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomUp.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenComposite.frag.glsl", RuntimeShaderStage.Fragment);
-        Console.WriteLine("[SPIR-V] compute strides=64,256,48,4; vertex strides=64,256,32; LocalSize=64,1,1");
+        Console.WriteLine("[SPIR-V] compute strides=64,320,48,4; vertex strides=64,320,32; LocalSize=64,1,1");
     }
 
     private static void CheckUniforms(MaterialLayout layout)

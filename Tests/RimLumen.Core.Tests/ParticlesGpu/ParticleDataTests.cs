@@ -5,6 +5,7 @@ using RimLumen.Core.Assets;
 using System.Runtime.InteropServices;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.ParticlesGpu;
+using RimLumen.Core.Scene;
 
 namespace RimLumen.Core.Tests.ParticlesGpu;
 
@@ -130,12 +131,12 @@ public static class ParticleDataTests
     public static void RateRetainsFractionalParticlesAcrossFrames()
     {
         var spec = new EmitterSpec { Name = "rate", Duration = 1f, Looping = true, RateOverTime = 2.5f };
-        var scheduler = new EmissionScheduler(spec);
+        var scheduler = new EmissionScheduler(spec, 1u);
         Equal(0, scheduler.Advance(0.25f, true));
         Equal(1, scheduler.Advance(0.25f, true));
         Equal(1, scheduler.Advance(0.5f, true));
         Equal(3, scheduler.Advance(1f, true));
-        Equal(5, new EmissionScheduler(spec).Advance(2f, true));
+        Equal(5, new EmissionScheduler(spec, 1u).Advance(2f, true));
         Equal(false, scheduler.Finished);
     }
 
@@ -144,8 +145,8 @@ public static class ParticleDataTests
     {
         var scheduler = new EmissionScheduler(new EmitterSpec
         {
-            Name = "initial", Bursts = new[] { (0f, 7) },
-        });
+            Name = "initial", Bursts = new[] { new ParticleBurstSpec(0f, 7) },
+        }, 1u);
         Equal(7, scheduler.Advance(0f, true));
         Equal(0, scheduler.Advance(0f, true));
         Equal(0, scheduler.Advance(0.5f, true));
@@ -157,13 +158,13 @@ public static class ParticleDataTests
         var spec = new EmitterSpec
         {
             Name = "loops", Duration = 2f, Looping = true, RateOverTime = 1.5f,
-            Bursts = new[] { (0.5f, 3), (2f, 5), (0f, 2) },
+            Bursts = new[] { new ParticleBurstSpec(0.5f, 3), new ParticleBurstSpec(2f, 5), new ParticleBurstSpec(0f, 2) },
         };
-        var whole = new EmissionScheduler(spec);
+        var whole = new EmissionScheduler(spec, 1u);
         Equal(31, whole.Advance(4.5f, true));
         Equal(0, whole.Advance(0f, true));
         Equal(1, whole.Advance(0.5f, true));
-        var split = new EmissionScheduler(spec);
+        var split = new EmissionScheduler(spec, 1u);
         Equal(15, split.Advance(2f, true));
         Equal(13, split.Advance(2f, true));
         Equal(3, split.Advance(0.5f, true));
@@ -176,8 +177,8 @@ public static class ParticleDataTests
         var scheduler = new EmissionScheduler(new EmitterSpec
         {
             Name = "once", Duration = 1f, RateOverTime = 4f,
-            Bursts = new[] { (0f, 2), (0.5f, 3), (1f, 5) },
-        });
+            Bursts = new[] { new ParticleBurstSpec(0f, 2), new ParticleBurstSpec(0.5f, 3), new ParticleBurstSpec(1f, 5) },
+        }, 1u);
         Equal(false, scheduler.Finished);
         Equal(14, scheduler.Advance(2f, true));
         Equal(true, scheduler.Finished);
@@ -190,8 +191,8 @@ public static class ParticleDataTests
         var scheduler = new EmissionScheduler(new EmitterSpec
         {
             Name = "paused", Duration = 1f, Looping = true, RateOverTime = 3f,
-            Bursts = new[] { (0.5f, 7), (0.75f, 11) },
-        });
+            Bursts = new[] { new ParticleBurstSpec(0.5f, 7), new ParticleBurstSpec(0.75f, 11) },
+        }, 1u);
         Equal(0, scheduler.Advance(0.25f, true));
         Equal(0, scheduler.Advance(4.5f, false));
         Equal(1, scheduler.Advance(0.25f, true));
@@ -201,8 +202,8 @@ public static class ParticleDataTests
     [LumenFact]
     public static void PausedFirstFrameConsumesInitialBurstAndCanFinishNonloop()
     {
-        var spec = new EmitterSpec { Name = "paused-start", Bursts = new[] { (0f, 7), (1f, 4) } };
-        var scheduler = new EmissionScheduler(spec);
+        var spec = new EmitterSpec { Name = "paused-start", Bursts = new[] { new ParticleBurstSpec(0f, 7), new ParticleBurstSpec(1f, 4) } };
+        var scheduler = new EmissionScheduler(spec, 1u);
         Equal(0, scheduler.Advance(0f, false));
         Equal(0, scheduler.Advance(0f, true));
         Equal(0, scheduler.Advance(1f, false));
@@ -217,10 +218,10 @@ public static class ParticleDataTests
         Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", Duration = float.NaN }));
         Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", RateOverTime = -1f }));
         Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", RateOverTime = float.PositiveInfinity }));
-        Throws<ArgumentOutOfRangeException>(() => new EmissionScheduler(new EmitterSpec { Name = "bad", Bursts = new[] { (2f, 1) } }));
-        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", Bursts = new[] { (0f, -1) } }));
-        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", Bursts = new[] { (float.NaN, 1) } }));
-        var scheduler = new EmissionScheduler(new EmitterSpec { Name = "valid", Bursts = new[] { (0f, 2) } });
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", Bursts = new[] { new ParticleBurstSpec(2f, 1) } }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", Bursts = new[] { new ParticleBurstSpec(0f, -1) } }));
+        Throws<InvalidDataException>(() => Validate(new EmitterSpec { Name = "bad", Bursts = new[] { new ParticleBurstSpec(float.NaN, 1) } }));
+        var scheduler = new EmissionScheduler(new EmitterSpec { Name = "valid", Bursts = new[] { new ParticleBurstSpec(0f, 2) } }, 1u);
         Throws<ArgumentOutOfRangeException>(() => scheduler.Advance(-1f, true));
         Throws<ArgumentOutOfRangeException>(() => scheduler.Advance(float.NaN, true));
         Throws<ArgumentOutOfRangeException>(() => scheduler.Advance(float.PositiveInfinity, true));
@@ -228,14 +229,60 @@ public static class ParticleDataTests
     }
 
     [LumenFact]
-    public static void SchedulerRejectsUnrepresentableSpawnBudgetInsteadOfWrapping()
+    public static void ProbabilitySchedulesAreGroupingIndependentAndRestartResetsRandomAndCarry()
     {
-        var scheduler = new EmissionScheduler(new EmitterSpec
+        var spec = new EmitterSpec
         {
-            Name = "overflow", RateOverTime = float.MaxValue, Bursts = new[] { (0f, 2) },
-        });
-        Throws<OverflowException>(() => scheduler.Advance(1f, true));
-        Equal(2, scheduler.Advance(0f, true));
+            Name = "probability", Duration = 1f,
+            Bursts = new[] { new ParticleBurstSpec(0f, 1, 0f), new ParticleBurstSpec(.25f, 1, 1f),
+                new ParticleBurstSpec(.5f, 1, 0f), new ParticleBurstSpec(.75f, 1, 1f) },
+        };
+        var grouped = new EmissionScheduler(spec, 123u);
+        var split = new EmissionScheduler(spec, 123u);
+        Equal(1, grouped.Advance(1f, true, .5f, 1f));
+        Equal(0, split.Advance(0f, true, .5f, 1f));
+        Equal(1, split.Advance(.25f, true, .5f, 1f));
+        Equal(0, split.Advance(.25f, true, .5f, 1f));
+        Equal(0, split.Advance(.25f, true, .5f, 1f));
+        split.Restart();
+        Equal(1, split.Advance(1f, true, .5f, 1f));
+        var randomSpec = new EmitterSpec { Name = "random", Duration = 1f, Looping = true,
+            Bursts = new[] { new ParticleBurstSpec(.25f, 1, .5f), new ParticleBurstSpec(.75f, 1, .5f) } };
+        var whole = new EmissionScheduler(randomSpec, 123u);
+        var pieces = new EmissionScheduler(randomSpec, 123u);
+        double total = whole.Advance(4f, true);
+        Equal(total, pieces.Advance(1f, true) + pieces.Advance(1f, true) + pieces.Advance(1f, true) + pieces.Advance(1f, true));
+        pieces.Restart();
+        Equal(total, pieces.Advance(4f, true));
+    }
+
+    [LumenFact]
+    public static void StaticShapeSamplingRespectsShellAndArcBoundaries()
+    {
+        var shell = new EmitterSpec { Name = "hemisphere", Shape = LumenShapeKind.HemisphereShell, ShapeExtents = Vector3.One,
+            ArcDegrees = 90f };
+        uint seed = 123u;
+        ParticleShapeSampler.Sample(shell, ref seed, out var position, out var direction);
+        Near(1f, position.Length());
+        Near(1f, direction.Length());
+        if (position.X < -1e-6f || position.Y < 0f || position.Z > 1e-6f)
+            throw new InvalidOperationException($"Hemisphere shell escaped the +Y, +X/-Z quarter: {position}");
+        var edge = new EmitterSpec { Name = "edge", Shape = LumenShapeKind.SingleSidedEdge,
+            ShapeExtents = new Vector3(2f), RadiusSpread = 1f };
+        ParticleShapeSampler.Sample(edge, ref seed, out position, out direction);
+        Equal(new Vector3(-2f, 0f, 0f), position);
+        Equal(-Vector3.UnitZ, direction);
+    }
+
+    [LumenFact]
+    public static void BillboardVerticalOverheadAndLocalProjectionRemainGeometric()
+    {
+        ParticleBillboardMath.Vertical(Vector3.UnitX, Vector3.UnitZ, 1f, false, out var right, out var up);
+        Equal(Vector3.UnitX, right);
+        Equal(Vector3.UnitY, up);
+        ParticleBillboardMath.Local(Quaternion.Identity, true, true, 1f, out right, out up);
+        Equal(Vector3.UnitX, right);
+        Equal(Vector3.UnitZ, up);
     }
 
     [LumenFact]
@@ -257,7 +304,7 @@ public static class ParticleDataTests
         Offset<GpuParticle>(nameof(GpuParticle.VelocityAndLifetime), 16);
         Offset<GpuParticle>(nameof(GpuParticle.StartColor), 32);
         Offset<GpuParticle>(nameof(GpuParticle.SizeSeedEmitterFlags), 48);
-        Equal(256, Marshal.SizeOf<GpuEmitterParams>());
+        Equal(320, Marshal.SizeOf<GpuEmitterParams>());
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.World), 0);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Slots), 64);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Shape), 80);
@@ -271,6 +318,10 @@ public static class ParticleDataTests
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ShapePosition), 208);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ShapeRotation), 224);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ShapeScale), 240);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ShapeOptions), 256);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ShapeMix), 272);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.BoxThicknessDonut), 288);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.WorldRotation), 304);
         Equal(64, Marshal.SizeOf<Matrix4x4>());
         Offset<Matrix4x4>(nameof(Matrix4x4.M11), 0);
         Offset<Matrix4x4>(nameof(Matrix4x4.M21), 16);

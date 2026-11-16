@@ -23,6 +23,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private readonly EffectStateGraph graph;
     private readonly LumenPlayRequest request;
     private readonly Matrix4x4[] nodeWorldMatrices;
+    private readonly Quaternion[] nodeWorldRotations;
     private readonly int[] cpuIds;
     private readonly int[] gpuIds;
     private readonly int[] lightIds;
@@ -49,7 +50,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private Matrix4x4 rootWorld;
 
     // Requires: request.InitialState is null or names a state the asset declares.
-    internal EffectInstanceHandle(LumenVfxService owner, EffectAsset asset, in LumenPlayRequest request)
+    internal EffectInstanceHandle(LumenVfxService owner, EffectAsset asset, in LumenPlayRequest request, uint playSeed)
     {
         this.owner = owner;
         this.asset = asset;
@@ -59,6 +60,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         if (request.InitialState is { } initialState && (initial = graph.IndexOf(initialState)) < 0)
             throw new ArgumentException($"Effect '{asset.EffectId}' declares no state '{initialState}'.", nameof(request));
         nodeWorldMatrices = new Matrix4x4[asset.Nodes.Length];
+        nodeWorldRotations = new Quaternion[asset.Nodes.Length];
         cpuIds = new int[asset.Nodes.Length];
         gpuIds = new int[asset.Nodes.Length];
         lightIds = new int[asset.Nodes.Length];
@@ -82,14 +84,16 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             for (int i = 0; i < asset.Nodes.Length; i++)
             {
                 if (asset.Nodes[i].Emitter is not { } spec) continue;
+                uint nodeSeed = unchecked(playSeed + (uint)i * 0x9E3779B9u);
+                if (nodeSeed == 0) nodeSeed = 1;
                 if (spec.PreferredTier == LumenParticleTier.L2_GpuCompute && engine is not null)
                 {
-                    gpuIds[i] = engine.CreateInstance(spec, nodeWorldMatrices[i], request.MapIndex, request.RealTime);
-                    if (!initialNodes[i]) engine.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], false, 1f, 1f);
+                    gpuIds[i] = engine.CreateInstance(spec, NodeTransform(i), request.MapIndex, request.RealTime, nodeSeed);
+                    if (!initialNodes[i]) engine.UpdateInstance(gpuIds[i], NodeTransform(i), false, 1f, 1f);
                 }
                 else
                 {
-                    cpuIds[i] = owner.Simulator.AcquireEmitter(spec, nodeWorldMatrices[i], emitting: initialNodes[i], rateMultiplier: 1f, realTime: request.RealTime, mapIndex: request.MapIndex);
+                    cpuIds[i] = owner.Simulator.AcquireEmitter(spec, NodeTransform(i), nodeSeed, emitting: initialNodes[i], rateMultiplier: 1f, realTime: request.RealTime, mapIndex: request.MapIndex);
                 }
                 PushVerticalState(i);
             }
@@ -242,14 +246,14 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                 bool emitting = state == PlaybackState.Playing && nodeActive[i];
                 if (cpuIds[i] >= 0)
                 {
-                    owner.Simulator.SetEmitterTransform(cpuIds[i], nodeWorldMatrices[i]);
+                    owner.Simulator.SetEmitterTransform(cpuIds[i], NodeTransform(i));
                     owner.Simulator.SetEmitterParams(cpuIds[i], emitting, parameters["rate"], intensity);
                     if (state == PlaybackState.Draining && !owner.Simulator.IsEmitterAlive(cpuIds[i])) cpuIds[i] = -1;
                 }
                 if (gpuIds[i] >= 0)
                 {
                     if (state == PlaybackState.Draining && !engine!.IsInstanceAlive(gpuIds[i])) gpuIds[i] = -1;
-                    else engine!.UpdateInstance(gpuIds[i], nodeWorldMatrices[i], emitting, intensity, parameters["rate"]);
+                    else engine!.UpdateInstance(gpuIds[i], NodeTransform(i), emitting, intensity, parameters["rate"]);
                 }
             }
             UpdateLights(intensity);
@@ -357,7 +361,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         nodeActive[index] = false;
         nodeDeactivatedAt[index] = playbackTime;
         if (cpuIds[index] >= 0) owner.Simulator.SetEmitterParams(cpuIds[index], false, parameters["rate"], parameters["intensity"]);
-        if (gpuIds[index] >= 0) engine!.UpdateInstance(gpuIds[index], nodeWorldMatrices[index], false, parameters["intensity"], parameters["rate"]);
+        if (gpuIds[index] >= 0) engine!.UpdateInstance(gpuIds[index], NodeTransform(index), false, parameters["intensity"], parameters["rate"]);
     }
 
     private void BeginDrain()
@@ -410,7 +414,11 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         }
         rootWorld = SpacePlaneTransform.BuildRootMatrix(origin, rotation, request.Scale * parameters["scale"]);
         SpacePlaneTransform.BuildWorldMatrices(asset, rootWorld, nodeWorldMatrices);
+        Quaternion rootRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitY, rotation * (MathF.PI / 180f));
+        SpacePlaneTransform.BuildWorldRotations(asset, rootRotation, nodeWorldRotations);
     }
+
+    private LumenEmitterTransform NodeTransform(int index) => new(nodeWorldMatrices[index], nodeWorldRotations[index]);
 
     // Ensures: emits one pulse on TargetNodeIndex's emitter when that node has one (Bursts[0].Count if the
     //          emitter declares bursts, else round(RateOverTime), clamped to [0, MaxParticles]) through
@@ -425,7 +433,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                 : (int)Math.Clamp(MathF.Round(spec.RateOverTime), 0f, spec.MaxParticles);
             if (cpuIds[node] >= 0)
             {
-                owner.Simulator.SetEmitterTransform(cpuIds[node], nodeWorldMatrices[node]);
+                owner.Simulator.SetEmitterTransform(cpuIds[node], NodeTransform(node));
                 owner.Simulator.EmitBurst(cpuIds[node], count);
             }
             if (gpuIds[node] >= 0) engine!.EmitBurst(gpuIds[node], count);

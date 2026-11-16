@@ -91,7 +91,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
         "looping": false,
         "worldSpaceSimulation": true,
         "rateOverTime": 0,
-        "bursts": [[0.0, 200], { "time": 0.5, "count": 100 }],
+        "bursts": [[0.0, 200], { "time": 0.5, "count": 100, "probability": 0.5 }],
         "shape": "Point",
         "shapeExtents": [1, 1, 1],
         "coneAngleDegrees": 25,
@@ -167,7 +167,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 - **粒子密度设置**：公开 setter `RimLumenRenderHost.ParticleDensityScale` 接受范围为 `0.1`～`1.0`；范围外的有限值静默截到边界，不记录日志，NaN 和正负无穷抛出 `ArgumentOutOfRangeException`。设置滑条连续取值，显示时四舍五入为整数百分比。密度 `1` 精确；截断后的密度为 `d` 时，脉冲有效密度为 `floor(d * 65536) / 65536`。
 - **粒子密度与脉冲**：每个发射器保存独立的 `Int64` 累积量 `a`，初值为 `0`，单位为 `1/65536` 粒子。先计算 `q = floor(density * 65536)`；每次非零脉冲依次计算 `a += count * q`、`n = ceil(a / 65536)`（用整数运算）和 `a -= n * 65536`。`n` 是本次请求预算，`a <= 0` 且可以为负。有效密度为 `floor(density * 65536) / 65536`，永不高于设定值；密度为 `1` 时精确，不使用 `0.999` 阈值。
 
-  密度为 `0.25` 时，连续四次 `count = 1` 的预算为 `1, 0, 0, 0`；连续八次总计为 `2`。连续两次 `count = 7` 的预算为 `2, 2`。密度为 `0.1` 时，`q = 6553`，十次 `count = 1` 累计 `65530`，总请求为 `1`；密度为 `0.2` 时，五次 `count = 1` 的总请求为 `1`。累计请求预算按有效密度计算，为 `ceil(sum(count * q) / 65536)`。预算不是实际粒子数：容量或空闲槽位不足时，丢弃的请求不会补发。
+  密度为 `0.25` 时，连续四次 `count = 1` 的预算为 `1, 0, 0, 0`；连续八次总计为 `2`。连续两次 `count = 7` 的预算为 `2, 2`。密度为 `0.1` 时，`q = 6553`，十次 `count = 1` 累计 `65530`，总请求为 `1`；密度为 `0.2` 时，五次 `count = 1` 的总请求为 `1`。累计请求预算按有效密度计算，为 `ceil(sum(count * q) / 65536)`。预算不是实际存活粒子数或 GPU 粒子计数：容量或空闲槽位不足时，丢弃的请求不会补发。`rateOverTime` 须有限且非负，没有额外速率上限。容量准入前使用宽数值累计有限的连续发射预算 `rate × dt` 和全部跨过的、通过概率判定并按密度缩放的脉冲；超过 Int32 范围属于普通容量丢弃，不因预算范围抛异常。即使没有空闲槽位，仍对全部计划发生次数抽取概率，并对通过的次数更新密度余量。
 
   脉冲在 CPU 侧入队时只计算一次，GPU Capture 不再缩放。`Play`、显式 `Restart` 和 `GoTo` 状态重新进入会将 `a` 重置为 `0`；循环回绕不会重置。例如，密度为 `0.25` 时，每个循环一次 `count = 1`，八个循环的总请求为 `2`。连续发射率使用独立的 `double` 小数余量，向下取整并保留余数；运行时 `rate` 倍率不缩放脉冲。
 
@@ -194,6 +194,8 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 1. 状态时钟归零，并触发一次 `StateChanged(name)`。
 2. 属于该状态的节点从头开始自己的发射计划：`bursts` 的时刻、发射器 `duration` 与 `rateOverTime` 都从进入时刻起算。L1（CPU）与 L2（GPU）行为一致。
 3. 不属于该状态的节点停止新发射，已发出的粒子跑完寿命，点光在 `0.25s` 内淡出。
+
+发射暂停不等于游戏暂停：发射器首次激活后，即使停止新发射，循环和非循环发射器的发射计划时钟仍随时间推进；期间跨过的计划脉冲直接跳过，不补发，已有粒子继续模拟。从未激活的节点仍停在发射时间 0。显式 Restart 重置时钟、密度余量和概率随机状态，保留已接受的待发脉冲。游戏全局暂停仍使用 `dt=0`；`SetParam("rate", 0)` 只暂停连续发射，不影响已编写的脉冲。
 
 状态在帧边界切换：切换发生的那一帧，发射器按新状态模拟整帧。一帧推进跨过多个状态时，会依次走完每个状态与其中的事件。
 
@@ -344,9 +346,33 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 ### 1. 粒子系统枚举（`RimLumen.Core.Contracts`）
 
 - **`LumenParticleTier`**：`L0_ExternalCpu`（外部兼容播放器）/ `L1_NativeCpu`（原生 CPU 模拟，适合少粒子或需频繁代码交互）/ `L2_GpuCompute`（Vulkan Compute 模拟，默认，适合大数量与力场粒子）。
-- **`LumenShapeKind`**：`Point`（0）/ `Sphere`（1）/ `CircleXZ`（2）/ `Cone`（3）/ `Box`（4）。
+- **`LumenShapeKind`**：`Point`（0）、`Sphere`（1）、`CircleXZ`（2）、`Cone`（3）、`Box`（4）、`SphereShell`（5）、`Hemisphere`（6）、`HemisphereShell`（7）、`CircleEdgeXZ`（8）、`ConeShell`（9）、`ConeVolume`（10）、`ConeVolumeShell`（11）、`SingleSidedEdge`（12）、`BoxShell`（13）、`BoxEdge`（14）、`Donut`（15）、`Rectangle`（16）。
 - **`LumenBlendMode`**：`Additive`（0，推荐发光与火焰）/ `AlphaBlend`（1，烟雾与水雾）/ `Premultiplied`（2）。
-- **`LumenBillboardMode`**：`Camera`（0，面向相机）/ `Horizontal`（1，水平贴地面片）/ `StretchedVelocity`（2，按速度方向拉伸，配合 `VelocityStretchFactor` 与 `LengthScale`）/ `Mesh`（3，网格枚举保留值）。
+- **`LumenBillboardMode`**：`Camera`（0，面向相机）/ `Horizontal`（1，水平贴地面片）/ `StretchedVelocity`（2，按速度方向拉伸，配合 `VelocityStretchFactor` 与 `LengthScale`）/ `Mesh`（3，延期）/ `Vertical`（4）/ `Local`（5）。
+
+### 形状与概率脉冲
+
+`ShapeExtents` 默认 `(1,1,1)`，单位为格：球 / 半球使用 XYZ 半径，圆 / 圆锥使用 XZ 底面半径，盒体使用 XYZ 半尺寸，`SingleSidedEdge` 使用 X 半长，`Donut` 使用 XZ 主环半径，`Rectangle` 使用 XZ 半尺寸。形状轴为 +Y，半球在 +Y；边沿 X 分布并向 -Z 发射。静态部分圆弧的径向向量为 `(cos θ, 0, -sin θ)`。
+
+| 发射器字段（JSON / XML 使用首字母小写） | 默认 | 有效范围及含义 |
+| --- | --- | --- |
+| `ConeLength` | 5 | 有限非负格，仅圆锥体积使用 |
+| `DonutRadius` | 0.2 | 有限非负格，圆环管半径 |
+| `RadiusThickness` | 1 | 有限 `[0,1]`，径向厚度；显式 Shell / Edge 保持表面 / 边缘 |
+| `BoxThickness` | `(0,0,0)` | 各分量有限 `[0,1]`，盒壳 / 棱边向内厚度 |
+| `ArcDegrees` | 360 | 有限 `[0,360]` 度 |
+| `ArcSpread` | 0 | 有限 `[0,1]`，非零时相位量化为 `floor(u/step)*step` |
+| `RadiusSpread` | 0 | 有限 `[0,1]`，同样量化，仅用于单边 X 位置 |
+| `RandomDirectionAmount`、`SphericalDirectionAmount` | 0 | 各有限 `[0,1]`，分别向独立球面方向及形状中心向外方向混合 |
+| `RandomPositionAmount` | 0 | 有限非负格；添加独立均匀体积球形偏移 |
+
+圆锥以 `r=sqrt(lerp((1-RadiusThickness)^2,1,u))` 采样底面，壳用 `r=1`；`d=normalize(radial*sin(angle)*r + +Y*cos(angle))`，位置为 `radial*r*底面半径`。体积形状再加 `d*u*ConeLength/max(0.001,d.y)`。归一化输入长度 `<=1e-5` 时返回零方向，因此可产生静止粒子。盒壳按 `abs(ShapeExtents*ShapeScale)` 的面面积加权，盒棱按长度加权；总权重为零时选择 X 轴。
+
+形状采样后先应用形状局部 TRS，再依次混合随机方向、球向方向、随机位置；方向不受形状缩放。导入的定向形状只在形状局部使用 `R*Rx(+90°)` 和缩放 `(sx,sz,sy)`，不旋转 prefab、世界或力场。L1 / L2 使用相同的形状公式和分布，不承诺同种子的出生粒子逐一相同。上述范围外的原生输入被拒绝，不截断；导入值走 External 并给出字段原因。
+
+`Bursts` 为 `ParticleBurstSpec(Time, Count, Probability=1)[]`：时间为有限秒数且在 `[0, Duration]` 内（包含两端），数量为非负整数，概率有限 `[0,1]`；JSON 的 `probability` 和 XML 的 `<probability>` 可省略，例如 `<li><time>0.5</time><count>100</count><probability>0.5</probability></li>`。C#、JSON 和 XML 都在资产入口校验时间；超过 Duration 时错误指出具体字段，不在 Play 热路径重复校验。共享 CPU 调度器对每个计划发生的脉冲先抽一次概率，接受后才计算密度；拒绝不消耗密度余量，显式 `EmitBurst` 不受概率控制。同一节点种子的 L1 / L2 接受结果一致，服务为每次 Play 和节点分配种子，不提供公开种子，也不承诺跨 Play 重现。Restart 重置计划、余量和概率随机状态，但保留已接受待发脉冲；循环回绕不重置。连续发射及共享定点密度余量规则不变，见上文「粒子密度与脉冲」。
+
+`Vertical` 在 `GroundXZ` 使用 `normalize(cross(worldUp, rawCameraForward))`；正顶视时采用定义好的相机右轴极限、上轴取 +Y，有限但边缘朝向相机而不可见。2D 中站立面片应使用 `Vertical3D`；它直接使用已补偿的相机右 / 上轴，不再做逆 Y 或归一化。`Local` 使用完整世界四元数轴做真实几何投影，`Vertical3D` 显示映射只应用一次；边缘视角允许塌缩，不转向相机。空间平面只有 `GroundXZ=0` 和 `Vertical3D=3`。
 
 ### 2. 四种力场（`ForceFieldSpec` / `ForceFieldKind`）
 
@@ -446,6 +472,8 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 
 ---
 
+`LumenEmitterTransform` 是只读的 `World` 矩阵与单位世界 `Rotation` 四元数对：旋转来自完整父级旋转链及请求 / Follow 偏航，与缩放无关，不从矩阵推断，也不是 `ShapeRotation`。节点 `LocalRotation` 与 `ShapeRotation` 一样要求有限单位四元数，平方范数误差不超过 `1e-5`；XML 非有限 yaw 被拒绝。GPU 唯一入口为 `CreateInstance(spec, LumenEmitterTransform, mapIndex, realTime, uint emissionSeed)`，`UpdateInstance` 同样接收完整 transform；CPU `AcquireEmitter` 也要求节点种子。内部 emitter / particle / material / vertex 布局分别为 320 / 64 / 128 / 44 字节，不是公开原始 GPU ABI。
+
 ### 4. 原生 HDR 混合空间与扩展绘制
 
 `LumenColorBlendSpace : byte` 提供 `Legacy = 0`（默认）和 `Linear = 1`，控制原生 HDR 层的混合，与发射器的 `ColorSpace` 材质计算相互独立。`RimLumenRenderHost.ColorBlendSpace` 是请求设置；只读的 `CurrentFrameColorBlendSpace` 是当前帧锁存值。安装时初始化锁存值，每帧在 `EngineApplication.PrePollEvents`（584）采集，早于输入、`OnUpdate`（715）和 `BeginMainThreadFrame`（730）。Update 中的设置修改从下一帧生效。
@@ -501,8 +529,10 @@ RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled
 
 当游戏同时启用 `Chezhou.RimUnity` 时，`RimLumen.Adapter.RimUnity` 会读取其导出的 `catalog.json`、预制体 JSON（含 `.json.gz`）和 `.rutex` 贴图，并将粒子节点按功能自动分流：
 
-- **转入原生 HDR / GPU（或 CPU）**：受支持的基础形状及其形状局部位置、旋转、缩放（TRS）、曲线、渐变、贴图、序列帧、周期发射及确定性脉冲。
-- **保留在原 RimUnity 播放器混播（`L0_ExternalCpu`）**：节点启用了 `trails`、`subEmitters`（含子发射器依赖）、`collision`、`trigger`、`renderMode.Mesh`、`renderMode.Vertical` 或未知 `renderMode`、超出原生颜色范围的材质 `_Color`、线性 `velocityOverLifetime`、`rotationOverLifetime`、变化曲线 `forceOverLifetime`、任何启用的 `lights` 模块（含 `ratio = 1`）、概率脉冲，或使用了核心暂未建模的形状（如非零底面半径圆锥、球壳、圆环或网格形状）。
+- **转入原生 HDR / GPU（或 CPU）**：受支持的基础形状及其形状局部位置、旋转、缩放（TRS）、曲线、渐变、贴图、序列帧、周期发射及受概率控制的计划脉冲。
+- **保留在原 RimUnity 播放器混播（`L0_ExternalCpu`）**：节点启用了 `trails`、`subEmitters`（含子发射器依赖）、`collision`、`trigger`、`renderMode.Mesh` 或未知 `renderMode`、超出原生颜色范围的材质 `_Color`、线性 `velocityOverLifetime`、`rotationOverLifetime`、变化曲线 `forceOverLifetime`、任何启用的 `lights` 模块（含 `ratio = 1`），以及动态圆弧 / 半径模式、align、变化速度 / 力 / 旋转曲线、双曲线随机、几何或形状纹理等尚未覆盖的功能。
+
+导入脉冲的计划时间须严格小于系统 `Duration`。`cycleCount=0` 时，每个系统循环都从同一本地相位重新重复，即使间隔不能整除时长。一个发射器所有脉冲定义展开后的发生次数合计最多 4096；超限时整个发射器转 External 并给出原因，不截断。间隔非有限时转 External；重复时，间隔 `<=0` 也转 External。单次脉冲允许有限的非正间隔，但不使用该间隔。无效计划原因是 `emission.bursts.schedule.domain`，总次数超限原因是 `emission.bursts.occurrenceLimit`。曲线分流只检查启用的模块及有效轴；禁用 emission 中保存的曲线不参与判定。启用 `main.startSize3D`、`main.startRotation3D` 或非零 `startRotation` 时转 External，原因分别为 `main.startSize3D`、`main.startRotation3D`、`main.startRotation`；启用的 `rateOverDistance` 双曲线原因是 `emission.rateOverDistance.dualCurve`。未启用的 3D 轴字段不触发拒绝，初始旋转和 3D 尺寸的原生支持仍延期。
 
 适配器将材质 `_Color` 单独映射到 `materialTint`；Linear 材质在没有其他不支持原因时走原生路径。导入的材质颜色超出上述范围时转外部播放，原因包含材质标识和字段：`material[<asset-id>]._Color.domain`；不截断或折入顶点颜色。
 

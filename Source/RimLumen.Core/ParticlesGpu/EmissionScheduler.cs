@@ -9,24 +9,34 @@ internal sealed class EmissionScheduler
     private readonly double duration;
     private readonly double rate;
     private readonly bool looping;
-    private readonly (float Time, int Count)[] bursts;
+    private readonly ParticleBurstSpec[] bursts;
+    private readonly uint initialSeed;
+    private uint randomState;
     private double time;
     private double fractional;
     private long burstRemainder;
     private bool started;
 
-    // Requires: spec passed LumenAssetRules validation.
-    public EmissionScheduler(EmitterSpec spec)
+    // Requires: spec passed LumenAssetRules validation; emissionSeed is nonzero.
+    public EmissionScheduler(EmitterSpec spec, uint emissionSeed)
     {
-        foreach (var burst in spec.Bursts)
-        {
-            if (burst.Time > spec.Duration)
-                throw new ArgumentOutOfRangeException(nameof(spec), "Burst time must not exceed duration.");
-        }
         duration = spec.Duration;
         rate = spec.RateOverTime;
         looping = spec.Looping;
-        bursts = ((float Time, int Count)[])spec.Bursts.Clone();
+        bursts = (ParticleBurstSpec[])spec.Bursts.Clone();
+        for (int i = 1; i < bursts.Length; i++)
+        {
+            ParticleBurstSpec value = bursts[i];
+            int j = i;
+            while (j > 0 && bursts[j - 1].Time > value.Time)
+            {
+                bursts[j] = bursts[j - 1];
+                j--;
+            }
+            bursts[j] = value;
+        }
+        initialSeed = emissionSeed;
+        randomState = emissionSeed;
     }
 
     public bool Finished => !looping && time >= duration;
@@ -38,6 +48,7 @@ internal sealed class EmissionScheduler
         fractional = 0d;
         burstRemainder = 0;
         started = false;
+        randomState = initialSeed;
     }
 
     internal int AcceptBurst(int count, float density)
@@ -45,42 +56,39 @@ internal sealed class EmissionScheduler
 
     // Requires: dt >= 0; called once per captured frame.
     // Ensures: advances emitter time; preserves fractional rate and counts all crossed bursts.
-    public int Advance(float dt, bool emitting) => Advance(dt, emitting, 1f, 1f);
+    public double Advance(float dt, bool emitting) => Advance(dt, emitting, 1f, 1f);
 
-    internal int Advance(float dt, bool emitting, float density, float rateMultiplier)
+    internal double Advance(float dt, bool emitting, float density, float rateMultiplier)
     {
         if (!float.IsFinite(dt) || dt < 0f) throw new ArgumentOutOfRangeException(nameof(dt));
         double end = looping ? time + dt : Math.Min(time + dt, duration);
         double remainder = fractional;
+        long nextBurstRemainder = burstRemainder;
+        uint nextRandomState = randomState;
         double count = 0;
         if (emitting)
         {
             count = ParticleEmissionBudget.AccumulateRate(ref remainder, rate * rateMultiplier, end - time, density);
-            foreach (var burst in bursts)
+            long firstCycle = looping && bursts.Length != 0 ? Math.Max(0L, (long)Math.Floor(time / duration) - 1) : 0;
+            long lastCycle = looping && bursts.Length != 0 ? (long)Math.Floor(end / duration) : 0;
+            for (long cycle = firstCycle; bursts.Length != 0 && cycle <= lastCycle; cycle++)
             {
-                if (burst.Count == 0) continue;
-                double occurrences;
-                if (looping)
+                foreach (var burst in bursts)
                 {
-                    // For each burst, subtract events at/before the old time from those at/before the new time.
-                    double before = time < burst.Time ? 0 : Math.Floor((time - burst.Time) / duration) + 1;
-                    double after = end < burst.Time ? 0 : Math.Floor((end - burst.Time) / duration) + 1;
-                    occurrences = after - before;
+                    double occurrenceTime = cycle * duration + burst.Time;
+                    if ((occurrenceTime > time || (!started && occurrenceTime == 0d)) && occurrenceTime <= end)
+                    {
+                        if (ParticleRandom.Next01(ref nextRandomState) < burst.Probability)
+                            count += ParticleEmissionBudget.AccumulateBurst(ref nextBurstRemainder, burst.Count, density);
+                    }
                 }
-                else
-                {
-                    occurrences = burst.Time > time && burst.Time <= end ? 1 : 0;
-                }
-                if (!started && burst.Time == 0f) occurrences++;
-                for (double occurrence = 0; occurrence < occurrences; occurrence++)
-                    count += AcceptBurst(burst.Count, density);
             }
-            if (count > int.MaxValue)
-                throw new OverflowException("Frame emission exceeds the integer spawn budget.");
         }
         time = end;
         fractional = remainder;
+        burstRemainder = nextBurstRemainder;
+        randomState = nextRandomState;
         started = true;
-        return (int)count;
+        return count;
     }
 }

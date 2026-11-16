@@ -44,6 +44,8 @@ public sealed class LumenEffectDef : Def
             LumenNodeXml node = nodes[i] ?? throw new InvalidDataException($"{source}: node {i} is null.");
             string nodePath = $"{source}: node {i}";
             string nodeName = string.IsNullOrEmpty(node.name) ? $"node{i}" : node.name!;
+            if (!float.IsFinite(node.localYawDegrees))
+                throw new InvalidDataException($"{nodePath}.localYawDegrees: must be finite.");
             specs[i] = new EffectNodeSpec
             {
                 Name = nodeName,
@@ -145,6 +147,16 @@ public sealed class LumenEffectDef : Def
             ShapeRotation = LumenAssetRules.NormalizeRotation(new Quaternion(xml.shapeRotation.x, xml.shapeRotation.y, xml.shapeRotation.z, xml.shapeRotation.w), path + ".emitter.shapeRotation"),
             ShapeScale = new Vector3(xml.shapeScale.x, xml.shapeScale.y, xml.shapeScale.z),
             ConeAngleDegrees = xml.coneAngleDegrees,
+            ConeLength = xml.coneLength,
+            DonutRadius = xml.donutRadius,
+            RadiusThickness = xml.radiusThickness,
+            BoxThickness = new Vector3(xml.boxThickness.x, xml.boxThickness.y, xml.boxThickness.z),
+            ArcDegrees = xml.arcDegrees,
+            ArcSpread = xml.arcSpread,
+            RadiusSpread = xml.radiusSpread,
+            RandomDirectionAmount = xml.randomDirectionAmount,
+            SphericalDirectionAmount = xml.sphericalDirectionAmount,
+            RandomPositionAmount = xml.randomPositionAmount,
             StartLifetimeMin = xml.startLifetimeMin,
             StartLifetimeMax = xml.startLifetimeMax,
             StartSpeedMin = xml.startSpeedMin,
@@ -200,28 +212,18 @@ public sealed class LumenEffectDef : Def
             intensity);
     }
 
-    private static (float Time, int Count)[] ToBursts(List<LumenBurstXml>? bursts, string path)
+    private static ParticleBurstSpec[] ToBursts(List<LumenBurstXml>? bursts, string path)
     {
         if (bursts is null || bursts.Count == 0)
         {
-            return Array.Empty<(float, int)>();
+            return Array.Empty<ParticleBurstSpec>();
         }
 
-        var result = new (float Time, int Count)[bursts.Count];
+        var result = new ParticleBurstSpec[bursts.Count];
         for (int i = 0; i < bursts.Count; i++)
         {
             LumenBurstXml burst = bursts[i] ?? throw new InvalidDataException($"{path}.bursts[{i}] is null.");
-            if (!float.IsFinite(burst.time) || burst.time < 0f)
-            {
-                throw new InvalidDataException($"{path}.bursts[{i}]: time must be finite and >= 0, got {burst.time}.");
-            }
-
-            if (burst.count < 0)
-            {
-                throw new InvalidDataException($"{path}.bursts[{i}]: count must be >= 0, got {burst.count}.");
-            }
-
-            result[i] = (burst.time, burst.count);
+            result[i] = new ParticleBurstSpec(burst.time, burst.count, burst.probability);
         }
 
         return result;
@@ -354,6 +356,16 @@ public sealed class LumenEmitterXml
     public UnityEngine.Quaternion shapeRotation = UnityEngine.Quaternion.identity;
     public UnityEngine.Vector3 shapeScale = UnityEngine.Vector3.one;
     public float coneAngleDegrees = 25f;
+    public float coneLength = 5f;
+    public float donutRadius = 0.2f;
+    public float radiusThickness = 1f;
+    public UnityEngine.Vector3 boxThickness;
+    public float arcDegrees = 360f;
+    public float arcSpread;
+    public float radiusSpread;
+    public float randomDirectionAmount;
+    public float sphericalDirectionAmount;
+    public float randomPositionAmount;
     public LumenBillboardMode billboardMode = LumenBillboardMode.Camera;
     public float velocityStretchFactor;
     public float lengthScale = 1f;
@@ -393,6 +405,7 @@ public sealed class LumenBurstXml
 {
     public float time;
     public int count = 1;
+    public float probability = 1f;
 }
 
 public sealed class LumenCurveKeyXml
@@ -493,6 +506,7 @@ internal static class LumenAssetRules
                 throw new InvalidDataException($"{path} ('{node.Name}'): localScale must be finite.");
             }
 
+            ValidateRotation(node.LocalRotation, $"{path} ('{node.Name}').localRotation");
             ValidateEnum(node.SpacePlane, $"{path} ('{node.Name}').spacePlane");
 
             if (node.Emitter is { } emitter)
@@ -588,6 +602,25 @@ internal static class LumenAssetRules
         return Quaternion.Normalize(rotation);
     }
 
+    private static void ValidateRotation(Quaternion rotation, string path)
+    {
+        float lengthSquared = rotation.LengthSquared();
+        if (!float.IsFinite(lengthSquared) || MathF.Abs(lengthSquared - 1f) > 1e-5f)
+            throw new InvalidDataException($"{path}: quaternion must be finite, nondegenerate and unit (|lengthSquared - 1| <= 1e-5).");
+    }
+
+    private static void ValidateRange(float value, float max, string path)
+    {
+        if (!float.IsFinite(value) || value < 0f || value > max)
+            throw new InvalidDataException($"{path}: must be finite and in [0,{max}], got {value}.");
+    }
+
+    private static void ValidateNonnegative(float value, string path)
+    {
+        if (!float.IsFinite(value) || value < 0f)
+            throw new InvalidDataException($"{path}: must be finite and >= 0, got {value}.");
+    }
+
     private static void ValidateEmitter(EmitterSpec emitter, string path)
     {
         if (emitter.MaxParticles <= 0)
@@ -621,11 +654,19 @@ internal static class LumenAssetRules
         Vector3 scale = emitter.ShapeScale;
         if (!float.IsFinite(scale.X) || !float.IsFinite(scale.Y) || !float.IsFinite(scale.Z))
             throw new InvalidDataException($"{path}.shapeScale: components must be finite (zero and negative scales are allowed).");
-        float rotationLengthSquared = emitter.ShapeRotation.LengthSquared();
-        // Absolute squared-norm tolerance 1e-5 admits Quaternion.Normalize float roundoff without accepting scaled rotations.
-        // C# assets must already be unit rotations: never mutate an immutable programmatic spec to normalize it.
-        if (!float.IsFinite(rotationLengthSquared) || MathF.Abs(rotationLengthSquared - 1f) > 1e-5f)
-            throw new InvalidDataException($"{path}.shapeRotation: quaternion must be finite, nondegenerate and unit (|lengthSquared - 1| <= 1e-5).");
+        ValidateRotation(emitter.ShapeRotation, path + ".shapeRotation");
+        ValidateNonnegative(emitter.ConeLength, path + ".coneLength");
+        ValidateNonnegative(emitter.DonutRadius, path + ".donutRadius");
+        ValidateNonnegative(emitter.RandomPositionAmount, path + ".randomPositionAmount");
+        ValidateRange(emitter.RadiusThickness, 1f, path + ".radiusThickness");
+        ValidateRange(emitter.BoxThickness.X, 1f, path + ".boxThickness.x");
+        ValidateRange(emitter.BoxThickness.Y, 1f, path + ".boxThickness.y");
+        ValidateRange(emitter.BoxThickness.Z, 1f, path + ".boxThickness.z");
+        ValidateRange(emitter.ArcDegrees, 360f, path + ".arcDegrees");
+        ValidateRange(emitter.ArcSpread, 1f, path + ".arcSpread");
+        ValidateRange(emitter.RadiusSpread, 1f, path + ".radiusSpread");
+        ValidateRange(emitter.RandomDirectionAmount, 1f, path + ".randomDirectionAmount");
+        ValidateRange(emitter.SphericalDirectionAmount, 1f, path + ".sphericalDirectionAmount");
 
         ValidateEnum(emitter.PreferredTier, path + ".preferredTier");
         ValidateEnum(emitter.Shape, path + ".shape");
@@ -662,17 +703,16 @@ internal static class LumenAssetRules
             throw new InvalidDataException($"{path}: coneAngleDegrees must be in [0, 180], got {emitter.ConeAngleDegrees}.");
         }
 
-        foreach ((float time, int count) in emitter.Bursts)
+        for (int i = 0; i < emitter.Bursts.Length; i++)
         {
-            if (!float.IsFinite(time) || time < 0f)
-            {
-                throw new InvalidDataException($"{path}: burst time must be finite and >= 0, got {time}.");
-            }
-
-            if (count < 0)
-            {
-                throw new InvalidDataException($"{path}: burst count must be >= 0, got {count}.");
-            }
+            ParticleBurstSpec burst = emitter.Bursts[i];
+            string burstPath = $"{path}.bursts[{i}]";
+            ValidateNonnegative(burst.Time, burstPath + ".time");
+            if (burst.Time > emitter.Duration)
+                throw new InvalidDataException($"{burstPath}.time: must be <= duration ({emitter.Duration}), got {burst.Time}.");
+            if (burst.Count < 0)
+                throw new InvalidDataException($"{burstPath}.count: must be >= 0, got {burst.Count}.");
+            ValidateRange(burst.Probability, 1f, burstPath + ".probability");
         }
 
         for (int i = 0; i < emitter.ForceFields.Length; i++)
@@ -830,7 +870,9 @@ public static class LumenJsonAssetLoader
     private static readonly string[] EmitterProperties =
     {
         "name", "maxParticles", "duration", "looping", "worldSpaceSimulation", "rateOverTime", "bursts",
-        "shape", "shapeExtents", "shapePosition", "shapeRotation", "shapeScale", "coneAngleDegrees", "startLifetime", "startLifetimeMin", "startLifetimeMax",
+        "shape", "shapeExtents", "shapePosition", "shapeRotation", "shapeScale", "coneAngleDegrees",
+        "coneLength", "donutRadius", "radiusThickness", "boxThickness", "arcDegrees", "arcSpread", "radiusSpread",
+        "randomDirectionAmount", "sphericalDirectionAmount", "randomPositionAmount", "startLifetime", "startLifetimeMin", "startLifetimeMax",
         "startSpeed", "startSpeedMin", "startSpeedMax", "startSize", "startSizeMin", "startSizeMax",
         "startColor", "colorSpace", "materialTint", "sizeOverLifetime", "colorOverLifetime", "forceFields", "textureKey",
         "flipbookTilesX", "flipbookTilesY", "flipbookCycles", "blendMode", "billboardMode",
@@ -843,7 +885,7 @@ public static class LumenJsonAssetLoader
         "glowRadius", "overlightRadius", "color", "intensity", "intensityOverTime",
     };
 
-    private static readonly string[] BurstProperties = { "time", "count" };
+    private static readonly string[] BurstProperties = { "time", "count", "probability" };
 
     private static readonly string[] ForceFieldProperties =
     {
@@ -920,6 +962,16 @@ public static class LumenJsonAssetLoader
             ShapeRotation = scope.Rotation("shapeRotation", Quaternion.Identity),
             ShapeScale = scope.Vector3("shapeScale", Vector3.One),
             ConeAngleDegrees = scope.Float("coneAngleDegrees", 25f),
+            ConeLength = scope.Float("coneLength", 5f),
+            DonutRadius = scope.Float("donutRadius", 0.2f),
+            RadiusThickness = scope.Float("radiusThickness", 1f),
+            BoxThickness = scope.Vector3("boxThickness", Vector3.Zero),
+            ArcDegrees = scope.Float("arcDegrees", 360f),
+            ArcSpread = scope.Float("arcSpread", 0f),
+            RadiusSpread = scope.Float("radiusSpread", 0f),
+            RandomDirectionAmount = scope.Float("randomDirectionAmount", 0f),
+            SphericalDirectionAmount = scope.Float("sphericalDirectionAmount", 0f),
+            RandomPositionAmount = scope.Float("randomPositionAmount", 0f),
             StartLifetimeMin = lifetime ?? scope.Float("startLifetimeMin", 1f),
             StartLifetimeMax = lifetime ?? scope.Float("startLifetimeMax", 1f),
             StartSpeedMin = speed ?? scope.Float("startSpeedMin", 0f),
@@ -976,11 +1028,11 @@ public static class LumenJsonAssetLoader
     private static ScalarCurve Multiply(ScalarCurve curve, float factor) =>
         factor == 1f ? curve : new ScalarCurve(curve.Keys, curve.Multiplier * factor);
 
-    private static (float Time, int Count)[] ParseBursts(JsonScope scope, string path)
+    private static ParticleBurstSpec[] ParseBursts(JsonScope scope, string path)
     {
         if (!scope.TryGet("bursts", out JsonElement element) || element.ValueKind == JsonValueKind.Null)
         {
-            return Array.Empty<(float, int)>();
+            return Array.Empty<ParticleBurstSpec>();
         }
 
         if (element.ValueKind != JsonValueKind.Array)
@@ -988,7 +1040,7 @@ public static class LumenJsonAssetLoader
             throw new InvalidDataException($"{path}.bursts: must be an array, got {element.ValueKind}.");
         }
 
-        var bursts = new List<(float, int)>(element.GetArrayLength());
+        var bursts = new List<ParticleBurstSpec>(element.GetArrayLength());
         int index = 0;
         foreach (JsonElement burstElement in element.EnumerateArray())
         {
@@ -997,7 +1049,8 @@ public static class LumenJsonAssetLoader
             {
                 float time = NumberAt(burstElement, 0, burstPath);
                 int count = (int)NumberAt(burstElement, 1, burstPath);
-                bursts.Add((time, count));
+                float probability = burstElement.GetArrayLength() > 2 ? NumberAt(burstElement, 2, burstPath) : 1f;
+                bursts.Add(new ParticleBurstSpec(time, count, probability));
                 continue;
             }
 
@@ -1009,7 +1062,7 @@ public static class LumenJsonAssetLoader
             var burst = new JsonScope(burstElement, burstPath);
             burst.Check(BurstProperties);
             float burstTime = burst.Float("time", 0f);
-            bursts.Add((burstTime, burst.Int("count", 1)));
+            bursts.Add(new ParticleBurstSpec(burstTime, burst.Int("count", 1), burst.Float("probability", 1f)));
         }
 
         return bursts.ToArray();

@@ -28,6 +28,10 @@ internal struct GpuEmitterParams
     public Vector4 ShapePosition; // node-local cells xyz, unused w
     public Vector4 ShapeRotation; // unit quaternion xyzw; rotates position and direction
     public Vector4 ShapeScale; // dimensionless xyz; affects sampled position only, unused w
+    public Vector4 ShapeOptions; // offset 256: radiusThickness, arc radians, arcSpread, radiusSpread
+    public Vector4 ShapeMix; // offset 272: randomDirection, sphericalDirection, randomPosition cells, coneLength cells
+    public Vector4 BoxThicknessDonut; // offset 288: boxThickness xyz, donutRadius cells
+    public Vector4 WorldRotation; // offset 304: unit world quaternion xyzw, independent of World scale/shear; stride 320
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]

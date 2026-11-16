@@ -418,16 +418,14 @@ internal sealed class SpyGpuEngine : ILumenGpuParticleEngine
     public int Capacity => 1_048_576;
     public string Name => "SpyGpuEngine";
     public bool HasActiveWork => true;
-    public int CreateInstance(EmitterSpec spec, Matrix4x4 initialWorldTransform)
-        => CreateInstance(spec, initialWorldTransform, -1, false);
-    public int CreateInstance(EmitterSpec spec, Matrix4x4 initialWorldTransform, int mapIndex, bool realTime)
+    public int CreateInstance(EmitterSpec spec, LumenEmitterTransform initialTransform, int mapIndex, bool realTime, uint emissionSeed)
     {
         int id = Creates.Count;
-        Creates.Add((spec, initialWorldTransform, mapIndex));
+        Creates.Add((spec, initialTransform.World, mapIndex));
         return id;
     }
-    public void UpdateInstance(int instanceId, in Matrix4x4 worldTransform, bool emitting, float intensityMultiplier, float rateMultiplier)
-        => Updates.Add((instanceId, worldTransform, emitting, intensityMultiplier));
+    public void UpdateInstance(int instanceId, in LumenEmitterTransform transform, bool emitting, float intensityMultiplier, float rateMultiplier)
+        => Updates.Add((instanceId, transform.World, emitting, intensityMultiplier));
     public void DestroyInstance(int instanceId, bool immediate = false) => Destroys.Add((instanceId, immediate));
     public readonly List<int> Restarts = new();
     public readonly List<(int Id, int Count)> Bursts = new();

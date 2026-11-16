@@ -319,10 +319,10 @@ public static class EffectStateMachineSuite
         var spec = new EmitterSpec
         {
             Name = "schedule", MaxParticles = 64, Duration = 1f, RateOverTime = 7f,
-            Bursts = new[] { (0f, 5), (0.4f, 3) },
+            Bursts = new[] { new ParticleBurstSpec(0f, 5), new ParticleBurstSpec(0.4f, 3) },
         };
-        var fresh = new EmissionScheduler(spec);
-        var reused = new EmissionScheduler(spec);
+        var fresh = new EmissionScheduler(spec, 1u);
+        var reused = new EmissionScheduler(spec, 1u);
         for (int i = 0; i < 9; i++) reused.Advance(0.15f, emitting: true);
         reused.Restart();
         for (int i = 0; i < 9; i++)
@@ -436,7 +436,7 @@ public static class EffectStateMachineSuite
     private static EmitterSpec Burst(string name, int count, float lifetime = 10f,
         LumenParticleTier tier = LumenParticleTier.L1_NativeCpu) => new()
     {
-        Name = name, MaxParticles = 16, Duration = 1f, RateOverTime = 0f, Bursts = new[] { (0f, count) },
+        Name = name, MaxParticles = 16, Duration = 1f, RateOverTime = 0f, Bursts = new[] { new ParticleBurstSpec(0f, count) },
         StartLifetimeMin = lifetime, StartLifetimeMax = lifetime, PreferredTier = tier,
     };
 

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using RimLumen.Core.Contracts;
 using RimUnity.Serialization;
 using static RimLumen.Adapter.RimUnity.RimUnityValueConversion;
@@ -16,20 +18,28 @@ public sealed class RimUnityTierClassifier
     }
 
     public (LumenParticleTier Tier, IReadOnlyList<string> Reasons) Classify(ComponentData particleSystem, ComponentData? renderer)
+        => Classify(particleSystem, renderer, out _);
+
+    internal (LumenParticleTier Tier, IReadOnlyList<string> Reasons) Classify(ComponentData particleSystem, ComponentData? renderer,
+        out ParticleBurstSpec[] convertedBursts)
     {
         var reasons = new List<string>();
+        AddDeferredCurveReasons(particleSystem, reasons);
         foreach (string module in new[] { "trails", "subEmitters", "collision", "trigger" })
             if (Enabled(Member(particleSystem.members, module))) reasons.Add(module);
         int renderMode = Integer(Member(renderer?.members, "renderMode"));
         if (renderMode == 4) reasons.Add("renderMode.Mesh");
-        else if (renderMode == 3) reasons.Add("renderMode.Vertical");
-        else if (renderMode is not (0 or 1 or 2)) reasons.Add("renderMode." + renderMode);
+        else if (renderMode is not (0 or 1 or 2 or 3)) reasons.Add("renderMode." + renderMode);
+        int alignment = Integer(Member(renderer?.members, "alignment"));
+        if (alignment is < 0 or > 4 || (renderMode == 0 && alignment is 1 or 3 or 4))
+            reasons.Add("alignment." + alignment);
         ValueData? velocity = Member(particleSystem.members, "velocityOverLifetime");
-        if (Enabled(velocity) && (Nonzero(Field(velocity, "x")) || Nonzero(Field(velocity, "y")) || Nonzero(Field(velocity, "z"))))
+        if (Enabled(velocity) && (NonzeroSingleCurve(Field(velocity, "x")) || NonzeroSingleCurve(Field(velocity, "y")) || NonzeroSingleCurve(Field(velocity, "z"))))
             reasons.Add("velocityOverLifetime.linear");
         if (Enabled(Member(particleSystem.members, "rotationOverLifetime"))) reasons.Add("rotationOverLifetime");
         ValueData? force = Member(particleSystem.members, "forceOverLifetime");
-        if (Enabled(force) && (Varying(Field(force, "x")) || Varying(Field(force, "y")) || Varying(Field(force, "z"))))
+        if (Enabled(force) && (IsCurve(Field(force, "x")) || IsCurve(Field(force, "y")) || IsCurve(Field(force, "z")) ||
+            Varying(Field(force, "x")) || Varying(Field(force, "y")) || Varying(Field(force, "z"))))
             reasons.Add("forceOverLifetime.curve");
         ValueData? lights = Member(particleSystem.members, "lights");
         if (Enabled(lights)) reasons.Add("lights.perParticle");
@@ -37,21 +47,28 @@ public sealed class RimUnityTierClassifier
         ValueData? main = Member(particleSystem.members, "main");
         ValueData? emission = Member(particleSystem.members, "emission");
         int maxParticles = Integer(Field(main, "maxParticles"), 1000);
-        float maxLifetime = CurveRange(Field(main, "startLifetime"), 5f).Max;
-        float rate = Enabled(emission, true) ? CurveRange(Field(emission, "rateOverTime"), 10f).Max : 0;
-        float maxBurst = 0;
         if (Enabled(emission, true) && Field(emission, "bursts")?.items is { } bursts)
             foreach (ValueData burst in bursts)
             {
-                float probability = Number(Field(burst, "probability"), 1 - Number(Field(burst, "inverseProbability")));
-                if (probability > 0 && probability < 1 && !reasons.Contains("emission.bursts.probability"))
-                    reasons.Add("emission.bursts.probability");
-                if (probability > 0)
-                    maxBurst = MathF.Max(maxBurst, CurveRange(Field(burst, "count"), Number(Field(burst, "maxCount"))).Max);
+                float probability = RawNumber(Field(burst, "probability"), 1 - RawNumber(Field(burst, "inverseProbability"), 0));
+                if ((!float.IsFinite(probability) || probability < 0 || probability > 1) && !reasons.Contains("emission.bursts.probability.domain"))
+                    reasons.Add("emission.bursts.probability.domain");
+                ValueData? count = Field(burst, "count");
+                int countMode = Integer(Field(count, "mode"));
+                if (countMode is 1 or 3 && Varying(count) && !reasons.Contains("emission.bursts.count.variable"))
+                    reasons.Add("emission.bursts.count.variable");
             }
-        bool gpu = maxParticles >= L2ParticleThreshold || rate * maxLifetime + maxBurst >= L2ParticleThreshold;
         AddShapeReasons(Member(particleSystem.members, "shape"), reasons);
+        convertedBursts = ConvertBurstSchedule(emission, Number(Field(main, "duration"), 5f), reasons);
         if (reasons.Count != 0) return (LumenParticleTier.L0_ExternalCpu, reasons);
+        float maxLifetime = CurveRange(Field(main, "startLifetime"), 5f).Max;
+        float rate = Enabled(emission, true) ? CurveRange(Field(emission, "rateOverTime"), 10f).Max : 0;
+        float maxBurst = 0;
+        if (Enabled(emission, true) && Field(emission, "bursts")?.items is { } nativeBursts)
+            foreach (ValueData burst in nativeBursts)
+                if (RawNumber(Field(burst, "probability"), 1 - RawNumber(Field(burst, "inverseProbability"), 0)) > 0)
+                    maxBurst = MathF.Max(maxBurst, CurveRange(Field(burst, "count"), Number(Field(burst, "maxCount"))).Max);
+        bool gpu = maxParticles >= L2ParticleThreshold || rate * maxLifetime + maxBurst >= L2ParticleThreshold;
         if (maxParticles >= L2ParticleThreshold) reasons.Add("maxParticles >= L2ParticleThreshold");
         if (rate * maxLifetime + maxBurst >= L2ParticleThreshold) reasons.Add("peakConcurrent >= L2ParticleThreshold");
         return (gpu ? LumenParticleTier.L2_GpuCompute : LumenParticleTier.L1_NativeCpu, reasons);
@@ -63,32 +80,136 @@ public sealed class RimUnityTierClassifier
         int kind = enabled ? Integer(Field(shape, "shapeType"), 4) : -1;
         if (enabled)
         {
-            if (kind is 4 or 7 or 8 or 9 && Number(Field(shape, "radius"), 1f) != 0)
-                reasons.Add("shape.coneRadius");
-            if (kind is 10 or 11) reasons.Add("shape.circlePlane");
             string? unsupported = kind switch
             {
-                1 => "shape.sphereShell", 2 or 3 => "shape.hemisphere", 6 or 13 or 14 or 19 or 20 => "shape.geometry",
-                7 => "shape.coneShell", 8 or 9 => "shape.coneVolume", 12 => "shape.edge",
-                15 => "shape.boxShell", 16 => "shape.boxEdge", 17 => "shape.donut", 18 => "shape.rectangle",
-                0 or 4 or 5 or 10 or 11 => null, _ => "shape.unsupported",
+                6 or 13 or 14 or 19 or 20 => "shape.geometry",
+                >= 0 and <= 18 => null, _ => "shape.unsupported",
             };
             if (unsupported is not null) reasons.Add(unsupported);
-            if (kind == 0 && Number(Field(shape, "radiusThickness"), 1f) != 1f)
-                reasons.Add("shape.radiusThickness");
-            // Unity normalizes a sampled base disk; Core samples solid angle uniformly, even at zero base radius.
-            if (kind == 4 && Number(Field(shape, "angle"), 25f) != 0)
-                reasons.Add("shape.coneDistribution");
-            if (kind is 0 or 4 or 10 or 11 && (Number(Field(shape, "arc"), 360f) != 360f ||
-                Integer(Field(shape, "arcMode")) != 0 || Number(Field(shape, "arcSpread")) != 0))
-                reasons.Add("shape.arc");
-            if (Number(Field(shape, "randomDirectionAmount")) != 0 || Number(Field(shape, "sphericalDirectionAmount")) != 0)
-                reasons.Add("shape.direction");
-            if (Number(Field(shape, "randomPositionAmount")) != 0) reasons.Add("shape.randomPosition");
+            if (Integer(Field(shape, "arcMode")) != 0) reasons.Add("shape.arcMode");
+            if (kind == 12 && Integer(Field(shape, "radiusMode")) != 0) reasons.Add("shape.radiusMode");
+            Domain("radius", 1, 0, float.MaxValue);
+            Domain("radiusThickness", 1, 0, 1);
+            Domain("angle", 25, 0, 180);
+            Domain("length", 5, 0, float.MaxValue);
+            Domain("donutRadius", .2f, 0, float.MaxValue);
+            Domain("arc", 360, 0, 360);
+            Domain("arcSpread", 0, 0, 1);
+            Domain("radiusSpread", 0, 0, 1);
+            Domain("randomDirectionAmount", 0, 0, 1);
+            Domain("sphericalDirectionAmount", 0, 0, 1);
+            Domain("randomPositionAmount", 0, 0, float.MaxValue);
+            foreach (string field in new[] { "position", "rotation", "scale" })
+            {
+                ValueData? transform = Field(shape, field);
+                if (transform is not null && transform.kind != "null" && transform.vector is { } components &&
+                    Array.Exists(components, x => !float.IsFinite(x))) reasons.Add("shape." + field + ".domain");
+            }
+            ValueData? box = Field(shape, "boxThickness");
+            if (box is not null && box.kind != "null" && box.vector is { } thickness &&
+                Array.Exists(thickness, x => !float.IsFinite(x) || x < 0 || x > 1)) reasons.Add("shape.boxThickness.domain");
+            void Domain(string name, float fallback, float min, float max)
+            {
+                float value = RawNumber(Field(shape, name), fallback);
+                if (!float.IsFinite(value) || value < min || value > max) reasons.Add("shape." + name + ".domain");
+            }
             if (Boolean(Field(shape, "alignToDirection"))) reasons.Add("shape.alignToDirection");
             if (Field(shape, "texture") is { kind: not "null" }) reasons.Add("shape.texture");
         }
     }
+
+    private static float RawNumber(ValueData? value, float fallback) => value is null || value.kind == "null" ? fallback :
+        value.kind is "integer" or "specialNumber" ? float.Parse(value.text, CultureInfo.InvariantCulture) : (float)value.number;
+
+    private static void AddDeferredCurveReasons(ComponentData particles, List<string> reasons)
+    {
+        // Export/ParticleWriter.cs:17-25 serializes inactive fields too; Emission.cs:175-176 selects the active axes.
+        ValueData? main = Member(particles.members, "main");
+        bool size3D = Boolean(Field(main, "startSize3D"));
+        bool rotation3D = Boolean(Field(main, "startRotation3D"));
+        if (size3D) reasons.Add("main.startSize3D");
+        if (rotation3D) reasons.Add("main.startRotation3D");
+        else if (NonzeroSingleCurve(Field(main, "startRotation"))) reasons.Add("main.startRotation");
+        AddDual("main", main, "startLifetime", "startSpeed", "gravityModifier");
+        if (size3D) AddDual("main", main, "startSizeX", "startSizeY", "startSizeZ");
+        else AddDual("main", main, "startSize");
+        if (rotation3D) AddDual("main", main, "startRotationX", "startRotationY", "startRotationZ");
+        else AddDual("main", main, "startRotation");
+        foreach (var selection in new (string Module, string[] Fields)[]
+        {
+            ("emission", new[] { "rateOverTime", "rateOverDistance" }), ("sizeOverLifetime", new[] { "size" }),
+            ("velocityOverLifetime", new[] { "x", "y", "z", "orbitalX", "orbitalY", "orbitalZ", "radial" }),
+            ("forceOverLifetime", new[] { "x", "y", "z" }), ("noise", new[] { "strength" })
+        })
+        {
+            ValueData? module = Member(particles.members, selection.Module);
+            if (Enabled(module, selection.Module == "emission")) AddDual(selection.Module, module, selection.Fields);
+        }
+        void AddDual(string moduleName, ValueData? module, params string[] fields)
+        {
+            foreach (string field in fields)
+                if (Integer(Field(Field(module, field), "mode")) == 2)
+                    reasons.Add(moduleName + "." + field + ".dualCurve");
+        }
+        ValueData? emission = Member(particles.members, "emission");
+        if (Enabled(emission, true) && Field(emission, "bursts")?.items is { } bursts)
+            foreach (ValueData burst in bursts)
+                if (Integer(Field(Field(burst, "count"), "mode")) == 2)
+                    reasons.Add("emission.bursts.count.dualCurve");
+        ValueData? velocity = Member(particles.members, "velocityOverLifetime");
+        if (Enabled(velocity))
+            foreach (string field in new[] { "x", "y", "z", "orbitalX", "orbitalY", "orbitalZ", "radial" })
+                if (IsCurve(Field(velocity, field)) || Varying(Field(velocity, field))) { reasons.Add("velocityOverLifetime.curve"); break; }
+    }
+
+    private static ParticleBurstSpec[] ConvertBurstSchedule(ValueData? emission, float duration, List<string> reasons)
+    {
+        if (!Enabled(emission, true) || Field(emission, "bursts")?.items is not { } bursts)
+            return Array.Empty<ParticleBurstSpec>();
+        var plans = new List<(ValueData Source, float Time, float Interval, int Occurrences)>();
+        int total = 0;
+        foreach (ValueData burst in bursts)
+        {
+            float time = RawNumber(Field(burst, "time"), 0);
+            float interval = RawNumber(Field(burst, "repeatInterval"), 0);
+            int cycles = Integer(Field(burst, "cycleCount") ?? Field(burst, "cycles"), Integer(Field(burst, "repeats")) + 1);
+            if (!float.IsFinite(time) || time < 0 || time > duration || !float.IsFinite(interval) || cycles < 0 ||
+                (cycles != 1 && interval <= 0))
+            {
+                if (!reasons.Contains("emission.bursts.schedule.domain")) reasons.Add("emission.bursts.schedule.domain");
+                continue;
+            }
+            // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468, ParticleSystem.Emission.cs:48-52,121-129.
+            // Repeat phase restarts each loop. Keep source float arithmetic and its strict endpoint test.
+            float available = cycles == 1 ? 1 : MathF.Max(0, MathF.Ceiling((duration - time) / interval));
+            int occurrences = 0;
+            for (int i = 0; i < available && (cycles == 0 || i < cycles); i++)
+            {
+                if (time + i * interval >= duration) break;
+                if (++total > 4096)
+                {
+                    reasons.Add("emission.bursts.occurrenceLimit");
+                    return Array.Empty<ParticleBurstSpec>();
+                }
+                occurrences++;
+            }
+            plans.Add((burst, time, interval, occurrences));
+        }
+        if (reasons.Count != 0) return Array.Empty<ParticleBurstSpec>();
+        var result = new List<ParticleBurstSpec>(total);
+        foreach (var plan in plans)
+        {
+            float probability = RawNumber(Field(plan.Source, "probability"), 1 - RawNumber(Field(plan.Source, "inverseProbability"), 0));
+            int count = checked((int)MathF.Round(CurveRange(Field(plan.Source, "count"), Number(Field(plan.Source, "maxCount"))).Max));
+            for (int i = 0; i < plan.Occurrences; i++)
+                result.Add(new ParticleBurstSpec(plan.Time + i * plan.Interval, count, probability));
+        }
+        return result.OrderBy(burst => burst.Time).ToArray();
+    }
+
+    private static bool NonzeroSingleCurve(ValueData? value) => Integer(Field(value, "mode")) != 2 && Nonzero(value);
+
+    private static bool IsCurve(ValueData? value) => Integer(Field(value, "mode")) is 1 or 2;
 
     private static bool Nonzero(ValueData? value)
     {

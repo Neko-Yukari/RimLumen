@@ -62,7 +62,7 @@ public sealed class RimUnityPrefabTranslator
                         throw new InvalidDataException("Invalid exported material[" + materialRef!.text + "]._Color vector.");
                     materialTint = new Vector4(values[0], values[1], values[2], values.Length == 4 ? values[3] : 1f);
                 }
-                var classification = Classifier.Classify(particles, renderer);
+                var classification = Classifier.Classify(particles, renderer, out ParticleBurstSpec[] bursts);
                 var reasons = new List<string>(classification.Reasons);
                 if (!float.IsFinite(materialTint.X) || materialTint.X < 0 ||
                     !float.IsFinite(materialTint.Y) || materialTint.Y < 0 ||
@@ -80,10 +80,12 @@ public sealed class RimUnityPrefabTranslator
                     reasons.Add("subEmitters.dependency");
                 }
                 if (active[i] && particles.enabled && renderer?.enabled != false && classification.Tier != LumenParticleTier.L0_ExternalCpu)
-                    emitter = ConvertEmitter(source.name, particles, renderer, classification.Tier, material, materialTint, shaderResolver);
+                    emitter = ConvertEmitter(source.name, particles, renderer, classification.Tier, material, materialTint, shaderResolver, bursts);
                 classifications.Add(new RimUnityNodeTranslation(i, source.id, classification.Tier, reasons));
                 ValueData? main = Member(particles.members, "main");
-                duration = MathF.Max(duration, Number(Field(main, "duration"), 5f) + CurveRange(Field(main, "startLifetime"), 5f).Max);
+                // External playback owns deferred lifetime curves; do not evaluate them as native values.
+                duration = MathF.Max(duration, Number(Field(main, "duration"), 5f) +
+                    (Integer(Field(Field(main, "startLifetime"), "mode")) == 2 ? 0 : CurveRange(Field(main, "startLifetime"), 5f).Max));
             }
             nodes[i] = new EffectNodeSpec
             {
@@ -105,7 +107,7 @@ public sealed class RimUnityPrefabTranslator
     }
 
     private static EmitterSpec ConvertEmitter(string name, ComponentData particles, ComponentData? renderer,
-        LumenParticleTier tier, ResourceData? material, Vector4 materialTint, Func<string, ShaderData?> shaderResolver)
+        LumenParticleTier tier, ResourceData? material, Vector4 materialTint, Func<string, ShaderData?> shaderResolver, ParticleBurstSpec[] bursts)
     {
         ValueData? main = Member(particles.members, "main");
         ValueData? emission = Member(particles.members, "emission");
@@ -158,9 +160,13 @@ public sealed class RimUnityPrefabTranslator
             int kind = Integer(Field(shape, "shapeType"), 4);
             shapeKind = kind switch
             {
-                0 => LumenShapeKind.Sphere,
-                4 => LumenShapeKind.Cone,
-                5 => LumenShapeKind.Box,
+                0 => LumenShapeKind.Sphere, 1 => LumenShapeKind.SphereShell,
+                2 => LumenShapeKind.Hemisphere, 3 => LumenShapeKind.HemisphereShell,
+                4 => LumenShapeKind.Cone, 5 => LumenShapeKind.Box,
+                7 => LumenShapeKind.ConeShell, 8 => LumenShapeKind.ConeVolume, 9 => LumenShapeKind.ConeVolumeShell,
+                10 => LumenShapeKind.CircleXZ, 11 => LumenShapeKind.CircleEdgeXZ, 12 => LumenShapeKind.SingleSidedEdge,
+                15 => LumenShapeKind.BoxShell, 16 => LumenShapeKind.BoxEdge, 17 => LumenShapeKind.Donut,
+                18 => LumenShapeKind.Rectangle,
                 _ => throw new NotSupportedException("Unsupported particle shape: " + kind),
             };
             Vector4 position = Vector(Field(shape, "position"), Vector4.Zero);
@@ -169,16 +175,14 @@ public sealed class RimUnityPrefabTranslator
             shapePosition = new Vector3(position.X, position.Y, position.Z);
             shapeScale = new Vector3(scale.X, scale.Y, scale.Z);
             shapeRotation = global::RimUnity.Quaternion.ToNumerics(global::RimUnity.Quaternion.Euler(rotation.X, rotation.Y, rotation.Z));
-            extents = shapeKind == LumenShapeKind.Box ? new Vector3(0.5f) : new Vector3(Number(Field(shape, "radius"), 1f));
+            float radius = Number(Field(shape, "radius"), 1f);
+            extents = kind is 5 or 15 or 16 ? new Vector3(.5f) : kind == 18 ? new Vector3(.5f, 0, .5f) : new Vector3(radius);
         }
+        else shape = null;
         // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468, Source/RimUnity/Particles/ParticleSystem.Shapes.cs:12,84-86.
         // Core +Y -> Unity +Z before the authored shape rotation; B * diag(sx,sz,sy) = diag(sx,sy,sz) * B.
-        // Sphere already samples XYZ isotropically; only point/box/cone need the emission-axis basis change.
-        if (shapeKind != LumenShapeKind.Sphere)
-        {
-            shapeRotation *= Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2f);
-            shapeScale = new Vector3(shapeScale.X, shapeScale.Z, shapeScale.Y);
-        }
+        shapeRotation *= Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2f);
+        shapeScale = new Vector3(shapeScale.X, shapeScale.Z, shapeScale.Y);
         var forces = ConvertForces(particles);
         return new EmitterSpec
         {
@@ -186,9 +190,17 @@ public sealed class RimUnityPrefabTranslator
             Looping = Boolean(Field(main, "loop"), true), MaxParticles = Integer(Field(main, "maxParticles"), 1000),
             WorldSpaceSimulation = Integer(Field(main, "simulationSpace")) == 1,
             RateOverTime = Enabled(emission, true) ? CurveRange(Field(emission, "rateOverTime"), 10f).Max : 0,
-            Bursts = Enabled(emission, true) ? ConvertBursts(Field(emission, "bursts"), duration) : Array.Empty<(float, int)>(),
+            Bursts = bursts,
             Shape = shapeKind, ShapeExtents = extents, ConeAngleDegrees = Number(Field(shape, "angle"), 25f),
             ShapePosition = shapePosition, ShapeRotation = shapeRotation, ShapeScale = shapeScale,
+            ConeLength = Number(Field(shape, "length"), 5f), DonutRadius = Number(Field(shape, "donutRadius"), .2f),
+            RadiusThickness = Number(Field(shape, "radiusThickness"), 1f),
+            BoxThickness = ConvertBoxThickness(Field(shape, "boxThickness")),
+            ArcDegrees = Number(Field(shape, "arc"), 360f), ArcSpread = Number(Field(shape, "arcSpread")),
+            RadiusSpread = Number(Field(shape, "radiusSpread")),
+            RandomDirectionAmount = Number(Field(shape, "randomDirectionAmount")),
+            SphericalDirectionAmount = Number(Field(shape, "sphericalDirectionAmount")),
+            RandomPositionAmount = Number(Field(shape, "randomPositionAmount")),
             StartLifetimeMin = lifetime.Min, StartLifetimeMax = lifetime.Max,
             StartSpeedMin = speed.Min, StartSpeedMax = speed.Max, StartSizeMin = size.Min, StartSizeMax = size.Max,
             // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468, Source/Shared/ShaderColorSpace.cs:69-103,122-134:
@@ -203,8 +215,9 @@ public sealed class RimUnityPrefabTranslator
             FlipbookCycles = Enabled(sheet) ? Number(Field(sheet, "cycleCount"), 1) : 1,
             BillboardMode = Integer(Member(renderer?.members, "renderMode")) switch
             {
-                0 => LumenBillboardMode.Camera, 1 => LumenBillboardMode.StretchedVelocity, 2 => LumenBillboardMode.Horizontal,
-                4 => LumenBillboardMode.Mesh,
+                0 => Integer(Member(renderer?.members, "alignment")) == 2 ? LumenBillboardMode.Local : LumenBillboardMode.Camera,
+                1 => LumenBillboardMode.StretchedVelocity, 2 => LumenBillboardMode.Horizontal,
+                3 => LumenBillboardMode.Vertical, 4 => LumenBillboardMode.Mesh,
                 var mode => throw new NotSupportedException("Unsupported particle render mode: " + mode),
             },
             VelocityStretchFactor = Number(Member(renderer?.members, "velocityScale")),
@@ -212,24 +225,10 @@ public sealed class RimUnityPrefabTranslator
         };
     }
 
-    private static (float Time, int Count)[] ConvertBursts(ValueData? value, float duration)
+    private static Vector3 ConvertBoxThickness(ValueData? value)
     {
-        var result = new List<(float, int)>();
-        if (value?.items is null) return result.ToArray();
-        foreach (ValueData burst in value.items)
-        {
-            float time = Number(Field(burst, "time"));
-            float interval = Number(Field(burst, "repeatInterval"));
-            int cycles = Integer(Field(burst, "cycleCount") ?? Field(burst, "cycles"), Integer(Field(burst, "repeats")) + 1);
-            float probability = Number(Field(burst, "probability"), 1 - Number(Field(burst, "inverseProbability")));
-            if (probability > 0 && probability < 1)
-                throw new NotSupportedException("Probabilistic bursts require external playback.");
-            if (probability <= 0) continue;
-            int count = checked((int)MathF.Round(CurveRange(Field(burst, "count"), Number(Field(burst, "maxCount"))).Max));
-            if (cycles <= 0) throw new NotSupportedException("Unbounded burst cycles require external playback.");
-            for (int i = 0; i < cycles && time + i * interval <= duration; i++) result.Add((time + i * interval, count));
-        }
-        return result.OrderBy(burst => burst.Item1).ToArray();
+        Vector4 source = Vector(value, Vector4.Zero);
+        return new Vector3(source.X, source.Z, source.Y);
     }
 
     private static ForceFieldSpec[] ConvertForces(ComponentData particles)

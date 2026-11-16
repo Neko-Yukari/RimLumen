@@ -18,13 +18,13 @@ internal static class IntegrationTests
 
     private static readonly (string Path, int Nodes, int Report, int Native, int L0, int L1, int L2)[] Expected =
     [
-        ("Effects/FireTornado", 1, 1, 0, 1, 0, 0),
-        ("Effects/Lightning", 10, 6, 0, 6, 0, 0),
-        ("Effects/Linger", 4, 4, 0, 4, 0, 0),
-        ("Effects/Orbit", 3, 3, 1, 2, 1, 0),
+        ("Effects/FireTornado", 1, 1, 1, 0, 1, 0),
+        ("Effects/Lightning", 10, 6, 1, 5, 0, 1),
+        ("Effects/Linger", 4, 4, 1, 3, 0, 1),
+        ("Effects/Orbit", 3, 3, 1, 2, 0, 1),
         ("Effects/Probe", 1, 1, 0, 1, 0, 0),
-        ("Effects/Rune", 5, 4, 0, 4, 0, 0),
-        ("Effects/Tornado", 35, 34, 0, 34, 0, 0),
+        ("Effects/Rune", 5, 4, 1, 3, 0, 1),
+        ("Effects/Tornado", 35, 34, 1, 33, 0, 1),
     ];
 
     private static ulong frame;
@@ -44,7 +44,8 @@ internal static class IntegrationTests
                 {
                     Effect = entry.Path, Index = i, Name = asset.Nodes[i].Name,
                     NodeId = classification?.NodeId ?? string.Empty,
-                    Tier = classification?.Tier.ToString() ?? "N/A", Reasons = classification?.Reasons ?? System.Array.Empty<string>()
+                    Tier = classification?.Tier.ToString() ?? "N/A", Reasons = classification?.Reasons ?? System.Array.Empty<string>(),
+                    CreatedNative = asset.Nodes[i].Emitter is not null
                 }));
             }
         }
@@ -60,6 +61,7 @@ internal static class IntegrationTests
         provider.RegisterPackageRoot(Wotf, WotfData);
         Check.Equal(1, provider.PackageCount, "provider packages");
 
+        var expectedTextureKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var expected in Expected)
         {
             string id = expected.Path;
@@ -91,6 +93,8 @@ internal static class IntegrationTests
             foreach (var node in asset.Nodes.Where(n => n.Emitter is not null))
             {
                 var e = node.Emitter!;
+                Console.WriteLine($"NATIVE_TEXTURE effect={id} node={node.Name} key={JsonSerializer.Serialize(e.TextureKey)}");
+                if (e.TextureKey is { Length: > 0 } key) expectedTextureKeys.Add(key);
                 Check.True(e.MaxParticles > 0, id + " maxParticles");
                 Check.True(e.MaxParticles >= e.StartLifetimeMin, id + " ordering sanity " + e.Name);
                 foreach (float v in new[] { e.Duration, e.RateOverTime, e.StartLifetimeMin, e.StartLifetimeMax, e.StartSpeedMin, e.StartSpeedMax,
@@ -107,12 +111,17 @@ internal static class IntegrationTests
 
         Check.True(!provider.TryResolveEffect("Effects/DoesNotExist", out var miss) && miss is null, "miss");
         Check.True(provider.TryInspectTranslation("Effects/FireTornado", out var fire), "FireTornado report");
-        Check.Reasons(["shape.coneRadius", "shape.coneDistribution"], fire!.Nodes.Single().Reasons, "FireTornado raw kind=4 radius=1 angle=25 speed=0");
+        Check.Reasons([], fire!.Nodes.Single().Reasons, "FireTornado cone radius/distribution now supported");
 
-        Check.True(provider.Textures.ResolvedTextureKeys.Count > 0, "offline texture metadata recorded");
+        Console.WriteLine("AUTO_TEXTURES expected=" + JsonSerializer.Serialize(expectedTextureKeys.Order()) +
+            " actual=" + JsonSerializer.Serialize(provider.Textures.ResolvedTextureKeys.Order()));
+        Check.True(expectedTextureKeys.SetEquals(provider.Textures.ResolvedTextureKeys), "automatic texture registrations exactly match native emitter keys");
         Check.True(provider.Textures.ResolvedTextureKeys.All(key => catalog.Find(key) is { type: "Texture2D" }), "texture keys resolve to catalog records");
-        string textureKey = provider.Textures.ResolvedTextureKeys.First();
-        Check.Equal(textureKey, provider.Textures.ResolveTextureKey(catalog, textureKey), "texture key preserved offline");
+        string textureKey = catalog.Manifest.assets.First(a => a.type == "Texture2D").id;
+        var textureBridge = new RimUnityTextureBridge();
+        Check.Equal(textureKey, textureBridge.ResolveTextureKey(catalog, textureKey), "real catalog texture key preserved offline");
+        Check.True(textureBridge.ResolvedTextureKeys.SequenceEqual([textureKey]), "explicit texture resolution records exactly the selected key");
+        Check.True(textureBridge.ResolvedTextureKeys.All(key => catalog.Find(key) is { type: "Texture2D" }), "explicit texture keys resolve to catalog Texture2D records");
 
         var supported = new RimUnityPrefabTranslator().Translate("phase-a.native-play", Prefab(Particles(1000, 40, .8f)),
             _ => null, _ => null, out _);
@@ -149,20 +158,27 @@ internal static class IntegrationTests
         int lightningFinished = 0;
         lightning.Finished += () => lightningFinished++;
         Check.Equal(1, spy.Plays, "Lightning delegates L0 to external");
-        Check.Equal(6, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), "external report L0 count");
+        Check.Equal(5, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), "external report L0 count");
         var lightningInstance = recording.Last as EffectInstanceHandle ?? throw new InvalidOperationException("Lightning inner handle is not native.");
-        Check.Equal(0, lightningInstance.CpuEmitterCount, "no duplicate native L0 emitters");
+        Check.Equal(1, lightningInstance.CpuEmitterCount, "Lightning native root uses offline CPU fallback, external children are not duplicated");
         Check.Equal(0, lightningInstance.GpuEmitterCount, "no L2 engine offline");
+        var lightningRoot = Resolve(provider, "Effects/Lightning").Nodes[0].Emitter!;
+        Check.Near(0, lightningRoot.RateOverTime, "installed Lightning root emission is disabled");
+        Check.Equal(0, lightningRoot.Bursts.Length, "installed Lightning root has no scheduled pulses");
         Step(1f / 60f, 10);
         Check.True(lightning.IsAlive, "hybrid handle alive while external plays");
         lightning.Trigger("state");
         lightning.SetParam("intensity", .5f);
         Check.Equal(1, spy.LastHandle!.Triggers, "Trigger forwarded");
         Check.Equal(1, spy.LastHandle.Params, "SetParam forwarded");
+        spy.LastHandle.Stop(true);
+        Check.True(lightningInstance.IsAlive && lightning.IsAlive, "composite remains alive when external finishes before native");
+        Check.Equal(0, lightningFinished, "external finish alone does not complete composite");
         lightning.Stop(true);
-        Check.Equal(1, spy.LastHandle.Stops, "Stop forwarded");
+        Check.Equal(2, spy.LastHandle.Stops, "Stop forwarded after external-only stop");
         Check.True(spy.LastHandle.LastAllowFadeOut, "Stop arg forwarded");
         Step(1f / 60f, 1);
+        Check.True(!lightningInstance.IsAlive && !lightning.IsAlive, "disabled root emission has no live particles left after stop");
         Check.Equal(1, lightningFinished, "composite Finished once both parts ended");
         lightning.Dispose();
         Check.Equal(1, spy.LastHandle.Disposes, "Dispose forwarded");
@@ -170,32 +186,47 @@ internal static class IntegrationTests
 
         int beforeLinger = spy.Plays;
         var linger = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/Linger" });
-        Check.Equal(beforeLinger + 1, spy.Plays, "Linger delegates its four L0 nodes");
-        Check.Equal(4, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), "Linger L0 count");
-        Check.Equal(0, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, "Linger has no native emitters");
+        Check.Equal(beforeLinger + 1, spy.Plays, "Linger delegates its three L0 nodes");
+        Check.Equal(3, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), "Linger L0 count");
+        Check.Equal(1, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, "Linger native root uses offline CPU fallback");
         linger.Dispose();
-
+        Check.True(!linger.IsAlive && !spy.LastHandle!.IsAlive, "Linger dispose terminates both handles");
+        Check.Equal(0, LumenSceneBootstrap.Simulator.LiveParticleCount, "Linger dispose leaves no particles");
         int beforeOrbit = spy.Plays;
         var orbit = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/Orbit" });
         Check.Equal(beforeOrbit + 1, spy.Plays, "Orbit delegates external subset");
         Check.Equal(2, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), "Orbit L0 count");
-        Check.Equal(1, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, "Orbit retains only its representable native node");
+        Check.Equal(1, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, "Orbit native root replaces the now-external Core node");
         Step(1f / 60f, 10);
         orbit.Stop(false);
         Check.Equal(0, LumenSceneBootstrap.Simulator.LiveParticleCount, "mixed Orbit stop releases native particles");
         Check.True(!orbit.IsAlive && !spy.LastHandle!.IsAlive, "mixed Orbit stop terminates both handles");
 
-        foreach (var remaining in new[] { ("Effects/FireTornado", 1), ("Effects/Rune", 4), ("Effects/Tornado", 34) })
+        int beforeFire = spy.Plays;
+        using (var fireHandle = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/FireTornado" }))
+        {
+            Check.Equal(beforeFire, spy.Plays, "FireTornado is all-native and never calls external");
+            Check.True(ReferenceEquals(recording.Last, fireHandle), "FireTornado returns direct native handle");
+            Check.Equal(1, (fireHandle as EffectInstanceHandle)!.CpuEmitterCount, "FireTornado owns one CPU emitter");
+            Step(1f / 60f, 10);
+            fireHandle.Stop(false);
+            Check.True(!fireHandle.IsAlive, "FireTornado stops native handle");
+            Check.Equal(0, LumenSceneBootstrap.Simulator.LiveParticleCount, "FireTornado stop releases particles");
+        }
+        foreach (var remaining in new[] { ("Effects/Rune", 3), ("Effects/Tornado", 33) })
         {
             int plays = spy.Plays;
-            using var externalOnly = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { MapIndex = 111, EffectId = remaining.Item1 });
+            using var mixed = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { MapIndex = 111, EffectId = remaining.Item1 });
             Check.Equal(plays + 1, spy.Plays, remaining.Item1 + " external delegation");
             Check.Equal(remaining.Item2, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), remaining.Item1 + " external node count");
-            Check.Equal(0, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, remaining.Item1 + " no duplicate native emitter");
-            externalOnly.Stop(false);
-            Check.True(!externalOnly.IsAlive && !spy.LastHandle!.IsAlive, remaining.Item1 + " stopped");
+            Check.Equal(1, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, remaining.Item1 + " one native root with offline CPU fallback");
+            Check.Equal(0, (recording.Last as EffectInstanceHandle)!.GpuEmitterCount, remaining.Item1 + " no GPU engine offline");
+            Step(1f / 60f, 10);
+            mixed.Stop(false);
+            Check.True(!mixed.IsAlive && !spy.LastHandle!.IsAlive, remaining.Item1 + " stopped");
+            Check.Equal(0, LumenSceneBootstrap.Simulator.LiveParticleCount, remaining.Item1 + " stop releases native particles");
         }
-        Console.WriteLine("HYBRID six WotF effects played here; Probe external handoff checked separately; Lightning native=0/L0=6, Orbit native=1/L0=2; supported in-memory native simulation retained");
+        Console.WriteLine("HYBRID six WotF effects played here; Probe external handoff checked separately; Lightning native=1/L0=5, Orbit native=1/L0=2, FireTornado native=1/L0=0; supported in-memory 25-frame native simulation retained");
 
         var inert = LumenHostRegistry.VfxService.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/DoesNotExist" });
         Check.True(!inert.IsAlive, "missing effect stays inert");

@@ -33,6 +33,8 @@ public enum LumenBillboardMode : byte
     Horizontal = 1,
     StretchedVelocity = 2,
     Mesh = 3,
+    Vertical = 4,
+    Local = 5,
 }
 
 public enum LumenShapeKind : byte
@@ -42,6 +44,18 @@ public enum LumenShapeKind : byte
     CircleXZ = 2,
     Cone = 3,
     Box = 4,
+    SphereShell = 5,
+    Hemisphere = 6,
+    HemisphereShell = 7,
+    CircleEdgeXZ = 8,
+    ConeShell = 9,
+    ConeVolume = 10,
+    ConeVolumeShell = 11,
+    SingleSidedEdge = 12,
+    BoxShell = 13,
+    BoxEdge = 14,
+    Donut = 15,
+    Rectangle = 16,
 }
 
 public enum ForceFieldKind : byte
@@ -109,6 +123,11 @@ public readonly record struct ForceFieldSpec(
     float Strength,
     float Frequency = 1f);
 
+// Time is finite in [0, emitter Duration] seconds; Count is >= 0 particles.
+// Probability is finite [0,1]. Each planned occurrence draws once before applying density carry;
+// rejected occurrences do not consume carry. Explicit EmitBurst does not use this probability.
+public readonly record struct ParticleBurstSpec(float Time, int Count, float Probability = 1f);
+
 public sealed class EmitterSpec
 {
     // Identifier; required in C#, JSON defaults to the node name.
@@ -123,17 +142,20 @@ public sealed class EmitterSpec
     public bool WorldSpaceSimulation { get; init; } = true;
     // Finite >= 0 particles/s; density and runtime rate multiplier scale the accumulated rate.
     public float RateOverTime { get; init; }
-    // Time: finite >= 0 seconds in cycle; Count: >= 0 particles. Per-emitter Int64 a starts at 0,
+    // Time: finite [0, Duration] seconds in cycle; Count: >= 0 particles. Per-emitter Int64 a starts at 0,
     // in 1/65536-particle units. q = floor(density * 65536); each nonzero burst uses a += count * q,
     // n = ceil(a / 65536) by integer arithmetic, then a -= n * 65536; a <= 0. Effective density is
     // floor(density * 65536) / 65536, never above authored; n is a request budget.
     // Scale once on CPU enqueue, not again in GPU capture. Play/explicit Restart/GoTo state re-entry
     // reset a; loop wrap does not. Runtime rate does not scale bursts; continuous rate has double carry.
-    public (float Time, int Count)[] Bursts { get; init; } = Array.Empty<(float, int)>();
+    // All planned occurrences update probability/carry before capacity drops; excess requests are not replayed.
+    public ParticleBurstSpec[] Bursts { get; init; } = Array.Empty<ParticleBurstSpec>();
 
-    // Point/Box emit +Y; Sphere emits radially; CircleXZ emits radially in XZ; Cone emits about +Y.
+    // Shape frame: +Y axis, radial(cos(theta),0,-sin(theta)); hemispheres occupy +Y.
+    // SingleSidedEdge spans X and emits -Z. Shape TRS follows sampling, before node/world TRS.
     public LumenShapeKind Shape { get; init; } = LumenShapeKind.Point;
-    // Cells: Sphere ellipsoid XYZ radii; CircleXZ/Cone disc X/Z radii; Box XYZ half-extents; Point unused.
+    // Cells: sphere/hemisphere XYZ radii; circle/cone X/Z base radii; box XYZ half-extents;
+    // edge X half-length; donut X/Z major-ring radii; rectangle X/Z half-extents; Point unused.
     public Vector3 ShapeExtents { get; init; } = Vector3.One;
     // Shape-only transform: position = R(scale * sampledPosition) + position; direction = R(sampledDirection).
     // Does not transform node children, forces or billboard size. Rotation is a unit quaternion (x,y,z,w).
@@ -145,6 +167,28 @@ public sealed class EmitterSpec
     public Vector3 ShapeScale { get; init; } = Vector3.One;
     // Cone half-angle in degrees, finite [0,180]; unused by other shapes.
     public float ConeAngleDegrees { get; init; } = 25f;
+    // Finite >= 0 cells along the cone axis; used by ConeVolume/ConeVolumeShell only.
+    public float ConeLength { get; init; } = 5f;
+    // Finite >= 0 cells: donut tube radius before ShapeScale, independent of its major ring.
+    public float DonutRadius { get; init; } = 0.2f;
+    // Finite [0,1]: radial shell thickness; 0 is the surface/edge, 1 fills the interior.
+    // Explicit Shell/Edge variants keep their surface/edge regardless of this value.
+    public float RadiusThickness { get; init; } = 1f;
+    // Finite [0,1] per axis: inward thickness for BoxShell/BoxEdge, 0 is the face/edge.
+    // Face/edge selection uses areas/lengths from abs(ShapeExtents * ShapeScale).
+    public Vector3 BoxThickness { get; init; }
+    // Finite [0,360] degrees: random azimuth extent from +X toward -Z.
+    public float ArcDegrees { get; init; } = 360f;
+    // Finite [0,1] normalized phase step: 0 is continuous; positive uses floor(u/step)*step.
+    public float ArcSpread { get; init; }
+    // Same phase quantization as ArcSpread, but only for the SingleSidedEdge X position.
+    public float RadiusSpread { get; init; }
+    // Finite [0,1]: after shape TRS, mix direction with an independent uniform sphere direction.
+    public float RandomDirectionAmount { get; init; }
+    // Finite [0,1]: then mix toward the normalized transformed offset from ShapePosition.
+    public float SphericalDirectionAmount { get; init; }
+    // Finite >= 0 cells: finally add an independent uniform-volume sphere offset, after shape TRS.
+    public float RandomPositionAmount { get; init; }
 
     // Uniform birth lifetime range in seconds: finite minimum > 0, maximum >= minimum.
     public float StartLifetimeMin { get; init; } = 1f;
@@ -183,8 +227,10 @@ public sealed class EmitterSpec
 
     // Additive, AlphaBlend or Premultiplied; RGB is premultiplied by final alpha for Additive/Premultiplied.
     public LumenBlendMode BlendMode { get; init; } = LumenBlendMode.Additive;
-    // Camera, fixed-world-XZ Horizontal, or velocity-aligned StretchedVelocity; Mesh is deferred:
-    // L1 draws a camera quad and L2 rejects Mesh.
+    // Camera, fixed-world-XZ Horizontal, velocity-aligned StretchedVelocity, Vertical or Local.
+    // GroundXZ Vertical keeps world up: exactly overhead it is edge-on; use Vertical3D for
+    // standing sprites in 2D. Local preserves geometric projection, including edge-on collapse.
+    // Mesh is deferred: L1 draws a camera quad and L2 rejects Mesh.
     public LumenBillboardMode BillboardMode { get; init; } = LumenBillboardMode.Camera;
     // Seconds: stretched height = current full width * LengthScale + world speed * this factor.
     public float VelocityStretchFactor { get; init; }

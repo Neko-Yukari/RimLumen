@@ -105,7 +105,7 @@ public static class EffectInstanceHandleSuite
                 {
                     Name = "idle", Emitter = new EmitterSpec
                     {
-                        Name = "paused", RateOverTime = 4f, Bursts = new[] { (10f, 3) },
+                        Name = "paused", Duration = 10f, RateOverTime = 4f, Bursts = new[] { new ParticleBurstSpec(10f, 3) },
                         StartLifetimeMin = 20f, StartLifetimeMax = 20f,
                     },
                 },

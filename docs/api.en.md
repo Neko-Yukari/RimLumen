@@ -91,7 +91,7 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
         "looping": false,
         "worldSpaceSimulation": true,
         "rateOverTime": 0,
-        "bursts": [[0.0, 200], { "time": 0.5, "count": 100 }],
+        "bursts": [[0.0, 200], { "time": 0.5, "count": 100, "probability": 0.5 }],
         "shape": "Point",
         "shapeExtents": [1, 1, 1],
         "coneAngleDegrees": 25,
@@ -167,7 +167,7 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
 - **Particle density setting**: The public setter `RimLumenRenderHost.ParticleDensityScale` accepts a range of `0.1`–`1.0`; finite values outside it are silently clamped without logging, while NaN and positive or negative infinity throw `ArgumentOutOfRangeException`. The settings slider is continuous and displays a rounded whole percentage. Density `1` is exact; after clamping to `d`, the effective burst density is `floor(d * 65536) / 65536`.
 - **Particle density and bursts**: Each emitter keeps its own `Int64` accumulator `a`, initially `0`, in units of `1/65536` particle. Compute `q = floor(density * 65536)`; for every nonzero burst, apply `a += count * q`, `n = ceil(a / 65536)` using integer arithmetic, then `a -= n * 65536`. Here `n` is the request budget; `a <= 0` and may be negative. The effective density is `floor(density * 65536) / 65536`, never above the authored value; density `1` is exact and has no `0.999` threshold.
 
-  At density `0.25`, four consecutive bursts with `count = 1` yield budgets `1, 0, 0, 0`; eight such bursts total `2`. Two consecutive bursts with `count = 7` yield `2, 2`. At density `0.1`, `q = 6553`, so ten `count = 1` bursts accumulate `65530` and request `1`; at density `0.2`, five such bursts request `1`. The cumulative request budget uses the effective density: `ceil(sum(count * q) / 65536)`. A budget is not an actual particle count: requests dropped for insufficient capacity or free slots are not replayed.
+  At density `0.25`, four consecutive bursts with `count = 1` yield budgets `1, 0, 0, 0`; eight such bursts total `2`. Two consecutive bursts with `count = 7` yield `2, 2`. At density `0.1`, `q = 6553`, so ten `count = 1` bursts accumulate `65530` and request `1`; at density `0.2`, five such bursts request `1`. The cumulative request budget uses the effective density: `ceil(sum(count * q) / 65536)`. A scheduled budget is not the actual live-particle count or GPU particle count: requests dropped for insufficient capacity or free slots are not replayed. `rateOverTime` must be finite and nonnegative, with no additional rate cap. Before capacity admission, finite continuous `rate × dt` budgets and all crossed bursts accepted by probability and scaled by density are accumulated in wide numeric types; exceeding Int32 is ordinary capacity dropping, not a budget-range exception. Even when no slots are free, every planned occurrence gets its probability draw and every accepted occurrence updates density carry.
 
   Bursts are scaled once when queued on the CPU; GPU Capture does not scale them again. `Play`, explicit `Restart`, and `GoTo` state re-entry reset `a` to `0`; loop wrap does not. For example, at density `0.25`, one `count = 1` burst per loop requests `2` particles over eight loops. Continuous rate emission uses a separate `double` fractional carry, floors the accumulated count and retains the remainder. The runtime `rate` multiplier does not scale bursts.
 
@@ -194,6 +194,8 @@ An effect is made of named states, and exactly one state plays at a time. A stat
 1. The state clock resets to zero and `StateChanged(name)` is raised once.
 2. Every node of the state restarts its own emission schedule: `bursts` times, the emitter `duration` and `rateOverTime` all count from the moment of entry. L1 (CPU) and L2 (GPU) behave identically.
 3. Every other node stops new emission; its live particles finish their lifetime and its point light fades out over `0.25s`.
+
+Emission pause is distinct from game pause: after an emitter's first activation, its emission schedule clock advances while emission is disabled for both looping and non-looping emitters. Planned bursts crossed during that interval are skipped without catch-up, while live particles continue simulating. A never-activated node remains at emission time 0. Explicit Restart resets the clock, density carry, and probability RNG while retaining already accepted pending bursts. Global game pause still uses `dt=0`; `SetParam("rate", 0)` pauses continuous emission only and does not affect authored bursts.
 
 States switch on frame boundaries: on the frame a switch happens, emitters simulate the whole frame under the new state. A frame that crosses several states walks through each of them and their events in order.
 
@@ -344,9 +346,33 @@ Legacy XML keys are rejected too: `<startColorLinear>` is renamed to `<startColo
 ### 1. Particle System Enums (`RimLumen.Core.Contracts`)
 
 - **`LumenParticleTier`**: `L0_ExternalCpu` (external bridge player) / `L1_NativeCpu` (native CPU simulation, suited for low counts or frequent script interaction) / `L2_GpuCompute` (Vulkan Compute simulation, default, suited for high particle counts and force fields).
-- **`LumenShapeKind`**: `Point` (`0`) / `Sphere` (`1`) / `CircleXZ` (`2`) / `Cone` (`3`) / `Box` (`4`).
+- **`LumenShapeKind`**: `Point` (0), `Sphere` (1), `CircleXZ` (2), `Cone` (3), `Box` (4), `SphereShell` (5), `Hemisphere` (6), `HemisphereShell` (7), `CircleEdgeXZ` (8), `ConeShell` (9), `ConeVolume` (10), `ConeVolumeShell` (11), `SingleSidedEdge` (12), `BoxShell` (13), `BoxEdge` (14), `Donut` (15), `Rectangle` (16).
 - **`LumenBlendMode`**: `Additive` (`0`, recommended for glow and fire) / `AlphaBlend` (`1`, smoke and mist) / `Premultiplied` (`2`).
-- **`LumenBillboardMode`**: `Camera` (`0`, camera-facing) / `Horizontal` (`1`, flat ground-aligned quad) / `StretchedVelocity` (`2`, stretched along velocity using `VelocityStretchFactor` and `LengthScale`) / `Mesh` (`3`, reserved mesh enum value).
+- **`LumenBillboardMode`**: `Camera` (`0`, camera-facing) / `Horizontal` (`1`, flat ground-aligned quad) / `StretchedVelocity` (`2`, stretched along velocity using `VelocityStretchFactor` and `LengthScale`) / `Mesh` (`3`, deferred) / `Vertical` (`4`) / `Local` (`5`).
+
+### Shapes and probabilistic bursts
+
+`ShapeExtents` defaults to `(1,1,1)` in cells: sphere / hemisphere use XYZ radii, circle / cone use XZ base radii, box uses XYZ half-extents, `SingleSidedEdge` uses X half-length, `Donut` uses XZ major-ring radii, and `Rectangle` uses XZ half-extents. The shape axis is +Y and hemispheres occupy +Y; the edge spans X and emits -Z. Static partial-arc radial direction is `(cos θ, 0, -sin θ)`.
+
+| Emitter field (JSON / XML use lower camel case) | Default | Domain and meaning |
+| --- | --- | --- |
+| `ConeLength` | 5 | finite nonnegative cells; cone volumes only |
+| `DonutRadius` | 0.2 | finite nonnegative cells; tube radius |
+| `RadiusThickness` | 1 | finite `[0,1]` radial thickness; explicit Shell / Edge variants remain on surface / edge |
+| `BoxThickness` | `(0,0,0)` | finite `[0,1]` per component; inward box shell / edge thickness |
+| `ArcDegrees` | 360 | finite `[0,360]` degrees |
+| `ArcSpread` | 0 | finite `[0,1]`; nonzero phase quantization `floor(u/step)*step` |
+| `RadiusSpread` | 0 | finite `[0,1]`; same quantization, single-sided edge X only |
+| `RandomDirectionAmount`, `SphericalDirectionAmount` | 0 | each finite `[0,1]`; mix toward an independent sphere direction and outward shape-center direction |
+| `RandomPositionAmount` | 0 | finite nonnegative cells; add an independent uniform-volume sphere offset |
+
+Cone base radius uses `r=sqrt(lerp((1-RadiusThickness)^2,1,u))`, or `r=1` for shells; `d=normalize(radial*sin(angle)*r + +Y*cos(angle))` and position is `radial*r*baseRadius`. Volume shapes then add `d*u*ConeLength/max(0.001,d.y)`. Normalization returns zero for input length `<=1e-5`, allowing a stationary birth. Box shells weight faces by areas from `abs(ShapeExtents*ShapeScale)`; box edges weight lengths, selecting X when total weight is zero.
+
+After sampling, apply shape-local TRS, then mix random direction, spherical direction, and random position in that order; shape scale does not scale direction. Imported oriented shapes use shape-only `R*Rx(+90°)` and scale `(sx,sz,sy)`, without rotating the prefab, world, or forces. L1 / L2 use the same shape formulas and distributions; seeded per-particle birth identity is not promised. Native inputs outside the stated domains are rejected without clamping; imported values route to External with a named field reason.
+
+`Bursts` is `ParticleBurstSpec(Time, Count, Probability=1)[]`: time is finite seconds in `[0, Duration]` inclusive, count is a nonnegative integer, and probability is finite `[0,1]`; JSON `probability` and XML `<probability>` are optional, for example `<li><time>0.5</time><count>100</count><probability>0.5</probability></li>`. C#, JSON, and XML validate time at the asset boundary; values above Duration produce an error naming the exact field, without repeating the check in the Play hot path. The shared CPU scheduler draws once per planned occurrence before density; rejected occurrences do not consume density carry, and explicit `EmitBurst` is never gated. L1 / L2 agree on acceptance for the same node seed. The service assigns play and node seeds; no public seed or cross-Play reproducibility is promised. Restart resets schedule, carry and probability RNG while retaining accepted pending bursts; loop wrap does not reset them. Continuous rate and the shared fixed-point density carry rule remain unchanged; see “Particle density and bursts” above.
+
+`Vertical` in `GroundXZ` uses `normalize(cross(worldUp, rawCameraForward))`; at exact overhead, the defined camera-right limit with +Y up gives a finite but edge-on invisible quad. Use `Vertical3D` for standing sprites in 2D; it reuses the already compensated camera right / up without a second inverse Y or normalization. `Local` projects the full world-quaternion axes geometrically, applying the `Vertical3D` display mapping once; edge-on collapse is retained without camera-facing fallback. The only space planes are `GroundXZ=0` and `Vertical3D=3`.
 
 ### 2. Four Force Fields (`ForceFieldSpec` / `ForceFieldKind`)
 
@@ -446,6 +472,8 @@ All three events are raised on the main thread from the per-frame advance, in th
 
 ---
 
+`LumenEmitterTransform` is a readonly pair of `World` matrix and unit world `Rotation` quaternion: rotation composes the full parent chain and request / Follow yaw independently of scale. It is not inferred from the matrix and is distinct from `ShapeRotation`. Node `LocalRotation`, like `ShapeRotation`, must be finite and unit length within `1e-5` squared-norm tolerance; XML nonfinite yaw is rejected. The sole GPU entry is `CreateInstance(spec, LumenEmitterTransform, mapIndex, realTime, uint emissionSeed)`; `UpdateInstance` likewise takes the complete transform, and CPU `AcquireEmitter` requires the node seed. Internal emitter / particle / material / vertex layouts are 320 / 64 / 128 / 44 bytes, not a public raw GPU ABI.
+
 ### 4. Native HDR Blend Space and Extension Draws
 
 `LumenColorBlendSpace : byte` offers `Legacy = 0` (default) and `Linear = 1` for native HDR-layer blending, independently of an emitter's material `ColorSpace`. `RimLumenRenderHost.ColorBlendSpace` is the requested setting; read-only `CurrentFrameColorBlendSpace` is the frame latch. It is initialized at installation and captured each frame in `EngineApplication.PrePollEvents` (584), before input, `OnUpdate` (715), and `BeginMainThreadFrame` (730). A setting changed during Update takes effect on the next frame.
@@ -501,8 +529,10 @@ To opt a custom `ShaderDef` out of automatic HDR redraw, attach `<li Class="RimL
 
 When `Chezhou.RimUnity` is active, `RimLumen.Adapter.RimUnity` reads its exported `catalog.json`, prefab JSON (including `.json.gz`), and `.rutex` textures, automatically routing each particle node:
 
-- **Native HDR / GPU (or CPU)**: supported basic shapes with shape-local position, rotation, and scale (TRS), curves, gradients, textures, flipbooks, rate-over-time emission, and deterministic bursts.
-- **Retained on RimUnity (`L0_ExternalCpu`)**: nodes using `trails`, `subEmitters` (including sub-emitter dependencies), `collision`, `trigger`, `renderMode.Mesh`, `renderMode.Vertical` or an unknown `renderMode`, a material `_Color` outside the native colour domain, linear `velocityOverLifetime`, `rotationOverLifetime`, curve-based `forceOverLifetime`, any enabled `lights` module (including `ratio = 1`), probabilistic bursts, or shapes not yet modeled in Core (such as non-zero-radius base cones, shells, rings, or meshes).
+- **Native HDR / GPU (or CPU)**: supported basic shapes with shape-local position, rotation, and scale (TRS), curves, gradients, textures, flipbooks, rate-over-time emission, and probability-controlled scheduled bursts.
+- **Retained on RimUnity (`L0_ExternalCpu`)**: nodes using `trails`, `subEmitters` (including sub-emitter dependencies), `collision`, `trigger`, `renderMode.Mesh` or an unknown `renderMode`, a material `_Color` outside the native colour domain, linear `velocityOverLifetime`, `rotationOverLifetime`, curve-based `forceOverLifetime`, any enabled `lights` module (including `ratio = 1`), as well as deferred dynamic arc / radius modes, alignment, varying velocity / force / rotation curves, dual-curve randomness, geometry, and shape textures.
+
+Imported burst schedule times must be strictly less than the system `Duration`. With `cycleCount=0`, repetition restarts from the same local phase in every system loop, even when the interval does not divide the duration. The total expanded occurrences across all burst definitions in one emitter are limited to 4096; above that, the whole emitter routes to External with a reason, never truncation. A nonfinite interval routes to External; a repeated burst with interval `<=0` also routes to External. A one-shot burst permits a finite nonpositive interval but does not use it. The reasons are `emission.bursts.schedule.domain` for an invalid schedule and `emission.bursts.occurrenceLimit` for exceeding the total limit. Deferred curve classification inspects only active modules and axes; stored curves in disabled emission are ignored. Active `main.startSize3D`, active `main.startRotation3D`, or nonzero `startRotation` route to External with reasons `main.startSize3D`, `main.startRotation3D`, and `main.startRotation`, respectively. Active dual-curve `rateOverDistance` uses reason `emission.rateOverDistance.dualCurve`; inactive 3D-axis fields do not cause rejection. Native initial rotation and 3D size remain deferred.
 
 The adapter maps material `_Color` separately to `materialTint` and routes Linear materials natively when no other unsupported reason applies. Imported material colours outside the domain above route to External with a material identity and field reason, `material[<asset-id>]._Color.domain`, without clamping or folding into vertex colour.
 
