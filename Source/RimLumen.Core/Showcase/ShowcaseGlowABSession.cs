@@ -21,6 +21,9 @@ internal static class ShowcaseGlowABSession
     private const string BloomPrefix = "-rimlumen-glow-ab-bloom=";
     // Optional (intensity, threshold, knee) override of the Standard pack's default bloom; knee is optional.
     private static (float Intensity, float Threshold, float? Knee)? bloomOverride;
+    private const string EventPrefix = "-rimlumen-glow-ab-event=";
+    // Optional vanilla event sampled instead of the fire cluster: "explosion" or "lightning".
+    private static string? glowEvent;
     private const float CameraSize = 12f;
 
     internal static bool TryStart(IReadOnlyList<string> args)
@@ -49,6 +52,13 @@ internal static class ShowcaseGlowABSession
                     (parts.Length == 3 && !float.TryParse(parts[2], style, inv, out knee)))
                     throw new ArgumentException("Glow A/B bloom override must be 'intensity,threshold[,knee]': " + bloom);
                 bloomOverride = (intensity, threshold, parts.Length == 3 ? knee : null);
+            }
+            string? ev = args.FirstOrDefault(arg => arg.StartsWith(EventPrefix, StringComparison.OrdinalIgnoreCase));
+            if (ev != null)
+            {
+                glowEvent = ev.Substring(EventPrefix.Length).ToLowerInvariant();
+                if (glowEvent is not ("explosion" or "lightning"))
+                    throw new ArgumentException("Glow A/B event must be 'explosion' or 'lightning': " + ev);
             }
             outputDir = Path.GetFullPath(outputDir);
             Directory.CreateDirectory(outputDir);
@@ -140,13 +150,29 @@ internal static class ShowcaseGlowABSession
         yield return new UnityEngine.WaitForEndOfFrame();
         Current.CameraDriver.enabled = false;
 
-        for (int x = -4; x <= -1; x++)
-            for (int z = -1; z <= 1; z++) StartFire(map, center + new IntVec3(x, 0, z));
-        StartFire(map, center + new IntVec3(6, 0, 0));
+        if (glowEvent == null)
+        {
+            for (int x = -4; x <= -1; x++)
+                for (int z = -1; z <= 1; z++) StartFire(map, center + new IntVec3(x, 0, z));
+            StartFire(map, center + new IntVec3(6, 0, 0));
+        }
         Log.Message($"[RimLumen] Glow A/B scene: arena={arena}; cluster=({center.x - 4},{center.z - 1})..({center.x - 1},{center.z + 1}) (12 fires); isolated=({center.x + 6},{center.z}); fireSize=0.9; cameraCenter={center}; rootSize={CameraSize}; all spawned pawns despawned; Standard bloom intensity={RimLumenRenderHost.ShaderPackParams.BloomIntensity} threshold={RimLumenRenderHost.ShaderPackParams.BloomThreshold} knee={RimLumenRenderHost.ShaderPackParams.BloomKnee}; localHour={GenLocalDate.DayPercent(map) * 24f:F3}.");
 
         var wait = Stopwatch.StartNew();
-        while (CountFireGlow(map) == 0)
+        if (glowEvent != null)
+        {
+            IntVec3 at = center + new IntVec3(-2, 0, 0);
+            if (glowEvent == "lightning")
+                map.weatherManager.eventHandler.AddEvent(new WeatherEvent_LightningStrike(map, at));
+            else
+                GenExplosion.DoExplosion(at, map, 3.9f, DamageDefOf.Bomb, null);
+            // ExplosionFlash is solid for 0.05 s and LightningGlow fades in over 0.08 s; pause 4 ticks in, at peak.
+            int eventTick = Find.TickManager.TicksGame + 4;
+            while (Find.TickManager.TicksGame < eventTick) yield return new UnityEngine.WaitForEndOfFrame();
+            Find.TickManager.CurTimeSpeed = TimeSpeed.Paused;
+            Log.Message($"[RimLumen] Glow A/B event={glowEvent} at {at}; paused at tick {Find.TickManager.TicksGame}.");
+        }
+        while (glowEvent == null && CountFireGlow(map) == 0)
         {
             if (wait.Elapsed.TotalSeconds > 30) throw new TimeoutException("No live FireGlow fleck appeared within 30 seconds.");
             if (Find.TickManager.CurTimeSpeed != TimeSpeed.Normal || Find.TickManager.Paused)
@@ -156,7 +182,7 @@ internal static class ShowcaseGlowABSession
         // FireGlow fades in over 0.75 s (Fleck_Visual.xml); let it reach full alpha, then pause so the three captures
         // share one simulation state and on-vs-on2 isolates capture noise from fleck lifetime changes.
         int settleTick = Find.TickManager.TicksGame + 180;
-        while (Find.TickManager.TicksGame < settleTick)
+        while (glowEvent == null && Find.TickManager.TicksGame < settleTick)
         {
             if (wait.Elapsed.TotalSeconds > 60) throw new TimeoutException("Simulation did not advance 180 ticks.");
             yield return new UnityEngine.WaitForEndOfFrame();
@@ -175,7 +201,7 @@ internal static class ShowcaseGlowABSession
             for (int frame = 0; frame < 30; frame++) yield return new UnityEngine.WaitForEndOfFrame();
             if (!Find.TickManager.Paused || LongEventHandler.AnyEventNowOrWaiting)
                 throw new InvalidOperationException("Glow A/B simulation resumed or a long event is pending.");
-            if (CountFireGlow(map) == 0) throw new InvalidOperationException("No live FireGlow at " + names[step]);
+            if (glowEvent == null && CountFireGlow(map) == 0) throw new InvalidOperationException("No live FireGlow at " + names[step]);
             IScreenCaptureBackend backend = ShowcaseCaptureSession.RequestCapture();
             yield return new UnityEngine.WaitForEndOfFrame();
             byte[] rgba = ShowcaseCaptureSession.ReadAndWriteCapture(backend, Path.Combine(outputDir, names[step] + ".png"), out int w, out int h);

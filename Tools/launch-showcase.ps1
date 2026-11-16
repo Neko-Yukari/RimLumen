@@ -8,6 +8,8 @@ param(
     [string]$GlowAB = '',
     # Optional 'intensity,threshold' override of the Standard pack's bloom for -GlowAB.
     [string]$GlowABBloom = '',
+    # Optional vanilla event for -GlowAB instead of the fire cluster: explosion or lightning.
+    [string]$GlowABEvent = '',
     [switch]$NoBuild,
     [switch]$Detach,
     [switch]$CleanupJunction,
@@ -206,6 +208,7 @@ try {
             $start.ArgumentList.Add($arg)
         }
         if ($GlowABBloom) { $start.ArgumentList.Add("-rimlumen-glow-ab-bloom=$GlowABBloom") }
+        if ($GlowABEvent) { $start.ArgumentList.Add("-rimlumen-glow-ab-event=$GlowABEvent") }
         $process = [Diagnostics.Process]::Start($start)
         Write-Host "Started headless RimWorld glow A/B PID=$($process.Id); timeout=${TimeoutSeconds}s"
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
