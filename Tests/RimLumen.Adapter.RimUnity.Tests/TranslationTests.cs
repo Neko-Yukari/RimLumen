@@ -339,15 +339,62 @@ internal static class TranslationTests
 
     internal static void LinearMaterial()
     {
+        AssertLinearFactors(1f, ".323865139 (white texture)");
+        AssertLinearFactors(.5f, ".094312444 (sRGB texture .5)");
+    }
+
+    private static void AssertLinearFactors(float lifetime, string sourceFormulaReference)
+    {
+        var asset = TranslateMaterial("Linear", new Vector4(.5f, .5f, .5f, .75f), new Vector4(.4f, .4f, .4f, .8f),
+            new Vector4(lifetime, lifetime, lifetime, 1), out var report);
+        Check.Equal(LumenParticleTier.L1_NativeCpu, report.Nodes.Single().Tier, "supported Linear material stays native");
+        Check.Reasons([], report.Nodes.Single().Reasons, "no temporary Linear fallback");
+        var emitter = asset.Nodes[0].Emitter!;
+        Check.Equal(LumenColorSpace.Linear, emitter.ColorSpace, "native Linear calculation selected");
+        Check.Equal(new Vector4(.5f, .5f, .5f, .75f), emitter.MaterialTint, "material tint stays separate from vertex");
+        Check.Near(.4f, emitter.StartColor.X * emitter.HdrIntensity, "stored start RGB is not decoded or tint-folded");
+        Check.Near(.8f, emitter.StartColor.W, "stored start alpha not tint-folded");
+        Check.Near(lifetime, GradientEvaluator.Evaluate(emitter.ColorOverLifetime, .5f).X, "lifetime RGB remains a vertex factor");
+        Check.Equal("test-texture", emitter.TextureKey, "texture identity reaches native sampling metadata resolution");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        Console.WriteLine($"LINEAR translated start=.4 lifetime={lifetime} tint=.5; pinned formula reference={sourceFormulaReference}; shader output not executed");
+    }
+
+    internal static void MaterialDomain()
+    {
+        AssertMaterialDomain(new Vector4(-.1f, 1, 1, 1));
+        AssertMaterialDomain(new Vector4(float.NaN, 1, 1, 1));
+        AssertMaterialDomain(new Vector4(1, float.PositiveInfinity, 1, 1));
+        AssertMaterialDomain(new Vector4(1, 1, 1, -.1f));
+        AssertMaterialDomain(new Vector4(2, 1.7f, .8f, 2));
+        AssertMaterialDomain(new Vector4(1, 1, 1, float.NaN));
+        var valid = TranslateMaterial("Linear", new Vector4(2, 1.7f, .8f, 1), Vector4.One, Vector4.One, out var report);
+        Check.Equal(LumenParticleTier.L1_NativeCpu, report.Nodes.Single().Tier, "finite HDR tint is native");
+        Check.Equal(new Vector4(2, 1.7f, .8f, 1), valid.Nodes[0].Emitter!.MaterialTint, "HDR tint is not clamped");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(valid);
+    }
+
+    private static void AssertMaterialDomain(Vector4 tint)
+    {
+        var asset = TranslateMaterial("Gamma", tint, Vector4.One, Vector4.One, out var report);
+        Check.Equal(LumenParticleTier.L0_ExternalCpu, report.Nodes.Single().Tier, "invalid material tint stays external");
+        Check.Reasons(["material[test-material]._Color.domain"], report.Nodes.Single().Reasons, "reason names material identity and source field");
+        Check.True(asset.Nodes[0].Emitter is null && asset.Nodes[0].PointLight is null, "invalid tint does not create native particles or light");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+    }
+
+    private static EffectAsset TranslateMaterial(string colorSpace, Vector4 tint, Vector4 start, Vector4 lifetime, out RimUnityTranslationReport report)
+    {
         var particles = Particles();
+        particles.members.Single(m => m.name == "main").value.fields.Add(Member("startColor", Vector(start.X, start.Y, start.Z, start.W)));
+        particles.members.Add(Member("colorOverLifetime", Data(("enabled", Number(1)), ("color", Vector(lifetime.X, lifetime.Y, lifetime.Z, lifetime.W)))));
         var prefab = Prefab(particles);
         prefab.nodes[0].components.Add(new ComponentData { id = "renderer", type = "RimUnity.ParticleSystemRenderer",
-            members = [Member("sharedMaterial", new ValueData { kind = "asset", text = "linear" })] });
-        var material = new ResourceData { type = "Material", colorSpace = "Linear", members = [] };
-        var asset = new RimUnityPrefabTranslator().Translate("linear", prefab, _ => material, _ => null, out var report);
-        Check.Reasons(["material.linearColorSpace"], report.Nodes.Single().Reasons, "Linear material reason");
-        Check.Equal(LumenParticleTier.L0_ExternalCpu, report.Nodes.Single().Tier, "Linear material external");
-        Check.True(asset.Nodes[0].Emitter is null && asset.Nodes[0].PointLight is null, "Linear owns particles and lights externally");
+            members = [Member("sharedMaterial", new ValueData { kind = "asset", text = "test-material" })] });
+        var material = new ResourceData { type = "Material", colorSpace = colorSpace, members = [
+            Member("_Color", Vector(tint.X, tint.Y, tint.Z, tint.W)),
+            Member("_MainTex", new ValueData { kind = "asset", text = "test-texture" })] };
+        return new RimUnityPrefabTranslator().Translate("material." + colorSpace, prefab, _ => material, _ => null, out report);
     }
 
     internal static void ParticleLights()
@@ -364,10 +411,29 @@ internal static class TranslationTests
     internal static void SceneColor()
     {
         EmitterSpec gamma = TranslateColor("Gamma");
-        Check.Near(.2f, gamma.StartColor.X * gamma.HdrIntensity, "Gamma stored start times tint");
-        Check.Near(.6f, gamma.StartColor.W, "Gamma alpha product");
+        Check.Near(.4f, gamma.StartColor.X * gamma.HdrIntensity, "Gamma stored start before tint");
+        Check.Near(.8f, gamma.StartColor.W, "Gamma stored alpha before tint");
+        Check.Equal(new Vector4(.5f, .5f, .5f, .75f), gamma.MaterialTint, "Gamma material tint remains separate");
         Check.Near(.5f, GradientEvaluator.Evaluate(gamma.ColorOverLifetime, .5f).X, "Gamma stored lifetime midpoint");
-        Console.WriteLine($"COLOUR gammaStart={gamma.StartColor.X * gamma.HdrIntensity} lifetimeMidpoint={GradientEvaluator.Evaluate(gamma.ColorOverLifetime, .5f).X}");
+        Check.Equal(LumenColorSpace.Stored, gamma.ColorSpace, "Gamma stays Stored");
+        AssertStoredFactorIdentity("Gamma");
+        AssertStoredFactorIdentity("existing-other");
+    }
+
+    private static void AssertStoredFactorIdentity(string colorSpace)
+    {
+        Vector4 start = new(2, .4f, 1, .8f), lifetime = new(4, 2, .5f, .5f), tint = new(.5f, 1.5f, 2, .75f);
+        var asset = TranslateMaterial(colorSpace, tint, start, lifetime, out _);
+        var emitter = asset.Nodes[0].Emitter!;
+        Check.Equal(tint, emitter.MaterialTint, "Stored tint retained independently");
+        Check.Equal(LumenColorSpace.Stored, emitter.ColorSpace, "non-Linear stays Stored");
+        Vector4 vertex = emitter.StartColor * GradientEvaluator.Evaluate(emitter.ColorOverLifetime, .5f);
+        vertex = new Vector4(vertex.X * emitter.HdrIntensity, vertex.Y * emitter.HdrIntensity, vertex.Z * emitter.HdrIntensity, vertex.W);
+        Vector4 split = vertex * emitter.MaterialTint;
+        Vector4 oldFolded = (start * tint) * lifetime;
+        Check.True(Vector4.Distance(oldFolded, split) < 1e-6f, $"Stored split equals old folded: old={oldFolded}; split={split}");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        Console.WriteLine($"STORED {colorSpace}: oldFolded={oldFolded} split={split} HDR={emitter.HdrIntensity}");
     }
 
     private static EmitterSpec TranslateColor(string colorSpace)

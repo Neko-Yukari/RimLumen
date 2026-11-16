@@ -64,7 +64,7 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
 - Keys use camelCase, are **case-insensitive**, and allow `//` comments and trailing commas.
 - **Unknown keys throw an error** to catch typos early (keys prefixed with `$` or `_` are ignored for documentation metadata).
 - Vectors accept `[x, y, z]`, `{ "x": ..., "y": ..., "z": ... }`, or a single number (uniform `x = y = z`).
-- Colors use the vanilla scene's stored encoding with no sRGB conversion: particle RGB `1.0` is vanilla full brightness, RGB values above `1` can drive HDR, alpha is coverage, and `hdrIntensity` scales RGB only; point-light RGB must be in `[0,1]`. Accepted forms are `[r, g, b, a]`, `[r, g, b]` (where `a = 1`), or `{ "r": ..., "g": ..., "b": ..., "a": ... }`.
+- Author particle colours in the vanilla scene's stored encoding: RGB must be finite and nonnegative with no upper bound; alpha must be finite in `[0,1]`. RGB `1` is vanilla full brightness and values above `1` can drive HDR. `hdrIntensity` and runtime `intensity` must be finite and nonnegative and scale RGB only; invalid runtime `intensity` throws `ArgumentOutOfRangeException` before mutation. Point-light RGB remains in `[0,1]`. JSON colours accept `[r, g, b, a]`, `[r, g, b]` (alpha 1), or `{ "r": ..., "g": ..., "b": ..., "a": ... }`.
 - Removed or renamed legacy keys are rejected with an error naming the new key or the removal: `startColorLinear` is renamed to `startColor`; gradient-stop `rgbaLinear` and point-light `colorLinear` / `colorRgb` are renamed to `color`; `bloomWeight` and `hdrMultiplier` were removed. No compatibility alias is provided.
 - Enums accept either member name strings (case-insensitive) or integer values.
 - Writing a single number for `startLifetime`, `startSpeed`, or `startSize` sets `Min = Max`; you can also write `...Min` / `...Max` separately.
@@ -102,6 +102,8 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
         "startSizeMin": 1.0,
         "startSizeMax": 1.0,
         "startColor": [1, 1, 1, 1],
+        "materialTint": [1, 1, 1, 1],
+        "colorSpace": "Stored",
         "sizeOverLifetime": [[0, 1], [1, 0]],
         "colorOverLifetime": [[0, [1, 1, 1, 1]], [1, [1, 0.3, 0.1, 0]]],
         "forceFields": [
@@ -157,6 +159,7 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
   For example, `[[0, 0], [0.5, 1], [0.5, 2], [0.5, 3], [1, 4]]` approaches `1` from the left of `0.5`, evaluates to `3` at `0.5`, and then interpolates from `3` toward `4`. The same rule applies to a pair of repeated keys. Source: [RimUnity `AnimationCurve.cs:23,30-35` at pinned revision `45ca90987f7d3721715b45c021cab986ee14c468`](https://github.com/chezhou9413/RimUnity/blob/45ca90987f7d3721715b45c021cab986ee14c468/Source/RimUnity/Animation/AnimationCurve.cs#L23-L35).
 
   For particle size curves, both L1 and L2 use the same 64-sample lookup table (LUT): samples are at `i/63` (`i = 0…63`), including both endpoints, with interpolation between adjacent samples. A step can be smoothed across a sample interval of width `1/63`; exact preservation is not guaranteed. Point-light curves are evaluated directly in seconds, not through the particle LUT.
+- **Material colour**: `materialTint` defaults to `(1,1,1,1)` and follows the colour domain above, as do `startColor` and the gradient; `colorSpace` is `Stored` (default) or `Linear`. Let `vertex = startColor × gradient`, with only its RGB multiplied by `hdrIntensity × intensity`. Stored RGB is `vertex × tint × texel`; Linear RGB is `E(vertex × D(tint) × (texture is sRGB ? D(texel) : texel))`. `vertex` is not decoded. `D` / `E` are sRGB decode / encode extended to nonnegative values above 1 without clamping. Alpha is always the product of the three raw alpha values, followed by soft-particle coverage and any blend-mode premultiplication. Componentwise, `D(x) = x/12.92` for `x <= 0.04045`, otherwise `((x+0.055)/1.055)^2.4`; `E(x) = 12.92*x` for `x <= 0.0031308`, otherwise `1.055*x^(1/2.4)-0.055`. Source: RimUnity `Source/Shared/ShaderColorSpace.cs:69-103,122-134` at revision `45ca90987f7d3721715b45c021cab986ee14c468`. This describes material calculation only, not the player blend space.
 - **Gradients (`colorOverLifetime`)**: Supports a stop array `[[time, [r,g,b,a]], ...]` or an object `{ "stops": [{ "time": 0, "color": [r,g,b,a] }] }`, requiring strictly increasing `time`.
 - **`pointLight`**: The JSON colour key is `color` (RGBA); radius keys are `glowRadius` and `overlightRadius` (in map cells).
 - **Force-field `strength`**: Required explicitly in JSON, XML, and C#. Omission rejects the asset; no default is used.
@@ -276,8 +279,10 @@ You can define `RimLumen.Core.Assets.LumenEffectDef` in any mod's `Defs/**/*.xml
 
 1. **ID**: Uses `<defName>`, registering both the bare short name and `<packageId>:<defName>`.
 2. **Node fields**: Adds `<heightOffset>` (added to `localPosition.y`), `localScale` is a single float scalar, and `localRotation` quaternion is omitted (use `<localYawDegrees>`).
-3. **Point light keys**: Uses `<radiusCells>` (matching JSON `glowRadius`), `<overlightRadius>`, `<color>` (RimWorld `Color` syntax `(r, g, b, a)`), `<intensity>`, and `<intensityOverTime>` (`<keys>` made of `<li><time>..</time><value>..</value></li>`).
+3. **Point light keys**: Uses `<radiusCells>` (matching JSON `glowRadius`), `<overlightRadius>`, `<color>` (raw float syntax `(r, g, b)` or `(r, g, b, a)`), `<intensity>`, and `<intensityOverTime>` (`<keys>` made of `<li><time>..</time><value>..</value></li>`).
 4. **List fields**: `<states>`, `<timelineEvents>` and a state's `<nodes>` are `<li>` lists; state fields are `<name>`, `<nodes>`, `<duration>`, `<loop>`, `<next>`, event fields are `<time>`, `<eventName>`, `<targetNodeIndex>`, `<state>`, `<notify>`; the root also takes `<defaultDuration>`, `<initialState>` and `<stopState>`. Meanings and defaults match the "State Machine" section above.
+
+XML emitters use `<colorSpace>` and `<materialTint>`, defaulting to `Stored` and `(1,1,1,1)`. XML `<startColor>`, gradient-stop `<color>`, `<materialTint>`, and point-light `<color>` use parenthesized raw float components: three components imply alpha 1; four preserve the given values, without byte-colour interpretation. Malformed text or component counts report the asset and field.
 
 Legacy XML keys are rejected too: `<startColorLinear>` is renamed to `<startColor>`; gradient-stop `<rgbaLinear>` and point-light `<colorLinear>` / `<colorRgb>` are renamed to `<color>`; `<bloomWeight>` and `<hdrMultiplier>` were removed.
 
@@ -451,6 +456,8 @@ An emitter's `textureKey` is resolved on the main thread in the following order:
 2. Otherwise call vanilla `ContentFinder<UnityEngine.Texture2D>.Get(key, reportFailure: false)` to load from a mod's `Textures/` directory (for example `"RimLumen/Effects/Spark"`).
 3. If still missing, fall back to the procedural soft circle and log one warning per missing `key`. An unspecified `textureKey` also uses the procedural circle. Its alpha is `max(0, 1 - r²)²`, where `r` is the fragment's radial coordinate; it is independent of the flipbook atlas UV and does not change per frame.
 
+For Linear materials, main-thread texture resolution reads `Texture2D.CpuData.Linear`: native ContentFinder textures use `false`, and RimUnity textures retain the export flag. There is no author `textureSrgb` field; UNorm, BC-UNorm, and SFloat formats do not automatically decode sRGB on the GPU. A present non-`Texture2D` or texture without `CpuData` fails for Linear materials with the texture key and missing colour metadata in the error. Stored materials and public `Register` behavior are unchanged; a missing texture still falls back to the procedural circle.
+
 > Never call texture registration from worker threads or render callbacks.
 
 ### 2. Automatic Vanilla Additive Glow Enhancement
@@ -478,7 +485,9 @@ To opt a custom `ShaderDef` out of automatic HDR redraw, attach `<li Class="RimL
 When `Chezhou.RimUnity` is active, `RimLumen.Adapter.RimUnity` reads its exported `catalog.json`, prefab JSON (including `.json.gz`), and `.rutex` textures, automatically routing each particle node:
 
 - **Native HDR / GPU (or CPU)**: supported basic shapes with shape-local position, rotation, and scale (TRS), curves, gradients, textures, flipbooks, rate-over-time emission, and deterministic bursts.
-- **Retained on RimUnity (`L0_ExternalCpu`)**: nodes using `trails`, `subEmitters` (including sub-emitter dependencies), `collision`, `trigger`, `renderMode.Mesh`, `renderMode.Vertical` or an unknown `renderMode`, a Linear color-space material (`material.linearColorSpace`), linear `velocityOverLifetime`, `rotationOverLifetime`, curve-based `forceOverLifetime`, any enabled `lights` module (including `ratio = 1`), probabilistic bursts, or shapes not yet modeled in Core (such as non-zero-radius base cones, shells, rings, or meshes).
+- **Retained on RimUnity (`L0_ExternalCpu`)**: nodes using `trails`, `subEmitters` (including sub-emitter dependencies), `collision`, `trigger`, `renderMode.Mesh`, `renderMode.Vertical` or an unknown `renderMode`, a material `_Color` outside the native colour domain, linear `velocityOverLifetime`, `rotationOverLifetime`, curve-based `forceOverLifetime`, any enabled `lights` module (including `ratio = 1`), probabilistic bursts, or shapes not yet modeled in Core (such as non-zero-radius base cones, shells, rings, or meshes).
+
+The adapter maps material `_Color` separately to `materialTint` and routes Linear materials natively when no other unsupported reason applies. Imported material colours outside the domain above route to External with a material identity and field reason, `material[<asset-id>]._Color.domain`, without clamping or folding into vertex colour.
 
 Callers using `RimLumenApi.Play` do not need to care which backend handles each node; a single `ILumenEffectHandle` controls both sides together.
 

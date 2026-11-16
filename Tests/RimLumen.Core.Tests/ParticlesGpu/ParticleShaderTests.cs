@@ -7,6 +7,9 @@ using System.Runtime.Loader;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using RimLumen.Core.ParticlesGpu;
+using RimLumen.Core.Assets;
+using RimLumen.Core.Contracts;
+using Waylith.Assets;
 using Waylith.Graphics.Meshes;
 using Waylith.Rendering;
 
@@ -15,6 +18,75 @@ namespace RimLumen.Core.Tests.ParticlesGpu;
 [LumenTestSuite]
 public static class ParticleShaderTests
 {
+    [LumenFact]
+    public static void PhaseATextureMetadataDistinguishesEncodingAndRejectsUnknownLinearSampling()
+    {
+        using var stored = new Texture2D(1, 1, LoadedTextureFormat.Rgba32, linear: false, mipCount: 1, createUninitialized: true);
+        using var linear = new Texture2D(1, 1, LoadedTextureFormat.Rgba32, linear: true, mipCount: 1, createUninitialized: true);
+        Require(LumenTextureRegistry.TextureIsSrgb("stored", stored, LumenColorSpace.Linear)
+            && !LumenTextureRegistry.TextureIsSrgb("linear", linear, LumenColorSpace.Linear),
+            "Loaded CpuData.Linear must be the actual texture-decode flag.");
+        using var unbacked = Texture2D.CreateUnbacked(1, 1);
+        using var volume = new Texture3D(1, 1, 1);
+        Require(!LumenTextureRegistry.TextureIsSrgb("unbacked", unbacked, LumenColorSpace.Stored)
+            && !LumenTextureRegistry.TextureIsSrgb("volume", volume, LumenColorSpace.Stored),
+            "Stored sampling does not require or guess colour metadata.");
+        RequireMissingMetadata("unbacked", unbacked);
+        RequireMissingMetadata("volume", volume);
+    }
+
+    private static void RequireMissingMetadata(string key, Texture texture)
+    {
+        try { LumenTextureRegistry.TextureIsSrgb(key, texture, LumenColorSpace.Linear); }
+        catch (InvalidOperationException error)
+        {
+            Require(error.Message.Contains(key, StringComparison.Ordinal)
+                && error.Message.Contains("colour metadata missing", StringComparison.Ordinal),
+                "Metadata rejection must name the texture key and missing colour metadata.");
+            return;
+        }
+        throw new InvalidOperationException("Linear sampling must reject textures without colour metadata: " + key);
+    }
+
+    [LumenFact]
+    public static void PhaseASharedCompositionIsWiredBeforeCoverageAndPremultiplication()
+    {
+        string l1 = Read("L1ParticleQuad.frag.glsl"), l2 = Read("ParticleBillboard.frag.glsl");
+        Require(l1.Contains("lumenParticleStoredColor(color, lumen._LumenMaterialTint, texel", StringComparison.Ordinal)
+            && l2.Contains("lumenParticleStoredColor(vColor, material._LumenMaterialTint, texel", StringComparison.Ordinal),
+            "Both real fragment entry points must call the shared straight stored composition with raw vertex and separate tint.");
+        string helper = Read("ParticleColor.glsl");
+        Require(helper.Contains("vertex.rgb * lumenDecodeStored(tint.rgb)", StringComparison.Ordinal)
+            && helper.Contains("textureSrgb ? lumenDecodeStored(texel.rgb) : texel.rgb", StringComparison.Ordinal)
+            && helper.Contains("vertex.a * tint.a * texel.a", StringComparison.Ordinal)
+            && !helper.Contains("clamp(", StringComparison.Ordinal),
+            "Linear materials decode only tint/sRGB texels, preserve alpha multiplication and extend HDR without clamping.");
+        Require(helper.Contains("pow((storedRgb + 0.055) / 1.055, vec3(2.4))", StringComparison.Ordinal)
+            && helper.Contains("storedRgb / 12.92", StringComparison.Ordinal)
+            && helper.Contains("lessThanEqual(storedRgb, vec3(0.04045))", StringComparison.Ordinal)
+            && helper.Contains("1.055 * pow(linearRgb, vec3(1.0 / 2.4)) - 0.055", StringComparison.Ordinal)
+            && helper.Contains("linearRgb * 12.92", StringComparison.Ordinal)
+            && helper.Contains("lessThanEqual(linearRgb, vec3(0.0031308))", StringComparison.Ordinal),
+            "Shared shader must use the pinned extended piecewise sRGB equations, not a gamma approximation.");
+        Require(l1.IndexOf("lumenParticleStoredColor(", StringComparison.Ordinal) < l1.IndexOf("c.a *=", StringComparison.Ordinal)
+            && l1.IndexOf("c.a *=", StringComparison.Ordinal) < l1.IndexOf("c.rgb *= c.a", StringComparison.Ordinal)
+            && l2.IndexOf("lumenParticleStoredColor(", StringComparison.Ordinal) < l2.IndexOf("color.a *=", StringComparison.Ordinal)
+            && l2.IndexOf("color.a *=", StringComparison.Ordinal) < l2.IndexOf("color.rgb *= color.a", StringComparison.Ordinal),
+            "Straight composition must precede soft coverage and output premultiplication in both real entry points.");
+        string root = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Source", "RimLumen.Core"));
+        string cpu = File.ReadAllText(Path.Combine(root, "Rendering", "L1ParticleBatchRenderer.cs"));
+        string gpu = File.ReadAllText(Path.Combine(root, "ParticlesGpu", "ParticleGpuDrawResources.cs"));
+        string enqueue = File.ReadAllText(Path.Combine(root, "ParticlesGpu", "LumenGpuParticleEngine.Gpu.cs"));
+        Require(cpu.Contains("DrawProperty.Vector(TintPropertyId, batch.MaterialTint)", StringComparison.Ordinal)
+            && cpu.Contains("batch.TextureSrgb ? 1f : 0f", StringComparison.Ordinal)
+            && gpu.Contains("DrawProperty.Vector(TintPropertyId, emitter.MaterialTint)", StringComparison.Ordinal)
+            && gpu.Contains("textureSrgb[i] ? 1f : 0f", StringComparison.Ordinal)
+            && enqueue.Contains("LumenTextureRegistry.TextureIsSrgb(key, texture, emitter.ColorSpace)", StringComparison.Ordinal)
+            && enqueue.Contains("gpu.TextureSrgb[i] = texture is not null && textureSrgb", StringComparison.Ordinal)
+            && enqueue.Contains("frame.Gpu.TextureSrgb", StringComparison.Ordinal),
+            "Main-thread texture flags and captured tint must reach per-draw arena vectors, not cached material mutation.");
+    }
+
     [LumenFact]
     public static void P2A4aFlipbookStartsAtTopRow()
     {
@@ -229,12 +301,14 @@ public static class ParticleShaderTests
         string fragment = Read("L1ParticleQuad.frag.glsl");
         MaterialLayout layout = ShaderMetadataParser.ExtractMaterialLayout(fragment, "L1ParticleQuad.frag");
         Require(!layout.HasErrors, "Waylith rejected the L1 material metadata.");
-        Require(layout.UniformSize == 48, $"L1 material UBO must be 48 bytes; got {layout.UniformSize}.");
+        Require(layout.UniformSize == 80, $"L1 material UBO must be 80 bytes; got {layout.UniformSize}.");
         Require(layout.UniformSlots.Select(x => (x.Offset, x.PropertyName)).SequenceEqual(new[]
         {
-            (0, "_LumenDraw"), (16, "_LumenDepth"), (32, "_LumenProjection")
+            (0, "_LumenDraw"), (16, "_LumenDepth"), (32, "_LumenProjection"),
+            (48, "_LumenMaterialTint"), (64, "_LumenColor")
         }), "L1 material UBO offsets differ from the runtime packing.");
-        CheckOverrideSlots(layout, ("_LumenDraw", 0), ("_LumenDepth", 16), ("_LumenProjection", 32));
+        CheckOverrideSlots(layout, ("_LumenDraw", 0), ("_LumenDepth", 16), ("_LumenProjection", 32),
+            ("_LumenMaterialTint", 48), ("_LumenColor", 64));
         Require(layout.TextureSlots.Select(x => (x.Binding, x.PropertyName)).SequenceEqual(new[]
         {
             (1, "_LumenParticleTexture"), (2, "_LumenSceneDepth")
@@ -316,14 +390,16 @@ public static class ParticleShaderTests
 
     private static void CheckUniforms(MaterialLayout layout)
     {
-        Require(layout.UniformSize == 96, "Material UBO must be 96 bytes.");
+        Require(layout.UniformSize == 128, "Material UBO must be 128 bytes.");
         Require(layout.UniformSlots.Select(x => (x.Offset, x.PropertyName)).SequenceEqual(new[]
         {
             (0, "_LumenDraw"), (16, "_LumenCameraRight"), (32, "_LumenCameraUp"),
-            (48, "_LumenProjection"), (64, "_LumenDepthUv"), (80, "_LumenVertical")
+            (48, "_LumenProjection"), (64, "_LumenDepthUv"), (80, "_LumenVertical"),
+            (96, "_LumenMaterialTint"), (112, "_LumenColor")
         }), "Material UBO offsets differ from runtime packing.");
         CheckOverrideSlots(layout, ("_LumenDraw", 0), ("_LumenCameraRight", 16), ("_LumenCameraUp", 32),
-            ("_LumenProjection", 48), ("_LumenDepthUv", 64), ("_LumenVertical", 80));
+            ("_LumenProjection", 48), ("_LumenDepthUv", 64), ("_LumenVertical", 80),
+            ("_LumenMaterialTint", 96), ("_LumenColor", 112));
     }
 
     // Per-draw vectors travel through DrawPropertyArena and only reach a uniform when the id the renderer uses

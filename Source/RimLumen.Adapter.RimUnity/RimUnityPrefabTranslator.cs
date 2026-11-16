@@ -53,13 +53,25 @@ public sealed class RimUnityPrefabTranslator
                     material = resourceResolver(materialRef.text) ?? throw new InvalidDataException("Missing material: " + materialRef.text);
                     if (material.type != "Material") throw new InvalidDataException("Renderer asset is not a Material: " + materialRef.text);
                 }
+                Vector4 materialTint = Vector4.One;
+                ValueData? tintValue = Member(material?.members, "_Color");
+                if (tintValue is not null && tintValue.kind != "null")
+                {
+                    float[] values = tintValue.vector;
+                    if (values is null || values.Length < 3 || values.Length > 4)
+                        throw new InvalidDataException("Invalid exported material[" + materialRef!.text + "]._Color vector.");
+                    materialTint = new Vector4(values[0], values[1], values[2], values.Length == 4 ? values[3] : 1f);
+                }
                 var classification = Classifier.Classify(particles, renderer);
                 var reasons = new List<string>(classification.Reasons);
-                if (string.Equals(material?.colorSpace, "Linear", StringComparison.OrdinalIgnoreCase))
+                if (!float.IsFinite(materialTint.X) || materialTint.X < 0 ||
+                    !float.IsFinite(materialTint.Y) || materialTint.Y < 0 ||
+                    !float.IsFinite(materialTint.Z) || materialTint.Z < 0 ||
+                    !float.IsFinite(materialTint.W) || materialTint.W < 0 || materialTint.W > 1)
                 {
                     classification.Tier = LumenParticleTier.L0_ExternalCpu;
                     reasons.RemoveAll(reason => reason.EndsWith("L2ParticleThreshold", StringComparison.Ordinal));
-                    reasons.Add("material.linearColorSpace");
+                    reasons.Add("material[" + materialRef!.text + "]._Color.domain");
                 }
                 if (subEmitterTargets.Contains(particles.id))
                 {
@@ -68,7 +80,7 @@ public sealed class RimUnityPrefabTranslator
                     reasons.Add("subEmitters.dependency");
                 }
                 if (active[i] && particles.enabled && renderer?.enabled != false && classification.Tier != LumenParticleTier.L0_ExternalCpu)
-                    emitter = ConvertEmitter(source.name, particles, renderer, classification.Tier, material, shaderResolver);
+                    emitter = ConvertEmitter(source.name, particles, renderer, classification.Tier, material, materialTint, shaderResolver);
                 classifications.Add(new RimUnityNodeTranslation(i, source.id, classification.Tier, reasons));
                 ValueData? main = Member(particles.members, "main");
                 duration = MathF.Max(duration, Number(Field(main, "duration"), 5f) + CurveRange(Field(main, "startLifetime"), 5f).Max);
@@ -93,7 +105,7 @@ public sealed class RimUnityPrefabTranslator
     }
 
     private static EmitterSpec ConvertEmitter(string name, ComponentData particles, ComponentData? renderer,
-        LumenParticleTier tier, ResourceData? material, Func<string, ShaderData?> shaderResolver)
+        LumenParticleTier tier, ResourceData? material, Vector4 materialTint, Func<string, ShaderData?> shaderResolver)
     {
         ValueData? main = Member(particles.members, "main");
         ValueData? emission = Member(particles.members, "emission");
@@ -112,10 +124,6 @@ public sealed class RimUnityPrefabTranslator
             ValueData? shaderRef = Member(material.members, "shader");
             if (shaderRef?.kind == "asset")
                 shader = shaderResolver(shaderRef.text) ?? throw new InvalidDataException("Missing shader: " + shaderRef.text);
-            Vector4 tint = Vector(Member(material.members, "_Color"), Vector4.One);
-            // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468, ParticleSystem.Simulation.cs:110-116:
-            // vertex factors retain stored values. Native HDR deliberately does not reproduce Color32 clipping.
-            color *= tint;
         }
         color = ExtractHdrIntensity(color, out float hdr);
         ColorGradient lifetimeColors = Enabled(colorModule) ? ToColorGradient(Field(colorModule, "color")) : ColorGradient.Constant(Vector4.One);
@@ -183,7 +191,10 @@ public sealed class RimUnityPrefabTranslator
             ShapePosition = shapePosition, ShapeRotation = shapeRotation, ShapeScale = shapeScale,
             StartLifetimeMin = lifetime.Min, StartLifetimeMax = lifetime.Max,
             StartSpeedMin = speed.Min, StartSpeedMax = speed.Max, StartSizeMin = size.Min, StartSizeMax = size.Max,
-            StartColor = color, HdrIntensity = hdr,
+            // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468, Source/Shared/ShaderColorSpace.cs:69-103,122-134:
+            // material tint/texture are decoded only by Linear material shading; vertex factors stay stored.
+            StartColor = color, HdrIntensity = hdr, MaterialTint = materialTint,
+            ColorSpace = string.Equals(material?.colorSpace, "Linear", StringComparison.OrdinalIgnoreCase) ? LumenColorSpace.Linear : LumenColorSpace.Stored,
             SizeOverLifetime = Enabled(sizeModule) ? ToScalarCurve(Field(sizeModule, "size")) : ScalarCurve.Constant(1),
             ColorOverLifetime = lifetimeColors,
             ForceFields = forces, TextureKey = textureKey, BlendMode = blend,

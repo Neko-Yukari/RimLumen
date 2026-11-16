@@ -38,5 +38,9 @@ public struct CpuParticle
     public int FlipbookFrame;
 }
 
-/// <summary>Contiguous index range in <see cref="CpuParticleSimulator"/> sharing one texture and blend mode.</summary>
-public readonly record struct L1SubBatch(string? TextureKey, RimLumen.Core.Contracts.LumenBlendMode BlendMode, int IndexStart, int IndexCount, float SoftParticleFadeDistance = 0.5f);
+/// <summary>Contiguous index range sharing texture, blend, soft fade and material colour calculation.</summary>
+public readonly record struct L1SubBatch(string? TextureKey, RimLumen.Core.Contracts.LumenBlendMode BlendMode, int IndexStart, int IndexCount, float SoftParticleFadeDistance = 0.5f)
+{
+    public Vector4 MaterialTint { get; init; } = Vector4.One;
+    public RimLumen.Core.Contracts.LumenColorSpace ColorSpace { get; init; }
+}

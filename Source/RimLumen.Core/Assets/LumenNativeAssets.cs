@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Numerics;
 using System.Text;
@@ -150,7 +151,9 @@ public sealed class LumenEffectDef : Def
             StartSpeedMax = xml.startSpeedMax,
             StartSizeMin = xml.startSizeMin,
             StartSizeMax = xml.startSizeMax,
-            StartColor = ToVector4(xml.startColor),
+            StartColor = ParseColor(xml.startColor, path + ".emitter.startColor"),
+            ColorSpace = xml.colorSpace,
+            MaterialTint = ParseColor(xml.materialTint, path + ".emitter.materialTint"),
             SizeOverLifetime = xml.sizeOverLifetime is { Count: > 0 }
                 ? new ScalarCurve(ToCurveKeys(xml.sizeOverLifetime, path + ".sizeOverLifetime"))
                 : ScalarCurve.Constant(1f),
@@ -189,10 +192,11 @@ public sealed class LumenEffectDef : Def
             intensity = xml.intensity == 1f ? null : ScalarCurve.Constant(xml.intensity);
         }
 
+        Vector4 color = ParseColor(xml.color, path + ".pointLight.color");
         return new PointLightSpec(
             xml.radiusCells,
             xml.overlightRadius,
-            new Vector3(xml.color.r, xml.color.g, xml.color.b),
+            new Vector3(color.X, color.Y, color.Z),
             intensity);
     }
 
@@ -242,7 +246,7 @@ public sealed class LumenEffectDef : Def
         {
             LumenGradientStopXml stop = stops[i] ?? throw new InvalidDataException($"{path}[{i}] is null.");
             stop.RejectLegacyFields($"{path}[{i}]");
-            result[i] = new ColorStop(stop.time, ToVector4(stop.color));
+            result[i] = new ColorStop(stop.time, ParseColor(stop.color, $"{path}[{i}].color"));
         }
 
         return result;
@@ -271,7 +275,26 @@ public sealed class LumenEffectDef : Def
         return result;
     }
 
-    private static Vector4 ToVector4(UnityEngine.Color color) => new(color.r, color.g, color.b, color.a);
+    // Keep raw floats until shared domain validation; Verse.ParseColor interprets RGB > 1 as byte values.
+    private static Vector4 ParseColor(string text, string path)
+    {
+        if (text is null)
+            throw new InvalidDataException($"{path}: expected (r,g,b) or (r,g,b,a) raw float colour, got null.");
+        string value = text.Trim();
+        if (value.Length < 2 || value[0] != '(' || value[^1] != ')')
+            throw new InvalidDataException($"{path}: expected (r,g,b) or (r,g,b,a) raw float colour, got '{text}'.");
+        string[] components = value[1..^1].Split(',');
+        if (components.Length != 3 && components.Length != 4)
+            throw new InvalidDataException($"{path}: expected 3 or 4 colour components, got {components.Length}.");
+        Span<float> rgba = stackalloc float[4];
+        rgba[3] = 1f;
+        for (int i = 0; i < components.Length; i++)
+        {
+            if (!float.TryParse(components[i], NumberStyles.Float, CultureInfo.InvariantCulture, out rgba[i]))
+                throw new InvalidDataException($"{path}: colour component {i} must be a float, got '{components[i]}'.");
+        }
+        return new Vector4(rgba[0], rgba[1], rgba[2], rgba[3]);
+    }
 }
 
 public sealed class LumenNodeXml
@@ -304,7 +327,12 @@ public sealed class LumenEmitterXml
     public float startSpeedMax = 0f;
     public float startSizeMin = 1f;
     public float startSizeMax = 1f;
-    public UnityEngine.Color startColor = UnityEngine.Color.white;
+    public string startColor = "(1,1,1,1)";
+    // Material calculation: Stored multiplies raw factors; Linear decodes tint and sRGB texture RGB and
+    // encodes the product back to stored values. Alpha is never gamma-converted.
+    public LumenColorSpace colorSpace = LumenColorSpace.Stored;
+    // RGBA material factor: RGB finite >= 0 without an upper bound, alpha finite in [0,1].
+    public string materialTint = "(1,1,1,1)";
     private string? startColorLinear = null;
     private string? bloomWeight = null;
     private string? hdrMultiplier = null;
@@ -376,7 +404,7 @@ public sealed class LumenCurveKeyXml
 public sealed class LumenGradientStopXml
 {
     public float time;
-    public UnityEngine.Color color = UnityEngine.Color.white;
+    public string color = "(1,1,1,1)";
     private string? rgbaLinear = null;
 
     internal void RejectLegacyFields(string path)
@@ -398,7 +426,7 @@ public sealed class LumenForceFieldXml
 
 public sealed class LumenPointLightXml
 {
-    public UnityEngine.Color color = UnityEngine.Color.white;
+    public string color = "(1,1,1,1)";
     private string? colorLinear = null;
     private string? colorRgb = null;
 
@@ -426,7 +454,8 @@ internal static class LumenAssetRules
     //          earlier node (the only cycle-free ordering the runtime accepts), a non-positive particle
     //          budget/duration/lifetime, an invalid flipbook grid or enum, empty/nonfinite/unordered curves,
     //          particle curve times outside [0,1], light curve times below zero seconds, light radii outside [0,40],
-    //          light colour outside [0,1], or state references that EffectStateGraph.For rejects.
+    //          light colour outside [0,1], start/tint/gradient RGB non-finite or negative, colour alpha outside [0,1],
+    //          a non-finite or negative hdrIntensity, or state references that EffectStateGraph.For rejects.
     public static void Validate(EffectAsset asset, string source)
     {
         if (string.IsNullOrEmpty(asset.EffectId))
@@ -531,6 +560,16 @@ internal static class LumenAssetRules
         }
     }
 
+    // Stored scene encoding: RGB finite >= 0 without an upper bound (HDR), alpha finite in [0,1] as coverage.
+    private static void ValidateStoredColor(Vector4 color, string path)
+    {
+        if (!float.IsFinite(color.X) || !float.IsFinite(color.Y) || !float.IsFinite(color.Z) ||
+            color.X < 0f || color.Y < 0f || color.Z < 0f)
+            throw new InvalidDataException($"{path}: RGB components must be finite and >= 0, got ({color.X}, {color.Y}, {color.Z}).");
+        if (!float.IsFinite(color.W) || color.W < 0f || color.W > 1f)
+            throw new InvalidDataException($"{path}: alpha must be finite and in [0,1], got {color.W}.");
+    }
+
     // Scalar CurveKeys allow equal times (D22); ColorGradient stops remain strict.
     private static void ValidateTime(float time, float previous, string path, bool normalized, bool allowEqual)
     {
@@ -601,14 +640,21 @@ internal static class LumenAssetRules
         {
             ColorStop stop = stops[i];
             ValidateTime(stop.Time, i > 0 ? stops[i - 1].Time : -1f, $"{path}.colorOverLifetime[{i}]", normalized: true, allowEqual: false);
-            Vector4 rgba = stop.Rgba;
-            if (!float.IsFinite(rgba.X) || !float.IsFinite(rgba.Y) || !float.IsFinite(rgba.Z) || !float.IsFinite(rgba.W))
-                throw new InvalidDataException($"{path}.colorOverLifetime[{i}].color: components must be finite.");
+            ValidateStoredColor(stop.Rgba, $"{path}.colorOverLifetime[{i}].color");
         }
 
         if (!float.IsFinite(emitter.RateOverTime) || emitter.RateOverTime < 0f)
         {
             throw new InvalidDataException($"{path}: rateOverTime must be finite and >= 0, got {emitter.RateOverTime}.");
+        }
+
+        ValidateStoredColor(emitter.StartColor, path + ".startColor");
+        ValidateStoredColor(emitter.MaterialTint, path + ".materialTint");
+        ValidateEnum(emitter.ColorSpace, path + ".colorSpace");
+
+        if (!float.IsFinite(emitter.HdrIntensity) || emitter.HdrIntensity < 0f)
+        {
+            throw new InvalidDataException($"{path}: hdrIntensity must be finite and >= 0, got {emitter.HdrIntensity}.");
         }
 
         if (!float.IsFinite(emitter.ConeAngleDegrees) || emitter.ConeAngleDegrees < 0f || emitter.ConeAngleDegrees > 180f)
@@ -786,7 +832,7 @@ public static class LumenJsonAssetLoader
         "name", "maxParticles", "duration", "looping", "worldSpaceSimulation", "rateOverTime", "bursts",
         "shape", "shapeExtents", "shapePosition", "shapeRotation", "shapeScale", "coneAngleDegrees", "startLifetime", "startLifetimeMin", "startLifetimeMax",
         "startSpeed", "startSpeedMin", "startSpeedMax", "startSize", "startSizeMin", "startSizeMax",
-        "startColor", "sizeOverLifetime", "colorOverLifetime", "forceFields", "textureKey",
+        "startColor", "colorSpace", "materialTint", "sizeOverLifetime", "colorOverLifetime", "forceFields", "textureKey",
         "flipbookTilesX", "flipbookTilesY", "flipbookCycles", "blendMode", "billboardMode",
         "velocityStretchFactor", "lengthScale", "softParticleFadeDistance", "hdrIntensity",
         "preferredTier", "killBelowFloor",
@@ -881,6 +927,8 @@ public static class LumenJsonAssetLoader
             StartSizeMin = size ?? scope.Float("startSizeMin", 1f),
             StartSizeMax = size ?? scope.Float("startSizeMax", 1f),
             StartColor = scope.ColorRgba("startColor", Vector4.One),
+            ColorSpace = scope.Enum("colorSpace", LumenColorSpace.Stored),
+            MaterialTint = scope.ColorRgba("materialTint", Vector4.One),
             SizeOverLifetime = scope.TryGet("sizeOverLifetime", out JsonElement sizeElement) ? ParseCurve(sizeElement, path + ".sizeOverLifetime") : ScalarCurve.Constant(1f),
             ColorOverLifetime = scope.TryGet("colorOverLifetime", out JsonElement colorElement) ? ParseGradient(colorElement, path + ".colorOverLifetime") : ColorGradient.Constant(Vector4.One),
             ForceFields = ParseForceFields(scope, path),

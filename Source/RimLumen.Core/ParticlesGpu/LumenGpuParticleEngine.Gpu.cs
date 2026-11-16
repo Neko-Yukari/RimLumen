@@ -64,20 +64,24 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             ParticleGpuFrame gpu = FrameSlot(snapshot);
             for (int i = 0; i < snapshot.Emitters.Length; i++)
             {
-                string? key = snapshot.Emitters[i].TextureKey;
+                ParticleEmitterFrame emitter = snapshot.Emitters[i];
+                string? key = emitter.TextureKey;
                 Texture? texture = null;
+                bool textureSrgb = false;
                 if (!string.IsNullOrEmpty(key))
                 {
                     if (!LumenTextureRegistry.TryGetRegistered(key, out texture))
                         texture = ResolveHostTexture(key);
                     if (texture is not null)
                     {
+                        textureSrgb = LumenTextureRegistry.TextureIsSrgb(key, texture, emitter.ColorSpace);
                         Texture.EnsureSampledReady(texture);
                         if (texture.GpuResource is null && !texture.EnsureResident()) texture = null;
                     }
                     if (texture is null && warnedTextures.Add(key)) WarnMissingTexture(key);
                 }
                 gpu.TexturePresent[i] = texture is not null;
+                gpu.TextureSrgb[i] = texture is not null && textureSrgb;
                 gpu.Textures[i] = texture ?? Texture2D.whiteTexture;
                 Texture.EnsureSampledReady(gpu.Textures[i]);
             }
@@ -267,7 +271,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
     {
         if (drawResources is null || particles is null) return;
         if (!pendingFrames.TryGet(frameIndex, out ParticleQueuedFrame? frame) || frame.Gpu is null) return;
-        drawResources.AppendDraws(frame.Snapshot, frame.Gpu, sceneDepth, frame.Textures, frame.TexturePresent,
+        drawResources.AppendDraws(frame.Snapshot, frame.Gpu, sceneDepth, frame.Textures, frame.TexturePresent, frame.Gpu.TextureSrgb,
             draws, maker, arena, queueOrder, frameIndex);
     }
 

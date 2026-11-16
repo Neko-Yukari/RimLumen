@@ -169,15 +169,16 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         if (state == PlaybackState.Playing && !stopRequested) EnterState(index);
     }
 
-    // Requires: name is non-empty; values other than rate are finite.
-    // Ensures: rate accepts only finite nonnegative values; otherwise throws ArgumentOutOfRangeException.
+    // Requires: name is non-empty; values other than rate and intensity are finite.
+    // Ensures: rate and intensity accept only finite nonnegative values; otherwise throws
+    //          ArgumentOutOfRangeException without changing the stored value.
     // Ensures: "intensity" scales light colour and particle vertex colour, "rate" scales emission rate,
     //          "scale" multiplies the root scale. Unknown names are recorded and retrievable through
     //          TryGetParam without affecting simulation. Safe no-op once the handle is dead.
     public void SetParam(string name, float value)
     {
-        if (name == "rate" && (!float.IsFinite(value) || value < 0f))
-            throw new ArgumentOutOfRangeException(nameof(value), value, "Rate must be finite and nonnegative.");
+        if ((name == "rate" || name == "intensity") && (!float.IsFinite(value) || value < 0f))
+            throw new ArgumentOutOfRangeException(nameof(value), value, $"{name} must be finite and nonnegative.");
         if (IsAlive) parameters[name] = value;
     }
 

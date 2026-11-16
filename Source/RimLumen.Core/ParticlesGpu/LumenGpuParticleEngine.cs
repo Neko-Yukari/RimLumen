@@ -99,7 +99,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         instance.BaseY = baseY;
     }
 
-    // Requires: main thread, id from this engine.
+    // Requires: main thread, id from this engine; intensityMultiplier/rateMultiplier finite >= 0.
     // Ensures: next capture sees transform/emission/intensity/rate changes.
     public void UpdateInstance(int instanceId, in Matrix4x4 worldTransform, bool emitting, float intensityMultiplier, float rateMultiplier)
     {
@@ -217,7 +217,8 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 ShapeScale = new Vector4(spec.ShapeScale, 0f)
             };
             rows.Add(new ParticleEmitterFrame(instance.Id, parameters, instance.Curves, spec.TextureKey, spec.BlendMode,
-                instance.MapIndex, instance.IsVertical3D, instance.BaseY, spec.KillBelowFloor));
+                instance.MapIndex, instance.IsVertical3D, instance.BaseY, spec.KillBelowFloor)
+                { MaterialTint = spec.MaterialTint, ColorSpace = spec.ColorSpace });
         }
         foreach (int id in removed) instances.Remove(id);
         captured = new ParticleFrame(context, rows.ToArray(), fields.ToArray(), clears.ToArray());
@@ -238,6 +239,9 @@ internal readonly record struct ParticleEmitterFrame(int InstanceId, GpuEmitterP
     GpuCurveSample[] Curves, string? TextureKey, LumenBlendMode Blend, int MapIndex = -1,
     bool IsVertical3D = false, float BaseY = 0f, bool KillBelowFloor = false)
 {
+    internal Vector4 MaterialTint { get; init; } = Vector4.One;
+    internal LumenColorSpace ColorSpace { get; init; }
+
     // -1 on either side means unscoped (no map known), which keeps offline frames drawing everything.
     internal bool IsVisibleOnMap(int currentMapIndex) =>
         MapIndex < 0 || currentMapIndex < 0 || MapIndex == currentMapIndex;

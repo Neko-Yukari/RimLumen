@@ -64,7 +64,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 - 键名采用 camelCase，解析时**大小写不敏感**，允许 `//` 注释和尾逗号。
 - **未知键名会直接报错**，用于尽早暴露拼写错误。
 - 向量支持 `[x, y, z]`、`{ "x": ..., "y": ..., "z": ... }` 或单个数字（等比 `x = y = z`）。
-- 颜色使用原版场景的存储编码，不做 sRGB 转换；粒子 RGB 的 `1.0` 为原版满亮度，`>1` 可用于 HDR，alpha 表示覆盖度，`hdrIntensity` 只缩放 RGB；点光颜色 RGB 必须在 `[0,1]` 内。支持 `[r, g, b, a]`、`[r, g, b]`（此时 `a = 1`）或 `{ "r": ..., "g": ..., "b": ..., "a": ... }`。
+- 粒子颜色按原版场景存储编码编写：RGB 必须有限且非负，上限不限；alpha 必须有限且在 `[0,1]` 内。RGB 的 `1` 为原版满亮度，`>1` 可用于 HDR。`hdrIntensity` 和运行时 `intensity` 必须有限且非负，只缩放 RGB；无效的运行时 `intensity` 在修改前抛出 `ArgumentOutOfRangeException`。点光颜色 RGB 仍须在 `[0,1]` 内。JSON 颜色支持 `[r, g, b, a]`、`[r, g, b]`（alpha 为 1）或 `{ "r": ..., "g": ..., "b": ..., "a": ... }`。
 - 已移除或改名的旧键会被拒绝，错误信息指出新键或移除状态：`startColorLinear` 改名为 `startColor`；渐变停靠点 `rgbaLinear`、点光 `colorLinear` / `colorRgb` 改名为 `color`；`bloomWeight` 与 `hdrMultiplier` 已移除。不提供兼容别名。
 - 枚举支持名称字符串或整数。
 - `startLifetime`、`startSpeed`、`startSize` 写单个数字时等价于 `Min = Max`，也可以分开写 `...Min` / `...Max`。
@@ -102,6 +102,8 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
         "startSizeMin": 1.0,
         "startSizeMax": 1.0,
         "startColor": [1, 1, 1, 1],
+        "materialTint": [1, 1, 1, 1],
+        "colorSpace": "Stored",
         "sizeOverLifetime": [[0, 1], [1, 0]],
         "colorOverLifetime": [[0, [1, 1, 1, 1]], [1, [1, 0.3, 0.1, 0]]],
         "forceFields": [
@@ -157,6 +159,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
   例如 `[[0, 0], [0.5, 1], [0.5, 2], [0.5, 3], [1, 4]]`：接近 `0.5` 的左极限为 `1`，在 `0.5` 时为 `3`，随后从 `3` 向 `4` 插值。两个重复帧同样适用该规则。来源：[RimUnity `AnimationCurve.cs:23,30-35`，固定版本 `45ca90987f7d3721715b45c021cab986ee14c468`](https://github.com/chezhou9413/RimUnity/blob/45ca90987f7d3721715b45c021cab986ee14c468/Source/RimUnity/Animation/AnimationCurve.cs#L23-L35)。
 
   粒子尺寸曲线由 L1 和 L2 使用相同的 64 点查找表（LUT）：采样点为 `i/63`（`i = 0…63`），包含两端，再对相邻样本插值。阶跃可能在宽度为 `1/63` 的采样区间内被平滑，不能保证精确保留。点光曲线按秒直接求值，不使用该粒子查找表。
+- **材质颜色**：`materialTint` 默认为 `(1,1,1,1)`，与 `startColor` 和渐变遵循上述颜色范围；`colorSpace` 为 `Stored`（默认）或 `Linear`。令 `vertex = startColor × gradient`，并仅对其 RGB 乘以 `hdrIntensity × intensity`。Stored 的 RGB 为 `vertex × tint × texel`；Linear 的 RGB 为 `E(vertex × D(tint) × (贴图为 sRGB ? D(texel) : texel))`。`vertex` 不解码；`D` / `E` 分别为 sRGB 解码 / 编码，在非负值上延伸至大于 1，不截断。alpha 始终为三个原始 alpha 的乘积，再应用软粒子覆盖度和混合模式要求的预乘。逐分量计算中，`D(x) = x/12.92`（`x <= 0.04045`），否则为 `((x+0.055)/1.055)^2.4`；`E(x) = 12.92*x`（`x <= 0.0031308`），否则为 `1.055*x^(1/2.4)-0.055`。依据 RimUnity 固定版本 `45ca90987f7d3721715b45c021cab986ee14c468` 的 `Source/Shared/ShaderColorSpace.cs:69-103,122-134`。此处只描述材质计算，不改变玩家混合空间。
 - **渐变（`colorOverLifetime`）**：支持颜色数组（单色常量）或停靠点数组 `[[time, [r,g,b,a]], ...]` 或对象 `{ "stops": [{ "time": 0, "color": [r,g,b,a] }] }`，要求 `time` 严格递增。
 - **`pointLight`**：JSON 下颜色键为 `color`（RGBA），半径键为 `glowRadius` 与 `overlightRadius`（单位：地图格）。
 - **力场 `strength`**：JSON、XML 与 C# 均须显式提供；省略时拒绝资产，不使用默认值。
@@ -276,8 +279,10 @@ tornado.Stop();                                      // 进入 collapse，播完
 
 1. **ID**：使用 `<defName>`，同样会同时注册裸短名与 `<packageId>:<defName>`。
 2. **节点字段**：额外提供 `<heightOffset>`（会累加到 `localPosition.y`），`localScale` 为单个浮点标量，不提供 `localRotation` 四元数（用 `<localYawDegrees>`）。
-3. **点光键名**：使用 `<radiusCells>`（对应 JSON 的 `glowRadius`）、`<overlightRadius>`、`<color>`（环世界 `Color` 语法 `(r, g, b, a)`）、`<intensity>` 与 `<intensityOverTime>`（`<keys>` 由 `<li><time>..</time><value>..</value></li>` 组成）。
+3. **点光键名**：使用 `<radiusCells>`（对应 JSON 的 `glowRadius`）、`<overlightRadius>`、`<color>`（原始浮点语法 `(r, g, b)` 或 `(r, g, b, a)`）、`<intensity>` 与 `<intensityOverTime>`（`<keys>` 由 `<li><time>..</time><value>..</value></li>` 组成）。
 4. **列表字段**：`<states>`、`<timelineEvents>` 与状态的 `<nodes>` 用 `<li>` 列表；状态字段为 `<name>`、`<nodes>`、`<duration>`、`<loop>`、`<next>`，事件字段为 `<time>`、`<eventName>`、`<targetNodeIndex>`、`<state>`、`<notify>`；根上另有 `<defaultDuration>`、`<initialState>`、`<stopState>`。含义与默认值同上一节「状态机」。
+
+XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Stored` 和 `(1,1,1,1)`。XML 的 `<startColor>`、渐变停靠点 `<color>`、`<materialTint>` 和点光 `<color>` 使用带括号的原始浮点分量：三分量时 alpha 为 1，四分量时保留给定值，不按字节颜色解释。格式错误或分量数错误会报告资产和字段。
 
 旧键同样被拒绝：`<startColorLinear>` 改名为 `<startColor>`；渐变停靠点 `<rgbaLinear>`、点光 `<colorLinear>` / `<colorRgb>` 改名为 `<color>`；`<bloomWeight>` 与 `<hdrMultiplier>` 已移除。
 
@@ -451,6 +456,8 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 2. 未命中时，调用游戏原版 `ContentFinder<UnityEngine.Texture2D>.Get(key, reportFailure: false)` 加载模组 `Textures/` 目录下的图片（例如 `"RimLumen/Effects/Spark"`）；
 3. 仍找不到时，退回程序化默认圆斑，并且每个缺失的 `key` 只在日志打印一次警告。未指定 `textureKey` 时也使用程序化圆斑。其 alpha 为 `max(0, 1 - r²)²`，`r` 为片元内的径向坐标；它与序列帧 atlas UV 独立，不随帧变化。
 
+Linear 材质在主线程解析贴图时读取 `Texture2D.CpuData.Linear`：原生 ContentFinder 贴图为 `false`，RimUnity 贴图保留导出标志。无需也不能编写 `textureSrgb` 字段；UNorm、BC-UNorm 和 SFloat 格式不触发 GPU 自动 sRGB 解码。存在的贴图若不是 `Texture2D` 或缺少 `CpuData`，Linear 材质会报错并指出贴图键及缺失的颜色元数据。Stored 材质和公开 `Register` 行为不变；找不到贴图时仍回退到程序化圆斑。
+
 > 不要在多线程或渲染回调里调用贴图注册。
 
 ### 2. 原版加法发光自动增强的兼容现状
@@ -478,7 +485,9 @@ RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled
 当游戏同时启用 `Chezhou.RimUnity` 时，`RimLumen.Adapter.RimUnity` 会读取其导出的 `catalog.json`、预制体 JSON（含 `.json.gz`）和 `.rutex` 贴图，并将粒子节点按功能自动分流：
 
 - **转入原生 HDR / GPU（或 CPU）**：受支持的基础形状及其形状局部位置、旋转、缩放（TRS）、曲线、渐变、贴图、序列帧、周期发射及确定性脉冲。
-- **保留在原 RimUnity 播放器混播（`L0_ExternalCpu`）**：节点启用了 `trails`、`subEmitters`（含子发射器依赖）、`collision`、`trigger`、`renderMode.Mesh`、`renderMode.Vertical` 或未知 `renderMode`、Linear 色彩空间材质（`material.linearColorSpace`）、线性 `velocityOverLifetime`、`rotationOverLifetime`、变化曲线 `forceOverLifetime`、任何启用的 `lights` 模块（含 `ratio = 1`）、概率脉冲，或使用了核心暂未建模的形状（如非零底面半径圆锥、球壳、圆环或网格形状）。
+- **保留在原 RimUnity 播放器混播（`L0_ExternalCpu`）**：节点启用了 `trails`、`subEmitters`（含子发射器依赖）、`collision`、`trigger`、`renderMode.Mesh`、`renderMode.Vertical` 或未知 `renderMode`、超出原生颜色范围的材质 `_Color`、线性 `velocityOverLifetime`、`rotationOverLifetime`、变化曲线 `forceOverLifetime`、任何启用的 `lights` 模块（含 `ratio = 1`）、概率脉冲，或使用了核心暂未建模的形状（如非零底面半径圆锥、球壳、圆环或网格形状）。
+
+适配器将材质 `_Color` 单独映射到 `materialTint`；Linear 材质在没有其他不支持原因时走原生路径。导入的材质颜色超出上述范围时转外部播放，原因包含材质标识和字段：`material[<asset-id>]._Color.domain`；不截断或折入顶点颜色。
 
 上层调用 `RimLumenApi.Play` 时无需感知背后走哪一路，同一个 `ILumenEffectHandle` 会同时接管两端生命周期。
 

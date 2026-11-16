@@ -191,6 +191,20 @@ public static class EffectInstanceHandleSuite
     }
 
     [LumenFact]
+    public static void PhaseAIntensityRejectsInvalidWithoutMutation()
+    {
+        var asset = new EffectAsset { EffectId = "intensity", Nodes = new[] { new EffectNodeSpec { Name = "root" } } };
+        var service = VfxTestData.Service(asset);
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
+        handle.SetParam("intensity", 2f);
+        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", -1f));
+        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.NaN));
+        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.PositiveInfinity));
+        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.NegativeInfinity));
+        VfxAssert.Check(handle.TryGetParam("intensity", out float intensity) && intensity == 2f, "Invalid intensity must not mutate state");
+    }
+
+    [LumenFact]
     public static void FollowOverridesOriginAndFacingThenFreezesOnDetach()
     {
         var asset = new EffectAsset

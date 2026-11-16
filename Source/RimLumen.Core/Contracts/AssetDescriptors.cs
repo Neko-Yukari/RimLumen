@@ -20,6 +20,13 @@ public enum LumenBlendMode : byte
     Premultiplied = 2,
 }
 
+// Material calculation only; authored colours remain stored values in both modes.
+public enum LumenColorSpace : byte
+{
+    Stored = 0,
+    Linear = 1,
+}
+
 public enum LumenBillboardMode : byte
 {
     Camera = 0,
@@ -67,8 +74,8 @@ public sealed class ScalarCurve
     public static ScalarCurve Constant(float value) => new(new[] { new CurveKey(0f, 1f) }, value);
 }
 
-// Time: normalized lifetime [0,1], strictly increasing. Rgba: finite components in vanilla scene
-// stored encoding (no sRGB conversion); 1 = full brightness, >1 = HDR; alpha = coverage.
+// Time: normalized lifetime [0,1], strictly increasing. Rgba: stored vertex factor, not decoded;
+// RGB finite >= 0, 1 = full brightness, >1 = HDR; alpha is finite [0,1] coverage.
 public readonly record struct ColorStop(float Time, Vector4 Rgba);
 
 public sealed class ColorGradient
@@ -149,8 +156,14 @@ public sealed class EmitterSpec
     // world simulation, at draw for local simulation; shape scale does not change size.
     public float StartSizeMin { get; init; } = 1f;
     public float StartSizeMax { get; init; } = 1f;
-    // Stored scene encoding RGBA: RGB 1 = vanilla full brightness, >1 = HDR; alpha is coverage.
+    // Stored vertex factor: finite RGB >= 0, 1 = vanilla full brightness, >1 = HDR; alpha finite [0,1].
     public Vector4 StartColor { get; init; } = Vector4.One;
+    // Stored RGBA material factor, separate from StartColor and lifetime vertex factors.
+    // RGB is finite >= 0 without an upper bound; alpha is finite [0,1].
+    public Vector4 MaterialTint { get; init; } = Vector4.One;
+    // Stored multiplies raw factors; Linear decodes tint and sRGB texture RGB, not vertex RGB,
+    // and encodes the product back to stored values. Alpha is never gamma-converted.
+    public LumenColorSpace ColorSpace { get; init; } = LumenColorSpace.Stored;
 
     // Dimensionless size multiplier over normalized age; 64 samples at i/63, interpolated at draw.
     // A step can be smoothed across a 1/63 sample interval.
@@ -179,8 +192,9 @@ public sealed class EmitterSpec
     public float LengthScale { get; init; } = 1f;
     // Eye-space cells: positive values feather alpha by clamp(depth separation / distance, 0, 1).
     public float SoftParticleFadeDistance { get; init; } = 0.5f;
-    // RGB-only scale. Texture * StartColor * lifetime gradient compose componentwise, then HDR scales RGB;
-    // soft fade scales alpha, followed by mode-dependent RGB premultiplication. No sRGB conversion.
+    // Finite >= 0 RGB-only scale, combined with StartColor, lifetime gradient and runtime intensity
+    // into the vertex factor before MaterialTint/texture composition in ColorSpace.
+    // Soft fade scales final alpha, followed by blend-mode RGB premultiplication.
     public float HdrIntensity { get; init; } = 1f;
     // Expires a particle that is descending (world vy < 0) below the effect's play-origin height.
     public bool KillBelowFloor { get; init; }

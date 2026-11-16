@@ -11,6 +11,23 @@ namespace RimLumen.Core.Tests.ParticlesGpu;
 public static class ParticleEngineTests
 {
     [LumenFact]
+    public static void PhaseACaptureFreezesMaterialSeparatelyFromVertexFactors()
+    {
+        using var engine = new LumenGpuParticleEngine(8);
+        var spec = new EmitterSpec { Name = "material", MaxParticles = 8,
+            StartColor = new Vector4(0.4f), MaterialTint = new Vector4(0.5f),
+            ColorSpace = LumenColorSpace.Linear, HdrIntensity = 3f };
+        int id = engine.CreateInstance(spec, Matrix4x4.Identity);
+        engine.UpdateInstance(id, Matrix4x4.Identity, false, 2f, 1f);
+        engine.CaptureMainThread(Frame(0));
+        ParticleEmitterFrame row = engine.CapturedFrame!.Emitters[0];
+        Require(row.MaterialTint == spec.MaterialTint && row.ColorSpace == LumenColorSpace.Linear,
+            "Capture must freeze the material tint and mode for the real draw path.");
+        Require(row.Parameters.StartColor == spec.StartColor && row.Parameters.Appearance.Z == 3f && row.Parameters.State.W == 2f,
+            "GPU vertex factors must retain raw StartColor and both intensity scales, without material tint folding.");
+    }
+
+    [LumenFact]
     public static void P2A6RateParameterReachesGpuScheduler()
     {
         using var engine = new LumenGpuParticleEngine(32);

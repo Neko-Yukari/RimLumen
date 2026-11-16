@@ -89,8 +89,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     public ReadOnlySpan<uint> Indices => indices.AsSpan(0, batchCount * 6);
 
     private readonly List<L1SubBatch> subBatches = new();
-    private readonly Dictionary<(string? TextureKey, LumenBlendMode BlendMode, float SoftParticleFadeDistance), int> groupIds = new();
-    private readonly List<(string? TextureKey, LumenBlendMode BlendMode, float SoftParticleFadeDistance)> groupKeys = new();
+    private readonly Dictionary<(string? TextureKey, LumenBlendMode BlendMode, float SoftParticleFadeDistance, Vector4 MaterialTint, LumenColorSpace ColorSpace), int> groupIds = new();
+    private readonly List<(string? TextureKey, LumenBlendMode BlendMode, float SoftParticleFadeDistance, Vector4 MaterialTint, LumenColorSpace ColorSpace)> groupKeys = new();
     private int[] groupCounts = Array.Empty<int>();
     private int[] groupCursors = Array.Empty<int>();
 
@@ -145,7 +145,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         emitter.BaseY = baseY;
     }
 
-    // Requires: rateMultiplier is finite and >= 0 (validated by the public SetParam boundary).
+    // Requires: rateMultiplier and intensityMultiplier are finite and >= 0 (validated by the public SetParam boundary).
     // Ensures: sets emission on/off plus the runtime rate/intensity multipliers. Turning emission off
     //          never kills live particles. Unknown ids are ignored.
     public void SetEmitterParams(int emitterId, bool emitting, float rateMultiplier, float intensityMultiplier)
@@ -386,7 +386,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
 
     private int GroupOf(EmitterSpec spec)
     {
-        var key = (spec.TextureKey, spec.BlendMode, spec.SoftParticleFadeDistance);
+        var key = (spec.TextureKey, spec.BlendMode, spec.SoftParticleFadeDistance, spec.MaterialTint, spec.ColorSpace);
         if (groupIds.TryGetValue(key, out int group)) return group;
         group = groupKeys.Count;
         groupIds.Add(key, group);
@@ -427,8 +427,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             int count = groupCounts[group];
             if (count > 0)
             {
-                var (textureKey, blendMode, softFade) = groupKeys[group];
-                subBatches.Add(new L1SubBatch(textureKey, blendMode, offset * 6, count * 6, softFade));
+                var (textureKey, blendMode, softFade, tint, colorSpace) = groupKeys[group];
+                subBatches.Add(new L1SubBatch(textureKey, blendMode, offset * 6, count * 6, softFade)
+                    { MaterialTint = tint, ColorSpace = colorSpace });
             }
 
             offset += count;

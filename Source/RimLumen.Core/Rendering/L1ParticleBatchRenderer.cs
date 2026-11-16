@@ -11,7 +11,7 @@ using Shader = Waylith.Rendering.Shader;
 
 namespace RimLumen.Core.Rendering;
 
-// L1 CPU particles are one dynamic Mesh with one SubMesh per (texture, blend) sub-batch. The pipeline
+// L1 CPU particles are one dynamic Mesh with one SubMesh per texture/blend/fade/material-colour sub-batch. The pipeline
 // stages the simulator batch on the main thread right after capture, the engine drains the mesh upload
 // when it captures the frame's draw snapshot, and Capture() appends one MeshDrawCommand per SubMesh so
 // MeshBatchRenderer records them inside the RimLumenHdr pass.
@@ -31,6 +31,8 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
         new(VertexAttributeSemantic.Color, VertexAttributeFormat.Float32, 4, 0, 20),
         new(VertexAttributeSemantic.TexCoord1, VertexAttributeFormat.Float32, 2, 0, 36)
     };
+    private static readonly int TintPropertyId = Shader.PropertyToID("_LumenMaterialTint");
+    private static readonly int ColorPropertyId = Shader.PropertyToID("_LumenColor");
     private static readonly int DrawPropertyId = Shader.PropertyToID("_LumenDraw");
     private static readonly int DepthPropertyId = Shader.PropertyToID("_LumenDepth");
     private static readonly int ProjectionPropertyId = Shader.PropertyToID("_LumenProjection");
@@ -84,7 +86,7 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
 
             if (subBatches is null || subBatches.Count == 0)
             {
-                staged.Add(Resolve(null, LumenBlendMode.Additive, 0, indices.Length));
+                staged.Add(Resolve(null, LumenBlendMode.Additive, 0, indices.Length, Vector4.One, LumenColorSpace.Stored));
             }
             else
             {
@@ -92,7 +94,7 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
                 {
                     if (sub.IndexStart < 0 || sub.IndexCount < 0 || (long)sub.IndexStart + sub.IndexCount > indices.Length)
                         throw new ArgumentException($"L1 sub-batch [{sub.IndexStart}, +{sub.IndexCount}) lies outside {indices.Length} indices.", nameof(subBatches));
-                    if (sub.IndexCount > 0) staged.Add(Resolve(sub.TextureKey, sub.BlendMode, sub.IndexStart, sub.IndexCount, sub.SoftParticleFadeDistance));
+                    if (sub.IndexCount > 0) staged.Add(Resolve(sub.TextureKey, sub.BlendMode, sub.IndexStart, sub.IndexCount, sub.MaterialTint, sub.ColorSpace, sub.SoftParticleFadeDistance));
                 }
             }
             if (staged.Count == 0) return;
@@ -121,10 +123,11 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
         }
     }
 
-    private static StagedBatch Resolve(string? textureKey, LumenBlendMode blend, int indexStart, int indexCount, float softFade = 0.5f)
+    private static StagedBatch Resolve(string? textureKey, LumenBlendMode blend, int indexStart, int indexCount,
+        Vector4 tint, LumenColorSpace colorSpace, float softFade = 0.5f)
     {
-        Texture texture = LumenTextureRegistry.ResolveForSamplingOnMainThread(textureKey, out bool hasTexture);
-        return new StagedBatch(texture, hasTexture, blend, indexStart, indexCount, softFade);
+        Texture texture = LumenTextureRegistry.ResolveForSamplingOnMainThread(textureKey, colorSpace, out bool hasTexture, out bool textureSrgb);
+        return new StagedBatch(texture, hasTexture, blend, indexStart, indexCount, softFade, tint, colorSpace, textureSrgb);
     }
 
     // Requires: main thread, in RimLumenPipeline.Capture after MeshDrawSubmission.CaptureFlushedSnapshot.
@@ -151,12 +154,15 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
                 StagedBatch batch = staged[i];
                 Material? material = MaterialFor(batch, frameIndex);
                 if (material is null) continue;
-                Span<DrawProperty> properties = arena.Allocate(3, out DrawPropertyRange range);
+                Span<DrawProperty> properties = arena.Allocate(5, out DrawPropertyRange range);
                 properties[0] = DrawProperty.Vector(DrawPropertyId,
                     new Vector4(batch.HasTexture ? 1f : 0f, batch.BlendMode == LumenBlendMode.AlphaBlend ? 0f : 1f, 0f, 0f));
                 properties[1] = DrawProperty.Vector(DepthPropertyId,
                     new Vector4(depthParams.X, depthParams.Y, depthParams.Z, batch.SoftParticleFadeDistance));
                 properties[2] = DrawProperty.Vector(ProjectionPropertyId, projectionPacked);
+                properties[3] = DrawProperty.Vector(TintPropertyId, batch.MaterialTint);
+                properties[4] = DrawProperty.Vector(ColorPropertyId,
+                    new Vector4(batch.ColorSpace == LumenColorSpace.Linear ? 1f : 0f, batch.TextureSrgb ? 1f : 0f, 0f, 0f));
                 var command = new MeshDrawCommand(mesh, material, range, Matrix4x4.Identity, i,
                     RimLumenRenderHost.LumenRenderPassId);
                 FinalDrawItem? draw = maker.TryMake(in command, arena, UnityEngine.Shader.GlobalKeywordKey, queueOrder + i);
@@ -241,7 +247,7 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
 
     // Texture is resolved on the main thread in Stage; HasTexture is false when Texture is the white fallback.
     private readonly record struct StagedBatch(Texture Texture, bool HasTexture, LumenBlendMode BlendMode, int IndexStart, int IndexCount,
-        float SoftParticleFadeDistance);
+        float SoftParticleFadeDistance, Vector4 MaterialTint, LumenColorSpace ColorSpace, bool TextureSrgb);
 
     // Per-capture vector state is never stored here: see AppendDraws/DrawPropertyArena.
     private readonly record struct CachedMaterial(Material Material, ulong LastUsedFrame);

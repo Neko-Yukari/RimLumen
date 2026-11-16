@@ -22,7 +22,7 @@ internal static class IntegrationTests
         ("Effects/Lightning", 10, 6, 0, 6, 0, 0),
         ("Effects/Linger", 4, 4, 0, 4, 0, 0),
         ("Effects/Orbit", 3, 3, 1, 2, 1, 0),
-        ("Effects/Probe", 1, 1, 1, 0, 0, 1),
+        ("Effects/Probe", 1, 1, 0, 1, 0, 0),
         ("Effects/Rune", 5, 4, 0, 4, 0, 0),
         ("Effects/Tornado", 35, 34, 0, 34, 0, 0),
     ];
@@ -114,12 +114,9 @@ internal static class IntegrationTests
         string textureKey = provider.Textures.ResolvedTextureKeys.First();
         Check.Equal(textureKey, provider.Textures.ResolveTextureKey(catalog, textureKey), "texture key preserved offline");
 
-        var probe = Resolve(provider, "Effects/Probe");
-        var emitter = probe.Nodes.Single(n => n.Emitter is not null).Emitter!;
-        Check.Equal(1000, emitter.MaxParticles, "Probe 30aff maxParticles");
-        Check.Near(40, emitter.RateOverTime, "Probe 30aff rate");
-        Check.Near(.8f, emitter.StartLifetimeMax, "Probe 30aff lifetime");
-        Check.Equal(LumenParticleTier.L2_GpuCompute, emitter.PreferredTier, "Probe tier");
+        var supported = new RimUnityPrefabTranslator().Translate("phase-a.native-play", Prefab(Particles(1000, 40, .8f)),
+            _ => null, _ => null, out _);
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(supported);
 
         LumenHostRegistry.RegisterAssetProvider(provider);
         var recording = new RecordingInner(LumenSceneBootstrap.Service);
@@ -128,24 +125,24 @@ internal static class IntegrationTests
         Check.Equal(recording.Capabilities, hybrid.Capabilities, "capabilities delegated");
         LumenHostRegistry.RegisterVfxService(hybrid);
 
-        var request = new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/Probe", OriginWorld = new Vector3(3, 0, 4) };
+        var request = new LumenPlayRequest { MapIndex = 111, EffectId = supported.EffectId, OriginWorld = new Vector3(3, 0, 4) };
         var handle = LumenHostRegistry.VfxService!.Play(request);
         Check.True(ReferenceEquals(recording.Last, handle), "no-L0 hybrid returns the direct inner handle");
         Check.Equal(0, spy.Plays, "no-L0 never calls external");
-        var instance = handle as EffectInstanceHandle ?? throw new InvalidOperationException("Probe handle is not the native instance.");
+        var instance = handle as EffectInstanceHandle ?? throw new InvalidOperationException("Supported native handle is not the native instance.");
         Step(1f / 60f, 20);
         int spawned = LumenSceneBootstrap.Simulator.LiveParticleCount;
-        Check.True(spawned > 5, "native frames spawn probe particles: " + spawned);
+        Check.True(spawned > 5, "native frames spawn supported particles: " + spawned);
         Vector3 before = LumenSceneBootstrap.Simulator.LiveParticles[0].Position;
         Step(1f / 60f, 5);
         Vector3 after = LumenSceneBootstrap.Simulator.LiveParticles[0].Position;
         Check.True(Vector3.Distance(before, after) > 0.0001f, $"live particle advances: before={before} after={after}");
-        Console.WriteLine($"Probe actual frames=25 liveAt20={spawned} before={before} after={after} displacement={Vector3.Distance(before, after)}");
+        Console.WriteLine($"Supported native actual frames=25 liveAt20={spawned} before={before} after={after} displacement={Vector3.Distance(before, after)}");
         Check.Near(25f / 60f, instance.PlaybackTime, "playback advanced", 0.0001f);
-        Check.True(instance.IsAlive && instance.CpuEmitterCount == 1, "probe bound to L1 backend without GPU");
+        Check.True(instance.IsAlive && instance.CpuEmitterCount == 1, "supported native bound to L1 backend without GPU");
         handle.Stop(false);
-        Check.True(!handle.IsAlive, "stop false kills probe handle");
-        Check.Equal(0, LumenSceneBootstrap.Simulator.LiveParticleCount, "stop false releases probe particles");
+        Check.True(!handle.IsAlive, "stop false kills supported native handle");
+        Check.Equal(0, LumenSceneBootstrap.Simulator.LiveParticleCount, "stop false releases supported native particles");
 
         var lightningRequest = new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/Lightning" };
         var lightning = LumenHostRegistry.VfxService!.Play(lightningRequest);
@@ -198,13 +195,44 @@ internal static class IntegrationTests
             externalOnly.Stop(false);
             Check.True(!externalOnly.IsAlive && !spy.LastHandle!.IsAlive, remaining.Item1 + " stopped");
         }
-        Console.WriteLine("HYBRID all7 played; Lightning native=0/L0=6, Orbit native=1/L0=2; lifecycle forwarded; no-L0 direct handle");
+        Console.WriteLine("HYBRID six WotF effects played here; Probe external handoff checked separately; Lightning native=0/L0=6, Orbit native=1/L0=2; supported in-memory native simulation retained");
 
         var inert = LumenHostRegistry.VfxService.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/DoesNotExist" });
         Check.True(!inert.IsAlive, "missing effect stays inert");
 
         Console.WriteLine(string.Join("; ", Log));
         Console.WriteLine($"WotF textures={provider.Textures.ResolvedTextureKeys.Count}");
+    }
+
+    internal static void WotfProbeMaterial()
+    {
+        var catalog = new RimUnityPackageCatalog(Wotf, WotfData);
+        ResourceData material = catalog.ReadResource("4fc865aeebe035242bc33dd60bc7ef80_2100000")!;
+        Check.True(material.members.Single(m => m.name == "_Color").value.vector.SequenceEqual(new[] { 2f, 1.7f, .8f, 2f }),
+            "installed ProbeAdditive source _Color is the approved out-of-domain input");
+        var provider = new RimUnityAssetProvider();
+        provider.RegisterPackageRoot(Wotf, WotfData);
+        var probe = Resolve(provider, "Effects/Probe");
+        Check.True(provider.TryInspectTranslation("Effects/Probe", out var report), "Probe translation report");
+        const string reason = "material[4fc865aeebe035242bc33dd60bc7ef80_2100000]._Color.domain";
+        Check.Reasons([reason], report!.Nodes.Single().Reasons, "actual ProbeAdditive alpha2 material-domain reason");
+        Check.Equal(LumenParticleTier.L0_ExternalCpu, report.Nodes.Single().Tier, "actual Probe changes from L2 to External");
+        Check.True(probe.Nodes.Single().Emitter is null && probe.Nodes.Single().PointLight is null, "Probe native ownership removed");
+        LumenHostRegistry.RegisterAssetProvider(provider);
+        LumenSceneBootstrap.EnsureInitialized();
+        var inner = new RecordingInner(LumenSceneBootstrap.Service);
+        var external = new SpyExternalPlayer();
+        var hybrid = new RimUnityHybridVfxService(inner, provider, external);
+        using var handle = hybrid.Play(new LumenPlayRequest { MapIndex = 111, EffectId = Wotf + ":Effects/Probe" });
+        Check.Equal(1, external.Plays, "actual Probe handed to existing external player seam");
+        Check.Reasons([reason], external.LastReport!.Nodes.Single().Reasons, "external receives material-domain report");
+        var native = inner.Last as EffectInstanceHandle ?? throw new InvalidOperationException("Probe inner is not native handle");
+        Check.Equal(0, native.CpuEmitterCount, "external Probe has no duplicate CPU emitter");
+        Check.Equal(0, native.GpuEmitterCount, "external Probe has no duplicate GPU emitter");
+        Check.True(handle.IsAlive, "external Probe handle owns lifetime");
+        handle.Stop(false);
+        Check.True(!handle.IsAlive && !external.LastHandle!.IsAlive, "Probe composite stop forwards externally");
+        Console.WriteLine($"PROBE L2->L0_ExternalCpu reason={reason} externalPlays={external.Plays} nativeCpu=0 nativeGpu=0");
     }
 
     internal static void RejectedHybrid()

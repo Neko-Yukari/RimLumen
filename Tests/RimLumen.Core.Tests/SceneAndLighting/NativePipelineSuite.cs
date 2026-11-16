@@ -6,7 +6,6 @@ using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Scene;
-using UColor = UnityEngine.Color;
 using UVector3 = UnityEngine.Vector3;
 
 namespace RimLumen.Core.Tests.SceneAndLighting;
@@ -346,7 +345,7 @@ public static class NativePipelineSuite
                         startSpeedMax = 3f,
                         startSizeMin = 0.5f,
                         startSizeMax = 1f,
-                        startColor = new UColor(1f, 0.5f, 0.25f, 1f),
+                        startColor = "(1,0.5,0.25,1)",
                         hdrIntensity = 2f,
                         shape = LumenShapeKind.Cone,
                         shapeExtents = new UVector3(1f, 1f, 1f),
@@ -365,8 +364,8 @@ public static class NativePipelineSuite
                         sizeOverLifetime = new List<LumenCurveKeyXml> { new() { time = 0f, value = 1f }, new() { time = 1f, value = 0.5f } },
                         colorOverLifetime = new List<LumenGradientStopXml>
                         {
-                            new() { time = 0f, color = new UColor(1f, 1f, 1f, 1f) },
-                            new() { time = 1f, color = new UColor(0f, 0f, 0f, 0f) },
+                            new() { time = 0f, color = "(1,1,1,1)" },
+                            new() { time = 1f, color = "(0,0,0,0)" },
                         },
                         forceFields = new List<LumenForceFieldXml>
                         {
@@ -375,7 +374,7 @@ public static class NativePipelineSuite
                     },
                     pointLight = new LumenPointLightXml
                     {
-                        color = new UColor(1f, 0.5f, 0.25f, 1f),
+                        color = "(1,0.5,0.25,1)",
                         radiusCells = 6f,
                         overlightRadius = 1.5f,
                         intensity = 2f,
@@ -592,6 +591,30 @@ public static class NativePipelineSuite
         simulator.ReleaseEmitter(beta, immediate: true);
         simulator.ReleaseEmitter(gamma, immediate: true);
         NativeTestData.Check(simulator.SubBatches.Count == 0 && simulator.Indices.Length == 0, "No particles means no sub-batches");
+    }
+
+    [LumenFact]
+    public static void PhaseAMaterialChangesSplitBatchesWithoutChangingVertexFactors()
+    {
+        var simulator = new CpuParticleSimulator();
+        var stored = new EmitterSpec { Name = "stored", MaxParticles = 4, StartColor = new Vector4(0.4f),
+            MaterialTint = new Vector4(0.5f), ColorOverLifetime = ColorGradient.Constant(new Vector4(0.5f)), HdrIntensity = 2f };
+        var tinted = new EmitterSpec { Name = "tinted", MaxParticles = 4, MaterialTint = new Vector4(0.25f) };
+        var linear = new EmitterSpec { Name = "linear", MaxParticles = 4, MaterialTint = new Vector4(0.5f), ColorSpace = LumenColorSpace.Linear };
+        simulator.EmitBurst(simulator.AcquireEmitter(stored, Matrix4x4.Identity, emitting: false), 1);
+        simulator.EmitBurst(simulator.AcquireEmitter(tinted, Matrix4x4.Identity, emitting: false), 1);
+        simulator.EmitBurst(simulator.AcquireEmitter(linear, Matrix4x4.Identity, emitting: false), 1);
+        simulator.EmitBurst(simulator.AcquireEmitter(stored, Matrix4x4.Identity, emitting: false), 1);
+        NativeTestData.Step(simulator, 0f, 0f);
+        NativeTestData.Check(simulator.SubBatches.Count == 3,
+            $"Tint and colour space must split shared-texture draws; expected 3 groups, got {simulator.SubBatches.Count}");
+        NativeTestData.Check(simulator.SubBatches[0].IndexCount == 12, "Equal material metadata must still coalesce.");
+        NativeTestData.Check(simulator.SubBatches[0].MaterialTint == stored.MaterialTint
+            && simulator.SubBatches[1].MaterialTint == tinted.MaterialTint
+            && simulator.SubBatches[2].ColorSpace == LumenColorSpace.Linear,
+            "The grouped draw ranges must carry each emitter's separate tint and calculation mode.");
+        NativeTestData.Check(simulator.Vertices[0].Color == new Vector4(0.4f, 0.4f, 0.4f, 0.2f),
+            "Vertex factors include intensity but must not include or decode material tint.");
     }
 
     [LumenFact]
