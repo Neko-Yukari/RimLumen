@@ -1,23 +1,28 @@
 #version 450
 
-// Purely visual effect light pool: one ground quad per light, spanning [-R, R] around the light, drawn right
-// after vanilla LightOverlay (queue 3100) with blend DstColor, One, so the scene becomes scene * (1 + L).
-// Fog of war, roof darkness and the other later map layers cover it exactly as they cover vanilla lighting.
-// The vertex stage is Waylith's SceneDefault.vert.glsl (vUv at location 1; plane10 uv spans [0,1]).
-layout(location = 1) in vec2 vUv;
-
+// Light pool composite: one full-screen pass at the queue-3101 split, right after vanilla LightOverlay (3100), with
+// blend DstColor, One, so the scene becomes scene * (1 + compressHighlights(sum)). Fog of war, roof darkness and the
+// other later map layers cover it exactly as they cover vanilla lighting.
+layout(set = 0, binding = 0) uniform sampler2D lightSum; // linear sum of this frame's pools (Accumulate pass)
+layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 outColor;
 
-layout(set = 2, binding = 0) uniform MaterialUniforms
+// Identity up to a peak of 1, so a lone pool keeps scene * (1 + L). Above 1 the peak holds at 1 and the excess
+// whitens the colour along its own hue instead of clipping per channel: overlapping pools stop at 2x.
+vec3 compressHighlights(vec3 color)
 {
-    vec4 _LumenLight; // rgb: ColorRgb * effective intensity (>= 0, unclamped); a unused
-} uMaterial;
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak <= 1.0) return color;
+    float excess = peak - 1.0;
+    return mix(color / peak, vec3(1.0), excess / (excess + 4.0));
+}
 
 void main()
 {
-    // d = offset / R, so dot(d, d) = (distance / R)^2 and the falloff (1 - (distance / R)^2)^2 is 0 at and beyond R.
-    vec2 d = vUv * 2.0 - 1.0;
-    float q = max(0.0, 1.0 - dot(d, d));
-    // Alpha 0: the shared blend leaves destination alpha unchanged (dstA * 0 + dstA * 1).
-    outColor = vec4(uMaterial._LumenLight.rgb * (q * q), 0.0);
+    vec3 sum = texture(lightSum, uv).rgb;
+    // The RGBA16F sum can overflow to +Inf (Inf / Inf would be NaN in compressHighlights): zero NaN, saturate the rest.
+    if (any(isnan(sum))) sum = vec3(0.0);
+    sum = clamp(sum, vec3(0.0), vec3(1024.0));
+    // Alpha 0 with the alpha factors Zero, One leaves destination alpha unchanged.
+    outColor = vec4(compressHighlights(sum), 0.0);
 }

@@ -1,4 +1,6 @@
 #version 450
+#include "../RimLumen/RimLumenColorSpace.glsl"
+#include "RimLumenPackUniforms.glslinc"
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
 layout(set = 0, binding = 1) uniform sampler2D bloomImage;
 layout(set = 0, binding = 2) uniform sampler2D sceneImage;
@@ -26,9 +28,28 @@ void main()
 {
     vec4 hdr = texture(hdrImage, uv);
     hdr.rgb = sanitizeHdr(hdr.rgb);
-    vec3 mapped = compressHighlights(hdr.rgb + texture(bloomImage, uv).rgb * pc.value.x);
+    vec3 bloom = texture(bloomImage, uv).rgb * pc.value.x;
     // Zero by default; later distortion contributors can supply an explicit screen-space offset.
     vec2 offset = hdr.rg * pc.value.y * pc.value.zw;
-    vec3 refracted = texture(sceneImage, uv + offset).rgb - texture(sceneImage, uv).rgb;
-    outColor = vec4(mapped + refracted * hdr.a, hdr.a);
+    if (ubo.ColorBlendSpace < 0.5)
+    {
+        vec3 refracted = texture(sceneImage, uv + offset).rgb - texture(sceneImage, uv).rgb;
+        outColor = vec4(compressHighlights(hdr.rgb + bloom) + refracted * hdr.a, hdr.a);
+        return;
+    }
+    // Linear: hdr is premultiplied linear radiance. Empty pixels leave the scene bit-exact.
+    if (hdr == vec4(0.0) && bloom == vec3(0.0))
+    {
+        outColor = vec4(0.0);
+        return;
+    }
+    // Composite over the decoded scene in linear light and write the encoded result opaquely, so coverage
+    // weights radiance instead of its sRGB encoding. compressHighlights is identity up to 1: hdr, bloom -> 0
+    // reproduces the scene exactly.
+    // RGBA16F coverage is unclamped; Legacy's UNORM OneMinusSrcAlpha blend sees it clamped to [0, 1].
+    float a = clamp(hdr.a, 0.0, 1.0);
+    vec3 scene = lumenDecodeStored(texture(sceneImage, uv).rgb);
+    vec3 refracted = lumenDecodeStored(texture(sceneImage, uv + offset).rgb) - scene;
+    vec3 linear = max(scene * (1.0 - a) + hdr.rgb + bloom + refracted * a, vec3(0.0));
+    outColor = vec4(lumenEncodeStored(compressHighlights(linear)), 1.0);
 }

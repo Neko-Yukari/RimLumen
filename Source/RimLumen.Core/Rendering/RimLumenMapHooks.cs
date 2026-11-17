@@ -15,6 +15,8 @@ internal static class RimLumenMapHooks
     private const string HarmonyId = "NekoYukari.RimLumen.MapSplit";
     private static readonly ConditionalWeakTable<MeshDrawFrame, PipelineFrame> Frames = new();
     private static readonly SceneGrabPoint[] sentinels = new SceneGrabPoint[4];
+    // Right after vanilla LightOverlay: the light-pool composite runs before every queue-3101 draw.
+    private static SceneGrabPoint lightPoolSentinel = null!;
     private static FieldInfo sceneGrabs = null!;
     private static FieldInfo sceneTargets = null!;
     private static FieldInfo mapRenderer = null!;
@@ -24,6 +26,7 @@ internal static class RimLumenMapHooks
     private sealed record RecordScope(FrameContext Context, PipelineFrame Payload, SceneColorTargets Targets, MeshBatchRenderer Renderer)
     {
         internal GlowGroupMask Recorded;
+        internal bool LightPoolsRecorded;
     }
 
     internal static void Arm()
@@ -51,6 +54,9 @@ internal static class RimLumenMapHooks
             sentinels[i] = SceneGrabRegistry.Define(name, queue);
             if (sentinels[i].Queue != queue) throw new InvalidOperationException($"SceneGrabPoint {name} queue changed.");
         }
+        lightPoolSentinel = SceneGrabRegistry.Define("RimLumenLightPool", Lighting.LightPoolRenderer.RenderQueue);
+        if (lightPoolSentinel.Queue != Lighting.LightPoolRenderer.RenderQueue)
+            throw new InvalidOperationException("SceneGrabPoint RimLumenLightPool queue changed.");
         var harmony = new Harmony(HarmonyId);
         string target = capture.DeclaringType!.FullName + "." + capture.Name;
         try
@@ -95,7 +101,8 @@ internal static class RimLumenMapHooks
         // Vanilla may hand back the same MeshDrawFrame instance on a later capture (observed in a validation run),
         // so drop the earlier capture's payload binding and split sentinels before deciding on this one.
         Frames.Remove(map);
-        if (map.SceneGrabs is List<SceneGrabPoint> previous) previous.RemoveAll(point => Array.IndexOf(sentinels, point) >= 0);
+        if (map.SceneGrabs is List<SceneGrabPoint> previous)
+            previous.RemoveAll(point => point == lightPoolSentinel || Array.IndexOf(sentinels, point) >= 0);
         if (RimLumenRenderHost.FailSafeTripped || RimLumenRenderHost.Pipeline?.Captured is not { } payload) return;
         try
         {
@@ -103,6 +110,7 @@ internal static class RimLumenMapHooks
             IReadOnlyList<SceneGrabPoint>? grabs = map.SceneGrabs;
             for (int i = 0; i < sentinels.Length; i++)
                 if (payload.ShouldSplit((GlowGroup)i)) grabs = SceneGrabSplit.Insert(grabs, sentinels[i], static point => point.Queue);
+            if (payload.HasLightPools) grabs = SceneGrabSplit.Insert(grabs, lightPoolSentinel, static point => point.Queue);
             sceneGrabs.SetValue(map, grabs);
             Frames.Add(map, payload);
         }
@@ -125,6 +133,17 @@ internal static class RimLumenMapHooks
 
     private static bool GrabPrefix(SceneGrabPoint point)
     {
+        if (point == lightPoolSentinel)
+        {
+            RecordScope? lightScope = current;
+            if (lightScope != null && !RimLumenRenderHost.FailSafeTripped && !lightScope.LightPoolsRecorded)
+            {
+                lightScope.LightPoolsRecorded = true;
+                try { RimLumenRenderHost.Pipeline!.MapChain.RecordLightPools(lightScope.Context, lightScope.Payload, lightScope.Targets); }
+                finally { lightScope.Renderer.InvalidateCommandBufferBindings(); }
+            }
+            return false;
+        }
         int index = Array.IndexOf(sentinels, point);
         if (index < 0) return true;
         GlowGroup group = (GlowGroup)index;

@@ -8,6 +8,7 @@ using RimLumen.Core.Rendering.Logic;
 using RimWorldWaylith.Rendering;
 using Waylith.Graphics;
 using Waylith.Rendering;
+using Waylith.Rendering.PostFx;
 
 namespace RimLumen.Core.Rendering;
 
@@ -16,7 +17,10 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
     private readonly MeshBatchRenderer renderer = new(owner.App.GraphicsDevice!, owner.App.RenderContext!);
     private readonly MeshBatchRenderer glowRenderer = new(owner.App.GraphicsDevice!, owner.App.RenderContext!);
     private readonly OffscreenPostEffectPass depthCopy = new("RimLumenDepthCopy", "PostFx/RimLumenDepthCopy.frag.glsl", new[] { 0 });
-    private readonly OffscreenPostEffectPass encodeStored = new("RimLumenEncodeStored", "PostFx/RimLumenEncodeStored.frag.glsl", new[] { 0 });
+    private readonly MeshBatchRenderer lightRenderer = new(owner.App.GraphicsDevice!, owner.App.RenderContext!);
+    // scene * (1 + compress(sum)): DstColor, One on colour; Zero, One keeps destination alpha.
+    private readonly PostEffectPass lightComposite = new("RimLumenLightPoolComposite", LightPoolRenderer.CompositeFile, new[] { 0 },
+        new BlendState(true, BlendFactor.DstColor, BlendFactor.One, BlendOp.Add, BlendFactor.Zero, BlendFactor.One, BlendOp.Add));
     private bool labelOpen;
     private bool renderPassOpen;
 
@@ -38,21 +42,55 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
             RecordChain(in ctx, payload, targets);
         }
         catch (Exception ex) { owner.TripRenderFailSafe(ex); }
-        finally
+        finally { CloseOpenScopes(in ctx); }
+    }
+
+    // Requires: the queue-3101 split of a frame with light pools; no render pass open.
+    // Ensures: the pools are summed linearly into the slot's LightSum, then one full-screen pass multiplies the scene
+    //          by (1 + compress(sum)); scene alpha and depth are untouched.
+    internal void RecordLightPools(in FrameContext ctx, PipelineFrame payload, SceneColorTargets targets)
+    {
+        try
         {
-            try
-            {
-                if (renderPassOpen) ctx.CommandBuffer.EndRenderPass();
-                if (labelOpen) ctx.CommandBuffer.EndDebugLabel();
-            }
-            catch (Exception ex)
-            {
-                owner.App.FrameRenderer.RenderToMainThread.Enqueue(() =>
-                    Verse.Log.Error($"[RimLumen] Closing the failed map record left the command buffer unbalanced: {ex}"));
-            }
-            renderPassOpen = false;
-            labelOpen = false;
+            RenderTexture scene = targets.Current(ctx.SubmissionFrameIndex);
+            if (!scene.HasDepth) throw new InvalidOperationException("RimLumen requires scene depth at the light-pool split.");
+            PassAttachment attachment = targets.LoadAttachment
+                ?? throw new InvalidOperationException("SceneColorTargets.LoadAttachment is unavailable at the light-pool split.");
+            HdrTargets.Slot slot = owner.Targets.Ensure(ctx.SubmissionFrameIndex, scene, payload.BloomMipLevels);
+            ctx.CommandBuffer.BeginDebugLabel("RimLumen/LightPools\0"u8, new float4(1f, 0.5f, 0f, 1f));
+            labelOpen = true;
+            var frame = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer, owner.Targets.RenderPass,
+                owner.Targets.EnsureLightSum(slot), slot.LightSum!.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat,
+                scene.DepthFormat);
+            BeginPass(in frame, clear: true);
+            lightRenderer.InvalidateCommandBufferBindings();
+            lightRenderer.RecordPass(in frame, payload.LightMesh, RimLumenRenderHost.LumenRenderPassId);
+            EndPass(in frame);
+            slot.LightSum.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
+            FrameContext composite = attachment.MakeFrameContext(in ctx);
+            BeginPass(in composite, clear: false);
+            lightComposite.SetInput(0, slot.LightSum);
+            lightComposite.RecordInline(in composite, composite.RenderPass, composite.SampleCount);
+            EndPass(in composite);
         }
+        catch (Exception ex) { owner.TripRenderFailSafe(ex); }
+        finally { CloseOpenScopes(in ctx); }
+    }
+
+    private void CloseOpenScopes(in FrameContext ctx)
+    {
+        try
+        {
+            if (renderPassOpen) ctx.CommandBuffer.EndRenderPass();
+            if (labelOpen) ctx.CommandBuffer.EndDebugLabel();
+        }
+        catch (Exception ex)
+        {
+            owner.App.FrameRenderer.RenderToMainThread.Enqueue(() =>
+                Verse.Log.Error($"[RimLumen] Closing the failed map record left the command buffer unbalanced: {ex}"));
+        }
+        renderPassOpen = false;
+        labelOpen = false;
     }
 
     private void RecordChain(in FrameContext ctx, PipelineFrame payload, SceneColorTargets targets)
@@ -95,14 +133,8 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         }
         EndPass(in frame);
         slot.Color.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
+        // The layer stays in the frame's blend space; uniforms.ColorBlendSpace tells bloom and the composite which.
         RenderTexture hdrSource = slot.Color;
-        if (payload.ColorBlendSpace == LumenColorBlendSpace.Linear && payload.HasHdrDraws)
-        {
-            hdrSource = owner.Targets.EnsureStoredColor(ctx.SubmissionFrameIndex);
-            encodeStored.SetInput(0, slot.Color);
-            encodeStored.Output = hdrSource;
-            encodeStored.Record(in ctx, null);
-        }
         ShaderPackSpec pack = owner.ShaderPack.Spec;
         try
         {
@@ -185,8 +217,9 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         owner.DepthProxy.Clear();
         renderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         glowRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
+        lightRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         depthCopy.Invalidate();
-        encodeStored.Invalidate();
+        lightComposite.Invalidate();
         owner.ShaderPack.InvalidateOffscreen();
         owner.ShaderPack.InvalidateInline();
     }
@@ -195,7 +228,8 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
     {
         renderer.Dispose();
         glowRenderer.Dispose();
+        lightRenderer.Dispose();
         depthCopy.Dispose();
-        encodeStored.Dispose();
+        lightComposite.Dispose();
     }
 }

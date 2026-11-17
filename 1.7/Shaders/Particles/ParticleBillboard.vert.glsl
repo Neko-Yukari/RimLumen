@@ -9,7 +9,8 @@ layout(location = 0) in vec3 inPosition; // @vertex Position required
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec2 vUv;
 layout(location = 2) out vec2 vRadialUv;
-layout(location = 3) out float vSoftDistance;
+// x: soft-particle fade distance; y: scalar radiance gain (hdrIntensity * intensity), applied after colour conversion.
+layout(location = 3) out vec2 vSoftAndGain;
 
 // Mirrors CameraBillboardBasis.GroundUp / ProjectTopDownPitch: Vertical3D under the straight-down 2D camera is a
 // true orthographic view pitched 60 degrees (sin 0.8660254, cos 0.5) about the ground-plane screen-up.
@@ -34,7 +35,7 @@ void main()
     vColor = vec4(0.0);
     vUv = quadUv;
     vRadialUv = quadUv;
-    vSoftDistance = emitter.State.y;
+    vSoftAndGain = vec2(emitter.State.y, emitter.Appearance.z * emitter.State.w);
     if (particle.ActiveEmitter == 0u || particle.PositionAndAge.w >= particle.VelocityAndLifetime.w)
     {
         // All vertices of dead slots coincide, producing no fragments without a CPU count.
@@ -50,7 +51,6 @@ void main()
     float blend = fract(samplePosition);
     float size = particle.Size * mix(a.Size.x, b.Size.x, blend);
     vColor = particle.StartColor * mix(a.Color, b.Color, blend);
-    vColor.rgb *= emitter.Appearance.z * emitter.State.w;
     // Appearance.w = cbrt(abs(det(World3x3))); world-space size is baked at birth, local-space at draw.
     if (emitter.SizeCone.w < 0.5) size *= emitter.Appearance.w;
 

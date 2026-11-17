@@ -277,6 +277,10 @@ internal sealed class ShaderPackRuntime : IDisposable
     {
         EnsurePlaceholders(ctx.CommandBuffer);
         LateBloomPasses passes = GetLatePasses(group);
+        // Late bloom adds onto the stored scene, so its glow stays in stored units whatever the frame's blend space.
+        ShaderPackUniforms stored = uniforms;
+        stored.ColorBlendSpace = 0f;
+        passes.Down[0].SetUniforms(in stored);
         RecordBloom(in ctx, slot, in uniforms, passes.Down, passes.Up, black1x1!, slot.Glow);
     }
 
@@ -300,7 +304,8 @@ internal sealed class ShaderPackRuntime : IDisposable
         for (int i = 0; i < passes.Down.Length; i++)
             passes.Down[i] = new OffscreenPostEffectPass($"RimLumen{group}BloomDown{i}",
                 i == 0 ? "PostFx/RimLumenBloomPrefilter.frag.glsl" : "PostFx/RimLumenBloomDown.frag.glsl",
-                i == 0 ? new[] { 0, 1 } : new[] { 0 }, BlendState.Opaque, pushConstantSize: 16);
+                i == 0 ? new[] { 0, 1 } : new[] { 0 }, BlendState.Opaque, pushConstantSize: 16,
+                uniformBinding: i == 0 ? 5 : -1);
         for (int i = 0; i < passes.Up.Length; i++)
             passes.Up[i] = new OffscreenPostEffectPass($"RimLumen{group}BloomUp{i}",
                 "PostFx/RimLumenBloomUp.frag.glsl", new[] { 0, 1 }, BlendState.Opaque, pushConstantSize: 16);

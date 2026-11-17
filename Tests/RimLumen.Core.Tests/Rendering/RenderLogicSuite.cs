@@ -205,19 +205,44 @@ public static class RenderLogicSuite
     }
 
     [LumenFact]
-    public static void LightPoolDefinitionFollowsLightOverlayWithSceneMultiplierBlendAndSkipsHdrRedraw()
+    public static void LightPoolsSumLinearlyAndCompressOnceWithinTwiceTheScene()
+    {
+        var single = new VisualPointLight(0f, 0f, 4f, new Vector3(0.6f, 0.4f, 0.2f));
+        Equal(new Vector3(0.6f, 0.4f, 0.2f), VisualPointLight.AccumulateAndCompress([single], 0f, 0f));
+
+        // Two overlapping pools: 0.3 + 0.2 = 0.5, not the stacked (1.3 * 1.2) - 1 = 0.56.
+        VisualPointLight[] pair =
+        [
+            new(0f, 0f, 4f, new Vector3(0.3f, 0.2f, 0.1f)),
+            new(0f, 0f, 6f, new Vector3(0.2f, 0.1f, 0.05f)),
+        ];
+        Vector3 summed = VisualPointLight.AccumulateAndCompress(pair, 0f, 0f);
+        Require(Vector3.Distance(summed, new Vector3(0.5f, 0.3f, 0.15f)) < 1e-6f, $"Pools must add linearly; got {summed}.");
+
+        // Five warm corridor lamps at GlowGrid's 3.6 scale: stacked multipliers would reach 4.6^5 ~ 2060x on red.
+        var warm = new Vector3(1f, 0.8f, 0.5f) * 3.6f;
+        var corridor = new VisualPointLight[5];
+        for (int i = 0; i < corridor.Length; i++) corridor[i] = new VisualPointLight(0.4f * i, 0f, 6f, warm);
+        Vector3 mapped = VisualPointLight.AccumulateAndCompress(corridor, 0.8f, 0f);
+        Require(mapped.X <= 1f && mapped.Y <= 1f && mapped.Z <= 1f && mapped.Z >= 0f,
+            $"Compressed pool term must stay in [0, 1] (scene at most 2x); got {mapped}.");
+        Require(mapped.X > mapped.Y && mapped.Y > mapped.Z,
+            $"Compression must keep the warm hue order instead of clipping every channel to white; got {mapped}.");
+    }
+
+    [LumenFact]
+    public static void LightPoolAccumulationAddsLinearlyAtLightOverlay()
     {
         ShaderProgramDefinition definition = LightPoolRenderer.CreateDefinition();
         Equal(3101, definition.renderQueue.Value);
         Equal(GlowGroup.Early, GlowGroups.Classify(definition.renderQueue.Value));
         PipelineState state = definition.ToPipelineState();
         Require(state.Blend.Enabled
-            && state.Blend.SrcColor == BlendFactor.DstColor
+            && state.Blend.SrcColor == BlendFactor.One
             && state.Blend.DstColor == BlendFactor.One
             && state.Blend.ColorOp == BlendOp.Add
             && state.Depth.Test && !state.Depth.Write,
-            "Light pool must blend DstColor + One with depth test and no depth write.");
-        Equal(false, AdditiveEmissiveFilter.IsAdditiveEmissive(in state, "RimLumen.LightPool"));
+            "Light-pool accumulation must blend One + One with depth test and no depth write.");
     }
 
     // Minimal third-party contributor: not a built-in appender or simulator, so it owns its HDR draws.

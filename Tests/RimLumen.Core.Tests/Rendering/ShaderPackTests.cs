@@ -37,7 +37,7 @@ public static class ShaderPackTests
         Equal(112, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.DepthValid)).ToInt32());
         Equal(116, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.GameDeltaSeconds)).ToInt32());
         Equal(120, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.RealDeltaSeconds)).ToInt32());
-        Equal(124, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.Padding)).ToInt32());
+        Equal(124, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.ColorBlendSpace)).ToInt32());
         Equal(128, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.BloomParams)).ToInt32());
         Equal(144, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam0)).ToInt32());
         Equal(160, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam1)).ToInt32());
@@ -116,7 +116,7 @@ public static class ShaderPackTests
         Equal(new Vector4(7.25f, 7.75f, 8.25f, 8.75f), p.PackParam3);
         ShaderPackUniformBlockSnapshot snapshot = p.CaptureSnapshot();
         ShaderPackUniforms uniforms = ShaderPackUniforms.Build(Matrix4x4.Identity, 1, 1, 1, 1,
-            0f, 0f, 0f, 0f, 0f, 0f, false, false, false, false, in snapshot);
+            0f, 0f, 0f, 0f, 0f, 0f, false, false, false, false, false, in snapshot);
         ReadOnlySpan<float> indexed = MemoryMarshal.Cast<byte, float>(
             MemoryMarshal.AsBytes(new[] { uniforms }.AsSpan()).Slice(144, 64));
         Require(indexed.SequenceEqual(new float[]
@@ -416,7 +416,7 @@ public static class ShaderPackTests
 
         ShaderPackUniforms u = ShaderPackUniforms.Build(
             in vp, 1920, 1080, 250, 200, 12.5f, 20f, 0.05f, 0.016f, 0.75f, 24f,
-            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: false, isPaused: false, in snapshot);
+            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: false, isPaused: false, linearBlendSpace: false, in snapshot);
 
         Equal(1f / 1920f, u.ScreenAndMapSize.X);
         Equal(1f / 1080f, u.ScreenAndMapSize.Y);
@@ -437,14 +437,16 @@ public static class ShaderPackTests
         // Named float flags are independently available to shader consumers.
         ShaderPackUniforms all = ShaderPackUniforms.Build(
             in vp, 800, 600, 1, 1, 0f, 0f, 0f, 0f, 1f, 24f,
-            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: true, in snapshot);
+            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: true, linearBlendSpace: true, in snapshot);
         Equal(1f, all.HasSceneDepth);
         Equal(1f, all.HasMapLightField);
         Equal(1f, all.IsPaused);
+        Equal(1f, all.ColorBlendSpace);
         ShaderPackUniforms none = ShaderPackUniforms.Build(
             in vp, 0, 0, 0, 0, 0f, 0f, 0f, 0f, 1f, 24f,
-            hasHdrDraws: false, hasSceneDepth: false, hasMapLightField: false, isPaused: false, in snapshot);
+            hasHdrDraws: false, hasSceneDepth: false, hasMapLightField: false, isPaused: false, linearBlendSpace: false, in snapshot);
         Equal(0f, none.DepthValid);
+        Equal(0f, none.ColorBlendSpace);
         Equal(0f, none.ScreenAndMapSize.X);
     }
 
@@ -494,7 +496,7 @@ public static class ShaderPackTests
         runtime.BloomIntensity = 0.3f;
         runtime.SetPackParam(0, 0.375f);
         ShaderPackUniforms uniforms = ShaderPackUniforms.Build(viewProjection, 1920, 1080, 250, 250, 7.5f, 10f, 0.05f, 0.016f, 0.8f, 24f,
-            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: false, runtime.CaptureSnapshot());
+            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: false, linearBlendSpace: false, runtime.CaptureSnapshot());
 
         Equal(1f / 1920f, uniforms.ScreenAndMapSize.X);
         Equal(250f, uniforms.ScreenAndMapSize.Z);
@@ -584,7 +586,7 @@ public static class ShaderPackTests
                         float DepthValid;
                         float GameDeltaSeconds;
                         float RealDeltaSeconds;
-                        float Padding;
+                        float ColorBlendSpace;
                         vec4 BloomParams;
                         vec4 PackParams[4];
                     } ubo;

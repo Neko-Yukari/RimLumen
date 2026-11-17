@@ -89,17 +89,30 @@ public static class ParticleShaderTests
     }
 
     [LumenFact]
-    public static void PhaseBConvertsStraightParticleColorAndEncodesAccumulation()
+    public static void PhaseBConvertsStraightColorThenGainsAndCompositesInLinearLight()
     {
         string l1 = Read("L1ParticleQuad.frag.glsl"), l2 = Read("ParticleBillboard.frag.glsl");
         int l1Convert = l1.IndexOf("c = lumenColorForBlendSpace(c, lumen._LumenColor.z > 0.5)", StringComparison.Ordinal);
         int l2Convert = l2.IndexOf("color = lumenColorForBlendSpace(color, material._LumenColor.z > 0.5)", StringComparison.Ordinal);
-        Require(l1Convert >= 0 && l1Convert < l1.IndexOf("c.rgb *= c.a", StringComparison.Ordinal)
-            && l2Convert >= 0 && l2Convert < l2.IndexOf("color.rgb *= color.a", StringComparison.Ordinal),
-            "Both shaders must decode straight stored colour before premultiplication.");
-        string encode = ShaderSourceLoader.ReadShaderSource(Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "PostFx", "RimLumenEncodeStored.frag.glsl")));
-        Require(encode.Contains("vec4(lumenEncodeStored(color.rgb), color.a)", StringComparison.Ordinal),
-            "The accumulated linear layer must be encoded with alpha preserved.");
+        int l1Gain = l1.IndexOf("c.rgb *= hdrGain;", StringComparison.Ordinal);
+        int l2Gain = l2.IndexOf("color.rgb *= vSoftAndGain.y;", StringComparison.Ordinal);
+        Require(l1Convert >= 0 && l1Convert < l1Gain && l1Gain < l1.IndexOf("c.rgb *= c.a", StringComparison.Ordinal)
+            && l2Convert >= 0 && l2Convert < l2Gain && l2Gain < l2.IndexOf("color.rgb *= color.a", StringComparison.Ordinal),
+            "Both shaders must convert straight colour, then apply the scalar gain, then premultiply.");
+        Require(!Read("ParticleBillboard.vert.glsl").Contains("vColor.rgb *=", StringComparison.Ordinal),
+            "L2 must not fold the radiance gain into the vertex colour before the sRGB transfer.");
+        string postFx = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "PostFx"));
+        Require(!File.Exists(Path.Combine(postFx, "RimLumenEncodeStored.frag.glsl")),
+            "The pre-encoded E(L*a) layer is retired; composites blend in linear light instead.");
+        string composite = ShaderSourceLoader.ReadShaderSource(Path.Combine(postFx, "RimLumenComposite.frag.glsl"));
+        Require(composite.Contains("if (hdr == vec4(0.0) && bloom == vec3(0.0))", StringComparison.Ordinal)
+            && composite.Contains("float a = clamp(hdr.a, 0.0, 1.0);", StringComparison.Ordinal)
+            && composite.Contains("scene * (1.0 - a) + hdr.rgb + bloom", StringComparison.Ordinal)
+            && composite.Contains("vec4(lumenEncodeStored(compressHighlights(linear)), 1.0)", StringComparison.Ordinal),
+            "Linear composite must skip empty pixels and encode D(scene)(1-a)+hdr+bloom once, opaquely.");
+        string prefilter = ShaderSourceLoader.ReadShaderSource(Path.Combine(postFx, "RimLumenBloomPrefilter.frag.glsl"));
+        Require(prefilter.Contains("if (ubo.ColorBlendSpace > 0.5) glow = lumenDecodeStored(glow);", StringComparison.Ordinal),
+            "Linear bloom must decode the stored glow copies into linear radiance.");
         string root = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Source", "RimLumen.Core"));
         string pipeline = File.ReadAllText(Path.Combine(root, "Rendering", "RimLumenPipeline.cs"));
         string chain = File.ReadAllText(Path.Combine(root, "Rendering", "RimLumenMapChain.cs"));
@@ -151,7 +164,7 @@ public static class ParticleShaderTests
     {
         string vertex = Read("L1ParticleQuad.vert.glsl"), fragment = Read("L1ParticleQuad.frag.glsl");
         Require(fragment.Contains("lumenParticleDiscCoverage(radialUv)", StringComparison.Ordinal)
-            && vertex.Contains("radialUv = inRadialUv;", StringComparison.Ordinal)
+            && vertex.Contains("radialUv = inRadialUvGain.xy;", StringComparison.Ordinal)
             && !vertex.Contains("gl_VertexIndex", StringComparison.Ordinal),
             "Procedural coordinates must come from the quad corner, not the animated atlas tile.");
         Require(Read("ParticleBillboard.frag.glsl").Contains("lumenParticleDiscCoverage(vRadialUv)", StringComparison.Ordinal),
@@ -366,21 +379,28 @@ public static class ParticleShaderTests
         string gameRoot = Environment.GetEnvironmentVariable("GameRoot")
             ?? XDocument.Load(buildProperties).Descendants("GameRoot").Single().Value;
         string vertex = File.ReadAllText(Path.Combine(gameRoot, "Rendering", "Shaders", LightPoolRenderer.VertexFile));
-        string fragmentPath = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", LightPoolRenderer.FragmentFile));
+        string fragmentPath = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", LightPoolRenderer.AccumulateFile));
         string fragment = ShaderSourceLoader.ReadShaderSource(fragmentPath);
 
-        MaterialLayout layout = ShaderMetadataParser.ExtractMaterialLayout(fragment, "RimLumenLightPool.frag.glsl");
+        MaterialLayout layout = ShaderMetadataParser.ExtractMaterialLayout(fragment, "RimLumenLightPoolAccumulate.frag.glsl");
         Require(!layout.HasErrors, "Waylith rejected the light-pool material metadata.");
         Require(layout.UniformSize == 16, $"Light-pool material UBO must be 16 bytes; got {layout.UniformSize}.");
         CheckOverrideSlots(layout, ("_LumenLight", 0));
         Require(layout.TextureSlots.Length == 0 && layout.StorageBufferSlots.Length == 0,
             "Light-pool shader declares only the _LumenLight uniform.");
-        Require(!ShaderMetadataParser.ValidateStageInterface(vertex, fragment, LightPoolRenderer.VertexFile, "RimLumenLightPool.frag.glsl"),
-            "Waylith reports mismatched SceneDefault/RimLumenLightPool varyings.");
+        Require(!ShaderMetadataParser.ValidateStageInterface(vertex, fragment, LightPoolRenderer.VertexFile, "RimLumenLightPoolAccumulate.frag.glsl"),
+            "Waylith reports mismatched SceneDefault/RimLumenLightPoolAccumulate varyings.");
         Require(fragment.Contains("vec2 d = vUv * 2.0 - 1.0;", StringComparison.Ordinal)
             && fragment.Contains("float q = max(0.0, 1.0 - dot(d, d));", StringComparison.Ordinal)
             && fragment.Contains("vec4(uMaterial._LumenLight.rgb * (q * q), 0.0)", StringComparison.Ordinal),
-            "Light-pool shader must evaluate (1 - (d/R)^2)^2 with zero alpha.");
+            "Light-pool accumulation must evaluate (1 - (d/R)^2)^2 with zero alpha.");
+        string composite = ShaderSourceLoader.ReadShaderSource(
+            Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", LightPoolRenderer.CompositeFile)));
+        Require(composite.Contains("if (peak <= 1.0) return color;", StringComparison.Ordinal)
+            && composite.Contains("if (any(isnan(sum))) sum = vec3(0.0);", StringComparison.Ordinal)
+            && composite.Contains("sum = clamp(sum, vec3(0.0), vec3(1024.0));", StringComparison.Ordinal)
+            && composite.Contains("vec4(compressHighlights(sum), 0.0)", StringComparison.Ordinal),
+            "Light-pool composite must apply the linear sum once, identity up to 1 and compressed above.");
     }
 
     [LumenFact]
@@ -437,12 +457,12 @@ public static class ParticleShaderTests
         CompileFile("Particles/L1ParticleQuad.vert.glsl", RuntimeShaderStage.Vertex);
         CompileFile("Particles/L1ParticleQuad.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenDepthCopy.frag.glsl", RuntimeShaderStage.Fragment);
-        CompileFile("PostFx/RimLumenEncodeStored.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomPrefilter.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomDown.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomUp.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenComposite.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("RimLumen/RimLumenLightPool.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("RimLumen/RimLumenLightPoolAccumulate.frag.glsl", RuntimeShaderStage.Fragment);
         Console.WriteLine("[SPIR-V] compute strides=64,320,48,4; vertex strides=64,320,32; LocalSize=64,1,1");
     }
 

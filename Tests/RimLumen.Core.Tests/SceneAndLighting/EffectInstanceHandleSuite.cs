@@ -177,7 +177,8 @@ public static class EffectInstanceHandleSuite
         VfxAssert.Check(!handle.TryGetParam("missing", out _), "Missing param is not invented");
         VfxTestData.Step(service, 0.5f, currentMapIndex: 111);
         VfxAssert.Equal(5, service.Simulator.LiveParticleCount);
-        VfxAssert.Equal(new Vector4(2f, 2f, 2f, 1f), service.Simulator.Vertices[0].Color);
+        VfxAssert.Equal(Vector4.One, service.Simulator.Vertices[0].Color);
+        VfxAssert.Equal(2f, service.Simulator.Vertices[0].HdrGain);
         // Unclamped: the light pool radius is not scaled with the effect, and intensity 2 doubles the colour.
         VfxAssert.Equal(new VisualPointLight(10f, 20f, 4f, new Vector3(1f, 0.5f, 0.25f)), service.Lights[0]);
         VfxAssert.Equal(new Vector3(10f, 2f, 20f), handle.RootWorld.Translation);

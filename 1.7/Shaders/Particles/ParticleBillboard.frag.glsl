@@ -8,7 +8,7 @@ layout(set = 2, binding = 5) uniform sampler2D _LumenSceneDepth; // @default = w
 layout(location = 0) in vec4 vColor;
 layout(location = 1) in vec2 vUv;
 layout(location = 2) in vec2 vRadialUv;
-layout(location = 3) in float vSoftDistance;
+layout(location = 3) in vec2 vSoftAndGain;
 layout(location = 0) out vec4 outColor;
 
 float eyeDistance(float depth)
@@ -37,12 +37,14 @@ void main()
         float separation = eyeDistance(sceneDepth) - eyeDistance(gl_FragCoord.z);
         if (separation < 0.0)
             discard; // Occlusion test lives here: the material pipeline runs with fixed-function depth test disabled.
-        if (vSoftDistance > 0.0)
-            color.a *= clamp(separation / vSoftDistance, 0.0, 1.0);
+        if (vSoftAndGain.x > 0.0)
+            color.a *= clamp(separation / vSoftAndGain.x, 0.0, 1.0);
     }
     if (color.a <= 0.0)
         discard;
     color = lumenColorForBlendSpace(color, material._LumenColor.z > 0.5);
+    // Scalar radiance gain multiplies the blend-space colour, so no sRGB transfer ever raises or crushes it.
+    color.rgb *= vSoftAndGain.y;
     // Additive blends with One/One, so its rgb must be premultiplied (the alternative SrcAlpha factor is not used).
     if (material._LumenDraw.w > 0.5)
         color.rgb *= color.a;

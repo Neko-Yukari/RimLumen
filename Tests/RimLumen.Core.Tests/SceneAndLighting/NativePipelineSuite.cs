@@ -610,8 +610,8 @@ public static class NativePipelineSuite
             && simulator.SubBatches[1].MaterialTint == tinted.MaterialTint
             && simulator.SubBatches[2].ColorSpace == LumenColorSpace.Linear,
             "The grouped draw ranges must carry each emitter's separate tint and calculation mode.");
-        NativeTestData.Check(simulator.Vertices[0].Color == new Vector4(0.4f, 0.4f, 0.4f, 0.2f),
-            "Vertex factors include intensity but must not include or decode material tint.");
+        NativeTestData.Check(simulator.Vertices[0].Color == new Vector4(0.2f, 0.2f, 0.2f, 0.2f) && simulator.Vertices[0].HdrGain == 2f,
+            "Vertex colour must not include or decode material tint; intensity travels as the separate gain.");
     }
 
     [LumenFact]
