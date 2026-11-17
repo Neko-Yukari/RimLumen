@@ -481,7 +481,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private LumenEmitterTransform NodeTransform(int index) => new(nodeWorldMatrices[index], nodeWorldRotations[index]);
 
     private LumenNodeFeatureFrame FeatureFrame(int index, bool active, float deltaTime) =>
-        new(NodeTransform(index), request.TargetWorld, request.MapIndex, parameters["intensity"], active, deltaTime);
+        new(NodeTransform(index), request.TargetWorld, request.MapIndex, parameters["intensity"], active, deltaTime, origin);
 
     private static readonly int FeatureCount = Enum.GetValues<LumenNodeFeature>().Length;
 
