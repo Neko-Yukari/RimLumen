@@ -34,6 +34,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         public int PendingBurst;
         public bool IsVertical3D;
         public float BaseY;
+        public Vector2 AnchorXZ;
     }
 
     private readonly int seed;
@@ -138,13 +139,15 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         if (emitters.TryGetValue(emitterId, out var emitter)) emitter.Transform = worldTransform;
     }
 
-    // Ensures: marks the emitter as Vertical3D (display remap in BuildBatch) and sets the floor height used by
-    //          Vertical3D display and KillBelowFloor (the effect's play-origin Y). Unknown ids are ignored.
-    internal void SetEmitterVerticalState(int emitterId, bool isVertical3D, float baseY)
+    // Ensures: marks the emitter as Vertical3D (display remap in BuildBatch) and sets its 3D pivot, the effect's play
+    //          origin: origin.Y is the floor of Vertical3D display and KillBelowFloor, origin.XZ the ground anchor that
+    //          local-space particles use now and world-space particles record at birth. Unknown ids are ignored.
+    internal void SetEmitterVerticalState(int emitterId, bool isVertical3D, Vector3 origin)
     {
         if (!emitters.TryGetValue(emitterId, out var emitter)) return;
         emitter.IsVertical3D = isVertical3D;
-        emitter.BaseY = baseY;
+        emitter.BaseY = origin.Y;
+        emitter.AnchorXZ = new Vector2(origin.X, origin.Z);
     }
 
     // Requires: rateMultiplier and intensityMultiplier are finite and >= 0 (validated by the public SetParam boundary).
@@ -311,7 +314,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             particles[particleCount++] = new CpuParticle
             {
                 EmitterId = id, Position = position, Velocity = direction * speed,
-                Lifetime = lifetime, StartSize = size,
+                Lifetime = lifetime, StartSize = size, SpawnAnchorXZ = emitter.AnchorXZ,
             };
             emitter.LiveCount++;
         }
@@ -381,6 +384,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
 
         CameraBillboardBasis.Extract(view, out Vector3 cameraRight, out Vector3 cameraUp, out float yScaleRatio);
         bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(cameraUp, yScaleRatio);
+        Vector3 groundUp = CameraBillboardBasis.GroundUp(cameraUp);
         float vanillaMoteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
         for (int i = 0; i < particleCount; i++)
         {
@@ -408,7 +412,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 velocity = Vector3.TransformNormal(velocity, emitter.Transform.World);
             }
             if (emitter.IsVertical3D)
-                CameraBillboardBasis.ProjectVertical3D(isTopDown2D, yScaleRatio, emitter.BaseY, vanillaMoteY, ref position, ref velocity);
+                CameraBillboardBasis.ProjectVertical3D(isTopDown2D, yScaleRatio, groundUp,
+                    spec.WorldSpaceSimulation ? particle.SpawnAnchorXZ : emitter.AnchorXZ, emitter.BaseY, vanillaMoteY,
+                    ref position, ref velocity);
             Vector3 right = cameraRight, up = cameraUp;
             float halfWidth = particle.Size * 0.5f, halfHeight = halfWidth;
             if (spec.BillboardMode == LumenBillboardMode.Horizontal)
@@ -419,7 +425,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             else if (spec.BillboardMode == LumenBillboardMode.Vertical)
                 ParticleBillboardMath.Vertical(cameraRight, cameraUp, yScaleRatio, emitter.IsVertical3D, out right, out up);
             else if (spec.BillboardMode == LumenBillboardMode.Local)
-                ParticleBillboardMath.Local(emitter.Transform.Rotation, emitter.IsVertical3D, isTopDown2D, yScaleRatio, out right, out up);
+                ParticleBillboardMath.Local(emitter.Transform.Rotation, emitter.IsVertical3D, isTopDown2D, yScaleRatio, groundUp, out right, out up);
             else if (spec.BillboardMode == LumenBillboardMode.StretchedVelocity)
             {
                 CameraBillboardBasis.ComputeStretchedAxes(cameraRight, cameraUp, yScaleRatio, velocity, out right, out up,

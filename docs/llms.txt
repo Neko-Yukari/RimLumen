@@ -26,7 +26,7 @@ Turning vanilla glow enhancement off is pixel-identical only when no RimLumen ef
 
 ## Documentation
 
-- [English Developer API Manual](api.en.md): Complete reference for coordinates (`Vertical3D` / `GroundXZ`), `.lumen.json`, XML `LumenEffectDef`, the effect state machine (`states`, `stopState`, `Notify`), force fields, `RimLumenApi`, `LumenTextureRegistry`, `Chezhou.RimUnity` bridge, and the programmable `ShaderPacks` specification.
+- [English Developer API Manual](api.en.md): Complete reference for coordinates (`Vertical3D`, drawn as a true 60°-pitch orthographic view under the vanilla 2D camera / `GroundXZ`), `.lumen.json`, XML `LumenEffectDef`, the effect state machine (`states`, `stopState`, `Notify`), force fields, `RimLumenApi`, `LumenTextureRegistry`, `Chezhou.RimUnity` bridge, and the programmable `ShaderPacks` specification.
 - [中文开发者 API 手册](api.md): Canonical Simplified Chinese developer manual (identical technical coverage; shipped in release packages at `docs/api.md`).
 - [Project Overview & Build Commands](https://github.com/Neko-Yukari/RimLumen/blob/master/README.md): Bilingual modder/player feature overview and PowerShell build, test, and release packaging commands.
 - [GitHub Repository](https://github.com/Neko-Yukari/RimLumen): Source repository for `RimLumen.Core`, `RimLumen.Adapter.RimUnity`, built-in `1.7/ShaderPacks/*`, and `1.7/Shaders/*`.

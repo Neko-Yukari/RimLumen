@@ -11,6 +11,20 @@ layout(location = 1) out vec2 vUv;
 layout(location = 2) out vec2 vRadialUv;
 layout(location = 3) out float vSoftDistance;
 
+// Mirrors CameraBillboardBasis.GroundUp / ProjectTopDownPitch: Vertical3D under the straight-down 2D camera is a
+// true orthographic view pitched 60 degrees (sin 0.8660254, cos 0.5) about the ground-plane screen-up.
+vec3 groundUpOf(vec3 up)
+{
+    float lengthSq = up.x * up.x + up.z * up.z;
+    return lengthSq < 1e-12 ? vec3(0.0, 0.0, 1.0) : vec3(up.x, 0.0, up.z) * inversesqrt(lengthSq);
+}
+
+vec3 projectTopDownPitch(vec3 value, vec3 groundUp)
+{
+    float along = value.x * groundUp.x + value.z * groundUp.z;
+    return vec3(value.x, 0.0, value.z) + (along * (0.8660254 - 1.0) + value.y * 0.5) * groundUp;
+}
+
 void main()
 {
     vec2 quadUv = inPosition.xy;
@@ -21,7 +35,7 @@ void main()
     vUv = quadUv;
     vRadialUv = quadUv;
     vSoftDistance = emitter.State.y;
-    if (particle.SizeSeedEmitterFlags.w < 0.5 || particle.PositionAndAge.w >= particle.VelocityAndLifetime.w)
+    if (particle.ActiveEmitter == 0u || particle.PositionAndAge.w >= particle.VelocityAndLifetime.w)
     {
         // All vertices of dead slots coincide, producing no fragments without a CPU count.
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
@@ -34,7 +48,7 @@ void main()
     GpuCurveSample a = curves[row + lower];
     GpuCurveSample b = curves[row + min(lower + 1u, 63u)];
     float blend = fract(samplePosition);
-    float size = particle.SizeSeedEmitterFlags.x * mix(a.Size.x, b.Size.x, blend);
+    float size = particle.Size * mix(a.Size.x, b.Size.x, blend);
     vColor = particle.StartColor * mix(a.Color, b.Color, blend);
     vColor.rgb *= emitter.Appearance.z * emitter.State.w;
     // Appearance.w = cbrt(abs(det(World3x3))); world-space size is baked at birth, local-space at draw.
@@ -51,14 +65,20 @@ void main()
     // drawn position adapts to the camera.
     float verticalMode = material._LumenVertical.x;
     float yScale = material._LumenCameraUp.w > 0.0 ? material._LumenCameraUp.w : 1.0;
+    vec3 groundUp = groundUpOf(material._LumenCameraUp.xyz);
     if (verticalMode > 0.5)
     {
         float baseY = material._LumenVertical.y;
         float dy = center.y - baseY;
         if (verticalMode > 1.5)
         {
-            center = vec3(center.x, max(baseY, material._LumenVertical.z), center.z + dy);
-            velocity = vec3(velocity.x, 0.0, velocity.z + velocity.y);
+            // Pivot: the play origin; world-space particles keep the one of their birth, so a moving emitter's
+            // trail never drifts.
+            vec2 anchor = emitter.SizeCone.w > 0.5 ? lumenUnpackAnchor(particle.SpawnAnchorXZ)
+                : vec2(emitter.ShapePosition.w, emitter.ShapeScale.w);
+            vec3 offset = projectTopDownPitch(vec3(center.x - anchor.x, dy, center.z - anchor.y), groundUp);
+            center = vec3(anchor.x + offset.x, max(baseY, material._LumenVertical.z), anchor.y + offset.z);
+            velocity = projectTopDownPitch(velocity, groundUp);
         }
         else
             center.y = baseY + dy / yScale;
@@ -109,8 +129,8 @@ void main()
         up = y + 2.0 * cross(q.xyz, cross(q.xyz, y) + q.w * y);
         if (verticalMode > 1.5)
         {
-            right = vec3(right.x, 0.0, right.z + right.y);
-            up = vec3(up.x, 0.0, up.z + up.y);
+            right = projectTopDownPitch(right, groundUp);
+            up = projectTopDownPitch(up, groundUp);
         }
         else if (verticalMode > 0.5)
         {

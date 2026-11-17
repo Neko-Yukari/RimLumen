@@ -7,7 +7,10 @@ struct GpuParticle
     vec4 PositionAndAge;
     vec4 VelocityAndLifetime;
     vec4 StartColor;
-    vec4 SizeSeedEmitterFlags;
+    float Size;
+    uint Seed;
+    uint ActiveEmitter; // 0 dead; emitter index + 1 while alive
+    uint SpawnAnchorXZ; // world-space birth ground anchor, lumenPackAnchor
 };
 
 struct GpuEmitterParams
@@ -25,9 +28,9 @@ struct GpuEmitterParams
     vec4 Appearance;
     vec4 Tables;
     vec4 State;
-    vec4 ShapePosition;
+    vec4 ShapePosition; // w: play-origin X (Vertical3D ground anchor)
     vec4 ShapeRotation;
-    vec4 ShapeScale;
+    vec4 ShapeScale; // w: play-origin Z (Vertical3D ground anchor)
     vec4 ShapeOptions; // 256: radiusThickness, arc radians, arcSpread, radiusSpread
     vec4 ShapeMix; // 272: randomDirection, sphericalDirection, randomPosition, coneLength
     vec4 BoxThicknessDonut; // 288: boxThickness xyz, donutRadius
@@ -51,6 +54,19 @@ vec3 lumenDirection(vec3 value, vec3 fallback)
 {
     float squaredLength = dot(value, value);
     return squaredLength > 1e-12 ? value * inversesqrt(squaredLength) : fallback;
+}
+
+// Ground anchor as two int16 in 1/32 cell units (range [-1024, 1024) cells), X low and Z high. Kept as uint so no
+// bit pattern passes through a float register.
+uint lumenPackAnchor(vec2 anchorXZ)
+{
+    ivec2 q = ivec2(clamp(round(anchorXZ * 32.0), vec2(-32768.0), vec2(32767.0)));
+    return (uint(q.x) & 0xffffu) | (uint(q.y) << 16u);
+}
+
+vec2 lumenUnpackAnchor(uint packedXZ)
+{
+    return vec2(float(int(packedXZ << 16u) >> 16), float(int(packedXZ) >> 16)) * (1.0 / 32.0);
 }
 
 #endif

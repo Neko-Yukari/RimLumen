@@ -36,6 +36,8 @@ public struct CpuParticle
     public float Size;
     public Vector4 Color;
     public int FlipbookFrame;
+    // Vertical3D: the emitter's play-origin ground position (X, Z) when this world-space particle was born.
+    internal Vector2 SpawnAnchorXZ;
 }
 
 /// <summary>Contiguous index range sharing texture, blend, soft fade and material colour calculation.</summary>

@@ -144,7 +144,8 @@ public static class Phase3GeometrySuite
         float diagonal = MathF.Sqrt(0.5f);
         CheckLocal(false, false, 0.25f, new Vector3(diagonal, diagonal, 0f), new Vector3(-diagonal, diagonal, 0f));
         CheckLocal(true, false, 0.25f, new Vector3(diagonal, 4f * diagonal, 0f), new Vector3(-diagonal, 4f * diagonal, 0f));
-        CheckLocal(true, true, 1f, new Vector3(diagonal, 0f, diagonal), new Vector3(-diagonal, 0f, diagonal));
+        // Straight-down 2D: the 60-degree pitch keeps X and draws Y at cos 60 = 0.5 along screen-up (+Z).
+        CheckLocal(true, true, 1f, new Vector3(diagonal, 0f, 0.5f * diagonal), new Vector3(-diagonal, 0f, 0.5f * diagonal));
     }
 
     [LumenFact]
@@ -171,7 +172,7 @@ public static class Phase3GeometrySuite
 
     private static void CheckLocal(bool vertical, bool topDown, float yScale, Vector3 expectedRight, Vector3 expectedUp)
     {
-        ParticleBillboardMath.Local(Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 4f), vertical, topDown, yScale, out Vector3 right, out Vector3 up);
+        ParticleBillboardMath.Local(Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 4f), vertical, topDown, yScale, Vector3.UnitZ, out Vector3 right, out Vector3 up);
         Vector(expectedRight, right); Vector(expectedUp, up);
     }
 

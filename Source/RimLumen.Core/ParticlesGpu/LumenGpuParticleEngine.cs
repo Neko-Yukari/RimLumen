@@ -26,7 +26,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         public bool RealTime;
         public int MapIndex = -1;
         public bool IsVertical3D;
-        public float BaseY;
+        public Vector3 Origin;
         public double DrainRemaining;
         public int PendingBurst;
         public InstanceState State;
@@ -82,12 +82,13 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
     }
 
     // Requires: main thread. Unknown ids are ignored.
-    // Ensures: the next capture carries the Vertical3D display flag and the floor height (the effect's play-origin Y).
-    internal void SetInstanceVerticalState(int instanceId, bool isVertical3D, float baseY)
+    // Ensures: the next capture carries the Vertical3D display flag and the effect's play origin: Y is the floor height,
+    //          XZ the ground anchor uploaded in ShapePosition.w/ShapeScale.w (world-space particles record it at birth).
+    internal void SetInstanceVerticalState(int instanceId, bool isVertical3D, Vector3 origin)
     {
         if (!instances.TryGetValue(instanceId, out Instance? instance)) return;
         instance.IsVertical3D = isVertical3D;
-        instance.BaseY = baseY;
+        instance.Origin = origin;
     }
 
     // Requires: main thread, id from this engine; intensityMultiplier/rateMultiplier finite >= 0.
@@ -204,16 +205,16 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 Appearance = new Vector4(spec.VelocityStretchFactor, spec.LengthScale, spec.HdrIntensity, ParticleAppearanceMath.SizeScale(instance.Transform.World)),
                 Tables = new Vector4(row, fieldOffset, spec.ForceFields.Length, instance.Id & 0x00ffffff),
                 State = new Vector4(dt, spec.SoftParticleFadeDistance, 0, instance.Intensity),
-                ShapePosition = new Vector4(spec.ShapePosition, 0f),
+                ShapePosition = new Vector4(spec.ShapePosition, instance.Origin.X),
                 ShapeRotation = new Vector4(spec.ShapeRotation.X, spec.ShapeRotation.Y, spec.ShapeRotation.Z, spec.ShapeRotation.W),
-                ShapeScale = new Vector4(spec.ShapeScale, 0f),
+                ShapeScale = new Vector4(spec.ShapeScale, instance.Origin.Z),
                 ShapeOptions = new Vector4(spec.RadiusThickness, spec.ArcDegrees * (MathF.PI / 180f), spec.ArcSpread, spec.RadiusSpread),
                 ShapeMix = new Vector4(spec.RandomDirectionAmount, spec.SphericalDirectionAmount, spec.RandomPositionAmount, spec.ConeLength),
                 BoxThicknessDonut = new Vector4(spec.BoxThickness, spec.DonutRadius),
                 WorldRotation = new Vector4(instance.Transform.Rotation.X, instance.Transform.Rotation.Y, instance.Transform.Rotation.Z, instance.Transform.Rotation.W)
             };
             rows.Add(new ParticleEmitterFrame(instance.Id, parameters, instance.Curves, spec.TextureKey, spec.BlendMode,
-                instance.MapIndex, instance.IsVertical3D, instance.BaseY, spec.KillBelowFloor)
+                instance.MapIndex, instance.IsVertical3D, instance.Origin.Y, spec.KillBelowFloor)
                 { MaterialTint = spec.MaterialTint, ColorSpace = spec.ColorSpace });
         }
         foreach (int id in removed) instances.Remove(id);

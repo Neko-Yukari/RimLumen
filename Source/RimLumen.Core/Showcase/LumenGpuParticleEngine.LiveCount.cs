@@ -48,7 +48,7 @@ internal sealed partial class LumenGpuParticleEngine
                 // Unallocated slots are undefined. Inspect only the engine's allocated ranges.
                 foreach (Instance instance in instances.Values)
                     for (int i = instance.Slots.Offset; i < instance.Slots.Offset + instance.Slots.Capacity; i++)
-                        if (data[i].SizeSeedEmitterFlags.W > 0.5f) live++;
+                        if (data[i].ActiveEmitter != 0u) live++;
             }
             finally
             {

@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Rendering;
 using RimLumen.Core.Scene;
 
 namespace RimLumen.Core.Tests.SceneAndLighting;
@@ -667,7 +668,7 @@ public static class CpuParticleSimulatorSuite
         Matrix4x4 apex = Matrix4x4.CreateTranslation(0f, 4.8f, 0f);
         int free = simulator.AcquireEmitter(quad, new LumenEmitterTransform(apex, Quaternion.Identity), 1u, false);
         int ground = simulator.AcquireEmitter(quad, new LumenEmitterTransform(apex, Quaternion.Identity), 1u, false);
-        simulator.SetEmitterVerticalState(free, true, 0f);
+        simulator.SetEmitterVerticalState(free, true, Vector3.Zero);
         simulator.EmitBurst(free, 1);
         simulator.EmitBurst(ground, 1);
         Step(simulator, 0f, isoView);
@@ -685,7 +686,7 @@ public static class CpuParticleSimulatorSuite
             ConeAngleDegrees = 0f, ShapeExtents = Vector3.Zero, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 4f, StartSpeedMax = 4f,
             VelocityStretchFactor = 0.25f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
         }, new LumenEmitterTransform(Matrix4x4.CreateRotationZ(-MathF.PI / 4f) * apex, Quaternion.CreateFromAxisAngle(Vector3.UnitZ, -MathF.PI / 4f)), 1u, false);
-        streak.SetEmitterVerticalState(streakId, true, 0f);
+        streak.SetEmitterVerticalState(streakId, true, Vector3.Zero);
         streak.EmitBurst(streakId, 1);
         Step(streak, 0f, isoView);
         Vector3 velocity = Vector3.Normalize(new Vector3(1f, 1f, 0f)) * 4f;
@@ -717,8 +718,9 @@ public static class CpuParticleSimulatorSuite
             ConeAngleDegrees = 0f, ShapeExtents = Vector3.Zero, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 4f, StartSpeedMax = 4f,
             VelocityStretchFactor = 0.25f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
         }, new LumenEmitterTransform(apex, Quaternion.Identity), 1u, false);
-        simulator.SetEmitterVerticalState(free, true, 0f);
-        simulator.SetEmitterVerticalState(streak, true, 0f);
+        // Play origin (3, 0, 7): the apex node sits 4.8 straight above it.
+        simulator.SetEmitterVerticalState(free, true, new Vector3(3f, 0f, 7f));
+        simulator.SetEmitterVerticalState(streak, true, new Vector3(3f, 0f, 7f));
         simulator.EmitBurst(free, 1);
         simulator.EmitBurst(ground, 1);
         simulator.EmitBurst(streak, 1);
@@ -728,14 +730,94 @@ public static class CpuParticleSimulatorSuite
                 + simulator.Vertices[firstVertex + 2].Position + simulator.Vertices[firstVertex + 3].Position) * 0.25f;
 
         // Group order is acquisition order: Vertical3D quad and legacy quad share a group (vertices 0..7), the streak follows.
+        // 60-degree pitch: 4.8 of height draws 4.8 * cos 60 = 2.4 up-screen of the origin.
         Vector3 freeCenter = Center(0);
         Close(3f, freeCenter.X);
-        Close(11.8f, freeCenter.Z);
+        Close(9.4f, freeCenter.Z);
         Check(freeCenter.Y >= moteY - 1e-4f, $"Vertical3D must draw at or above the mote layer, y={freeCenter.Y}");
         Vector(new Vector3(3f, 4.8f, 7f), Center(4));
         Vector3 streakCenter = Center(8);
-        Close(11.8f, streakCenter.Z);
-        Vector(new Vector3(0f, 0f, 3f), simulator.Vertices[10].Position - simulator.Vertices[9].Position);
+        Close(9.4f, streakCenter.Z);
+        // Velocity (0, 4, 0) draws as (0, 0, 2): length = size 2 + stretch 0.25 * 2.
+        Vector(new Vector3(0f, 0f, 2.5f), simulator.Vertices[10].Position - simulator.Vertices[9].Position);
+    }
+
+    [LumenFact]
+    public static void Vertical3DTopDownPitchIsATrueOrthographicViewForAnyCameraYaw()
+    {
+        float sin = MathF.Sqrt(3f) / 2f, cos = 0.5f;
+        foreach (float yawDegrees in new[] { 0f, 30f, 90f, 215f })
+        {
+            // Straight-down camera turned about world Y: right and screen-up both lie in the ground plane.
+            float yaw = yawDegrees * MathF.PI / 180f;
+            var groundRight = new Vector3(MathF.Cos(yaw), 0f, -MathF.Sin(yaw));
+            var groundUp = new Vector3(MathF.Sin(yaw), 0f, MathF.Cos(yaw));
+            Matrix4x4 view = RigidView(groundRight, groundUp, -Vector3.UnitY);
+            CameraBillboardBasis.Extract(view, out _, out Vector3 cameraUp, out float yScale);
+            Check(CameraBillboardBasis.IsStraightTopDown2D(cameraUp, yScale), $"yaw {yawDegrees}: not straight-down");
+            Vector3 u = CameraBillboardBasis.GroundUp(cameraUp);
+            Vector(groundUp, u);
+            // Reference camera pitched 60 degrees down about groundRight: screen-up = sin * groundUp + cos * worldUp.
+            Vector3 pitchedUp = sin * groundUp + cos * Vector3.UnitY;
+            Vector2 Screen(Vector3 v)
+            {
+                Vector3 drawn = CameraBillboardBasis.ProjectTopDownPitch(v, u);
+                Close(0f, drawn.Y);
+                return new Vector2(Vector3.Dot(drawn, groundRight), Vector3.Dot(drawn, groundUp));
+            }
+            foreach (Vector3 v in new[] { Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ, new(0f, 1f, -1f), new(0.3f, -2f, 5f) })
+            {
+                Vector2 screen = Screen(v);
+                Close(Vector3.Dot(v, groundRight), screen.X);
+                Close(Vector3.Dot(v, pitchedUp), screen.Y);
+            }
+            // Singular values (1, 1): a unit sphere draws as a unit circle, never a 1:1.414 ellipse.
+            Vector2 ex = Screen(Vector3.UnitX), ey = Screen(Vector3.UnitY), ez = Screen(Vector3.UnitZ);
+            Close(1f, ex.X * ex.X + ey.X * ey.X + ez.X * ez.X);
+            Close(1f, ex.Y * ex.Y + ey.Y * ey.Y + ez.Y * ez.Y);
+            Close(0f, ex.X * ex.Y + ey.X * ey.Y + ez.X * ez.Y);
+            // A horizontal unit ring is an ellipse: full width along screen-right, sin 60 = 0.866 along screen-up.
+            Close(1f, Screen(groundRight).Length());
+            Close(sin, Screen(groundUp).Length());
+            // A velocity down-screen and up keeps a direction instead of the old (z + y) cancellation.
+            Close(sin - cos, -Screen(new Vector3(0f, 1f, 0f) - groundUp).Y);
+        }
+    }
+
+    [LumenFact]
+    public static void Vertical3DWorldSpaceParticlesKeepTheirBirthAnchorWhenTheOriginMoves()
+    {
+        // Camera turned 90 degrees: screen-up is world +X, so height draws along +X.
+        Matrix4x4 view = RigidView(-Vector3.UnitZ, Vector3.UnitX, -Vector3.UnitY);
+        float sin = MathF.Sqrt(3f) / 2f;
+        var spec = new EmitterSpec
+        {
+            Name = "moving-trail", Shape = LumenShapeKind.Cone, ConeAngleDegrees = 0f, ShapeExtents = Vector3.Zero,
+            StartSizeMin = 1f, StartSizeMax = 1f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+            ShapePosition = new Vector3(2f, 3f, 0f), WorldSpaceSimulation = true,
+        };
+        var simulator = new CpuParticleSimulator();
+        Vector3 first = new(10f, 0f, 20f), second = new(30f, 0f, 50f);
+        int id = simulator.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.CreateTranslation(first), Quaternion.Identity), 1u, false);
+        simulator.SetEmitterVerticalState(id, true, first);
+        simulator.EmitBurst(id, 1);
+        Step(simulator, 0f, view);
+        Vector3 Center(int firstVertex)
+            => (simulator.Vertices[firstVertex].Position + simulator.Vertices[firstVertex + 1].Position
+                + simulator.Vertices[firstVertex + 2].Position + simulator.Vertices[firstVertex + 3].Position) * 0.25f;
+        // Offset (2, 3, 0) from the origin: 2 along screen-up shrinks to 2 sin 60, height 3 adds 1.5.
+        Vector3 expected = new(10f + 2f * sin + 1.5f, 0f, 20f);
+        Vector3 born = Center(0);
+        Close(expected.X, born.X); Close(expected.Z, born.Z);
+
+        simulator.SetEmitterTransform(id, new LumenEmitterTransform(Matrix4x4.CreateTranslation(second), Quaternion.Identity));
+        simulator.SetEmitterVerticalState(id, true, second);
+        simulator.EmitBurst(id, 1);
+        Step(simulator, 0f, view);
+        Check(simulator.LiveParticleCount == 2, "Both particles stay alive");
+        Vector3 old = Center(0), fresh = Center(4);
+        Close(born.X, old.X); Close(born.Z, old.Z);
+        Close(30f + 2f * sin + 1.5f, fresh.X); Close(50f, fresh.Z);
     }
 
     [LumenFact]
@@ -789,7 +871,7 @@ public static class CpuParticleSimulatorSuite
         int belowFloor = simulator.AcquireEmitter(rising, new LumenEmitterTransform(Matrix4x4.CreateTranslation(0f, -3f, 0f), Quaternion.Identity), 1u, false);
         foreach (int id in new[] { expires, ignoresFlag, local, atFloor, belowFloor })
         {
-            simulator.SetEmitterVerticalState(id, true, 0f);
+            simulator.SetEmitterVerticalState(id, true, Vector3.Zero);
             simulator.EmitBurst(id, 1);
         }
         Step(simulator, 0f);
