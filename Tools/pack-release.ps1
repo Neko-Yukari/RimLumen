@@ -169,9 +169,16 @@ Copy-FilesToPackage 'Languages'
 Copy-FilesToPackage '1.7/Defs'
 Copy-FilesToPackage '1.7/Textures'
 Copy-FilesToPackage '1.7/ShaderPacks'
-Copy-FilesToPackage '1.7/Shaders/RimLumen'
-Copy-FilesToPackage '1.7/Shaders/Particles'
-Copy-FilesToPackage '1.7/Shaders/PostFx'
+# Every shader subdirectory ships; the three core directories must exist.
+$shaderDirs = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot '1.7/Shaders') -Directory | Sort-Object Name | ForEach-Object { "1.7/Shaders/$($_.Name)" })
+foreach ($coreShaderDir in @('RimLumen', 'Particles', 'PostFx')) {
+    if ("1.7/Shaders/$coreShaderDir" -notin $shaderDirs) {
+        throw "Release input directory missing: 1.7/Shaders/$coreShaderDir"
+    }
+}
+foreach ($shaderDir in $shaderDirs) {
+    Copy-FilesToPackage $shaderDir
+}
 
 # Step 5: verification gate
 Write-Host '== [5/5] verify =='
@@ -201,11 +208,11 @@ if (Test-Path -LiteralPath $packedPreview -PathType Leaf) {
     }
 }
 
-foreach ($shaderDir in @('Particles', 'PostFx')) {
-    $srcShaders = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot "1.7/Shaders/$shaderDir") -File -Recurse |
+foreach ($shaderDir in $shaderDirs) {
+    $srcShaders = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot $shaderDir) -File -Recurse |
             Where-Object { $_.Extension -in @('.glsl', '.glslinc') })
     if ($srcShaders.Count -eq 0) {
-        $failures.Add("no runtime shaders found in 1.7/Shaders/$shaderDir")
+        $failures.Add("no runtime shaders found in $shaderDir")
     }
     foreach ($shader in $srcShaders) {
         $relative = Get-RelativePath $RepoRoot $shader.FullName

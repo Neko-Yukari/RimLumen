@@ -64,6 +64,7 @@ public enum ForceFieldKind : byte
     Vortex = 1,
     CurlTurbulence = 2,
     PointAttractor = 3,
+    RingWave = 4,
 }
 
 // Time: normalized particle lifetime [0,1], or light age in seconds >= 0; nondecreasing under D22.
@@ -105,7 +106,7 @@ public sealed class ColorGradient
     public static ColorGradient Constant(Vector4 rgba) => new(new[] { new ColorStop(0f, rgba) });
 }
 
-// Kind must be GravityDrag, Vortex, CurlTurbulence or PointAttractor; undefined values reject the asset.
+// Kind must be GravityDrag, Vortex, CurlTurbulence, PointAttractor or RingWave; undefined values reject the asset.
 // CenterOrAxis is gravity direction
 // (not normalized), vortex axis (normalized; zero uses +Y), or attractor node-local centre in cells;
 // unused by curl. Vortex centre is the node origin. World-space centres follow current node World;
@@ -115,6 +116,11 @@ public sealed class ColorGradient
 // Radius: finite >= 0 cells; vortex/attractor linear falloff to zero at radius, 0 = unlimited; otherwise unused.
 // Strength: required in C#/JSON/XML; finite acceleration in cells/s² for gravity, vortex and attractor; curl potential scale in
 // cells²/s², multiplied by Frequency (1/cell). Frequency is finite, default 1, and used only by curl.
+// RingWave (runtime owner: particle-world-physics; falloff across the shell defined there): an expanding spherical
+// shell centred on CenterOrAxis (node-local, as PointAttractor). Shell radius r(t) = Parameters.X * t with
+// Parameters.X finite > 0 cells/s and t = seconds since the node's last (re)start (state entry or Trigger);
+// Parameters.Y finite > 0 cells is the shell half-thickness; the wave ends once r > Radius (finite > 0 cells);
+// Strength is the outward acceleration at the shell in cells/s² (negative = inward).
 public readonly record struct ForceFieldSpec(
     ForceFieldKind Kind,
     Vector3 CenterOrAxis,
@@ -216,6 +222,12 @@ public sealed class EmitterSpec
     public ColorGradient ColorOverLifetime { get; init; } = ColorGradient.Constant(Vector4.One);
     // Fields sum acceleration and drag; v = (v + acceleration * dt) * exp(-drag * dt).
     public ForceFieldSpec[] ForceFields { get; init; } = Array.Empty<ForceFieldSpec>();
+    // Environment force sources the particles react to; None opts out (ground runes, weapon auras).
+    public LumenEnvironmentChannel EnvironmentChannels { get; init; } = LumenEnvironmentChannel.Explosion | LumenEnvironmentChannel.Cursor;
+    // Finite >= 0 dimensionless scale of every environment force on this emitter.
+    public float EnvironmentForceScale { get; init; } = 1f;
+    public CollisionSpec Collision { get; init; } = new();
+    public SubEmitterSpec[] SubEmitters { get; init; } = Array.Empty<SubEmitterSpec>();
 
     // Texture asset key; null uses alpha = max(0, 1 - dot(radial, radial))², independent of flipbook UV.
     public string? TextureKey { get; init; }
@@ -289,6 +301,8 @@ public sealed class EffectNodeSpec
     public Vector3 LocalScale { get; init; } = Vector3.One;
     public EmitterSpec? Emitter { get; init; }
     public PointLightSpec? PointLight { get; init; }
+    public DistortionSpec? Distortion { get; init; }
+    public RibbonSpec? Ribbon { get; init; }
 }
 
 public sealed class EffectAsset
