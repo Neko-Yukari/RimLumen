@@ -45,7 +45,7 @@ public interface ILumenNodeFeatureBackend
     LumenNodeFeature Feature { get; }
 
     // Requires: node carries this backend's feature spec (validated by LumenAssetRules); seed != 0.
-    // Ensures: returns an instance id unique among this backend's live instances.
+    // Ensures: returns an instance id >= 0, unique among this backend's live instances.
     int CreateInstance(EffectNodeSpec node, in LumenNodeFeatureFrame initial, bool realTime, uint seed);
 
     void UpdateInstance(int instanceId, in LumenNodeFeatureFrame frame);

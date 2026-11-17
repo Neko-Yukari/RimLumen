@@ -78,7 +78,6 @@ public static class VfxContractParitySuite
     [LumenFact] public static void RejectsSubEmitterProbabilityAboveOne() => RejectJson(Source("\"targetNodeIndex\": 1, \"count\": 1, \"probability\": 1.5") + "," + Spark, "subEmitters[0].probability", "[0,1]");
     [LumenFact] public static void RejectsUnknownSubEmitterTrigger() => RejectJson("{ \"name\": \"source\", \"emitter\": { \"subEmitters\": [{ \"trigger\": 9, \"targetNodeIndex\": 1, \"count\": 1 }] } }," + Spark, "subEmitters[0].trigger", "unknown LumenSubEmitterTrigger");
     [LumenFact] public static void RejectsUnknownSubEmitterInheritBits() => RejectJson(Source("\"targetNodeIndex\": 1, \"count\": 1, \"inherit\": 8") + "," + Spark, "subEmitters[0].inherit", "unknown LumenSubEmitterInherit bits");
-    [LumenFact] public static void RejectsCollisionTriggerWithoutCollision() => RejectJson("{ \"name\": \"source\", \"emitter\": { \"subEmitters\": [{ \"trigger\": \"Collision\", \"targetNodeIndex\": 1, \"count\": 1 }] } }," + Spark, "subEmitters[0].trigger", "collision.mode");
     [LumenFact] public static void RequiresSubEmitterCountJson() => RejectJson("{ \"name\": \"source\", \"emitter\": { \"subEmitters\": [{ \"trigger\": \"Death\", \"targetNodeIndex\": 1 }] } }," + Spark, "subEmitters[0].count", "required");
     [LumenFact] public static void RequiresSubEmitterTriggerXml() => RejectXml("<li><name>source</name><emitter><subEmitters><li><targetNodeIndex>1</targetNodeIndex><count>1</count></li></subEmitters></emitter></li>", "subEmitters[0].trigger", "required");
 
@@ -99,6 +98,9 @@ public static class VfxContractParitySuite
     [LumenFact] public static void RejectsNegativeStrengthOverTime() => RejectJson(Distortion(Haze("\"radius\": 2, \"strength\": 0.1, \"strengthOverTime\": [[0, -1]]")), "distortion.strengthOverTime[0]", ">= 0");
 
     // E. Ribbon
+    [LumenFact] public static void RejectsEmptyStrengthOverTimeXml() => RejectXml("<li><name>fx</name><distortion><kind>HeatHaze</kind><radius>2</radius><strength>0.1</strength><frequency>1</frequency><strengthOverTime /></distortion></li>", "distortion.strengthOverTime", "at least one key");
+    [LumenFact] public static void RejectsEmptyWidthOverLengthXml() => RejectXml("<li><name>fx</name><ribbon><mode>Beam</mode><endAtTarget>true</endAtTarget><segments>1</segments><widthOverLength /></ribbon></li>", "ribbon.widthOverLength", "at least one key");
+    [LumenFact] public static void RejectsEmptyColorOverLengthXml() => RejectXml("<li><name>fx</name><ribbon><mode>Beam</mode><endAtTarget>true</endAtTarget><segments>1</segments><colorOverLength /></ribbon></li>", "ribbon.colorOverLength", "at least one stop");
     [LumenFact] public static void RequiresRibbonModeXml() => RejectXml("<li><name>fx</name><ribbon><width>1</width></ribbon></li>", "ribbon.mode", "required");
     [LumenFact] public static void RejectsUnknownRibbonMode() => RejectJson(Ribbon("\"mode\": 5"), "ribbon.mode", "unknown LumenRibbonMode");
     [LumenFact] public static void RejectsTrailWithoutLifetime() => RejectJson(Ribbon("\"mode\": \"Trail\", \"minVertexDistance\": 0.1, \"maxPoints\": 8"), "ribbon.lifetime", "required finite > 0 for Trail");
@@ -162,44 +164,27 @@ public static class VfxContractParitySuite
         {
             var document = new XmlDocument();
             document.LoadXml(node);
-            list.Add((LumenNodeXml)LoadXml(typeof(LumenNodeXml), document.DocumentElement!));
+            list.Add(LoadXml<LumenNodeXml>(document.DocumentElement!));
         }
         return new LumenEffectDef { defName = defName, nodes = list }.ToEffectAsset();
     }
 
-    // Offline, DirectXmlToObject drops every list item: its per-item PostLoad calls DeepProfiler.Start, which throws
-    // NullReferenceException without the game host. Lists and the DTOs holding them are therefore assembled here, and
-    // every object and value inside them is still parsed by the real loader.
-    private static object LoadXml(Type type, XmlElement element)
+    // DirectXmlToObject's per-list-item PostLoad calls DeepProfiler.Start, which reads Prefs (NullReferenceException
+    // without the game host) unless DeepProfiler.enabled is false; the item is then dropped. Disabling the profiler
+    // keeps the whole real loader path, lists included.
+    private static T LoadXml<T>(XmlElement element)
     {
-        var deferred = new List<(FieldInfo Field, XmlElement Element)>();
-        foreach (XmlElement child in element.ChildNodes.OfType<XmlElement>().ToList())
+        bool profiler = Verse.DeepProfiler.enabled;
+        Verse.DeepProfiler.enabled = false;
+        try
         {
-            FieldInfo? field = type.GetField(child.Name);
-            if (field is null || !(IsList(field.FieldType) || field.FieldType.Namespace == typeof(LumenNodeXml).Namespace))
-                continue;
-            deferred.Add((field, child));
-            element.RemoveChild(child);
+            return Verse.DirectXmlToObject.ObjectFromXml<T>(element, false);
         }
-
-        object value = typeof(Verse.DirectXmlToObject).GetMethod(nameof(Verse.DirectXmlToObject.ObjectFromXml))!
-            .MakeGenericMethod(type).Invoke(null, new object[] { element, false })!;
-        foreach ((FieldInfo field, XmlElement child) in deferred)
+        finally
         {
-            if (!IsList(field.FieldType))
-            {
-                field.SetValue(value, LoadXml(field.FieldType, child));
-                continue;
-            }
-            var list = (System.Collections.IList)Activator.CreateInstance(field.FieldType)!;
-            foreach (XmlElement item in child.ChildNodes.OfType<XmlElement>())
-                list.Add(LoadXml(field.FieldType.GetGenericArguments()[0], item));
-            field.SetValue(value, list);
+            Verse.DeepProfiler.enabled = profiler;
         }
-        return value;
     }
-
-    private static bool IsList(Type type) => type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>);
 
     private static void Same(string expected, string actual, string format)
     {

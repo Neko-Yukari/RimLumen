@@ -47,7 +47,7 @@ public enum LumenSubEmitterTrigger : byte
 {
     // A particle of the source emitter expires.
     Death = 0,
-    // A particle of the source emitter collides; requires the source Collision.Mode != None.
+    // A particle of the source emitter collides.
     Collision = 1,
 }
 

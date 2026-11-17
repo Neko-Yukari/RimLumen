@@ -55,9 +55,9 @@ public sealed partial class LumenEffectDef
             Speed = xml.speed,
             Frequency = xml.frequency,
             Duration = xml.duration,
-            StrengthOverTime = xml.strengthOverTime is { Count: > 0 }
-                ? new ScalarCurve(ToCurveKeys(xml.strengthOverTime, distortionPath + ".strengthOverTime"))
-                : null,
+            StrengthOverTime = xml.strengthOverTime is null
+                ? null
+                : new ScalarCurve(ToCurveKeys(xml.strengthOverTime, distortionPath + ".strengthOverTime")),
         };
     }
 
@@ -76,12 +76,12 @@ public sealed partial class LumenEffectDef
             NoiseAmplitude = xml.noiseAmplitude,
             NoiseFrequency = xml.noiseFrequency,
             Width = xml.width,
-            WidthOverLength = xml.widthOverLength is { Count: > 0 }
-                ? new ScalarCurve(ToCurveKeys(xml.widthOverLength, ribbonPath + ".widthOverLength"))
-                : ScalarCurve.Constant(1f),
-            ColorOverLength = xml.colorOverLength is { Count: > 0 }
-                ? new ColorGradient(ToColorStops(xml.colorOverLength, ribbonPath + ".colorOverLength"))
-                : ColorGradient.Constant(Vector4.One),
+            WidthOverLength = xml.widthOverLength is null
+                ? ScalarCurve.Constant(1f)
+                : new ScalarCurve(ToCurveKeys(xml.widthOverLength, ribbonPath + ".widthOverLength")),
+            ColorOverLength = xml.colorOverLength is null
+                ? ColorGradient.Constant(Vector4.One)
+                : new ColorGradient(ToColorStops(xml.colorOverLength, ribbonPath + ".colorOverLength")),
             HdrIntensity = xml.hdrIntensity,
             TextureKey = string.IsNullOrEmpty(xml.textureKey) ? null : xml.textureKey,
             BlendMode = xml.blendMode,
@@ -168,8 +168,6 @@ internal static partial class LumenAssetRules
             if (sub.Count < 0)
                 throw new InvalidDataException($"{subPath}.count: must be >= 0, got {sub.Count}.");
             ValidateRange(sub.Probability, 1f, subPath + ".probability");
-            if (sub.Trigger == LumenSubEmitterTrigger.Collision && collision.Mode == LumenCollisionMode.None)
-                throw new InvalidDataException($"{subPath}.trigger: Collision needs collision.mode Bounce or Kill on this emitter.");
         }
     }
 
