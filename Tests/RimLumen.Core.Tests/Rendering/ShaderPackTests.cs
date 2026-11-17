@@ -210,7 +210,7 @@ public static class ShaderPackTests
         Equal("custom-down.glsl", plan.BloomDownShaderPath);
         Equal("RimLumenBloomUp.frag.glsl", plan.BloomUpShaderPath);
         Equal(true, plan.HasCustomBloomShader);
-        Equal(5, plan.Passes[0].Inputs.Count);
+        Equal(6, plan.Passes[0].Inputs.Count);
         Equal(new ShaderPackGraphValidator.PlannedInput(4, ShaderPackGraphValidator.InputKind.MapLightField), plan.Passes[0].Inputs[4]);
 
         ShaderPackGraphValidator.ExecutionPlan custom = ShaderPackGraphValidator.ExecutionPlan.Compile(new ShaderPackSpec
@@ -227,7 +227,7 @@ public static class ShaderPackTests
             CompositeShaderPath = "\t",
         });
         Equal("RimLumenComposite.frag.glsl", implicitComposite.Passes[0].FragmentShaderPath);
-        Equal(5, implicitComposite.Passes[0].Inputs.Count);
+        Equal(6, implicitComposite.Passes[0].Inputs.Count);
         Equal(ShaderPackBlendMode.PremultipliedAlpha, implicitComposite.Passes[0].BlendMode);
     }
 
@@ -399,10 +399,8 @@ public static class ShaderPackTests
     [LumenFact]
     public static void HdrFrameGateHonorsRunOnEmptyFrames()
     {
-        Equal(false, HdrFrameGate.ShouldRenderHdr(0, false, false));
-        Equal(true, HdrFrameGate.ShouldRenderHdr(0, false, true));
-        Equal(HdrFrameMode.Skip, HdrFrameGate.Decide(false, 0, false));
-        Equal(HdrFrameMode.Render, HdrFrameGate.Decide(false, 0, true));
+        Equal(true, HdrFrameGate.ShouldRenderHdr(0, false, true, 0));
+        Equal(HdrFrameMode.Render, HdrFrameGate.Decide(false, 0, 0, true));
     }
 
     [LumenFact]

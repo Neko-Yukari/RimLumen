@@ -9,10 +9,10 @@ public static class ShaderPackGraphValidator
     private const string PrevPrefix = "prev:";
     private static readonly string[] ReservedSourceNames =
     [
-        "hdr", "glow", "bloom", "scene", "depth", "mapLightField", "backbuffer",
+        "hdr", "glow", "bloom", "scene", "depth", "mapLightField", "distortion", "backbuffer",
     ];
 
-    internal enum InputKind { Hdr, Glow, Bloom, Scene, Depth, MapLightField, Target }
+    internal enum InputKind { Hdr, Glow, Bloom, Scene, Depth, MapLightField, Distortion, Target }
 
     internal readonly record struct PlannedInput(int Binding, InputKind Kind, int TargetIndex = -1, int HistoryFramesAgo = 0);
 
@@ -196,6 +196,7 @@ public static class ShaderPackGraphValidator
             _ when string.Equals(source, "scene", StringComparison.OrdinalIgnoreCase) => InputKind.Scene,
             _ when string.Equals(source, "depth", StringComparison.OrdinalIgnoreCase) => InputKind.Depth,
             _ when string.Equals(source, "mapLightField", StringComparison.OrdinalIgnoreCase) => InputKind.MapLightField,
+            _ when string.Equals(source, "distortion", StringComparison.OrdinalIgnoreCase) => InputKind.Distortion,
             _ => null,
         };
         if (kind is { } reservedKind)
@@ -223,7 +224,7 @@ public static class ShaderPackGraphValidator
     private static IReadOnlyList<PlannedInput> DefaultInputs() => Array.AsReadOnly<PlannedInput>(
     [
         new(0, InputKind.Hdr), new(1, InputKind.Bloom), new(2, InputKind.Scene),
-        new(3, InputKind.Depth), new(4, InputKind.MapLightField),
+        new(3, InputKind.Depth), new(4, InputKind.MapLightField), new(6, InputKind.Distortion),
     ]);
 
     private static string ShaderPath(string? path, string fallback) => string.IsNullOrWhiteSpace(path) ? fallback : path;
