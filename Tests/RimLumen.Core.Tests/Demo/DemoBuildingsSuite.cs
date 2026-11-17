@@ -121,6 +121,26 @@ public static class DemoBuildingsSuite
         NativeTestData.Check(light.GlowRadius > 0f && light.ColorRgb.Z > light.ColorRgb.X, "fountain light is cool cyan");
     }
 
+    // Ensures: the street lamp is one steady warm light at the shared lamp radius, held alive by a loop state
+    //          with no particles.
+    [LumenFact]
+    public static void StreetLampIsOneSteadyWarmLightThatNeverEnds()
+    {
+        EffectAsset asset = RimLumenDemoEffects.CreateStreetLampAsset();
+        LumenAssetRules.Validate(asset, RimLumenDemoEffects.StreetLampId);
+        NativeTestData.Check(asset.Nodes.Length == 1 && asset.Nodes[0].Emitter is null, "lamp is a single light-only node");
+        PointLightSpec light = asset.Nodes[0].PointLight!.Value;
+        NativeTestData.Close(RimLumenDemoEffects.StreetLampRadius, light.GlowRadius, "lamp pool radius");
+        NativeTestData.Check(light.IntensityOverTime is null, "lamp light is steady");
+        NativeTestData.Check(light.ColorRgb.X > light.ColorRgb.Y && light.ColorRgb.Y > light.ColorRgb.Z, "lamp light is warm");
+
+        LumenVfxService service = VfxTestData.Service(asset);
+        using ILumenEffectHandle handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
+        for (int i = 0; i < 200; i++) VfxTestData.Step(service, 0.05f);
+        VfxAssert.Check(handle.IsAlive, "the loop state keeps the lamp lit after 10 s");
+        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
+    }
+
     // Ensures: the gold firework binds its burst to L2 and its trail/sparkle to L1, and a paused frame
     //          (DeltaTime = 0) advances the clock by nothing and spawns nothing.
     [LumenFact]

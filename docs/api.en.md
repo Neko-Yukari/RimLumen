@@ -164,7 +164,7 @@ Callers using `RimUnityAssetProvider` can call `RegisterPackageRoot` again, even
   For particle size curves, both L1 and L2 use the same 64-sample lookup table (LUT): samples are at `i/63` (`i = 0…63`), including both endpoints, with interpolation between adjacent samples. A step can be smoothed across a sample interval of width `1/63`; exact preservation is not guaranteed. Point-light curves are evaluated directly in seconds, not through the particle LUT.
 - **Material colour**: `materialTint` defaults to `(1,1,1,1)` and follows the colour domain above, as do `startColor` and the gradient; `colorSpace` is `Stored` (default) or `Linear`. Let `vertex = startColor × gradient`, with only its RGB multiplied by `hdrIntensity × intensity`. Stored RGB is `vertex × tint × texel`; Linear RGB is `E(vertex × D(tint) × (texture is sRGB ? D(texel) : texel))`. `vertex` is not decoded. `D` / `E` are sRGB decode / encode extended to nonnegative values above 1 without clamping. Alpha is always the product of the three raw alpha values, followed by soft-particle coverage and any blend-mode premultiplication. Componentwise, `D(x) = x/12.92` for `x <= 0.04045`, otherwise `((x+0.055)/1.055)^2.4`; `E(x) = 12.92*x` for `x <= 0.0031308`, otherwise `1.055*x^(1/2.4)-0.055`. Source: RimUnity `Source/Shared/ShaderColorSpace.cs:69-103,122-134` at revision `45ca90987f7d3721715b45c021cab986ee14c468`. This describes material calculation only, not the player blend space.
 - **Gradients (`colorOverLifetime`)**: Supports a stop array `[[time, [r,g,b,a]], ...]` or an object `{ "stops": [{ "time": 0, "color": [r,g,b,a] }] }`, requiring strictly increasing `time`.
-- **`pointLight`**: The JSON colour key is `color` (RGBA); the radius key is `glowRadius` (in map cells). A point light is a purely visual light pool: it never writes vanilla `GlowGrid` and has no effect on mood, plant growth or work speed. Its centre is the node's world position projected to the ground, its radius is `R = glowRadius`, and its falloff is `w = (1 - (d/R)^2)^2`, zero at `d >= R`. The light term `L = color × intensityOverTime × w` turns the scene into `scene × (1 + L)`, drawn right after vanilla lighting so fog, darkness and roofs cover it as usual. The pool follows its node every frame. `intensity` and curve key values must be finite and `>= 0`, with no upper bound; at effective intensity `<= 0` nothing is drawn. `overlightRadius` has been removed and is rejected in both JSON and XML.
+- **`pointLight`**: The JSON colour key is `color` (RGBA); the radius key is `glowRadius` (in map cells). A point light is a purely visual light pool: it never writes vanilla `GlowGrid` and has no effect on mood, plant growth or work speed. Its centre is the node's world position projected to the ground, its radius is `R = glowRadius`, and its falloff is `w = (1 - (d/R)^2)^2`, zero at `d >= R`. The light term `L = color × intensityOverTime × w` turns the scene into `scene × (1 + L)`, drawn right after vanilla lighting so fog, darkness and roofs cover it as usual. The pool follows its node every frame. `intensity` and curve key values must be finite and `>= 0`, with no upper bound; at effective intensity `<= 0` nothing is drawn. `overlightRadius` has been removed and is rejected in both JSON and XML. For gameplay light, see `CompRimLumenLogicalLight` in section 7.3.
 - **Force-field `strength`**: Required explicitly in JSON, XML, and C#. Omission rejects the asset; no default is used.
 - **`timelineEvents` / `states` / `initialState` / `stopState`**: see the next section, "State Machine".
 - **Particle density setting**: The public setter `RimLumenRenderHost.ParticleDensityScale` accepts a range of `0.1`–`1.0`; finite values outside it are silently clamped without logging, while NaN and positive or negative infinity throw `ArgumentOutOfRangeException`. The settings slider is continuous and displays a rounded whole percentage. Density `1` is exact; after clamping to `d`, the effective burst density is `floor(d * 65536) / 65536`.
@@ -525,6 +525,28 @@ Custom `bloomPrefilterShader`, `bloomDownShader` and `bloomUpShader` apply only 
 In the installed vanilla / DLC static inventory, ritual candle clusters at 3155 bloom at 3169 before weather FogOverlay 3169 and SunShadow 3170; orbital / power beams and endpoints at 3177 bloom at 3178 after FogOfWar 3175 and before the Gravship grab and Darkness 3180; grav-field 3181, grav engine 3185, thruster flame 3201 and Noctol eyes 4000 bloom at map end. The inventory has no eligible draws in `[3169, 3174]` or `[3178, 3179]`. The last group's bloom is later than the 3201 Screen and 3251 VoidNode grabs and is not included in them; ordering is not guaranteed for all overlays, grabs or third-party draws. This is a static ordering contract; in-game behaviour has not been verified.
 
 To opt a custom `ShaderDef` out of automatic HDR redraw, attach `<li Class="RimLumen.Core.Compat.LumenEmissiveModExtension"><EnableHdrBloom>false</EnableHdrBloom></li>`. (`HdrMultiplier` was removed; writing `<hdrMultiplier>` fails Def validation. Only `EnableHdrBloom` takes effect.)
+
+### 3. Gameplay Light (`CompRimLumenLogicalLight`)
+
+`pointLight` only lights the picture. When a building must affect mood, work speed, plant growth and the light readout, add the logical light comp to its ThingDef:
+
+```xml
+<comps>
+  <li Class="RimLumen.Core.Lighting.CompProperties_RimLumenLogicalLight">
+    <glowRadius>6</glowRadius>
+  </li>
+</comps>
+```
+
+- **Scope**: it only raises `GlowGrid.GroundGlowAt`, exactly like a white, non-overlit vanilla `CompGlower` of the same radius. It never enters vanilla `GlowGrid`, so `VisualGlowAt`, the vanilla octagonal lighting overlay and the G channel of the ShaderPack `mapLightField` stay unchanged.
+- **Falloff**: distances come from vanilla's 8-neighbour flood fill. Walls and other `blockLight` buildings occlude it, and light wraps through doorways and around corners. Cells near the source read 50% (Lit); cells beyond `glowRadius` read 0. Overlapping logical lights combine by maximum, and the result is combined with vanilla's value (sky included) by maximum. Vacuum-exposed terrain has no ground glow.
+- **When it is lit**: the same rule as `CompGlower`. The building is spawned, `FlickUtility.WantsToBeOn` holds, and the building and every comp implementing `IThingGlower` return `ShouldBeLitNow()`. Power, flick switches, fuel and schedules therefore need no extra setup, and the comp reacts to the same signals (`PowerTurnedOn`, `FlickedOff`, `RanOutOfFuel` and so on).
+- **Timing**: like vanilla glow, it is recomputed in `GlowGridUpdate_First` each frame and raises `GlowChanged` for changed cells. It recomputes only when a light switches or a wall inside a light's reach changes.
+- **Validation**: `glowRadius` must be finite and in `(0, 40]` cells; anything else fails Def validation. The comp has no colour, intensity or overlight fields.
+- **Pairing with a visual light**: play an effect with a `pointLight` when the pool should be visible. The two are independent, and no vanilla lighting is drawn on top.
+- **Do not add `CompGlower` as well**: the vanilla glower writes `GlowGrid` and draws its octagonal overlay on screen.
+
+With the "demo recreation buildings" setting on, the Recreation build menu offers three comparison street lamps: `RimLumen_StreetLamp_Visual` has the visual light only, `RimLumen_StreetLamp_Logic` the logical light only, and `RimLumen_StreetLamp_Both` both.
 
 ---
 

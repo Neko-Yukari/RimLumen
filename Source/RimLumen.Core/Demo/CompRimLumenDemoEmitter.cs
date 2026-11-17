@@ -11,6 +11,7 @@ public enum DemoEmitterKind
 {
     Firework,
     Fountain,
+    StreetLamp,
 }
 
 public sealed class CompProperties_RimLumenDemoEmitter : CompProperties
@@ -26,6 +27,7 @@ public sealed class CompProperties_RimLumenDemoEmitter : CompProperties
 // Drives the optional demo buildings. Every effect is played with realTime = false, so the play handle
 // follows the game clock: the firework trail, burst and light all freeze mid-air while the game is
 // paused and scale with 1x/2x/3x, with no per-frame work on this component beyond the tick counter.
+// The fountain and the street lamp keep one steady looping effect alive; only the fountain can be toggled.
 public sealed class CompRimLumenDemoEmitter : ThingComp
 {
     // 3.2 s between automatic launches; the visible lifetime comes from the firework asset itself.
@@ -44,7 +46,7 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
     }
 
     private readonly List<ActiveLaunch> launches = new();
-    private ILumenEffectHandle? fountain;
+    private ILumenEffectHandle? steady;
     private bool autoLaunch = true;
     private bool fountainActive = true;
     private int autoLaunchTicks;
@@ -64,13 +66,14 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
             return;
         }
 
-        if (fountainActive && fountain is not { IsAlive: true }) StartFountain();
+        if (fountainActive && steady is not { IsAlive: true }) StartSteady();
     }
 
     public override void PostSpawnSetup(bool respawningAfterLoad)
     {
         base.PostSpawnSetup(respawningAfterLoad);
-        if (Props.kind == DemoEmitterKind.Fountain && fountainActive) StartFountain();
+        // The lamp has no toggle: a Play that failed in an earlier session is retried on every spawn.
+        if (Props.kind == DemoEmitterKind.StreetLamp || (Props.kind == DemoEmitterKind.Fountain && fountainActive)) StartSteady();
     }
 
     public override void PostDeSpawn(Map map, DestroyMode mode)
@@ -120,6 +123,7 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
             yield break;
         }
 
+        if (Props.kind != DemoEmitterKind.Fountain) yield break;
         yield return new Command_Action
         {
             defaultLabel = fountainActive
@@ -137,11 +141,11 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
         fountainActive = !fountainActive;
         if (fountainActive)
         {
-            StartFountain();
+            StartSteady();
             return;
         }
 
-        ReleaseFountain();
+        ReleaseSteady();
     }
 
     private void LaunchFirework()
@@ -163,14 +167,16 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
         launches.Add(new ActiveLaunch(handle));
     }
 
-    private void StartFountain()
+    private void StartSteady()
     {
         if (parent.Map is null) return;
 
         RimLumenDemoEffects.EnsureRegistered();
         ILumenEffectHandle handle = RimLumenApi.Play(new LumenPlayRequest
         {
-            EffectId = RimLumenDemoEffects.ParticleFountainId,
+            EffectId = Props.kind == DemoEmitterKind.Fountain
+                ? RimLumenDemoEffects.ParticleFountainId
+                : RimLumenDemoEffects.StreetLampId,
             MapIndex = parent.Map.uniqueID,
             OriginWorld = EffectOrigin,
             RealTime = false,
@@ -181,7 +187,8 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
             return;
         }
 
-        fountain = handle;
+        steady = handle;
+        fountainActive = true;
     }
 
     // Ensures: retires fireworks that have shown their whole 2.75 s arc; Stop(true) lets the last embers
@@ -206,15 +213,15 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
         }
 
         launches.Clear();
-        ReleaseFountain();
+        ReleaseSteady();
     }
 
-    private void ReleaseFountain()
+    private void ReleaseSteady()
     {
-        if (fountain is null) return;
-        fountain.Stop(allowFadeOut: false);
-        fountain.Dispose();
-        fountain = null;
+        if (steady is null) return;
+        steady.Stop(allowFadeOut: false);
+        steady.Dispose();
+        steady = null;
     }
 
     private System.Numerics.Vector3 EffectOrigin
