@@ -16,7 +16,7 @@ internal static class IntegrationTests
     private const string Wotf = "NekoYukari.WhisperOfTheForest";
     private const string WotfData = "E:/SteamLibrary/steamapps/common/RimWorld/Mods/Whisper-of-the-Forest/1.7/Data/RimUnity";
 
-    private static readonly (string Path, int Nodes, int Report, int Native, int L0, int L1, int L2)[] Expected =
+    private static readonly (string Path, int Nodes, int Report, int Native, int External, int L1, int L2)[] Expected =
     [
         ("Effects/FireTornado", 1, 1, 1, 0, 1, 0),
         ("Effects/Lightning", 10, 6, 1, 5, 0, 1),
@@ -73,7 +73,7 @@ internal static class IntegrationTests
             Check.True(report.Nodes.Select(n => n.NodeIndex).SequenceEqual(report.Nodes.Select(n => n.NodeIndex).Order()), id + " report order");
             Check.Equal(report.Nodes.Count, report.Nodes.Select(n => n.NodeIndex).Distinct().Count(), id + " unique report indexes");
             Check.Equal(expected.Native, asset.Nodes.Count(n => n.Emitter is not null), id + " native emitters");
-            Check.Equal(expected.L0, report.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), id + " L0");
+            Check.Equal(expected.External, report.Nodes.Count(n => n.Tier == LumenParticleTier.External), id + " External");
             Check.Equal(expected.L1, report.Nodes.Count(n => n.Tier == LumenParticleTier.L1_NativeCpu), id + " L1");
             Check.Equal(expected.L2, report.Nodes.Count(n => n.Tier == LumenParticleTier.L2_GpuCompute), id + " L2");
             Check.Equal(Wotf, report.PackageId, id + " report package");
@@ -86,9 +86,9 @@ internal static class IntegrationTests
             Check.True(provider.TryResolveEffect(id.ToUpperInvariant(), out var alias) && ReferenceEquals(alias, asset), id + " case alias cached");
             foreach (var node in report.Nodes)
             {
-                if (node.Tier != LumenParticleTier.L0_ExternalCpu) continue;
+                if (node.Tier != LumenParticleTier.External) continue;
                 Check.True(asset.Nodes[node.NodeIndex].Emitter is null && asset.Nodes[node.NodeIndex].PointLight is null,
-                    id + " L0 owns both particles and lights: " + node.NodeId);
+                    id + " External owns both particles and lights: " + node.NodeId);
             }
             foreach (var node in asset.Nodes.Where(n => n.Emitter is not null))
             {
@@ -106,7 +106,7 @@ internal static class IntegrationTests
                     id + " finite gradient " + e.Name);
             }
             Log.Add($"{id}: nodes={asset.Nodes.Length} report={report.Nodes.Count} native={asset.Nodes.Count(n => n.Emitter is not null)} " +
-                $"L0={report.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu)} L1={report.Nodes.Count(n => n.Tier == LumenParticleTier.L1_NativeCpu)} L2={report.Nodes.Count(n => n.Tier == LumenParticleTier.L2_GpuCompute)}");
+                $"External={report.Nodes.Count(n => n.Tier == LumenParticleTier.External)} L1={report.Nodes.Count(n => n.Tier == LumenParticleTier.L1_NativeCpu)} L2={report.Nodes.Count(n => n.Tier == LumenParticleTier.L2_GpuCompute)}");
         }
 
         Check.True(!provider.TryResolveEffect("Effects/DoesNotExist", out var miss) && miss is null, "miss");
@@ -136,8 +136,8 @@ internal static class IntegrationTests
 
         var request = new LumenPlayRequest { MapIndex = 111, EffectId = supported.EffectId, OriginWorld = new Vector3(3, 0, 4) };
         var handle = LumenHostRegistry.VfxService!.Play(request);
-        Check.True(ReferenceEquals(recording.Last, handle), "no-L0 hybrid returns the direct inner handle");
-        Check.Equal(0, spy.Plays, "no-L0 never calls external");
+        Check.True(ReferenceEquals(recording.Last, handle), "no-External hybrid returns the direct inner handle");
+        Check.Equal(0, spy.Plays, "no-External never calls external");
         var instance = handle as EffectInstanceHandle ?? throw new InvalidOperationException("Supported native handle is not the native instance.");
         Step(1f / 60f, 20);
         int spawned = LumenSceneBootstrap.Simulator.LiveParticleCount;
@@ -157,8 +157,8 @@ internal static class IntegrationTests
         var lightning = LumenHostRegistry.VfxService!.Play(lightningRequest);
         int lightningFinished = 0;
         lightning.Finished += () => lightningFinished++;
-        Check.Equal(1, spy.Plays, "Lightning delegates L0 to external");
-        Check.Equal(5, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), "external report L0 count");
+        Check.Equal(1, spy.Plays, "Lightning delegates External to external");
+        Check.Equal(5, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.External), "external report External count");
         var lightningInstance = recording.Last as EffectInstanceHandle ?? throw new InvalidOperationException("Lightning inner handle is not native.");
         Check.Equal(1, lightningInstance.CpuEmitterCount, "Lightning native root uses offline CPU fallback, external children are not duplicated");
         Check.Equal(0, lightningInstance.GpuEmitterCount, "no L2 engine offline");
@@ -186,8 +186,8 @@ internal static class IntegrationTests
 
         int beforeLinger = spy.Plays;
         var linger = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/Linger" });
-        Check.Equal(beforeLinger + 1, spy.Plays, "Linger delegates its three L0 nodes");
-        Check.Equal(3, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), "Linger L0 count");
+        Check.Equal(beforeLinger + 1, spy.Plays, "Linger delegates its three External nodes");
+        Check.Equal(3, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.External), "Linger External count");
         Check.Equal(1, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, "Linger native root uses offline CPU fallback");
         linger.Dispose();
         Check.True(!linger.IsAlive && !spy.LastHandle!.IsAlive, "Linger dispose terminates both handles");
@@ -195,7 +195,7 @@ internal static class IntegrationTests
         int beforeOrbit = spy.Plays;
         var orbit = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/Orbit" });
         Check.Equal(beforeOrbit + 1, spy.Plays, "Orbit delegates external subset");
-        Check.Equal(2, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), "Orbit L0 count");
+        Check.Equal(2, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.External), "Orbit External count");
         Check.Equal(1, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, "Orbit native root replaces the now-external Core node");
         Step(1f / 60f, 10);
         orbit.Stop(false);
@@ -218,7 +218,7 @@ internal static class IntegrationTests
             int plays = spy.Plays;
             using var mixed = LumenHostRegistry.VfxService!.Play(new LumenPlayRequest { MapIndex = 111, EffectId = remaining.Item1 });
             Check.Equal(plays + 1, spy.Plays, remaining.Item1 + " external delegation");
-            Check.Equal(remaining.Item2, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.L0_ExternalCpu), remaining.Item1 + " external node count");
+            Check.Equal(remaining.Item2, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.External), remaining.Item1 + " external node count");
             Check.Equal(1, (recording.Last as EffectInstanceHandle)!.CpuEmitterCount, remaining.Item1 + " one native root with offline CPU fallback");
             Check.Equal(0, (recording.Last as EffectInstanceHandle)!.GpuEmitterCount, remaining.Item1 + " no GPU engine offline");
             Step(1f / 60f, 10);
@@ -226,7 +226,7 @@ internal static class IntegrationTests
             Check.True(!mixed.IsAlive && !spy.LastHandle!.IsAlive, remaining.Item1 + " stopped");
             Check.Equal(0, LumenSceneBootstrap.Simulator.LiveParticleCount, remaining.Item1 + " stop releases native particles");
         }
-        Console.WriteLine("HYBRID six WotF effects played here; Probe external handoff checked separately; Lightning native=1/L0=5, Orbit native=1/L0=2, FireTornado native=1/L0=0; supported in-memory 25-frame native simulation retained");
+        Console.WriteLine("HYBRID six WotF effects played here; Probe external handoff checked separately; Lightning native=1/External=5, Orbit native=1/External=2, FireTornado native=1/External=0; supported in-memory 25-frame native simulation retained");
 
         var inert = LumenHostRegistry.VfxService.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/DoesNotExist" });
         Check.True(!inert.IsAlive, "missing effect stays inert");
@@ -247,7 +247,7 @@ internal static class IntegrationTests
         Check.True(provider.TryInspectTranslation("Effects/Probe", out var report), "Probe translation report");
         const string reason = "material[4fc865aeebe035242bc33dd60bc7ef80_2100000]._Color.domain";
         Check.Reasons([reason], report!.Nodes.Single().Reasons, "actual ProbeAdditive alpha2 material-domain reason");
-        Check.Equal(LumenParticleTier.L0_ExternalCpu, report.Nodes.Single().Tier, "actual Probe changes from L2 to External");
+        Check.Equal(LumenParticleTier.External, report.Nodes.Single().Tier, "actual Probe changes from L2 to External");
         Check.True(probe.Nodes.Single().Emitter is null && probe.Nodes.Single().PointLight is null, "Probe native ownership removed");
         LumenHostRegistry.RegisterAssetProvider(provider);
         LumenSceneBootstrap.EnsureInitialized();
@@ -263,7 +263,7 @@ internal static class IntegrationTests
         Check.True(handle.IsAlive, "external Probe handle owns lifetime");
         handle.Stop(false);
         Check.True(!handle.IsAlive && !external.LastHandle!.IsAlive, "Probe composite stop forwards externally");
-        Console.WriteLine($"PROBE L2->L0_ExternalCpu reason={reason} externalPlays={external.Plays} nativeCpu=0 nativeGpu=0");
+        Console.WriteLine($"PROBE L2->External reason={reason} externalPlays={external.Plays} nativeCpu=0 nativeGpu=0");
     }
 
     internal static void RejectedHybrid()

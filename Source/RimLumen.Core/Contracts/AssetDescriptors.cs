@@ -244,7 +244,7 @@ public sealed class EmitterSpec
     public float HdrIntensity { get; init; } = 1f;
     // Expires a particle that is descending (world vy < 0) below the effect's play-origin height.
     public bool KillBelowFloor { get; init; }
-    // Defined tier required at asset entry. L2 selects GPU when available, otherwise L1; L0/L1 select native L1.
+    // Defined tier required at asset entry. L2 selects GPU when available, otherwise L1; External/L1 select native L1.
     public LumenParticleTier PreferredTier { get; init; } = LumenParticleTier.L2_GpuCompute;
 }
 

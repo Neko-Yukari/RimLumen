@@ -2,7 +2,7 @@ namespace RimLumen.Core.Contracts;
 
 public enum LumenParticleTier : byte
 {
-    L0_ExternalCpu = 0,
+    External = 0,
     L1_NativeCpu = 1,
     L2_GpuCompute = 2,
 }

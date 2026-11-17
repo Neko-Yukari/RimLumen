@@ -60,7 +60,7 @@ public sealed class RimUnityTierClassifier
             }
         AddShapeReasons(Member(particleSystem.members, "shape"), reasons);
         convertedBursts = ConvertBurstSchedule(emission, Number(Field(main, "duration"), 5f), reasons);
-        if (reasons.Count != 0) return (LumenParticleTier.L0_ExternalCpu, reasons);
+        if (reasons.Count != 0) return (LumenParticleTier.External, reasons);
         float maxLifetime = CurveRange(Field(main, "startLifetime"), 5f).Max;
         float rate = Enabled(emission, true) ? CurveRange(Field(emission, "rateOverTime"), 10f).Max : 0;
         float maxBurst = 0;

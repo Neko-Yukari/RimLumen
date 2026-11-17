@@ -17,7 +17,7 @@ internal static class Program
         [
             ("WotF all seven translation and native/hybrid play", IntegrationTests.WotfIntegration),
             ("WotF tier report", IntegrationTests.WotfTierReport),
-            ("Tier matrix and L0 ownership", TranslationTests.TierMatrix),
+            ("Tier matrix and External ownership", TranslationTests.TierMatrix),
             ("Phase3 active export fields", TranslationTests.ActiveExportFields),
             ("Phase3 bounded imported bursts", TranslationTests.BoundedImportedBursts),
             ("Phase3 deferred weighted export classification", TranslationTests.DeferredWeightedExports),

@@ -69,17 +69,17 @@ public sealed class RimUnityPrefabTranslator
                     !float.IsFinite(materialTint.Z) || materialTint.Z < 0 ||
                     !float.IsFinite(materialTint.W) || materialTint.W < 0 || materialTint.W > 1)
                 {
-                    classification.Tier = LumenParticleTier.L0_ExternalCpu;
+                    classification.Tier = LumenParticleTier.External;
                     reasons.RemoveAll(reason => reason.EndsWith("L2ParticleThreshold", StringComparison.Ordinal));
                     reasons.Add("material[" + materialRef!.text + "]._Color.domain");
                 }
                 if (subEmitterTargets.Contains(particles.id))
                 {
-                    classification.Tier = LumenParticleTier.L0_ExternalCpu;
+                    classification.Tier = LumenParticleTier.External;
                     reasons.RemoveAll(reason => reason.EndsWith("L2ParticleThreshold", StringComparison.Ordinal));
                     reasons.Add("subEmitters.dependency");
                 }
-                if (active[i] && particles.enabled && renderer?.enabled != false && classification.Tier != LumenParticleTier.L0_ExternalCpu)
+                if (active[i] && particles.enabled && renderer?.enabled != false && classification.Tier != LumenParticleTier.External)
                     emitter = ConvertEmitter(source.name, particles, renderer, classification.Tier, material, materialTint, shaderResolver, bursts);
                 classifications.Add(new RimUnityNodeTranslation(i, source.id, classification.Tier, reasons));
                 ValueData? main = Member(particles.members, "main");

@@ -34,7 +34,7 @@ internal static class TranslationTests
             AssertFallback(module, Data(("enabled", Number(1))), module);
         var mesh = new ComponentData { id = "renderer", type = "RimUnity.ParticleSystemRenderer", members = [Member("renderMode", Number(4))] };
         var meshResult = classifier.Classify(small, mesh);
-        Check.Equal(LumenParticleTier.L0_ExternalCpu, meshResult.Tier, "mesh tier");
+        Check.Equal(LumenParticleTier.External, meshResult.Tier, "mesh tier");
         Check.Reasons(["renderMode.Mesh"], meshResult.Reasons, "mesh reasons");
         AssertFallback("velocityOverLifetime", Data(("enabled", Number(1)), ("x", Constant(2))), "velocityOverLifetime.linear");
         AssertFallback("rotationOverLifetime", Data(("enabled", Number(1))), "rotationOverLifetime");
@@ -231,7 +231,7 @@ internal static class TranslationTests
             id = "renderer", type = "RimUnity.ParticleSystemRenderer", members = [Member("renderMode", Number(mode))]
         });
         var asset = new RimUnityPrefabTranslator().Translate("mode", prefab, _ => null, _ => null, out var report);
-        Check.Equal(LumenParticleTier.L0_ExternalCpu, report.Nodes.Single().Tier, "unsupported render mode tier");
+        Check.Equal(LumenParticleTier.External, report.Nodes.Single().Tier, "unsupported render mode tier");
         Check.Reasons([reason], report.Nodes.Single().Reasons, "render mode reason");
         Check.True(asset.Nodes[0].Emitter is null && asset.Nodes[0].PointLight is null, "unsupported render mode leaves particles and lights external");
     }
@@ -251,7 +251,7 @@ internal static class TranslationTests
             var particles = Particles(test.Max);
             particles.members.Single(m => m.name == "shape").value = test.Shape;
                 var asset = new RimUnityPrefabTranslator().Translate("shape", Prefab(particles), _ => null, _ => null, out var report);
-            Check.Equal(LumenParticleTier.L0_ExternalCpu, report.Nodes.Single().Tier, "unrepresentable shape");
+            Check.Equal(LumenParticleTier.External, report.Nodes.Single().Tier, "unrepresentable shape");
             Check.Reasons(test.Reasons, report.Nodes.Single().Reasons, "exact shape reason");
             Check.True(asset.Nodes[0].Emitter is null && asset.Nodes[0].PointLight is null, "shape fallback external ownership");
         }
@@ -282,7 +282,7 @@ internal static class TranslationTests
         var boxEmitter = boxAsset.Nodes[0].Emitter!;
         Vector3 corner = Vector3.Transform(boxEmitter.ShapeExtents * boxEmitter.ShapeScale, boxEmitter.ShapeRotation);
         Check.True(Vector3.Distance(new Vector3(1, 2, 3), Vector3.Abs(corner)) < 1e-6f, "box half extents after shape transform");
-        Console.WriteLine($"SHAPES exact L0 cases={cases.Length}; representable CPU cone/box retained");
+        Console.WriteLine($"SHAPES exact External cases={cases.Length}; representable CPU cone/box retained");
     }
 
     internal static void ShapeAxis()
@@ -485,7 +485,7 @@ internal static class TranslationTests
         var particles = Particles();
         particles.members.Add(Member(module, value));
         var asset = new RimUnityPrefabTranslator().Translate(module, Prefab(particles), _ => null, _ => null, out var report);
-        Check.Equal(LumenParticleTier.L0_ExternalCpu, report.Nodes.Single().Tier, reason);
+        Check.Equal(LumenParticleTier.External, report.Nodes.Single().Tier, reason);
         Check.Reasons([reason], report.Nodes.Single().Reasons, reason);
         Check.True(asset.Nodes[0].Emitter is null && asset.Nodes[0].PointLight is null, reason + " must leave particles AND lights to external");
     }
@@ -505,7 +505,7 @@ internal static class TranslationTests
         Check.Reasons(["subEmitters.dependency"], report.Nodes.Single(n => n.NodeId == "c").Reasons, "transitive target");
         foreach (var node in report.Nodes)
         {
-            Check.Equal(LumenParticleTier.L0_ExternalCpu, node.Tier, "closure tier");
+            Check.Equal(LumenParticleTier.External, node.Tier, "closure tier");
             Check.True(asset.Nodes[node.NodeIndex].Emitter is null && asset.Nodes[node.NodeIndex].PointLight is null, "closure duplicate native ownership");
         }
         Check.Equal(-1, asset.Nodes[0].ParentIndex, "topological root");
@@ -575,7 +575,7 @@ internal static class TranslationTests
     private static void AssertMaterialDomain(Vector4 tint)
     {
         var asset = TranslateMaterial("Gamma", tint, Vector4.One, Vector4.One, out var report);
-        Check.Equal(LumenParticleTier.L0_ExternalCpu, report.Nodes.Single().Tier, "invalid material tint stays external");
+        Check.Equal(LumenParticleTier.External, report.Nodes.Single().Tier, "invalid material tint stays external");
         Check.Reasons(["material[test-material]._Color.domain"], report.Nodes.Single().Reasons, "reason names material identity and source field");
         Check.True(asset.Nodes[0].Emitter is null && asset.Nodes[0].PointLight is null, "invalid tint does not create native particles or light");
         RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
