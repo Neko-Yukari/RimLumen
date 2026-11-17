@@ -11,12 +11,15 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
 {
     internal sealed class Slot
     {
+        // In the frame's blend space: stored units (Legacy) or premultiplied linear radiance (Linear).
         internal RenderTexture Color = null!;
-        internal RenderTexture? StoredColor;
         // Vanilla/third-party additive copies: bloom and pack input only, never part of the composite core term.
         internal RenderTexture Glow = null!;
         internal RenderTexture DepthSnapshot = null!;
         internal RenderTexture SceneSnapshot = null!;
+        // Linear sum of the frame's light pools; allocated on the first frame that has any.
+        internal RenderTexture? LightSum;
+        internal VkFramebuffer LightSumFramebuffer;
         internal RenderTexture[] Down = Array.Empty<RenderTexture>();
         internal RenderTexture[] Up = Array.Empty<RenderTexture>();
         internal VkFramebuffer Framebuffer;
@@ -89,10 +92,15 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         return result;
     }
 
-    // Requires: Ensure initialized this submission slot for the current scene dimensions.
-    // Ensures: lazily owns one full-size RGBA16F output in the slot, retired with the other slot targets.
-    internal RenderTexture EnsureStoredColor(int index)
-        => Slots[index].StoredColor ??= Make(width, height, $"RimLumen.StoredColor.{index}");
+    // Requires: Ensure returned this slot for the current scene in this submission.
+    // Ensures: the slot owns a full-size RGBA16F light-pool target and its framebuffer over the slot's scene depth,
+    //          retired with the other slot targets.
+    internal VkFramebuffer EnsureLightSum(Slot slot)
+    {
+        slot.LightSum ??= Make(width, height, $"RimLumen.LightSum.{Array.IndexOf(Slots, slot)}");
+        if (slot.LightSumFramebuffer.IsNull()) slot.LightSumFramebuffer = CreateFramebuffer(slot.LightSum, slot.SceneDepth);
+        return slot.LightSumFramebuffer;
+    }
 
     private unsafe VkFramebuffer CreateFramebuffer(RenderTexture color, VkImageView sceneDepth)
     {
@@ -108,8 +116,10 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
     {
         if (!slot.Framebuffer.IsNull()) device.DestroyFramebuffer(slot.Framebuffer, device.VkAllocator);
         if (!slot.GlowFramebuffer.IsNull()) device.DestroyFramebuffer(slot.GlowFramebuffer, device.VkAllocator);
+        if (!slot.LightSumFramebuffer.IsNull()) device.DestroyFramebuffer(slot.LightSumFramebuffer, device.VkAllocator);
         slot.Framebuffer = default;
         slot.GlowFramebuffer = default;
+        slot.LightSumFramebuffer = default;
     }
 
     private static RenderTexture Make(int width, int height, string name)
@@ -202,10 +212,10 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
             if (slot is null) continue;
             DestroyFramebuffers(slot);
             slot.Color?.Dispose();
-            slot.StoredColor?.Dispose();
             slot.Glow?.Dispose();
             slot.DepthSnapshot?.Dispose();
             slot.SceneSnapshot?.Dispose();
+            slot.LightSum?.Dispose();
             foreach (RenderTexture? texture in slot.Down) texture?.Dispose();
             foreach (RenderTexture? texture in slot.Up) texture?.Dispose();
         }

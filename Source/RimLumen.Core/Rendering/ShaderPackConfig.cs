@@ -221,7 +221,7 @@ public struct ShaderPackUniforms
     public float DepthValid;           // 112: 1 for a real boundary snapshot, 0 for placeholder
     public float GameDeltaSeconds;     // 116
     public float RealDeltaSeconds;     // 120
-    public float Padding;            // 124
+    public float ColorBlendSpace;      // 124: 0 Legacy (hdr/bloom in stored units), 1 Linear (linear radiance)
     public Vector4 BloomParams;         // 128
     public Vector4 PackParam0;          // 144
     public Vector4 PackParam1;          // 160
@@ -244,6 +244,7 @@ public struct ShaderPackUniforms
         bool hasSceneDepth,
         bool hasMapLightField,
         bool isPaused,
+        bool linearBlendSpace,
         in ShaderPackUniformBlockSnapshot runtime)
     {
         Matrix4x4 invViewProj = Matrix4x4.Invert(viewProjection, out Matrix4x4 inv) ? inv : Matrix4x4.Identity;
@@ -260,7 +261,7 @@ public struct ShaderPackUniforms
             SkyGlow = skyGlow, ZoomRootSize = zoomRootSize,
             HasHdrDraws = hasHdrDraws ? 1f : 0f, HasSceneDepth = hasSceneDepth ? 1f : 0f,
             HasMapLightField = hasMapLightField ? 1f : 0f, IsPaused = isPaused ? 1f : 0f,
-            DepthValid = hasSceneDepth ? 1f : 0f,
+            DepthValid = hasSceneDepth ? 1f : 0f, ColorBlendSpace = linearBlendSpace ? 1f : 0f,
             BloomParams = new Vector4(runtime.BloomIntensity, runtime.BloomThreshold, runtime.BloomKnee, runtime.BloomScatter),
             PackParam0 = runtime.PackParam0,
             PackParam1 = runtime.PackParam1,

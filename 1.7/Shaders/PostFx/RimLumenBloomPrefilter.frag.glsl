@@ -1,4 +1,6 @@
 #version 450
+#include "../RimLumen/RimLumenColorSpace.glsl"
+#include "RimLumenPackUniforms.glslinc"
 layout(set = 0, binding = 0) uniform sampler2D sourceImage;
 // Vanilla/third-party additive glow copies; the scene already shows their core, so they only feed bloom.
 layout(set = 0, binding = 1) uniform sampler2D glowImage;
@@ -26,5 +28,7 @@ void main()
     // Glow copies hold only additive emissive content drawn into the 8-bit scene, so each copy stays at or below 1
     // and a threshold would remove them entirely; they bloom in full and the threshold applies to hdr only.
     vec3 glow = sanitizeHdr(texture(glowImage, uv).rgb);
+    // Glow copies are stored-space scene draws; a Linear frame blooms in linear radiance, so decode them first.
+    if (ubo.ColorBlendSpace > 0.5) glow = lumenDecodeStored(glow);
     outColor = vec4(color * contribution + glow, 0.0);
 }

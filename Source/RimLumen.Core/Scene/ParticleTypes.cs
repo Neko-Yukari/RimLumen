@@ -2,27 +2,33 @@ using System.Numerics;
 
 namespace RimLumen.Core.Scene;
 
-/// <summary>One billboard corner submitted to the HDR pass.</summary>
+/// <summary>
+/// One billboard corner submitted to the HDR pass. <see cref="Color"/> is the straight authored colour;
+/// <see cref="HdrGain"/> (<c>HdrIntensity</c> times the runtime intensity multiplier) multiplies RGB only after
+/// the shader's colour-space conversion. RadialUv and HdrGain are contiguous: they upload as one float3 attribute.
+/// </summary>
 public readonly struct ParticleVertex
 {
     public readonly Vector3 Position;
     public readonly Vector2 Uv;
     public readonly Vector4 Color;
     public readonly Vector2 RadialUv;
+    public readonly float HdrGain;
 
-    public ParticleVertex(Vector3 position, Vector2 uv, Vector4 color, Vector2 radialUv)
+    public ParticleVertex(Vector3 position, Vector2 uv, Vector4 color, Vector2 radialUv, float hdrGain)
     {
         Position = position;
         Uv = uv;
         Color = color;
         RadialUv = radialUv;
+        HdrGain = hdrGain;
     }
 }
 
 /// <summary>
 /// Read-only snapshot of one live L1 particle. Values are the post-integration state of the last
-/// <c>CaptureMainThread</c>; <see cref="Color"/> already includes StartColor, the colour
-/// curve, <c>HdrIntensity</c> and the runtime intensity multiplier, and <see cref="Size"/> already
+/// <c>CaptureMainThread</c>; <see cref="Color"/> is StartColor times the colour curve (the scalar
+/// <c>HdrIntensity</c> gain travels separately as <see cref="ParticleVertex.HdrGain"/>), and <see cref="Size"/> already
 /// includes StartSize, the size curve and the emitter's determinant-based world size scale.
 /// </summary>
 public struct CpuParticle

@@ -21,6 +21,7 @@ layout(set = 2, binding = 2) uniform sampler2D _LumenSceneDepth; // @default = w
 layout(location = 0) in vec2 uv;
 layout(location = 1) in vec4 color;
 layout(location = 2) in vec2 radialUv;
+layout(location = 3) in float hdrGain;
 layout(location = 0) out vec4 outColor;
 
 float eyeDistance(float depth)
@@ -52,6 +53,8 @@ void main()
     if (c.a <= 0.0)
         discard;
     c = lumenColorForBlendSpace(c, lumen._LumenColor.z > 0.5);
+    // Scalar radiance gain multiplies the blend-space colour, so no sRGB transfer ever raises or crushes it.
+    c.rgb *= hdrGain;
     if (lumen._LumenDraw.y > 0.5)
         c.rgb *= c.a;
     outColor = c;

@@ -1,0 +1,25 @@
+#ifndef RIMLUMEN_PACK_UNIFORMS_INCLUDED
+#define RIMLUMEN_PACK_UNIFORMS_INCLUDED
+
+// C# ShaderPackUniforms, 208 bytes std140. ColorBlendSpace: 0 Legacy (hdr/bloom in stored units), 1 Linear.
+layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
+{
+    mat4 InvViewProjection;
+    vec4 ScreenAndMapSize;
+    float GameSeconds;
+    float RealSeconds;
+    float SkyGlow;
+    float ZoomRootSize;
+    float HasHdrDraws;
+    float HasSceneDepth;
+    float HasMapLightField;
+    float IsPaused;
+    float DepthValid;
+    float GameDeltaSeconds;
+    float RealDeltaSeconds;
+    float ColorBlendSpace;
+    vec4 BloomParams;
+    vec4 PackParams[4];
+} ubo;
+
+#endif

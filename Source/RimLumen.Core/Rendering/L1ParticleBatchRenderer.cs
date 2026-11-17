@@ -29,7 +29,8 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
         new(VertexAttributeSemantic.Position, VertexAttributeFormat.Float32, 3, 0, 0),
         new(VertexAttributeSemantic.TexCoord0, VertexAttributeFormat.Float32, 2, 0, 12),
         new(VertexAttributeSemantic.Color, VertexAttributeFormat.Float32, 4, 0, 20),
-        new(VertexAttributeSemantic.TexCoord1, VertexAttributeFormat.Float32, 2, 0, 36)
+        // ParticleVertex.RadialUv followed by HdrGain.
+        new(VertexAttributeSemantic.TexCoord1, VertexAttributeFormat.Float32, 3, 0, 36)
     };
     private static readonly int TintPropertyId = Shader.PropertyToID("_LumenMaterialTint");
     private static readonly int ColorPropertyId = Shader.PropertyToID("_LumenColor");

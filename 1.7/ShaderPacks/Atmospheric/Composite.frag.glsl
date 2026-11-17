@@ -1,4 +1,5 @@
 #version 450
+#include "../../Shaders/RimLumen/RimLumenColorSpace.glsl"
 layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 {
     mat4 InvViewProjection;
@@ -14,7 +15,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float DepthValid;
     float GameDeltaSeconds;
     float RealDeltaSeconds;
-    float Padding;
+    float ColorBlendSpace;
     vec4 BloomParams;
     vec4 PackParams[4];
 } ubo;
@@ -63,6 +64,14 @@ void main()
     vec3 hue = hdrAccum / max(peak, 0.00001);
     vec3 mappedHdr = mix(hue, vec3(1.0), desat) * (1.0 - exp(-peak));
 
-    vec3 finalRgb = baseWithFog * (1.0 - hdr.a) + mappedHdr;
-    outColor = vec4(finalRgb, 1.0);
+    // Legacy, or a Linear pixel with no effect: the graded scene exactly as Legacy writes it.
+    if (ubo.ColorBlendSpace < 0.5 || (hdr == vec4(0.0) && bloom == vec3(0.0)))
+    {
+        outColor = vec4(baseWithFog * (1.0 - hdr.a) + mappedHdr, 1.0);
+        return;
+    }
+    // Linear: the scene grade stays in stored units (unchanged without effects); the linear-radiance layer goes over
+    // it in linear light, so coverage weights radiance instead of its sRGB encoding.
+    float a = clamp(hdr.a, 0.0, 1.0);
+    outColor = vec4(lumenEncodeStored(max(lumenDecodeStored(baseWithFog) * (1.0 - a) + mappedHdr, vec3(0.0))), 1.0);
 }

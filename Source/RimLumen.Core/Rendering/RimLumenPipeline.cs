@@ -164,7 +164,7 @@ internal sealed class RimLumenPipeline : IDisposable
                     new Vector4(proj.M33, proj.M34, proj.M43, proj.M44));
             }
             if (ReferenceEquals(contributor, LumenSceneBootstrap.Service))
-                LightPool.Submit(LumenSceneBootstrap.Service.Lights);
+                LightPool.Stage(captureIndex, LumenSceneBootstrap.Service.Lights);
         }
     }
 
@@ -178,22 +178,25 @@ internal sealed class RimLumenPipeline : IDisposable
         var mesh = new MeshDrawFrame(timing.FrameNumber, view, MeshDrawFrame.RentList(), MeshDrawFrame.RentList(), Vector3.UnitY);
         // The vanilla scene keeps drawing the original glow; these copies only feed bloom and the `glow` pack input.
         var glowMesh = new MeshDrawFrame(timing.FrameNumber, view, MeshDrawFrame.RentList(), MeshDrawFrame.RentList(), Vector3.UnitY);
+        // Light-pool accumulation quads, drawn into their own target at the queue-3101 split.
+        var lightMesh = new MeshDrawFrame(timing.FrameNumber, view, MeshDrawFrame.RentList(), MeshDrawFrame.RentList(), Vector3.UnitY);
         try
         {
-            Captured = CaptureFrame(in timing, snapshot, mesh, glowMesh);
+            Captured = CaptureFrame(in timing, snapshot, mesh, glowMesh, lightMesh);
             return Captured;
         }
         catch (Exception)
         {
             mesh.Dispose();
             glowMesh.Dispose();
+            lightMesh.Dispose();
             throw;
         }
     }
 
-    // Ensures: a PipelineFrame owning mesh and glowMesh, or null after disposing both when the frame is skipped.
+    // Ensures: a PipelineFrame owning mesh, glowMesh and lightMesh, or null after disposing them when the frame is skipped.
     private PipelineFrame? CaptureFrame(in FrameTiming timing, MeshDrawSubmissionSnapshot snapshot, MeshDrawFrame mesh,
-        MeshDrawFrame glowMesh)
+        MeshDrawFrame glowMesh, MeshDrawFrame lightMesh)
     {
         List<FinalDrawItem> draws = mesh.Draws;
         List<FinalDrawItem> glowDraws = glowMesh.Draws;
@@ -265,6 +268,7 @@ internal sealed class RimLumenPipeline : IDisposable
         foreach (ILumenFrameContributor contributor in contributors)
             if (contributor is ILumenHdrDrawAppender appender)
                 appender.AppendHdrDraws(captureIndex, draws, maker, snapshot.PropertyArena, draws.Count, DepthProxy);
+        LightPool.AppendDraws(lightMesh.Draws, maker, snapshot.PropertyArena, captureIndex);
 
         ShaderPackSpec activePack = RimLumenRenderHost.ActiveShaderPack;
         bool runOnEmptyFrames = activePack.RunOnEmptyFrames;
@@ -283,6 +287,7 @@ internal sealed class RimLumenPipeline : IDisposable
         {
             mesh.Dispose();
             glowMesh.Dispose();
+            lightMesh.Dispose();
             RimLumenRenderHost.SetFrameCapabilities(false, false);
             return null;
         }
@@ -317,9 +322,10 @@ internal sealed class RimLumenPipeline : IDisposable
             hasSceneDepth,
             hasMapLightField,
             isPaused,
+            colorBlendSpace == LumenColorBlendSpace.Linear,
             in rtParams);
 
-        return new PipelineFrame(captureIndex, mesh, glowMesh, contributors, depthParams, mapIndex, renderHdr,
+        return new PipelineFrame(captureIndex, mesh, glowMesh, lightMesh, contributors, depthParams, mapIndex, renderHdr,
             hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms, glowGroups, earlyWork, colorBlendSpace);
     }
 
@@ -373,6 +379,7 @@ internal sealed class PipelineFrame(
     ulong index,
     MeshDrawFrame mesh,
     MeshDrawFrame glowMesh,
+    MeshDrawFrame lightMesh,
     ILumenFrameContributor[] contributors,
     Vector4 depthParams,
     int mapIndex,
@@ -395,6 +402,8 @@ internal sealed class PipelineFrame(
     internal ulong Index { get; } = index;
     internal MeshDrawFrame Mesh { get; } = mesh;
     internal MeshDrawFrame GlowMesh { get; } = glowMesh;
+    internal MeshDrawFrame LightMesh { get; } = lightMesh;
+    internal bool HasLightPools => LightMesh.Draws.Count > 0;
     internal bool HasGlowDraws => (GlowGroupsCaptured & GlowGroupMask.Early) != 0;
     internal GlowGroupMask GlowGroupsCaptured { get; } = glowGroups;
     internal bool ShouldSplit(GlowGroup group) => GlowGroups.ShouldSplit(group, GlowGroupsCaptured, earlyWork, BloomMipLevels);
@@ -405,5 +414,6 @@ internal sealed class PipelineFrame(
     {
         Mesh.Dispose();
         GlowMesh.Dispose();
+        LightMesh.Dispose();
     }
 }

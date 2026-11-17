@@ -9,7 +9,7 @@ layout(location = 0) out vec4 outColor;
 
 vec3 emission(vec2 at)
 {
-    return sanitizeHdr(texture(hdrImage, at).rgb) + sanitizeHdr(texture(glowImage, at).rgb);
+    return sanitizeHdr(texture(hdrImage, at).rgb) + glowInBlendSpace(sanitizeHdr(texture(glowImage, at).rgb));
 }
 
 void main()

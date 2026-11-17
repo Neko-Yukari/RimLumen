@@ -164,9 +164,9 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
   例如 `[[0, 0], [0.5, 1], [0.5, 2], [0.5, 3], [1, 4]]`：接近 `0.5` 的左极限为 `1`，在 `0.5` 时为 `3`，随后从 `3` 向 `4` 插值。两个重复帧同样适用该规则。来源：[RimUnity `AnimationCurve.cs:23,30-35`，固定版本 `45ca90987f7d3721715b45c021cab986ee14c468`](https://github.com/chezhou9413/RimUnity/blob/45ca90987f7d3721715b45c021cab986ee14c468/Source/RimUnity/Animation/AnimationCurve.cs#L23-L35)。
 
   粒子尺寸曲线由 L1 和 L2 使用相同的 64 点查找表（LUT）：采样点为 `i/63`（`i = 0…63`），包含两端，再对相邻样本插值。阶跃可能在宽度为 `1/63` 的采样区间内被平滑，不能保证精确保留。点光曲线按秒直接求值，不使用该粒子查找表。
-- **材质颜色**：`materialTint` 默认为 `(1,1,1,1)`，与 `startColor` 和渐变遵循上述颜色范围；`colorSpace` 为 `Stored`（默认）或 `Linear`。令 `vertex = startColor × gradient`，并仅对其 RGB 乘以 `hdrIntensity × intensity`。Stored 的 RGB 为 `vertex × tint × texel`；Linear 的 RGB 为 `E(vertex × D(tint) × (贴图为 sRGB ? D(texel) : texel))`。`vertex` 不解码；`D` / `E` 分别为 sRGB 解码 / 编码，在非负值上延伸至大于 1，不截断。alpha 始终为三个原始 alpha 的乘积，再应用软粒子覆盖度和混合模式要求的预乘。逐分量计算中，`D(x) = x/12.92`（`x <= 0.04045`），否则为 `((x+0.055)/1.055)^2.4`；`E(x) = 12.92*x`（`x <= 0.0031308`），否则为 `1.055*x^(1/2.4)-0.055`。依据 RimUnity 固定版本 `45ca90987f7d3721715b45c021cab986ee14c468` 的 `Source/Shared/ShaderColorSpace.cs:69-103,122-134`。此处只描述材质计算，不改变玩家混合空间。
+- **材质颜色**：`materialTint` 默认为 `(1,1,1,1)`，与 `startColor` 和渐变遵循上述颜色范围；`colorSpace` 为 `Stored`（默认）或 `Linear`。令 `vertex = startColor × gradient`。Stored 的 RGB 为 `vertex × tint × texel`；Linear 的 RGB 为 `E(vertex × D(tint) × (贴图为 sRGB ? D(texel) : texel))`。`vertex` 不解码。标量增益 `g = hdrIntensity × intensity` 在材质颜色转入本帧混合空间之后才乘到 RGB 上（Legacy 为 `g × rgb`，Linear 混合空间为 `g × D(rgb)`），不经过任何 sRGB 传递函数放大或压缩；`D` / `E` 分别为 sRGB 解码 / 编码，在非负值上延伸至大于 1，不截断。alpha 始终为三个原始 alpha 的乘积，再应用软粒子覆盖度和混合模式要求的预乘。逐分量计算中，`D(x) = x/12.92`（`x <= 0.04045`），否则为 `((x+0.055)/1.055)^2.4`；`E(x) = 12.92*x`（`x <= 0.0031308`），否则为 `1.055*x^(1/2.4)-0.055`。依据 RimUnity 固定版本 `45ca90987f7d3721715b45c021cab986ee14c468` 的 `Source/Shared/ShaderColorSpace.cs:69-103,122-134`。此处只描述材质计算，不改变玩家混合空间。
 - **渐变（`colorOverLifetime`）**：支持颜色数组（单色常量）或停靠点数组 `[[time, [r,g,b,a]], ...]` 或对象 `{ "stops": [{ "time": 0, "color": [r,g,b,a] }] }`，要求 `time` 严格递增。
-- **`pointLight`**：JSON 下颜色键为 `color`（RGBA），半径键为 `glowRadius`（单位：地图格）。点光是纯视觉光池，不写入原版 `GlowGrid`，不影响心情、种植和工作速度。圆心取节点世界位置在地面上的投影，半径 `R = glowRadius`，衰减公式为 `w = (1 - (d/R)^2)^2`，在 `d >= R` 处精确为 `0`。光源项 `L = color × intensityOverTime × w` 使场景变为 `scene × (1 + L)`，绘制在原版光照层之后，迷雾、黑暗和屋顶照常覆盖。光池每帧跟随节点。`intensity` 和曲线关键帧值须有限且 `>= 0`，无上限；有效强度 `<= 0` 时不绘制。`overlightRadius` 已移除，JSON 和 XML 解析均直接拒绝。需要游戏逻辑光时，见第七章第 3 节的 `CompRimLumenLogicalLight`。
+- **`pointLight`**：JSON 下颜色键为 `color`（RGBA），半径键为 `glowRadius`（单位：地图格）。点光是纯视觉光池，不写入原版 `GlowGrid`，不影响心情、种植和工作速度。圆心取节点世界位置在地面上的投影，半径 `R = glowRadius`，衰减公式为 `w = (1 - (d/R)^2)^2`，在 `d >= R` 处精确为 `0`。各光源项 `L = color × intensityOverTime × w` 在重叠处线性相加，总和只作用一次：场景变为 `scene × (1 + C(ΣL))`，其中 `C` 在峰值不超过 1 时为恒等，超过后峰值保持 1 并沿色相趋白，因此重叠处最多提亮 2 倍。绘制在原版光照层之后，迷雾、黑暗和屋顶照常覆盖。推荐 `intensity`：常亮灯具 `0.5–1.2`，短促强闪光 `1.0–2.0`；不要把原版 `GlowGrid` 的 `3.6` 尺度照搬到视觉光池上。光池每帧跟随节点。`intensity` 和曲线关键帧值须有限且 `>= 0`，无上限；有效强度 `<= 0` 时不绘制。`overlightRadius` 已移除，JSON 和 XML 解析均直接拒绝。需要游戏逻辑光时，见第七章第 3 节的 `CompRimLumenLogicalLight`。
 - **力场 `strength`**：JSON、XML 与 C# 均须显式提供；省略时拒绝资产，不使用默认值。
 - **`timelineEvents` / `states` / `initialState` / `stopState`**：见下一节「状态机」。
 - **粒子密度设置**：公开 setter `RimLumenRenderHost.ParticleDensityScale` 接受范围为 `0.1`～`1.0`；范围外的有限值静默截到边界，不记录日志，NaN 和正负无穷抛出 `ArgumentOutOfRangeException`。设置滑条连续取值，显示时四舍五入为整数百分比。密度 `1` 精确；截断后的密度为 `d` 时，脉冲有效密度为 `floor(d * 65536) / 65536`。
@@ -494,7 +494,7 @@ vec4 layerColor = lumenColorForBlendSpace(storedColor, linearBlendSpace);
 if (premultipliedBlend) layerColor.rgb *= layerColor.a;
 ```
 
-Linear 模式先对直通材质 RGB 解码，再进行 alpha / 硬件混合；宿主在 group 0 的 ShaderPack DAG 前对累积的原生 HDR 层编码一次。AlphaBlend 与 Premultiplied 遵循同一规则，alpha 始终表示覆盖度。只有 alpha 为 1 且目标层为空时与 Legacy 相等：例如空层上 `c=0.5, a=0.5`，Legacy 得 `0.25`，Linear 约为 `0.36078`；这是公式示例，并非实测像素。光影包的 `hdr`、`glow` 和 `scene` 仍为 Stored；原版 glow 和晚组 1～3 不变。需要 Linear 转换时，每个提交槽位按需额外分配一张全分辨率 RGBA16F 图像，并安全保留至目标退役。
+Linear 模式先对直通材质 RGB 解码，再进行 alpha / 硬件混合。原生 HDR 层和 group 0 宿主 Bloom 保持线性辐射（宿主 Bloom prefilter 先解码 Stored 的 glow 拷贝）；合成时在线性光下叠到解码后的场景上，只编码一次：`E(compress(D(scene) × (1 - a) + hdr + bloom))`，其中 `compress` 在峰值不超过 1 时为恒等。`hdr` 与 `bloom` 均为零的像素保持场景不变。AlphaBlend 与 Premultiplied 遵循同一规则，alpha 始终表示覆盖度。例如 `c=0.5, a=0.5` 叠在 `0.5` 灰场景上，两种模式都得 `0.5`；叠在黑色上，Legacy 得 `0.25`，Linear 约为 `0.36078`；这是公式示例，并非实测像素。光影包的 `hdr` 和 `bloom` 跟随 `ubo.ColorBlendSpace`，`glow` 和 `scene` 仍为 Stored，晚组 1～3 不变。自定义光影包在 Linear 模式下须自行完成同样的解码、混合、编码；不再额外分配图像。
 
 ## 七、贴图注册与兼容注意事项
 
@@ -821,7 +821,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float DepthValid;       // 112
     float GameDeltaSeconds; // 116: TicksThisFrame / 60; skipped update => 0
     float RealDeltaSeconds; // 120: host frame delta
-    float Padding;          // 124
+    float ColorBlendSpace;  // 124: 0 Legacy（hdr/bloom 为 stored 值），1 Linear（线性辐射）
     vec4 BloomParams;       // 128: intensity, threshold, knee, scatter
     vec4 PackParams[4];     // 144: 4 行，每行 16 字节，共 64 字节
 } ubo;
@@ -955,7 +955,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float DepthValid;
     float GameDeltaSeconds;
     float RealDeltaSeconds;
-    float Padding;
+    float ColorBlendSpace;
     vec4 BloomParams;
     vec4 PackParams[4];
 } ubo;

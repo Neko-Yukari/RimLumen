@@ -398,9 +398,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             float blend = samplePosition - lower;
             particle.Size = particle.StartSize * float.Lerp(a.Size.X, b.Size.X, blend)
                 * (spec.WorldSpaceSimulation ? 1f : ParticleAppearanceMath.SizeScale(emitter.Transform.World));
-            Vector4 color = spec.StartColor * Vector4.Lerp(a.Color, b.Color, blend);
-            float intensity = spec.HdrIntensity * emitter.IntensityMultiplier;
-            particle.Color = new Vector4(color.X * intensity, color.Y * intensity, color.Z * intensity, color.W);
+            particle.Color = spec.StartColor * Vector4.Lerp(a.Color, b.Color, blend);
+            float gain = spec.HdrIntensity * emitter.IntensityMultiplier;
             int tiles = spec.FlipbookTilesX * spec.FlipbookTilesY;
             int frame = (int)MathF.Floor(age * spec.FlipbookCycles * tiles);
             particle.FlipbookFrame = tiles > 1 && spec.FlipbookCycles > 1f
@@ -442,10 +441,10 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             if (activeMapIndex >= 0 && emitter.MapIndex >= 0 && emitter.MapIndex != activeMapIndex) continue;
             int slot = groupCursors[emitter.Group]++;
             int vertex = slot * 4, index = slot * 6;
-            vertices[vertex] = new(position - right - up, new Vector2(u0, v0), particle.Color, Vector2.Zero);
-            vertices[vertex + 1] = new(position + right - up, new Vector2(u1, v0), particle.Color, Vector2.UnitX);
-            vertices[vertex + 2] = new(position + right + up, new Vector2(u1, v1), particle.Color, Vector2.One);
-            vertices[vertex + 3] = new(position - right + up, new Vector2(u0, v1), particle.Color, Vector2.UnitY);
+            vertices[vertex] = new(position - right - up, new Vector2(u0, v0), particle.Color, Vector2.Zero, gain);
+            vertices[vertex + 1] = new(position + right - up, new Vector2(u1, v0), particle.Color, Vector2.UnitX, gain);
+            vertices[vertex + 2] = new(position + right + up, new Vector2(u1, v1), particle.Color, Vector2.One, gain);
+            vertices[vertex + 3] = new(position - right + up, new Vector2(u0, v1), particle.Color, Vector2.UnitY, gain);
             indices[index] = (uint)vertex;
             indices[index + 1] = (uint)vertex + 1;
             indices[index + 2] = (uint)vertex + 2;

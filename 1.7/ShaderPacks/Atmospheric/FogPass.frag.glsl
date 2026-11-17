@@ -14,7 +14,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float DepthValid;
     float GameDeltaSeconds;
     float RealDeltaSeconds;
-    float Padding;
+    float ColorBlendSpace;
     vec4 BloomParams;
     vec4 PackParams[4];
 } ubo;

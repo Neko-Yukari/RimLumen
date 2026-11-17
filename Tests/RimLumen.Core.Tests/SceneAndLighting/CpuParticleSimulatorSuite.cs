@@ -568,7 +568,8 @@ public static class CpuParticleSimulatorSuite
         sim.SetEmitterParams(id, false, 1f, 2f);
         sim.EmitBurst(id, 1);
         Step(sim, 0f);
-        Check(sim.Vertices[0].Color == new Vector4(8f, 16f, 24f, 0.4f), "HDR scales RGB only, never coverage alpha");
+        Check(sim.Vertices[0].Color == new Vector4(1f, 2f, 3f, 0.4f) && sim.Vertices[0].HdrGain == 8f,
+            "Vertex colour stays straight; HDR intensity times the multiplier travels as a separate RGB-only gain");
     }
 
     [LumenFact]

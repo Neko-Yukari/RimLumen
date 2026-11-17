@@ -15,6 +15,13 @@ void main()
     hdr.rgb = sanitizeHdr(hdr.rgb);
     vec3 bloom = texture(bloomImage, uv).rgb * ubo.BloomParams.x;
     vec3 streak = texture(streakImage, uv).rgb;
+    bool linearBlend = ubo.ColorBlendSpace > 0.5;
+    // Linear: empty pixels leave the scene bit-exact.
+    if (linearBlend && hdr == vec4(0.0) && bloom == vec3(0.0) && streak == vec3(0.0))
+    {
+        outColor = vec4(0.0);
+        return;
+    }
 
     float tintBias = clamp(ubo.PackParams[0][2], -1.0, 1.0);
     vec3 coolTint = vec3(0.65, 0.85, 1.25);
@@ -30,5 +37,14 @@ void main()
     float desat = shoulder / (shoulder + 3.2);
     vec3 hue = color / max(peak, 0.00001);
     vec3 mapped = mix(hue, vec3(1.0), desat) * (1.0 - exp(-peak * 1.05));
-    outColor = vec4(mapped, hdr.a);
+    if (!linearBlend)
+    {
+        outColor = vec4(mapped, hdr.a);
+        return;
+    }
+    // Linear: the tone-mapped layer goes over the decoded scene in linear light and is written opaquely.
+    // mapped -> 0 as hdr, bloom, streak -> 0, so the result stays continuous with the untouched scene.
+    vec3 scene = lumenDecodeStored(texture(sceneImage, uv).rgb);
+    float a = clamp(hdr.a, 0.0, 1.0);
+    outColor = vec4(lumenEncodeStored(max(scene * (1.0 - a) + mapped, vec3(0.0))), 1.0);
 }
