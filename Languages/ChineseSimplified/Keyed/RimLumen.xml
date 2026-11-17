@@ -27,7 +27,7 @@
   <RimLumen_FeaturePasses>{0} 趟渲染</RimLumen_FeaturePasses>
   <RimLumen_PackSummary>作者：{0}  |  特性：{1}</RimLumen_PackSummary>
   <RimLumen_PackDirectory>第三方光影包可放入模组的 ShaderPacks/ 或本地目录：{0}</RimLumen_PackDirectory>
-  <RimLumen_EffectAssetsReloaded>RimLumen 效果 JSON 重新扫描完成：载入 {0} 个，失败 {1} 个。XML LumenEffectDef 无法热重载，修改后需重启游戏。仅替换本次扫描得到的 ID；与 XML 或代码注册效果同名的裸 ID 会被 JSON 覆盖。已播放实例保持不变，停止后重新播放即可使用修改后的资产。</RimLumen_EffectAssetsReloaded>
+  <RimLumen_EffectAssetsReloaded>RimLumen 效果资产重载完成：载入 {0} 个 JSON 文件，失败 {1} 个。本次扫描得到的 ID 会替换同名资产，包括代码注册的资产。失效的扫描键会被释放；无关的代码注册、旧扫描键后来被代码覆盖的资产和已播放实例保持不变。已加载的 XML LumenEffectDef 会复用内存中的 Def，不会重读文件；修改 XML 后需重启游戏。</RimLumen_EffectAssetsReloaded>
   <RimLumen_BloomIntensity>泛光强度</RimLumen_BloomIntensity>
   <RimLumen_BloomIntensityTooltip>控制 HDR 发光体与粒子泛光的整体叠加强度。</RimLumen_BloomIntensityTooltip>
   <RimLumen_BloomThreshold>起辉阈值</RimLumen_BloomThreshold>

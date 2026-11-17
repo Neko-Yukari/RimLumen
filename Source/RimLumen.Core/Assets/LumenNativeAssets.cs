@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Numerics;
 using System.Text;
 using System.Text.Json;
@@ -1638,6 +1639,12 @@ public static class LumenJsonAssetLoader
     private static readonly string[] ColorComponents = { "r", "g", "b", "a" };
 }
 
+internal readonly record struct LumenScanRoot(string PackageId, string DataDirectory);
+
+internal readonly record struct LumenAliasChange(string EffectId, string? OldSource, string? NewSource);
+
+internal readonly record struct LumenAssetReloadResult(int Loaded, int Failed, IReadOnlyList<LumenAliasChange> AliasChanges);
+
 /// <summary>
 /// Discovers native RimLumen assets across loaded mods (<c>DefDatabase&lt;LumenEffectDef&gt;</c> and <c>1.7/Data/RimLumen/**/*.lumen.json</c>).
 /// </summary>
@@ -1685,7 +1692,7 @@ public static class LumenModAssetScanner
                 continue;
             }
 
-            RegisterAliases(catalog, packageId, relativeId, asset);
+            RegisterAliases(catalog, packageId, relativeId, asset, $"{packageId}:{Path.GetFullPath(file)}");
             registered++;
         }
 
@@ -1696,17 +1703,26 @@ public static class LumenModAssetScanner
     public static int ScanRunningMods(InMemoryAssetCatalog catalog)
     {
         ArgumentNullException.ThrowIfNull(catalog);
-        int registered = 0;
-        foreach (ModContentPack mod in LoadedModManager.RunningMods)
+        var counts = ScanSources(catalog, RunningModRoots(), LoadedEffectDefs());
+        return counts.JsonLoaded + counts.DefsLoaded;
+    }
+
+    // Ensures: scans roots in order, then already-loaded Defs; JsonLoaded counts JSON files only.
+    internal static (int JsonLoaded, int DefsLoaded) ScanSources(InMemoryAssetCatalog catalog,
+        IReadOnlyList<LumenScanRoot> roots, IReadOnlyList<LumenEffectDef> loadedDefs,
+        Action<string, string, Exception>? onJsonError = null)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        int jsonLoaded = 0;
+        foreach (LumenScanRoot root in roots)
         {
-            string packageId = string.IsNullOrEmpty(mod.PackageIdPlayerFacing) ? mod.Name : mod.PackageIdPlayerFacing;
-            Action<string, Exception> report = (file, error) =>
-                Verse.Log.Error($"[RimLumen] Failed to load effect asset '{file}' from {packageId}: {error.Message}");
-            registered += ScanDirectory(catalog, packageId, Path.Combine(mod.RootDir, "1.7", "Data", "RimLumen"), report);
-            registered += ScanDirectory(catalog, packageId, Path.Combine(mod.RootDir, "Data", "RimLumen"), report);
+            string packageId = root.PackageId;
+            jsonLoaded += ScanDirectory(catalog, packageId, root.DataDirectory,
+                (file, error) => (onJsonError ?? DefaultJsonError)(packageId, file, error));
         }
 
-        foreach (LumenEffectDef def in DefDatabase<LumenEffectDef>.AllDefsListForReading)
+        int defsLoaded = 0;
+        foreach (LumenEffectDef def in loadedDefs)
         {
             if (def is null)
             {
@@ -1717,44 +1733,117 @@ public static class LumenModAssetScanner
             try
             {
                 EffectAsset asset = def.ToEffectAsset(packageId);
-                RegisterAliases(catalog, packageId, asset.EffectId, asset);
-                registered++;
+                RegisterAliases(catalog, packageId, asset.EffectId, asset, $"{packageId}:LumenEffectDef/{def.defName}");
+                defsLoaded++;
             }
             catch (InvalidDataException error)
             {
-                Verse.Log.Error($"[RimLumen] Failed to load effect def '{def.defName}' from {packageId}: {error.Message}");
+                DefaultDefError(packageId, def.defName, error);
             }
         }
 
-        return registered;
+        return (jsonLoaded, defsLoaded);
     }
+
+    // Ensures: explicit reload of the current JSON sources and already-loaded Defs; Loaded/Failed count JSON files.
+    internal static LumenAssetReloadResult ReloadRunningModAssets(InMemoryAssetCatalog catalog)
+    {
+        LumenAssetReloadResult result = ReloadEffectAssets(catalog, RunningModRoots(), LoadedEffectDefs());
+        foreach (LumenAliasChange change in result.AliasChanges)
+        {
+            Log.Warning($"[RimLumen] Bare effect id '{change.EffectId}' reload winner changed from " +
+                $"{change.OldSource ?? "none"} to {change.NewSource ?? "none"}.");
+        }
+
+        return result;
+    }
+
+    internal static LumenAssetReloadResult ReloadEffectAssets(InMemoryAssetCatalog catalog,
+        IReadOnlyList<LumenScanRoot> roots, IReadOnlyList<LumenEffectDef> loadedDefs)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        var rebuilt = new InMemoryAssetCatalog();
+        int failed = 0;
+        var counts = ScanSources(rebuilt, roots, loadedDefs,
+            onJsonError: (packageId, file, error) =>
+            {
+                failed++;
+                DefaultJsonError(packageId, file, error);
+            });
+        LumenScannedAsset[] fresh = rebuilt.GetScannedSnapshot();
+        var freshByKey = fresh.ToDictionary(entry => entry.EffectId, StringComparer.Ordinal);
+        LumenScannedAsset[] previous = catalog.GetScannedSnapshot();
+        var changes = new List<LumenAliasChange>();
+        foreach (LumenScannedAsset old in previous.OrderBy(entry => entry.EffectId, StringComparer.Ordinal))
+        {
+            if (old.EffectId.Contains(':')) continue;
+            string? newSource = freshByKey.TryGetValue(old.EffectId, out LumenScannedAsset next) ? next.Source : null;
+            if (!string.Equals(old.Source, newSource, StringComparison.Ordinal))
+            {
+                changes.Add(new LumenAliasChange(old.EffectId, old.Source, newSource));
+            }
+        }
+
+        foreach (LumenScannedAsset entry in freshByKey.Values.OrderBy(entry => entry.EffectId, StringComparer.Ordinal))
+        {
+            catalog.RegisterScanned(entry.Asset, entry.Source);
+        }
+
+        foreach (LumenScannedAsset old in previous)
+        {
+            if (!freshByKey.ContainsKey(old.EffectId)) catalog.Unregister(old.EffectId);
+        }
+
+        return new LumenAssetReloadResult(counts.JsonLoaded, failed, changes);
+    }
+
+    private static List<LumenScanRoot> RunningModRoots()
+    {
+        var roots = new List<LumenScanRoot>();
+        foreach (ModContentPack mod in LoadedModManager.RunningMods)
+        {
+            string packageId = string.IsNullOrEmpty(mod.PackageIdPlayerFacing) ? mod.Name : mod.PackageIdPlayerFacing;
+            roots.Add(new LumenScanRoot(packageId, Path.Combine(mod.RootDir, "1.7", "Data", "RimLumen")));
+            roots.Add(new LumenScanRoot(packageId, Path.Combine(mod.RootDir, "Data", "RimLumen")));
+        }
+
+        return roots;
+    }
+
+    private static IReadOnlyList<LumenEffectDef> LoadedEffectDefs() => DefDatabase<LumenEffectDef>.AllDefsListForReading;
+
+    private static void DefaultJsonError(string packageId, string file, Exception error) =>
+        Log.Error($"[RimLumen] Failed to load effect asset '{file}' from {packageId}: {error.Message}");
+
+    private static void DefaultDefError(string packageId, string defName, Exception error) =>
+        Log.Error($"[RimLumen] Failed to load effect def '{defName}' from {packageId}: {error.Message}");
 
     // Ensures: registers "<packageId>:<id>" plus the bare "<id>" short name for the asset's own id and for the
     //          file-relative id. Canonical (package-qualified) keys overwrite, so a mod rescan refreshes its own
     //          assets; bare short names (the asset's own id and the file-relative id) are first-writer-wins so a mod cannot
-    //          silently shadow another mod's id.
-    private static void RegisterAliases(InMemoryAssetCatalog catalog, string? packageId, string relativeId, EffectAsset asset)
+    //          silently shadow another mod's id. Every key records its source.
+    private static void RegisterAliases(InMemoryAssetCatalog catalog, string? packageId, string relativeId, EffectAsset asset, string source)
     {
         if (!catalog.TryResolveEffect(asset.EffectId, out _))
         {
-            catalog.Register(asset);
+            catalog.RegisterScanned(asset, source);
         }
 
         if (!string.IsNullOrEmpty(packageId))
         {
-            catalog.Register(Alias(asset, $"{packageId}:{asset.EffectId}"));
+            catalog.RegisterScanned(Alias(asset, $"{packageId}:{asset.EffectId}"), source);
         }
 
         if (!string.Equals(asset.EffectId, relativeId, StringComparison.Ordinal))
         {
             if (!catalog.TryResolveEffect(relativeId, out _))
             {
-                catalog.Register(Alias(asset, relativeId));
+                catalog.RegisterScanned(Alias(asset, relativeId), source);
             }
 
             if (!string.IsNullOrEmpty(packageId))
             {
-                catalog.Register(Alias(asset, $"{packageId}:{relativeId}"));
+                catalog.RegisterScanned(Alias(asset, $"{packageId}:{relativeId}"), source);
             }
         }
     }

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using LudeonTK;
 using RimLumen.Core.Api;
@@ -48,24 +47,7 @@ public static class LumenEffectDebugActions
     public static void ReloadEffectAssets()
     {
         LumenSceneBootstrap.EnsureInitialized();
-        var refreshed = new InMemoryAssetCatalog();
-        int loaded = 0;
-        int failed = 0;
-        foreach (ModContentPack mod in LoadedModManager.RunningMods)
-        {
-            string packageId = string.IsNullOrEmpty(mod.PackageIdPlayerFacing) ? mod.Name : mod.PackageIdPlayerFacing;
-            Action<string, Exception> report = (file, error) =>
-            {
-                failed++;
-                Log.Error($"[RimLumen] Failed to load effect asset '{file}' from {packageId}: {error.Message}");
-            };
-            loaded += LumenModAssetScanner.ScanDirectory(refreshed, packageId, Path.Combine(mod.RootDir, "1.7", "Data", "RimLumen"), report);
-            loaded += LumenModAssetScanner.ScanDirectory(refreshed, packageId, Path.Combine(mod.RootDir, "Data", "RimLumen"), report);
-        }
-
-        // Rescanning in a fresh catalog preserves first-writer short names across mods, then refreshes those names too.
-        foreach (EffectAsset asset in refreshed.GetSnapshot())
-            LumenSceneBootstrap.Catalog.Register(asset);
-        Messages.Message("RimLumen_EffectAssetsReloaded".Translate(loaded, failed), MessageTypeDefOf.TaskCompletion, historical: false);
+        LumenAssetReloadResult result = LumenModAssetScanner.ReloadRunningModAssets(LumenSceneBootstrap.Catalog);
+        Messages.Message("RimLumen_EffectAssetsReloaded".Translate(result.Loaded, result.Failed), MessageTypeDefOf.TaskCompletion, historical: false);
     }
 }

@@ -59,6 +59,10 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 1. **全限定 ID**：`Author.MyMod:Spells/Fireball`（始终指向你自己的资产，不会撞名）。如果 JSON 内声明了不同的 `effectId`，也会同时注册 `Author.MyMod:<effectId>`。
 2. **裸短名**：`Spells/Fireball`（以及 JSON 内的 `effectId`）。裸短名采用**先到先得**规则，后加载的模组不会静默覆盖先加载模组的同名短名。
 
+开发调试菜单中的「Reload effect assets」会按当前启用模组的顺序重建一次资产快照：先扫描 `1.7/Data/RimLumen/`，再扫描 `Data/RimLumen/`，最后加入已加载的 XML `LumenEffectDef`。本次扫描得到的 ID 会以新解析的不可变实例替换同名资产，包括代码注册的资产。文件被删除或解析失败时，仅释放仍由扫描拥有的旧 ID；裸短名按先到先得交给下一个仍存在的候选，日志会记录旧的来源与新的来源。无关的代码注册保持不变，旧扫描键后来被代码覆盖的也不会被删除；已播放实例继续使用其旧资产。该操作不会重读 XML 文件，修改 XML 后仍需重启游戏。
+
+使用 `RimUnityAssetProvider` 的调用方可再次调用 `RegisterPackageRoot`，即使路径未变也会清空延迟加载的目录和已翻译资产缓存。之后解析时会重新读取目录和资产；已取得的旧资产实例保持不变。
+
 ### 2. JSON 解析规则
 
 - 键名采用 camelCase，解析时**大小写不敏感**，允许 `//` 注释和尾逗号。

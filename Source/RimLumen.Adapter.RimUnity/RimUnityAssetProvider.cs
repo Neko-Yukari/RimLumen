@@ -15,13 +15,12 @@ public sealed class RimUnityAssetProvider : ILumenAssetProvider
     public RimUnityTextureBridge Textures { get; } = new();
     public int PackageCount => roots.Count;
 
-    // Catalogs are opened lazily so all shared blob owners can be registered first.
+    // Catalogs are opened lazily so all shared blob owners can be registered first. An explicit
+    // registration, including the same root, invalidates lazy catalogs and translated instances.
     public void RegisterPackageRoot(string packageId, string rimUnityDataDir)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(packageId);
-        string root = Path.GetFullPath(rimUnityDataDir);
-        if (roots.TryGetValue(packageId, out string? previous) && string.Equals(root, previous, StringComparison.OrdinalIgnoreCase)) return;
-        roots[packageId] = root;
+        roots[packageId] = Path.GetFullPath(rimUnityDataDir);
         catalogs.Clear();
         cache.Clear();
     }

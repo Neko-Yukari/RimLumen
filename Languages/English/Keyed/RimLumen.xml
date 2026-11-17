@@ -27,7 +27,7 @@
   <RimLumen_FeaturePasses>{0} passes</RimLumen_FeaturePasses>
   <RimLumen_PackSummary>Author: {0}  |  Features: {1}</RimLumen_PackSummary>
   <RimLumen_PackDirectory>Place third-party shader packs in a mod's ShaderPacks/ folder or in the local directory: {0}</RimLumen_PackDirectory>
-  <RimLumen_EffectAssetsReloaded>RimLumen effect JSON rescan: {0} loaded, {1} failed. XML LumenEffectDef changes cannot be hot-reloaded; restart the game to load them. Only IDs from this scan are replaced; a bare ID shared with an XML or code-registered effect is overwritten by JSON. Already-playing instances are unchanged; stop and play again to use edited assets.</RimLumen_EffectAssetsReloaded>
+  <RimLumen_EffectAssetsReloaded>RimLumen effect asset reload: {0} JSON files loaded, {1} failed. Fresh IDs replace same-named assets, including code registrations. Stale scanner-owned keys are released; unrelated code entries, later code overrides of stale keys and already-playing instances are unchanged. Already-loaded XML LumenEffectDef entries are reused, not re-read: edit XML files only with a game restart.</RimLumen_EffectAssetsReloaded>
   <RimLumen_BloomIntensity>Bloom intensity</RimLumen_BloomIntensity>
   <RimLumen_BloomIntensityTooltip>Controls the overall bloom contribution from HDR emitters and particles.</RimLumen_BloomIntensityTooltip>
   <RimLumen_BloomThreshold>Bloom threshold</RimLumen_BloomThreshold>

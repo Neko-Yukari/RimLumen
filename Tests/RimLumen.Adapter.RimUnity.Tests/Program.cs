@@ -39,6 +39,7 @@ internal static class Program
             ("PhaseA WotF Probe external handoff", IntegrationTests.WotfProbeMaterial),
             ("D20 per-particle lights ownership", TranslationTests.ParticleLights),
             ("Catalog required, gzip payloads, aliases, shared owner and traversal", FileTests.Catalog),
+            ("RimUnity same-root reload refreshes catalogs and translations", FileTests.Reload),
             ("RUTX DXT1/BC7 mips, gzip and malformed payloads", FileTests.Textures),
             ("Core assembly architectural independence", IntegrationTests.CoreIndependence),
         ];

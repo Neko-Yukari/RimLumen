@@ -59,6 +59,10 @@ Suppose your mod's `packageId` is `Author.MyMod` and the file is at `1.7/Data/Ri
 1. **Fully qualified ID**: `Author.MyMod:Spells/Fireball` (always points to your asset without collisions). If a different `effectId` is declared inside the JSON, `Author.MyMod:<effectId>` is also registered.
 2. **Bare short name**: `Spells/Fireball` (as well as the JSON's `effectId`). Bare short names are **first-writer-wins**; later-loaded mods will not silently overwrite another mod's bare short name.
 
+The development menu action **Reload effect assets** rebuilds one snapshot in current mod order: it scans `1.7/Data/RimLumen/`, then `Data/RimLumen/`, then adds the already-loaded XML `LumenEffectDef` entries. Every ID in the fresh scan replaces any same-named asset with a new immutable instance, including code-registered assets. When a file is deleted or fails to load, only its old scanner-owned IDs are released; a bare short name goes to the next surviving candidate under first-writer-wins, with the old and new sources logged. Unrelated code registrations remain unchanged, and later code overrides of stale scanned keys are not deleted; already-playing instances keep their old asset. The action does not re-read XML files, so XML edits still require a game restart.
+
+Callers using `RimUnityAssetProvider` can call `RegisterPackageRoot` again, even with the same path, to clear its lazy catalogs and translated-asset cache. The next resolution re-reads the catalog and asset; previously acquired instances remain unchanged.
+
 ### 2. JSON Parsing Rules
 
 - Keys use camelCase, are **case-insensitive**, and allow `//` comments and trailing commas.
