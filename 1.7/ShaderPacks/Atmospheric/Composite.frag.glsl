@@ -19,12 +19,14 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     vec4 BloomParams;
     vec4 PackParams[4];
 } ubo;
+#include "../../Shaders/PostFx/RimLumenDistortion.glslinc"
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
 layout(set = 0, binding = 1) uniform sampler2D bloomImage;
 layout(set = 0, binding = 2) uniform sampler2D sceneImage;
 layout(set = 0, binding = 3) uniform sampler2D fogBlurImage;
 layout(set = 0, binding = 4) uniform sampler2D mapLightField;
+layout(set = 0, binding = 6) uniform sampler2D distortionImage;
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 outColor;
 
@@ -37,7 +39,8 @@ vec3 sanitizeHdr(vec3 c)
 
 void main()
 {
-    vec4 scene = texture(sceneImage, uv);
+    // Atmospheric always writes the graded scene opaquely; the refracted scene is what gets graded.
+    vec4 scene = texture(sceneImage, lumenRefractedUv(distortionImage, uv));
     vec4 hdr = texture(hdrImage, uv);
     hdr.rgb = sanitizeHdr(hdr.rgb);
     vec3 bloom = texture(bloomImage, uv).rgb;

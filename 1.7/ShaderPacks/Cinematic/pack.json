@@ -65,7 +65,8 @@
         { "binding": 1, "source": "bloom" },
         { "binding": 2, "source": "scene" },
         { "binding": 3, "source": "streakV" },
-        { "binding": 4, "source": "adapt" }
+        { "binding": 4, "source": "adapt" },
+        { "binding": 6, "source": "distortion" }
       ]
     }
   ],

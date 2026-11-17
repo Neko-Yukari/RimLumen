@@ -135,16 +135,17 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         slot.Color.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
         // The layer stays in the frame's blend space; uniforms.ColorBlendSpace tells bloom and the composite which.
         RenderTexture hdrSource = slot.Color;
+        RenderTexture? distortion = owner.Distortion.Record(in ctx, payload.DistortionMesh, scene);
         ShaderPackSpec pack = owner.ShaderPack.Spec;
         try
         {
-            owner.ShaderPack.RecordOffscreen(in ctx, slot, hdrSource, slot.SceneSnapshot, in uniforms,
+            owner.ShaderPack.RecordOffscreen(in ctx, slot, hdrSource, slot.SceneSnapshot, distortion, in uniforms,
                 payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
             FrameContext composite = attachment.MakeFrameContext(in ctx);
             BeginPass(in composite, clear: false);
             try
             {
-                owner.ShaderPack.RecordComposite(in composite, slot, hdrSource, slot.SceneSnapshot, in uniforms,
+                owner.ShaderPack.RecordComposite(in composite, slot, hdrSource, slot.SceneSnapshot, distortion, in uniforms,
                     payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
             }
             finally { EndPass(in composite); }
@@ -218,6 +219,7 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         renderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         glowRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         lightRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
+        owner.Distortion.OnRenderTargetRebuilt();
         depthCopy.Invalidate();
         lightComposite.Invalidate();
         owner.ShaderPack.InvalidateOffscreen();
