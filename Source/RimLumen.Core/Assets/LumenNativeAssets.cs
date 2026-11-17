@@ -16,7 +16,7 @@ namespace RimLumen.Core.Assets;
 /// <summary>
 /// RimWorld XML Def representation of a native RimLumen effect (<c>Defs/**/*.xml</c>).
 /// </summary>
-public sealed class LumenEffectDef : Def
+public sealed partial class LumenEffectDef : Def
 {
     public float defaultDuration = 2f;
     public List<LumenNodeXml>? nodes;
@@ -62,6 +62,8 @@ public sealed class LumenEffectDef : Def
                 LocalScale = new Vector3(node.localScale, node.localScale, node.localScale),
                 Emitter = node.emitter is null ? null : ToEmitterSpec(node.emitter, nodeName, nodePath),
                 PointLight = node.pointLight is null ? null : ToPointLightSpec(node.pointLight, nodePath),
+                Distortion = node.distortion is null ? null : ToDistortionSpec(node.distortion, nodePath),
+                Ribbon = node.ribbon is null ? null : ToRibbonSpec(node.ribbon, nodePath),
             };
         }
 
@@ -174,6 +176,10 @@ public sealed class LumenEffectDef : Def
                 ? new ColorGradient(ToColorStops(xml.colorOverLifetime, path + ".colorOverLifetime"))
                 : ColorGradient.Constant(Vector4.One),
             ForceFields = ToForceFields(xml.forceFields, path),
+            EnvironmentChannels = xml.environmentChannels,
+            EnvironmentForceScale = xml.environmentForceScale,
+            Collision = ToCollision(xml.collision),
+            SubEmitters = ToSubEmitters(xml.subEmitters, path),
             TextureKey = string.IsNullOrEmpty(xml.textureKey) ? null : xml.textureKey,
             FlipbookTilesX = xml.flipbookTilesX,
             FlipbookTilesY = xml.flipbookTilesY,
@@ -310,6 +316,8 @@ public sealed class LumenNodeXml
     public float heightOffset;
     public LumenEmitterXml? emitter;
     public LumenPointLightXml? pointLight;
+    public LumenDistortionXml? distortion;
+    public LumenRibbonXml? ribbon;
 }
 
 // XML mirror of <see cref="EmitterSpec"/>. Field initialisers are the SAME defaults the .lumen.json loader
@@ -380,6 +388,11 @@ public sealed class LumenEmitterXml
     public List<LumenCurveKeyXml>? sizeOverLifetime;
     public List<LumenGradientStopXml>? colorOverLifetime;
     public List<LumenForceFieldXml>? forceFields;
+    // Flags: comma-separated names, e.g. "Explosion, Cursor" or "None".
+    public LumenEnvironmentChannel environmentChannels = LumenEnvironmentChannel.Explosion | LumenEnvironmentChannel.Cursor;
+    public float environmentForceScale = 1f;
+    public LumenCollisionXml? collision;
+    public List<LumenSubEmitterXml>? subEmitters;
 }
 
 // XML mirror of <see cref="EffectStateSpec"/>; an omitted duration inherits the def's defaultDuration, as in .lumen.json.
@@ -461,7 +474,7 @@ public sealed class LumenPointLightXml
 /// <summary>
 /// Shared structural validation for every authored effect asset (XML Def and <c>.lumen.json</c>).
 /// </summary>
-internal static class LumenAssetRules
+internal static partial class LumenAssetRules
 {
     // Requires: asset is non-null.
     // Ensures: throws InvalidDataException naming <paramref name="source"/> when the asset cannot be played:
@@ -535,7 +548,14 @@ internal static class LumenAssetRules
                             throw new InvalidDataException($"{lightPath}.intensityOverTime[{k}]: value must be >= 0, got {intensity.Keys[k].Value}.");
                 }
             }
+
+            if (node.Distortion is { } distortion)
+                ValidateDistortion(distortion, $"{path} ('{node.Name}').distortion");
+            if (node.Ribbon is { } ribbon)
+                ValidateRibbon(ribbon, $"{path} ('{node.Name}').ribbon");
         }
+
+        ValidateSubEmitterGraph(nodes, source);
 
         TimelineEventSpec[] events = asset.TimelineEvents ?? Array.Empty<TimelineEventSpec>();
         for (int i = 0; i < events.Length; i++)
@@ -681,15 +701,8 @@ internal static class LumenAssetRules
         ValidateEnum(emitter.BillboardMode, path + ".billboardMode");
 
         ValidateCurve(emitter.SizeOverLifetime, path + ".sizeOverLifetime", normalized: true);
-        ColorStop[] stops = emitter.ColorOverLifetime.Stops;
-        if (stops.Length == 0)
-            throw new InvalidDataException($"{path}.colorOverLifetime: at least one stop is required.");
-        for (int i = 0; i < stops.Length; i++)
-        {
-            ColorStop stop = stops[i];
-            ValidateTime(stop.Time, i > 0 ? stops[i - 1].Time : -1f, $"{path}.colorOverLifetime[{i}]", normalized: true, allowEqual: false);
-            ValidateStoredColor(stop.Rgba, $"{path}.colorOverLifetime[{i}].color");
-        }
+        ValidateGradient(emitter.ColorOverLifetime, path + ".colorOverLifetime");
+        ValidateEnvironmentAndCollision(emitter, path);
 
         if (!float.IsFinite(emitter.RateOverTime) || emitter.RateOverTime < 0f)
         {
@@ -736,6 +749,23 @@ internal static class LumenAssetRules
             {
                 throw new InvalidDataException($"{path}.forceFields[{i}].strength/frequency: must be finite.");
             }
+
+            if (field.Kind == ForceFieldKind.RingWave)
+                ValidateRingWave(field, $"{path}.forceFields[{i}]");
+        }
+    }
+
+    // Normalized [0,1] stops in strictly increasing time with stored colours.
+    private static void ValidateGradient(ColorGradient gradient, string path)
+    {
+        ColorStop[] stops = gradient.Stops;
+        if (stops.Length == 0)
+            throw new InvalidDataException($"{path}: at least one stop is required.");
+        for (int i = 0; i < stops.Length; i++)
+        {
+            ColorStop stop = stops[i];
+            ValidateTime(stop.Time, i > 0 ? stops[i - 1].Time : -1f, $"{path}[{i}]", normalized: true, allowEqual: false);
+            ValidateStoredColor(stop.Rgba, $"{path}[{i}].color");
         }
     }
 }
@@ -743,7 +773,7 @@ internal static class LumenAssetRules
 /// <summary>
 /// Parses native <c>.lumen.json</c> effect descriptors into <see cref="EffectAsset"/>.
 /// </summary>
-public static class LumenJsonAssetLoader
+public static partial class LumenJsonAssetLoader
 {
     // Requires: json is non-empty UTF-8 JSON text.
     // Ensures: returns validated EffectAsset; throws InvalidDataException on malformed or invalid fields.
@@ -871,7 +901,7 @@ public static class LumenJsonAssetLoader
     private static readonly string[] NodeProperties =
     {
         "name", "parentIndex", "spacePlane", "localPosition", "localRotation", "localYawDegrees",
-        "localScale", "emitter", "pointLight",
+        "localScale", "emitter", "pointLight", "distortion", "ribbon",
     };
 
     private static readonly string[] EmitterProperties =
@@ -884,7 +914,7 @@ public static class LumenJsonAssetLoader
         "startColor", "colorSpace", "materialTint", "sizeOverLifetime", "colorOverLifetime", "forceFields", "textureKey",
         "flipbookTilesX", "flipbookTilesY", "flipbookCycles", "blendMode", "billboardMode",
         "velocityStretchFactor", "lengthScale", "softParticleFadeDistance", "hdrIntensity",
-        "preferredTier", "killBelowFloor",
+        "preferredTier", "killBelowFloor", "environmentChannels", "environmentForceScale", "collision", "subEmitters",
     };
 
     private static readonly string[] PointLightProperties =
@@ -938,6 +968,8 @@ public static class LumenJsonAssetLoader
             LocalScale = scope.Vector3("localScale", Vector3.One),
             Emitter = scope.TryGet("emitter", out JsonElement emitterElement) ? ParseEmitter(emitterElement, path + ".emitter", name) : null,
             PointLight = scope.TryGet("pointLight", out JsonElement lightElement) ? ParsePointLight(lightElement, path + ".pointLight") : null,
+            Distortion = scope.TryGet("distortion", out JsonElement distortionElement) ? ParseDistortion(distortionElement, path + ".distortion") : null,
+            Ribbon = scope.TryGet("ribbon", out JsonElement ribbonElement) ? ParseRibbon(ribbonElement, path + ".ribbon") : null,
         };
     }
 
@@ -991,6 +1023,10 @@ public static class LumenJsonAssetLoader
             SizeOverLifetime = scope.TryGet("sizeOverLifetime", out JsonElement sizeElement) ? ParseCurve(sizeElement, path + ".sizeOverLifetime") : ScalarCurve.Constant(1f),
             ColorOverLifetime = scope.TryGet("colorOverLifetime", out JsonElement colorElement) ? ParseGradient(colorElement, path + ".colorOverLifetime") : ColorGradient.Constant(Vector4.One),
             ForceFields = ParseForceFields(scope, path),
+            EnvironmentChannels = scope.Enum("environmentChannels", LumenEnvironmentChannel.Explosion | LumenEnvironmentChannel.Cursor),
+            EnvironmentForceScale = scope.Float("environmentForceScale", 1f),
+            Collision = ParseCollision(scope, path),
+            SubEmitters = ParseSubEmitters(scope, path),
             TextureKey = scope.String("textureKey", null),
             FlipbookTilesX = scope.Int("flipbookTilesX", 1),
             FlipbookTilesY = scope.Int("flipbookTilesY", 1),

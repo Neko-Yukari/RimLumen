@@ -101,6 +101,10 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     //          Throws ArgumentException for a request.InitialState the validated asset does not declare. MapIndex -1 is
     //          resolved once to Find.CurrentMap.uniqueID; with no current map it throws InvalidOperationException.
     //          Other negative ids throw ArgumentOutOfRangeException. Explicit ids never read CurrentMap.
+    //          Each node carrying a LumenNodeFeature (Distortion, Ribbon) gets one instance on the backend registered
+    //          through LumenHostRegistry.RegisterNodeFeatureBackend; with no backend for it, throws
+    //          InvalidOperationException naming the effect, node and feature. A ribbon with endAtTarget throws
+    //          ArgumentException when request.TargetWorld is null.
     public ILumenEffectHandle Play(in LumenPlayRequest request)
     {
         LumenAssetResolution resolution = LumenHostRegistry.ResolveAsset(request.EffectId, out var asset);

@@ -14,6 +14,7 @@ public static class LumenHostRegistry
     private static ILumenFrameContributor[] contributorSnapshot = Array.Empty<ILumenFrameContributor>();
     private static readonly List<ILumenAssetProvider> AssetProviders = new();
     private static readonly LumenAssetValidationCache ValidatedAssets = new();
+    private static readonly ILumenNodeFeatureBackend?[] NodeFeatureBackends = new ILumenNodeFeatureBackend?[Enum.GetValues<LumenNodeFeature>().Length];
 
     public static ILumenVfxService? VfxService { get; private set; }
     public static ILumenGpuParticleEngine? GpuParticleEngine { get; private set; }
@@ -62,6 +63,41 @@ public static class LumenHostRegistry
     {
         ArgumentNullException.ThrowIfNull(service);
         VfxService = service;
+    }
+
+    // Requires: backend is non-null.
+    // Ensures: backend drives every node carrying backend.Feature in handles played from now on; registering the same
+    //          instance again is a no-op; a different backend for an already registered feature throws
+    //          InvalidOperationException.
+    public static void RegisterNodeFeatureBackend(ILumenNodeFeatureBackend backend)
+    {
+        ArgumentNullException.ThrowIfNull(backend);
+        lock (Sync)
+        {
+            ILumenNodeFeatureBackend? existing = NodeFeatureBackends[(int)backend.Feature];
+            if (existing is not null && !ReferenceEquals(existing, backend))
+                throw new InvalidOperationException($"A {backend.Feature} node backend is already registered ({existing.GetType().FullName}).");
+            NodeFeatureBackends[(int)backend.Feature] = backend;
+        }
+    }
+
+    // Ensures: when backend is the registered backend of its feature, later Play calls find none (handles already
+    //          playing keep their instances); otherwise no-op.
+    public static void UnregisterNodeFeatureBackend(ILumenNodeFeatureBackend backend)
+    {
+        lock (Sync)
+        {
+            if (ReferenceEquals(NodeFeatureBackends[(int)backend.Feature], backend))
+                NodeFeatureBackends[(int)backend.Feature] = null;
+        }
+    }
+
+    public static ILumenNodeFeatureBackend? GetNodeFeatureBackend(LumenNodeFeature feature)
+    {
+        lock (Sync)
+        {
+            return NodeFeatureBackends[(int)feature];
+        }
     }
 
     public static void RegisterAssetProvider(ILumenAssetProvider provider)
