@@ -5,7 +5,9 @@ using RimUnity.Serialization;
 
 namespace RimLumen.Adapter.RimUnity;
 
-public sealed record RimUnityNodeTranslation(int NodeIndex, string NodeId, LumenParticleTier Tier, IReadOnlyList<string> Reasons);
+// One entry per translated component of a node: Component is "ParticleSystem", "TrailRenderer" or "LineRenderer".
+// A native ribbon reports L1_NativeCpu (its strip is built on the CPU each frame).
+public sealed record RimUnityNodeTranslation(int NodeIndex, string NodeId, string Component, LumenParticleTier Tier, IReadOnlyList<string> Reasons);
 
 public sealed class RimUnityTranslationReport
 {

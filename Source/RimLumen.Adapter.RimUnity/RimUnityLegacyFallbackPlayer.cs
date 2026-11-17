@@ -25,9 +25,25 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
                 anchor = new RU.GameObject("RimLumen external: " + request.EffectId);
                 anchor.SetActive(false);
                 RU.GameObject instance = RU.Object.Instantiate(PrefabLoader.LoadDirectory(report.DataDirectory, report.LogicalPath), anchor.transform, false);
-                var externalIds = report.Nodes.Where(node => node.Tier == LumenParticleTier.External)
+                var externalIds = report.Nodes
+                    .Where(node => node.Tier == LumenParticleTier.External && node.Component == RimUnityPrefabTranslator.ParticleComponent)
                     .Select(node => node.NodeId).ToHashSet(StringComparer.Ordinal);
                 var objects = MapNodes(report.Prefab, instance);
+                // Ribbons that play natively must not draw a second time through RimUnity.
+                foreach (RimUnityNodeTranslation node in report.Nodes.Where(node => node.Tier != LumenParticleTier.External))
+                {
+                    if (node.Component == RimUnityPrefabTranslator.TrailComponent) objects[node.NodeId].GetComponent<RU.TrailRenderer>()!.enabled = false;
+                    else if (node.Component == RimUnityPrefabTranslator.LineComponent) objects[node.NodeId].GetComponent<RU.LineRenderer>()!.enabled = false;
+                }
+                // Several ribbons on one node are all External, so the node's renderers are exactly the External ones.
+                var trails = new List<RU.TrailRenderer>();
+                var lines = new List<RU.LineRenderer>();
+                foreach (string id in report.Nodes.Where(node => node.Tier == LumenParticleTier.External &&
+                    node.Component != RimUnityPrefabTranslator.ParticleComponent).Select(node => node.NodeId).Distinct())
+                {
+                    trails.AddRange(objects[id].GetComponents<RU.TrailRenderer>().Where(trail => trail.enabled));
+                    lines.AddRange(objects[id].GetComponents<RU.LineRenderer>().Where(line => line.enabled));
+                }
                 var selected = new List<RU.ParticleSystem>();
                 foreach (NodeData node in report.Prefab.nodes)
                 {
@@ -42,7 +58,7 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
                     if (!enabled && renderer is not null) renderer.enabled = false;
                     if (enabled) selected.Add(particles);
                 }
-                var handle = new ExternalHandle(anchor, selected.ToArray(), request);
+                var handle = new ExternalHandle(anchor, selected.ToArray(), trails.ToArray(), lines.ToArray(), request);
                 anchor.SetActive(true);
                 handle.Start();
                 return handle;
@@ -85,6 +101,8 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
         private bool finishPending;
         private readonly RU.GameObject anchor;
         private readonly RU.ParticleSystem[] systems;
+        private RU.TrailRenderer[] trails;
+        private RU.LineRenderer[] lines;
         private readonly RU.ParticleSystem.MinMaxCurve[] rates;
         private readonly RU.ParticleSystem.MinMaxGradient[] colors;
         private readonly LumenPlayRequest request;
@@ -92,10 +110,13 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
         private float rotation;
         private float scale = 1;
 
-        public ExternalHandle(RU.GameObject anchor, RU.ParticleSystem[] systems, in LumenPlayRequest request)
+        public ExternalHandle(RU.GameObject anchor, RU.ParticleSystem[] systems, RU.TrailRenderer[] trails, RU.LineRenderer[] lines,
+            in LumenPlayRequest request)
         {
             this.anchor = anchor;
             this.systems = systems;
+            this.trails = trails;
+            this.lines = lines;
             this.request = request;
             rates = systems.Select(system => system.emission.rateOverTime).ToArray();
             colors = systems.Select(system => system.main.startColor).ToArray();
@@ -112,6 +133,8 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
             // handle has already rejected any non-null value and the External part starts every system.
             foreach (var system in systems)
                 if (system.gameObject.activeInHierarchy && !subTargets.Contains(system)) system.Play(false);
+            trails = trails.Where(trail => trail.gameObject.activeInHierarchy).ToArray();
+            lines = lines.Where(line => line.gameObject.activeInHierarchy).ToArray();
             LumenHostRegistry.RegisterContributor(this);
         }
 
@@ -168,7 +191,10 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
             state = allowFadeOut ? Playback.Draining : Playback.Dead;
             foreach (var system in systems)
                 system.Stop(false, allowFadeOut ? RU.ParticleSystemStopBehavior.StopEmitting : RU.ParticleSystemStopBehavior.StopEmittingAndClear);
-            if (!allowFadeOut || systems.All(system => !system.IsAlive(false))) Release();
+            // A line has nothing to fade; a trail stops recording and its points age out (TrailRenderer.cs:48-59).
+            foreach (var line in lines) line.enabled = false;
+            foreach (var trail in trails) trail.emitting = false;
+            if (!allowFadeOut || PlayedOut) Release();
         }
 
         public void Dispose() => Stop(false);
@@ -183,9 +209,13 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
             }
             if (!IsAlive) { Release(); return; }
             RefreshTransform();
-            // Play sets emitting, so a started system stays alive until it has played out (also without a Stop).
-            if (systems.All(system => !system.IsAlive(false))) Release();
+            if (PlayedOut) Release();
         }
+
+        // Play sets emitting, so a started system stays alive until it has played out (also without a Stop). An enabled
+        // trail or line draws until Stop, as RimUnity's LineRenderer.cs:39-41 and TrailRenderer.cs:48-59 do.
+        private bool PlayedOut => systems.All(system => !system.IsAlive(false)) &&
+            (state == Playback.Draining ? trails.All(trail => trail.positionCount == 0) : trails.Length == 0 && lines.Length == 0);
         public void EnqueuePreCompute(in LumenComputeContext context) { }
         public void RecordBufferBarriers(in LumenBarrierContext context) { }
         public void RecordHdrDraws(in LumenHdrDrawContext context) { }
