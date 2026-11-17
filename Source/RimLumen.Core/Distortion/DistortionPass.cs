@@ -43,25 +43,16 @@ internal sealed class DistortionPass(EngineApplication app) : IDisposable
         return target;
     }
 
-    private unsafe void RecordPass(in FrameContext frame, MeshDrawFrame draws)
+    private void RecordPass(in FrameContext frame, MeshDrawFrame draws)
     {
-        VkClearValue clear = default;
-        VkRenderPassBeginInfo begin = new()
-        {
-            RenderPass = frame.RenderPass, Framebuffer = frame.Framebuffer, RenderArea = new VkRect2D(frame.Extent),
-            ClearValueCount = 1, ClearValues = &clear
-        };
-        frame.CommandBuffer.BeginRenderPass(in begin, VkSubpassContents.Inline);
+        bool renderPassOpen = false;
+        RimLumenMapChain.BeginPass(in frame, clear: true, ref renderPassOpen);
         try
         {
-            VkViewport viewport = new() { Width = frame.Extent.Width, Height = frame.Extent.Height, MinDepth = 0, MaxDepth = 1 };
-            frame.CommandBuffer.SetViewport(0, new ReadOnlySpan<VkViewport>(in viewport));
-            VkRect2D scissor = new(frame.Extent);
-            frame.CommandBuffer.SetScissor(0, new ReadOnlySpan<VkRect2D>(in scissor));
             renderer.InvalidateCommandBufferBindings();
             renderer.RecordPass(in frame, draws, RimLumenRenderHost.DistortionPassId);
         }
-        finally { frame.CommandBuffer.EndRenderPass(); }
+        finally { RimLumenMapChain.EndPass(in frame, ref renderPassOpen); }
     }
 
     private VkFramebuffer Ensure(int slot, int sceneWidth, int sceneHeight)
