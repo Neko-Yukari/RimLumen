@@ -95,6 +95,10 @@ public static class RimLumenRenderHost
     // Ensures: the passId registered via RenderPassRegistry.Register("RimLumenHdr"); 0 before Install.
     public static byte LumenRenderPassId { get; private set; }
 
+    // Ensures: the passId registered via RenderPassRegistry.Register("RimLumenDistortion") and routed from layer 14;
+    //   0 before Install. Draws on it write additive screen offsets into the `distortion` input (docs/api.md).
+    public static byte DistortionPassId { get; private set; }
+
     // Requires: main thread; modRootDirectory is the RimLumen mod root (contains 1.7/Shaders).
     // Ensures: idempotent. Headless (no GraphicsDevice) => no-op, Capabilities stay default.
     //   Otherwise registers 1.7/Shaders with ShaderSourceLoader, registers the pass id + layer route,
@@ -110,6 +114,9 @@ public static class RimLumenRenderHost
         // UnityStubs LayerMask allocates named layers at 16..31; vanilla uses Default=0.
         // Reserve 15 in the otherwise unnamed 1..15 range without Unity/RimUnity coupling.
         LayerPassRouter.RegisterLayerMask(1 << 15, passId);
+        byte distortionPassId = RenderPassRegistry.Register("RimLumenDistortion");
+        LayerPassRouter.RegisterLayerMask(1 << 14, distortionPassId);
+        DistortionPassId = distortionPassId;
         LumenRenderPassId = passId;
         Pipeline = new RimLumenPipeline(EngineApplication.Instance);
         Pipeline.Attach();

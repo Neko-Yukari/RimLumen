@@ -56,6 +56,9 @@ public static class RimUnityValueConversion
         return new ScalarCurve(keys, Number(Field(value, "curveMultiplier")));
     }
 
+    /// <summary>A serialized AnimationCurve (keys, wrap modes) evaluated with clamped ends.</summary>
+    internal static ScalarCurve ToAnimationCurve(ValueData? curve) => new(ReadKeys(curve), 1f);
+
     private static CurveKey[] ReadKeys(ValueData? curve)
     {
         List<ValueData>? items = Field(curve, "keys")?.items;
@@ -137,7 +140,12 @@ public static class RimUnityValueConversion
         if (mode is 0 or 2)
             return ColorGradient.Constant(Vector(Field(value, "color") ?? Field(value, "colorMax"), Vector4.Zero));
         if (mode is not (1 or 3 or 4)) throw new InvalidDataException("Unknown MinMaxGradient mode: " + mode);
-        ValueData? gradient = Field(value, "gradient") ?? Field(value, "gradientMax");
+        return ToGradient(Field(value, "gradient") ?? Field(value, "gradientMax"));
+    }
+
+    /// <summary>A serialized Gradient (Blend or Fixed mode) in stored encoding.</summary>
+    internal static ColorGradient ToGradient(ValueData? gradient)
+    {
         var colors = (Field(gradient, "colorKeys")?.items ?? new List<ValueData>())
             .Select(key => new ColorStop(Number(Field(key, "time")), Vector(Field(key, "color"), Vector4.One)))
             .OrderBy(key => key.Time).ToArray();

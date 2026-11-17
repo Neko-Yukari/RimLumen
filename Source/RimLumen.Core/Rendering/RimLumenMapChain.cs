@@ -62,16 +62,16 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
             var frame = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer, owner.Targets.RenderPass,
                 owner.Targets.EnsureLightSum(slot), slot.LightSum!.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat,
                 scene.DepthFormat);
-            BeginPass(in frame, clear: true);
+            BeginPass(in frame, clear: true, ref renderPassOpen);
             lightRenderer.InvalidateCommandBufferBindings();
             lightRenderer.RecordPass(in frame, payload.LightMesh, RimLumenRenderHost.LumenRenderPassId);
-            EndPass(in frame);
+            EndPass(in frame, ref renderPassOpen);
             slot.LightSum.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
             FrameContext composite = attachment.MakeFrameContext(in ctx);
-            BeginPass(in composite, clear: false);
+            BeginPass(in composite, clear: false, ref renderPassOpen);
             lightComposite.SetInput(0, slot.LightSum);
             lightComposite.RecordInline(in composite, composite.RenderPass, composite.SampleCount);
-            EndPass(in composite);
+            EndPass(in composite, ref renderPassOpen);
         }
         catch (Exception ex) { owner.TripRenderFailSafe(ex); }
         finally { CloseOpenScopes(in ctx); }
@@ -117,7 +117,7 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         var barrierContext = new LumenBarrierContext { Frame = frame, FrameIndex = payload.Index };
         foreach (ILumenFrameContributor contributor in payload.Contributors) contributor.RecordBufferBarriers(in barrierContext);
         if (payload.HasGlowDraws) RecordGlow(in ctx, payload, scene, slot, GlowGroup.Early);
-        BeginPass(in frame, clear: true);
+        BeginPass(in frame, clear: true, ref renderPassOpen);
         var draw = new LumenHdrDrawContext
         {
             Frame = frame, FrameIndex = payload.Index, HdrColorTarget = slot.Color,
@@ -131,23 +131,24 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
             renderer.InvalidateCommandBufferBindings();
             renderer.RecordPass(in frame, payload.Mesh, RimLumenRenderHost.LumenRenderPassId);
         }
-        EndPass(in frame);
+        EndPass(in frame, ref renderPassOpen);
         slot.Color.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
         // The layer stays in the frame's blend space; uniforms.ColorBlendSpace tells bloom and the composite which.
         RenderTexture hdrSource = slot.Color;
+        RenderTexture? distortion = owner.Distortion.Record(in ctx, payload.DistortionMesh, scene);
         ShaderPackSpec pack = owner.ShaderPack.Spec;
         try
         {
-            owner.ShaderPack.RecordOffscreen(in ctx, slot, hdrSource, slot.SceneSnapshot, in uniforms,
+            owner.ShaderPack.RecordOffscreen(in ctx, slot, hdrSource, slot.SceneSnapshot, distortion, in uniforms,
                 payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
             FrameContext composite = attachment.MakeFrameContext(in ctx);
-            BeginPass(in composite, clear: false);
+            BeginPass(in composite, clear: false, ref renderPassOpen);
             try
             {
-                owner.ShaderPack.RecordComposite(in composite, slot, hdrSource, slot.SceneSnapshot, in uniforms,
+                owner.ShaderPack.RecordComposite(in composite, slot, hdrSource, slot.SceneSnapshot, distortion, in uniforms,
                     payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
             }
-            finally { EndPass(in composite); }
+            finally { EndPass(in composite, ref renderPassOpen); }
         }
         catch (Exception ex)
         {
@@ -171,25 +172,25 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         ShaderPackUniforms uniforms = payload.Uniforms;
         owner.ShaderPack.RecordLateBloom(in ctx, slot, in uniforms, group);
         FrameContext composite = attachment.MakeFrameContext(in ctx);
-        BeginPass(in composite, clear: false);
+        BeginPass(in composite, clear: false, ref renderPassOpen);
         try { owner.ShaderPack.RecordLateBloomComposite(in composite, slot, in uniforms, group); }
-        finally { EndPass(in composite); }
+        finally { EndPass(in composite, ref renderPassOpen); }
     }
 
     private void RecordGlow(in FrameContext ctx, PipelineFrame payload, RenderTexture scene, HdrTargets.Slot slot, GlowGroup group)
     {
         var frame = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer, owner.Targets.RenderPass,
             slot.GlowFramebuffer, slot.Glow.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat, scene.DepthFormat);
-        BeginPass(in frame, clear: true);
+        BeginPass(in frame, clear: true, ref renderPassOpen);
         GlowQueueRange range = GlowGroups.Range(group);
         glowRenderer.InvalidateCommandBufferBindings();
         glowRenderer.RecordPass(in frame, payload.GlowMesh, RimLumenRenderHost.LumenRenderPassId,
             queueMin: range.MinInclusive, queueMax: range.MaxExclusive);
-        EndPass(in frame);
+        EndPass(in frame, ref renderPassOpen);
         slot.Glow.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
     }
 
-    private unsafe void BeginPass(in FrameContext frame, bool clear)
+    internal static unsafe void BeginPass(in FrameContext frame, bool clear, ref bool renderPassOpen)
     {
         VkClearValue value = default;
         VkRenderPassBeginInfo begin = new()
@@ -205,7 +206,7 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         frame.CommandBuffer.SetScissor(0, new ReadOnlySpan<VkRect2D>(in scissor));
     }
 
-    private void EndPass(in FrameContext frame)
+    internal static void EndPass(in FrameContext frame, ref bool renderPassOpen)
     {
         frame.CommandBuffer.EndRenderPass();
         renderPassOpen = false;
@@ -218,6 +219,7 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         renderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         glowRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         lightRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
+        owner.Distortion.OnRenderTargetRebuilt();
         depthCopy.Invalidate();
         lightComposite.Invalidate();
         owner.ShaderPack.InvalidateOffscreen();

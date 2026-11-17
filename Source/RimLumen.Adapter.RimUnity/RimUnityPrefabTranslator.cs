@@ -46,32 +46,14 @@ public sealed class RimUnityPrefabTranslator
             EmitterSpec? emitter = null;
             if (particles is not null)
             {
-                ResourceData? material = null;
-                ValueData? materialRef = Member(renderer?.members, "sharedMaterial");
-                if (materialRef?.kind == "asset")
-                {
-                    material = resourceResolver(materialRef.text) ?? throw new InvalidDataException("Missing material: " + materialRef.text);
-                    if (material.type != "Material") throw new InvalidDataException("Renderer asset is not a Material: " + materialRef.text);
-                }
-                Vector4 materialTint = Vector4.One;
-                ValueData? tintValue = Member(material?.members, "_Color");
-                if (tintValue is not null && tintValue.kind != "null")
-                {
-                    float[] values = tintValue.vector;
-                    if (values is null || values.Length < 3 || values.Length > 4)
-                        throw new InvalidDataException("Invalid exported material[" + materialRef!.text + "]._Color vector.");
-                    materialTint = new Vector4(values[0], values[1], values[2], values.Length == 4 ? values[3] : 1f);
-                }
+                MaterialLook material = ReadMaterial(Member(renderer?.members, "sharedMaterial"), resourceResolver, shaderResolver);
                 var classification = Classifier.Classify(particles, renderer, out ParticleBurstSpec[] bursts);
                 var reasons = new List<string>(classification.Reasons);
-                if (!float.IsFinite(materialTint.X) || materialTint.X < 0 ||
-                    !float.IsFinite(materialTint.Y) || materialTint.Y < 0 ||
-                    !float.IsFinite(materialTint.Z) || materialTint.Z < 0 ||
-                    !float.IsFinite(materialTint.W) || materialTint.W < 0 || materialTint.W > 1)
+                if (material.TintDomainReason is { } tintReason)
                 {
                     classification.Tier = LumenParticleTier.External;
                     reasons.RemoveAll(reason => reason.EndsWith("L2ParticleThreshold", StringComparison.Ordinal));
-                    reasons.Add("material[" + materialRef!.text + "]._Color.domain");
+                    reasons.Add(tintReason);
                 }
                 if (subEmitterTargets.Contains(particles.id))
                 {
@@ -80,12 +62,30 @@ public sealed class RimUnityPrefabTranslator
                     reasons.Add("subEmitters.dependency");
                 }
                 if (active[i] && particles.enabled && renderer?.enabled != false && classification.Tier != LumenParticleTier.External)
-                    emitter = ConvertEmitter(source.name, particles, renderer, classification.Tier, material, materialTint, shaderResolver, bursts);
-                classifications.Add(new RimUnityNodeTranslation(i, source.id, classification.Tier, reasons));
+                    emitter = ConvertEmitter(source.name, particles, renderer, classification.Tier, material, bursts);
+                classifications.Add(new RimUnityNodeTranslation(i, source.id, ParticleComponent, classification.Tier, reasons));
                 ValueData? main = Member(particles.members, "main");
                 // External playback owns deferred lifetime curves; do not evaluate them as native values.
                 duration = MathF.Max(duration, Number(Field(main, "duration"), 5f) +
                     (Integer(Field(Field(main, "startLifetime"), "mode")) == 2 ? 0 : CurveRange(Field(main, "startLifetime"), 5f).Max));
+            }
+            RibbonSpec? ribbon = null;
+            List<ComponentData> components = source.components ?? new List<ComponentData>();
+            // A node holds one native ribbon, and external playback finds a renderer by node and type.
+            bool multipleRibbons = components.Count(c => c.type is "RimUnity.TrailRenderer" or "RimUnity.LineRenderer") > 1;
+            foreach (ComponentData component in components)
+            {
+                string? kind = component.type switch
+                {
+                    "RimUnity.TrailRenderer" => TrailComponent, "RimUnity.LineRenderer" => LineComponent, _ => null,
+                };
+                if (kind is null) continue;
+                var reasons = new List<string>();
+                if (multipleRibbons) reasons.Add("ribbon.multipleOnNode");
+                RibbonSpec? spec = ConvertRibbon(kind, component, resourceResolver, shaderResolver, reasons);
+                if (spec is not null && active[i] && component.enabled) ribbon = spec;
+                classifications.Add(new RimUnityNodeTranslation(i, source.id, kind,
+                    spec is null ? LumenParticleTier.External : LumenParticleTier.L1_NativeCpu, reasons));
             }
             nodes[i] = new EffectNodeSpec
             {
@@ -95,7 +95,7 @@ public sealed class RimUnityPrefabTranslator
                 LocalPosition = new Vector3(source.position[0], source.position[1], source.position[2]),
                 LocalRotation = new Quaternion(source.rotation[0], source.rotation[1], source.rotation[2], source.rotation[3]),
                 LocalScale = new Vector3(source.scale[0], source.scale[1], source.scale[2]),
-                Emitter = emitter,
+                Emitter = emitter, Ribbon = ribbon,
             };
         }
         report = new RimUnityTranslationReport
@@ -106,8 +106,151 @@ public sealed class RimUnityPrefabTranslator
         return new EffectAsset { EffectId = effectId, DefaultDuration = duration > 0 ? duration : 2f, Nodes = nodes };
     }
 
+    public const string ParticleComponent = "ParticleSystem", TrailComponent = "TrailRenderer", LineComponent = "LineRenderer";
+
+    // TintDomainReason: set when _Color is outside finite RGB >= 0, alpha in [0,1].
+    private readonly record struct MaterialLook(Vector4 Tint, string? TintDomainReason, string? TextureKey,
+        LumenBlendMode Blend, float SoftFade, LumenColorSpace ColorSpace);
+
+    private static MaterialLook ReadMaterial(ValueData? materialRef, Func<string, ResourceData?> resourceResolver,
+        Func<string, ShaderData?> shaderResolver)
+    {
+        ResourceData? material = null;
+        if (materialRef?.kind == "asset")
+        {
+            material = resourceResolver(materialRef.text) ?? throw new InvalidDataException("Missing material: " + materialRef.text);
+            if (material.type != "Material") throw new InvalidDataException("Renderer asset is not a Material: " + materialRef.text);
+        }
+        Vector4 tint = Vector4.One;
+        ValueData? tintValue = Member(material?.members, "_Color");
+        if (tintValue is not null && tintValue.kind != "null")
+        {
+            float[] values = tintValue.vector;
+            if (values is null || values.Length < 3 || values.Length > 4)
+                throw new InvalidDataException("Invalid exported material[" + materialRef!.text + "]._Color vector.");
+            tint = new Vector4(values[0], values[1], values[2], values.Length == 4 ? values[3] : 1f);
+        }
+        string? domainReason = !float.IsFinite(tint.X) || tint.X < 0 || !float.IsFinite(tint.Y) || tint.Y < 0 ||
+            !float.IsFinite(tint.Z) || tint.Z < 0 || !float.IsFinite(tint.W) || tint.W < 0 || tint.W > 1
+            ? "material[" + materialRef!.text + "]._Color.domain" : null;
+        ShaderData? shader = null;
+        if (material is not null)
+        {
+            ValueData? shaderRef = Member(material.members, "shader");
+            if (shaderRef?.kind == "asset")
+                shader = shaderResolver(shaderRef.text) ?? throw new InvalidDataException("Missing shader: " + shaderRef.text);
+        }
+        LumenBlendMode blend = LumenBlendMode.AlphaBlend;
+        if (shader?.blend == true && string.Equals(shader.dstColor, "One", StringComparison.OrdinalIgnoreCase)) blend = LumenBlendMode.Additive;
+        else if (shader?.blend == true && string.Equals(shader.srcColor, "One", StringComparison.OrdinalIgnoreCase)) blend = LumenBlendMode.Premultiplied;
+        ValueData? texture = Member(material?.members, "_MainTex");
+        float softFade = 0.35f;
+        ValueData? nearFade = Member(material?.members, "_SoftParticlesNearFadeDistance");
+        ValueData? inverseFade = Member(material?.members, "_InvFade");
+        if (nearFade is not null) softFade = Number(nearFade);
+        else if (inverseFade is not null)
+        {
+            float inverse = Number(inverseFade);
+            softFade = inverse > 0 ? 1f / inverse : 0;
+        }
+        // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468, Source/Shared/ShaderColorSpace.cs:69-103,122-134:
+        // material tint/texture are decoded only by Linear material shading; vertex factors stay stored.
+        return new MaterialLook(tint, domainReason, texture?.kind is "asset" or "string" ? texture.text : null, blend, softFade,
+            string.Equals(material?.colorSpace, "Linear", StringComparison.OrdinalIgnoreCase) ? LumenColorSpace.Linear : LumenColorSpace.Stored);
+    }
+
+    // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468: TrailRenderer.cs:11-18 and LineRenderer.cs:10-19 (fields),
+    // TrailRenderer.Geometry.cs:41-86 and TrailRenderer.LineGeometry.cs:12-19 (what the native strip reproduces).
+    // Ensures: null with one named reason per option the native ribbon cannot reproduce; otherwise the RibbonSpec.
+    private static RibbonSpec? ConvertRibbon(string kind, ComponentData component, Func<string, ResourceData?> resourceResolver,
+        Func<string, ShaderData?> shaderResolver, List<string> reasons)
+    {
+        List<MemberData> members = component.members;
+        bool trail = kind == TrailComponent;
+        string prefix = trail ? "trail." : "line.";
+        if (Integer(Member(members, "numCornerVertices")) != 0) reasons.Add(prefix + "numCornerVertices");
+        if (Integer(Member(members, "numCapVertices")) != 0) reasons.Add(prefix + "numCapVertices");
+        if (Integer(Member(members, "alignment")) != 0) reasons.Add(prefix + "alignment.TransformZ");
+        if (Boolean(Member(members, "generateLightingData"))) reasons.Add(prefix + "generateLightingData");
+        int textureModeValue = Integer(Member(members, "textureMode"));
+        // With exactly two points RepeatPerSegment's U (the point index) equals Stretch's (normalized length).
+        LumenRibbonTextureMode? textureMode = textureModeValue switch
+        {
+            0 => LumenRibbonTextureMode.Stretch, 1 => LumenRibbonTextureMode.Tile, 3 when !trail => LumenRibbonTextureMode.Stretch, _ => null,
+        };
+        if (textureMode is null) reasons.Add(prefix + "textureMode." + textureModeValue);
+        if (Member(members, "textureScale")?.vector is { } textureScale && (textureScale[0] != 1 || textureScale[1] != 1))
+            reasons.Add(prefix + "textureScale");
+        float width = Number(Member(members, "widthMultiplier"), 1f);
+        if (width <= 0) reasons.Add(prefix + "widthMultiplier.domain");
+        ValueData? widthCurve = Member(members, "widthCurve");
+        List<ValueData> widthKeys = Field(widthCurve, "keys")?.items ?? new List<ValueData>();
+        if (widthCurve is not null && widthKeys.Count == 0) reasons.Add(prefix + "widthCurve.empty");
+        if (widthKeys.Any(key => Integer(Field(key, "weightedMode")) != 0)) reasons.Add(prefix + "widthCurve.weighted");
+        else if (widthKeys.Any(key => Number(Field(key, "value")) < 0 || Number(Field(key, "time")) is < 0 or > 1))
+            reasons.Add(prefix + "widthCurve.domain");
+        // AnimationCurve.cs:24-29: Loop (2) and PingPong (4) repeat the keys outside their range; the rest clamp.
+        if (Integer(Field(widthCurve, "preWrapMode")) is 2 or 4 || Integer(Field(widthCurve, "postWrapMode")) is 2 or 4)
+            reasons.Add(prefix + "widthCurve.wrapMode");
+        ValueData? gradient = Member(members, "colorGradient");
+        if (Integer(Field(gradient, "mode")) == 2) reasons.Add(prefix + "colorGradient.perceptualBlend");
+        List<ValueData> materials = Member(members, "sharedMaterials")?.items ?? new List<ValueData>();
+        if (materials.Count != 1) reasons.Add(prefix + "sharedMaterials.count");
+        // TrailRenderer.Geometry.cs:26-28 / LineGeometry.cs:25-27: a null material slot draws nothing.
+        else if (materials[0].kind != "asset") reasons.Add(prefix + "sharedMaterials." + (materials[0].kind ?? "null"));
+        MaterialLook material = materials.Count == 1 ? ReadMaterial(materials[0], resourceResolver, shaderResolver) : default;
+        if (material.TintDomainReason is { } tintReason) reasons.Add(tintReason);
+        if (material.ColorSpace == LumenColorSpace.Linear) reasons.Add(prefix + "material.colorSpace.Linear");
+
+        float lifetime = 0, minVertexDistance = 0;
+        int maxPoints = 0;
+        Vector3? end = null;
+        if (trail)
+        {
+            lifetime = Number(Member(members, "time"), 5f);
+            minVertexDistance = Number(Member(members, "minVertexDistance"), .1f);
+            if (lifetime <= 0) reasons.Add("trail.time.domain");
+            if (minVertexDistance < 0) reasons.Add("trail.minVertexDistance.domain");
+            if (!Boolean(Member(members, "emitting"), true)) reasons.Add("trail.emitting");
+            if (Boolean(Member(members, "autodestruct"))) reasons.Add("trail.autodestruct");
+            // Unity keeps every point younger than `time` (at most one per frame); capacity covers 240 frames/s.
+            maxPoints = Math.Max(2, (int)MathF.Ceiling(lifetime * 240f));
+        }
+        else
+        {
+            List<ValueData> positions = Member(members, "positions")?.items ?? new List<ValueData>();
+            if (Boolean(Member(members, "useWorldSpace"), true)) reasons.Add("line.useWorldSpace");
+            if (Boolean(Member(members, "loop"))) reasons.Add("line.loop");
+            if (positions.Count != 2) reasons.Add("line.positions.count");
+            else
+            {
+                Vector4 start = Vector(positions[0], Vector4.Zero), stop = Vector(positions[1], Vector4.Zero);
+                // The beam starts at the node; a line whose first point is elsewhere would need a second node.
+                if (start.X != 0 || start.Y != 0 || start.Z != 0) reasons.Add("line.positions.start");
+                end = new Vector3(stop.X, stop.Y, stop.Z);
+            }
+        }
+        if (reasons.Count != 0) return null;
+
+        // Stored vertex colour times material tint is the L1 shader's Stored product (ParticleColor.glsl), which Linear
+        // blending decodes before the gain; an HDR tint therefore stays in the colour, not in HdrIntensity.
+        Vector4 tint = material.Tint;
+        return new RibbonSpec
+        {
+            Mode = trail ? LumenRibbonMode.Trail : LumenRibbonMode.Beam,
+            // TrailRenderer.cs:55 samples at no less than 1e-5 cells.
+            Lifetime = lifetime, MinVertexDistance = trail ? MathF.Max(1e-5f, minVertexDistance) : 0, MaxPoints = maxPoints,
+            EndLocal = end, Segments = trail ? 0 : 1,
+            // TrailRenderer.cs:17 / LineRenderer.cs:14: an unserialized widthCurve is AnimationCurve.Constant(0, 1, 1).
+            Width = width, WidthOverLength = widthCurve is null ? ScalarCurve.Constant(1) : ToAnimationCurve(widthCurve),
+            ColorOverLength = new ColorGradient(ToGradient(gradient).Stops.Select(stop => new ColorStop(stop.Time, stop.Rgba * tint)).ToArray()),
+            HdrIntensity = 1f, TextureKey = material.TextureKey, BlendMode = material.Blend, TextureMode = textureMode!.Value,
+            Alignment = LumenRibbonAlignment.View, SoftParticleFadeDistance = material.SoftFade,
+        };
+    }
+
     private static EmitterSpec ConvertEmitter(string name, ComponentData particles, ComponentData? renderer,
-        LumenParticleTier tier, ResourceData? material, Vector4 materialTint, Func<string, ShaderData?> shaderResolver, ParticleBurstSpec[] bursts)
+        LumenParticleTier tier, MaterialLook material, ParticleBurstSpec[] bursts)
     {
         ValueData? main = Member(particles.members, "main");
         ValueData? emission = Member(particles.members, "emission");
@@ -120,13 +263,6 @@ public sealed class RimUnityPrefabTranslator
         var speed = CurveRange(Field(main, "startSpeed"), 5f);
         var size = CurveRange(Field(main, "startSize"), 1f);
         Vector4 color = ToColorGradient(Field(main, "startColor")).Stops[0].Rgba;
-        ShaderData? shader = null;
-        if (material is not null)
-        {
-            ValueData? shaderRef = Member(material.members, "shader");
-            if (shaderRef?.kind == "asset")
-                shader = shaderResolver(shaderRef.text) ?? throw new InvalidDataException("Missing shader: " + shaderRef.text);
-        }
         color = ExtractHdrIntensity(color, out float hdr);
         ColorGradient lifetimeColors = Enabled(colorModule) ? ToColorGradient(Field(colorModule, "color")) : ColorGradient.Constant(Vector4.One);
         float gradientHdr = lifetimeColors.Stops.Aggregate(1f, (peak, stop) =>
@@ -136,20 +272,6 @@ public sealed class RimUnityPrefabTranslator
             lifetimeColors = new ColorGradient(lifetimeColors.Stops.Select(stop => new ColorStop(stop.Time,
                 new Vector4(stop.Rgba.X / gradientHdr, stop.Rgba.Y / gradientHdr, stop.Rgba.Z / gradientHdr, stop.Rgba.W))).ToArray());
             hdr *= gradientHdr;
-        }
-        LumenBlendMode blend = LumenBlendMode.AlphaBlend;
-        if (shader?.blend == true && string.Equals(shader.dstColor, "One", StringComparison.OrdinalIgnoreCase)) blend = LumenBlendMode.Additive;
-        else if (shader?.blend == true && string.Equals(shader.srcColor, "One", StringComparison.OrdinalIgnoreCase)) blend = LumenBlendMode.Premultiplied;
-        ValueData? texture = Member(material?.members, "_MainTex");
-        string? textureKey = texture?.kind is "asset" or "string" ? texture.text : null;
-        float softFade = 0.35f;
-        ValueData? nearFade = Member(material?.members, "_SoftParticlesNearFadeDistance");
-        ValueData? inverseFade = Member(material?.members, "_InvFade");
-        if (nearFade is not null) softFade = Number(nearFade);
-        else if (inverseFade is not null)
-        {
-            float inverse = Number(inverseFade);
-            softFade = inverse > 0 ? 1f / inverse : 0;
         }
         LumenShapeKind shapeKind = LumenShapeKind.Point;
         Vector3 extents = Vector3.One;
@@ -203,13 +325,10 @@ public sealed class RimUnityPrefabTranslator
             RandomPositionAmount = Number(Field(shape, "randomPositionAmount")),
             StartLifetimeMin = lifetime.Min, StartLifetimeMax = lifetime.Max,
             StartSpeedMin = speed.Min, StartSpeedMax = speed.Max, StartSizeMin = size.Min, StartSizeMax = size.Max,
-            // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468, Source/Shared/ShaderColorSpace.cs:69-103,122-134:
-            // material tint/texture are decoded only by Linear material shading; vertex factors stay stored.
-            StartColor = color, HdrIntensity = hdr, MaterialTint = materialTint,
-            ColorSpace = string.Equals(material?.colorSpace, "Linear", StringComparison.OrdinalIgnoreCase) ? LumenColorSpace.Linear : LumenColorSpace.Stored,
+            StartColor = color, HdrIntensity = hdr, MaterialTint = material.Tint, ColorSpace = material.ColorSpace,
             SizeOverLifetime = Enabled(sizeModule) ? ToScalarCurve(Field(sizeModule, "size")) : ScalarCurve.Constant(1),
             ColorOverLifetime = lifetimeColors,
-            ForceFields = forces, TextureKey = textureKey, BlendMode = blend,
+            ForceFields = forces, TextureKey = material.TextureKey, BlendMode = material.Blend,
             FlipbookTilesX = Enabled(sheet) ? Integer(Field(sheet, "numTilesX"), 1) : 1,
             FlipbookTilesY = Enabled(sheet) ? Integer(Field(sheet, "numTilesY"), 1) : 1,
             FlipbookCycles = Enabled(sheet) ? Number(Field(sheet, "cycleCount"), 1) : 1,
@@ -221,7 +340,7 @@ public sealed class RimUnityPrefabTranslator
                 var mode => throw new NotSupportedException("Unsupported particle render mode: " + mode),
             },
             VelocityStretchFactor = Number(Member(renderer?.members, "velocityScale")),
-            LengthScale = Number(Member(renderer?.members, "lengthScale"), 2f), SoftParticleFadeDistance = softFade,
+            LengthScale = Number(Member(renderer?.members, "lengthScale"), 2f), SoftParticleFadeDistance = material.SoftFade,
         };
     }
 

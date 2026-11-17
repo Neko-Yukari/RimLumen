@@ -6,6 +6,7 @@ using RimLumen.Core.Compat;
 using System.Linq;
 using System.Numerics;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Distortion;
 using RimLumen.Core.Rendering.Logic;
 using UnityStubs.Rendering;
 using Verse;
@@ -39,6 +40,7 @@ internal sealed class RimLumenPipeline : IDisposable
     private ILumenFrameContributor[] activeContributors = Array.Empty<ILumenFrameContributor>();
     private readonly List<ILumenFrameContributor> activeContributorBuffer = new();
     internal readonly RimLumenMapChain MapChain;
+    internal readonly DistortionPass Distortion;
     private bool disposed;
 
     internal RimLumenPipeline(EngineApplication app)
@@ -47,6 +49,7 @@ internal sealed class RimLumenPipeline : IDisposable
         Targets = new HdrTargets(app);
         ShaderPack = new ShaderPackRuntime(app, RimLumenRenderHost.ActiveShaderPack);
         MapChain = new RimLumenMapChain(this);
+        Distortion = new DistortionPass(app);
         Pre = new RimLumenPreBackbufferFeature(this);
         RimLumenRenderHost.LatchColorBlendSpace();
         app.PrePollEvents += LatchColorBlendSpace;
@@ -180,9 +183,11 @@ internal sealed class RimLumenPipeline : IDisposable
         var glowMesh = new MeshDrawFrame(timing.FrameNumber, view, MeshDrawFrame.RentList(), MeshDrawFrame.RentList(), Vector3.UnitY);
         // Light-pool accumulation quads, drawn into their own target at the queue-3101 split.
         var lightMesh = new MeshDrawFrame(timing.FrameNumber, view, MeshDrawFrame.RentList(), MeshDrawFrame.RentList(), Vector3.UnitY);
+        // Distortion-pass draws (layer 14 and the built-in distortion backend), summed into the `distortion` input.
+        var distortionMesh = new MeshDrawFrame(timing.FrameNumber, view, MeshDrawFrame.RentList(), MeshDrawFrame.RentList(), Vector3.UnitY);
         try
         {
-            Captured = CaptureFrame(in timing, snapshot, mesh, glowMesh, lightMesh);
+            Captured = CaptureFrame(in timing, snapshot, mesh, glowMesh, lightMesh, distortionMesh);
             return Captured;
         }
         catch (Exception)
@@ -190,13 +195,15 @@ internal sealed class RimLumenPipeline : IDisposable
             mesh.Dispose();
             glowMesh.Dispose();
             lightMesh.Dispose();
+            distortionMesh.Dispose();
             throw;
         }
     }
 
-    // Ensures: a PipelineFrame owning mesh, glowMesh and lightMesh, or null after disposing them when the frame is skipped.
+    // Ensures: a PipelineFrame owning mesh, glowMesh, lightMesh and distortionMesh, or null after disposing them when the
+    //          frame is skipped.
     private PipelineFrame? CaptureFrame(in FrameTiming timing, MeshDrawSubmissionSnapshot snapshot, MeshDrawFrame mesh,
-        MeshDrawFrame glowMesh, MeshDrawFrame lightMesh)
+        MeshDrawFrame glowMesh, MeshDrawFrame lightMesh, MeshDrawFrame distortionMesh)
     {
         List<FinalDrawItem> draws = mesh.Draws;
         List<FinalDrawItem> glowDraws = glowMesh.Draws;
@@ -204,6 +211,14 @@ internal sealed class RimLumenPipeline : IDisposable
         for (int i = 0; i < snapshot.CommandCount; i++)
         {
             MeshDrawCommand command = snapshot.Commands[i];
+            if (command.PassId == RimLumenRenderHost.DistortionPassId)
+            {
+                FinalDrawItem? offset = maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i);
+                if (offset is null) continue;
+                if (offset.RenderQueue == int.MaxValue) FinalDrawItem.Return(offset);
+                else distortionMesh.Draws.Add(offset);
+                continue;
+            }
             bool vanillaGlow = command.PassId != RimLumenRenderHost.LumenRenderPassId;
             if (vanillaGlow)
             {
@@ -281,19 +296,22 @@ internal sealed class RimLumenPipeline : IDisposable
             if (group == GlowGroup.Early) earlyGlowCount++;
         }
         int routedDrawCount = draws.Count + earlyGlowCount;
-        bool earlyWork = HdrFrameGate.Decide(contributors.Length > 0, routedDrawCount, runOnEmptyFrames) != HdrFrameMode.Skip;
+        int distortionDrawCount = distortionMesh.Draws.Count;
+        bool earlyWork = HdrFrameGate.Decide(contributors.Length > 0, routedDrawCount, distortionDrawCount, runOnEmptyFrames)
+            != HdrFrameMode.Skip;
         bool lateWork = activePack.BloomMipLevels > 0 && (glowGroups & ~GlowGroupMask.Early) != 0;
         if (!earlyWork && !lateWork)
         {
             mesh.Dispose();
             glowMesh.Dispose();
             lightMesh.Dispose();
+            distortionMesh.Dispose();
             RimLumenRenderHost.SetFrameCapabilities(false, false);
             return null;
         }
         bool hasDirectHdr = HasDirectHdrContributor(contributors);
         bool hasHdrDraws = HdrFrameGate.ShouldRenderHdr(routedDrawCount, hasDirectHdr);
-        bool renderHdr = HdrFrameGate.ShouldRenderHdr(routedDrawCount, hasDirectHdr, runOnEmptyFrames);
+        bool renderHdr = HdrFrameGate.ShouldRenderHdr(routedDrawCount, hasDirectHdr, runOnEmptyFrames, distortionDrawCount);
         if (!renderHdr) RimLumenRenderHost.SetFrameCapabilities(false, false);
         Map? map = Find.CurrentMap;
         int mapSizeX = map?.Size.x ?? 0;
@@ -325,13 +343,13 @@ internal sealed class RimLumenPipeline : IDisposable
             colorBlendSpace == LumenColorBlendSpace.Linear,
             in rtParams);
 
-        return new PipelineFrame(captureIndex, mesh, glowMesh, lightMesh, contributors, depthParams, mapIndex, renderHdr,
+        return new PipelineFrame(captureIndex, mesh, glowMesh, lightMesh, distortionMesh, contributors, depthParams, mapIndex, renderHdr,
             hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms, glowGroups, earlyWork, colorBlendSpace);
     }
 
     internal static bool HasDirectHdrContributor(IEnumerable<ILumenFrameContributor> frameContributors)
         => frameContributors.Any(contributor => contributor is not CpuParticleSimulator
-            and not LumenVfxService and not ILumenHdrDrawAppender);
+            and not LumenVfxService and not ILumenHdrDrawAppender and not LumenDistortionBackend);
 
     internal void Recorded() => RimLumenRenderHost.SetFrameCapabilities(true, true);
 
@@ -365,6 +383,7 @@ internal sealed class RimLumenPipeline : IDisposable
         Release("HdrTargets", Targets.Dispose);
         Release("ShaderPackRuntime", () => ShaderPack.Dispose());
         Release("MapChain", MapChain.Dispose);
+        Release("Distortion", Distortion.Dispose);
         Log.Message("[RimLumen] Vulkan resource shutdown completed.");
     }
 
@@ -380,6 +399,7 @@ internal sealed class PipelineFrame(
     MeshDrawFrame mesh,
     MeshDrawFrame glowMesh,
     MeshDrawFrame lightMesh,
+    MeshDrawFrame distortionMesh,
     ILumenFrameContributor[] contributors,
     Vector4 depthParams,
     int mapIndex,
@@ -404,6 +424,7 @@ internal sealed class PipelineFrame(
     internal MeshDrawFrame GlowMesh { get; } = glowMesh;
     internal MeshDrawFrame LightMesh { get; } = lightMesh;
     internal bool HasLightPools => LightMesh.Draws.Count > 0;
+    internal MeshDrawFrame DistortionMesh { get; } = distortionMesh;
     internal bool HasGlowDraws => (GlowGroupsCaptured & GlowGroupMask.Early) != 0;
     internal GlowGroupMask GlowGroupsCaptured { get; } = glowGroups;
     internal bool ShouldSplit(GlowGroup group) => GlowGroups.ShouldSplit(group, GlowGroupsCaptured, earlyWork, BloomMipLevels);
@@ -415,5 +436,6 @@ internal sealed class PipelineFrame(
         Mesh.Dispose();
         GlowMesh.Dispose();
         LightMesh.Dispose();
+        DistortionMesh.Dispose();
     }
 }

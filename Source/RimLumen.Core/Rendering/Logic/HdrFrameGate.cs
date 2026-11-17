@@ -15,8 +15,10 @@ public static class HdrFrameGate
     public static bool ShouldRenderHdr(int routedDrawCount, bool hasDirectHdrContributor)
         => routedDrawCount > 0 || hasDirectHdrContributor;
 
-    public static bool ShouldRenderHdr(int routedDrawCount, bool hasDirectHdrContributor, bool runOnEmptyFrames)
-        => runOnEmptyFrames || ShouldRenderHdr(routedDrawCount, hasDirectHdrContributor);
+    // Distortion draws need the chain for their composite even when the HDR layer stays empty.
+    public static bool ShouldRenderHdr(int routedDrawCount, bool hasDirectHdrContributor, bool runOnEmptyFrames,
+        int distortionDrawCount)
+        => runOnEmptyFrames || distortionDrawCount > 0 || ShouldRenderHdr(routedDrawCount, hasDirectHdrContributor);
 
     // Requires: routedDrawCount >= 0.
     // Ensures: Skip iff !anyContributorActive && routedDrawCount == 0; else Render.
@@ -27,10 +29,11 @@ public static class HdrFrameGate
             : HdrFrameMode.Skip;
     }
 
-    // Ensures: Render when runOnEmptyFrames, else the two-argument decision.
-    public static HdrFrameMode Decide(bool anyContributorActive, int routedDrawCount, bool runOnEmptyFrames)
+    // Ensures: Render when runOnEmptyFrames or any distortion draw exists, else the two-argument decision.
+    public static HdrFrameMode Decide(bool anyContributorActive, int routedDrawCount, int distortionDrawCount,
+        bool runOnEmptyFrames)
     {
-        return runOnEmptyFrames
+        return runOnEmptyFrames || distortionDrawCount > 0
             ? HdrFrameMode.Render
             : Decide(anyContributorActive, routedDrawCount);
     }
