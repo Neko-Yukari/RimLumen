@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using RimLumen.Core.Contracts;
-using RimLumen.Core.Lighting;
 using RimLumen.Core.ParticlesGpu;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Scene;
@@ -134,7 +133,7 @@ public static class ShowcaseStage
         {
             ("#1 LDR vs HDR泛光", "上: Transparent 8-bit | 下: L1 HDR 8.5x+Bloom"),
             ("#2 L1拉伸脉冲", "StretchedVelocity 锥形喷射 + 3D重力 + 渐变曲线"),
-            ("#3 动态点光照地", "WorldSpace 拖尾 + 7.5格绕行点光驱动 GlowGrid"),
+            ("#3 动态点光照地", "WorldSpace 拖尾 + 7.5格绕行纯视觉光池"),
             ("#4 深度软粒子穿墙", "上: SoftFade=0 硬切花岗岩墙 | 下: SoftFade=1.4 柔化"),
             ("#5 L2 GPU 12k旋涡", "12,000 GPU粒子: Curl湍流 + 涡旋 + 中心吸引"),
             ("#6 原版发光自动HDR", "EnableVanillaAdditiveBloom + MoteGlow 自动HDR"),
@@ -150,7 +149,7 @@ public static class ShowcaseStage
         return stations;
     }
 
-    // Requires: main thread; map is an active playing map with initialized GlowGrid and SkyManager.
+    // Requires: main thread; map is an active playing map with an initialized SkyManager.
     // Ensures: idempotently clears/rebuilds a centered 68x30 dark paved arena at midnight, leaves the game running at
     //   normal speed (a game that was paused is set to Normal; the stations follow RimWorld pause and 1x/2x/3x speed
     //   afterwards), frames the camera over all 6 left-to-right stations, and spawns all 6 live showcase stations via
@@ -290,18 +289,6 @@ public static class ShowcaseStage
 
     private static void EnsureMapComponents(Map map)
     {
-        var lighting = map.GetComponent<LumenMapLightingComponent>();
-        if (lighting is null)
-        {
-            lighting = new LumenMapLightingComponent(map);
-            map.components.Add(lighting);
-            lighting.FinalizeInit();
-        }
-        else if (!LumenMapLightingRegistry.TryResolve(map.uniqueID, out _))
-        {
-            lighting.FinalizeInit();
-        }
-
         if (map.GetComponent<LumenShowcaseMapComponent>() is null)
         {
             map.components.Add(new LumenShowcaseMapComponent(map));
@@ -628,7 +615,7 @@ public static class ShowcaseStage
             {
                 Name = "arcane_light",
                 LocalPosition = Vector3.Zero,
-                PointLight = new PointLightSpec(9.5f, 4.5f, new Vector3(0.30f, 0.92f, 1.0f), ScalarCurve.Constant(2.2f)),
+                PointLight = new PointLightSpec(9.5f, new Vector3(0.30f, 0.92f, 1.0f), ScalarCurve.Constant(2.2f)),
             },
         },
     };

@@ -139,8 +139,8 @@ public static class DemoBuildingsSuite
         });
         var typed = (EffectInstanceHandle)handle;
         VfxAssert.Check(typed.IsAlive && typed.IsEmitting, "firework starts playing");
-        GlowAssert.Equal(1, typed.GpuEmitterCount);
-        GlowAssert.Equal(2, typed.CpuEmitterCount);
+        VfxAssert.Equal(1, typed.GpuEmitterCount);
+        VfxAssert.Equal(2, typed.CpuEmitterCount);
         VfxAssert.Check(service.HasActiveWork, "a playing firework keeps the pipeline active");
 
         // Vertical3D keeps the node's identity rotation, so the Cone axis (local +Y) stays world +Y, and the
@@ -153,8 +153,8 @@ public static class DemoBuildingsSuite
         NativeTestData.Close(20f, typed.NodeWorldMatrices[0].Translation.Z, "effect origin z");
 
         for (int i = 0; i < 10; i++) VfxTestData.Step(service, 0f);
-        GlowAssert.Equal(0f, typed.PlaybackTime);
-        GlowAssert.Equal(0, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(0f, typed.PlaybackTime);
+        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
         VfxAssert.Check(engine.Updates.TrueForAll(update => update.Emitting), "paused frames never stop the emitters");
 
         for (int i = 0; i < 14; i++) VfxTestData.Step(service, 0.05f);
@@ -177,9 +177,9 @@ public static class DemoBuildingsSuite
             OriginWorld = new Vector3(4f, 0f, 6f),
         });
         var typed = (EffectInstanceHandle)handle;
-        GlowAssert.Equal(2, typed.GpuEmitterCount);
-        GlowAssert.Equal(0, typed.CpuEmitterCount);
-        GlowAssert.Equal(2, engine.Creates.Count);
+        VfxAssert.Equal(2, typed.GpuEmitterCount);
+        VfxAssert.Equal(0, typed.CpuEmitterCount);
+        VfxAssert.Equal(2, engine.Creates.Count);
 
         for (int i = 0; i < 20; i++) VfxTestData.Step(service, 0.05f);
         VfxAssert.Check(typed.IsAlive && typed.PlaybackTime > 0.9f, "the looping fountain keeps running");
@@ -203,13 +203,13 @@ public static class DemoBuildingsSuite
         handle.Stop(allowFadeOut: false);
         handle.Dispose();
         VfxAssert.Check(!handle.IsAlive, "an immediate stop kills the handle");
-        GlowAssert.Equal(1, engine.Destroys.Count);
+        VfxAssert.Equal(1, engine.Destroys.Count);
         VfxAssert.Check(engine.Destroys[0].Immediate, "the L2 instance is destroyed immediately");
 
         VfxTestData.Step(service, 0.05f);
-        GlowAssert.Equal(0, service.Simulator.ActiveEmitterCount);
-        GlowAssert.Equal(0, service.Simulator.LiveParticleCount);
-        GlowAssert.Equal(0, service.LiveHandleCount);
+        VfxAssert.Equal(0, service.Simulator.ActiveEmitterCount);
+        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(0, service.LiveHandleCount);
         VfxAssert.Check(!service.HasActiveWork, "no handle keeps the pipeline active after the stop");
     }
 
@@ -257,14 +257,14 @@ public static class DemoBuildingsSuite
 
         double beforeApex = 0;
         for (int i = 0; i < 12; i++) beforeApex += scheduler.Advance(0.05f, emitting: true);
-        GlowAssert.Equal(0, beforeApex);
+        VfxAssert.Equal(0, beforeApex);
 
         double atApex = scheduler.Advance(0.05f, emitting: true);
-        GlowAssert.Equal(1800, atApex);
+        VfxAssert.Equal(1800, atApex);
 
         double afterApex = 0;
         for (int i = 0; i < 10; i++) afterApex += scheduler.Advance(0.05f, emitting: true);
-        GlowAssert.Equal(0, afterApex);
+        VfxAssert.Equal(0, afterApex);
 
         var trail = new EmissionScheduler(asset.Nodes[0].Emitter!, 1u);
         VfxAssert.Check(trail.Advance(0.1f, emitting: true) > 0, "the launch trail emits by rate from the first frame");
@@ -278,7 +278,7 @@ public static class DemoBuildingsSuite
         using var handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         VfxTestData.Step(service, 0.016f);
         EmitterSpec spec = asset.Nodes[0].Emitter!;
-        GlowAssert.Equal("launch_trail", spec.Name);
+        VfxAssert.Equal("launch_trail", spec.Name);
         VfxAssert.Check(service.Simulator.LiveParticleCount > 0, "The first frame spawns the launch trail");
         Vector3 velocity = service.Simulator.LiveParticles[0].Velocity;
         Vector3 direction = Vector3.Normalize(velocity);

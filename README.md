@@ -16,7 +16,7 @@ HDR here means internal high-dynamic-range rendering, tone-mapped back to a stan
 | L2 | Vulkan Compute 粒子（力场模拟 + `InstancedDrawInfo.Direct` 实例化绘制）/ Vulkan compute simulation + instanced drawing |
 | L1 | 原生 CPU 粒子（贴图、Flipbook 序列帧、速度拉伸）/ native CPU particles (textures, flipbooks, velocity stretch) |
 | Vertical3D | 朝天真 3D 物理模拟，自动适配原版 2D 与 `IsoRim Waylith` 3D 视角 / skyward 3D simulation adapting across vanilla 2D and 3D views like `IsoRim Waylith` |
-| GlowGrid | 效果节点上的动态点光，写入原版 `GlowGrid` / dynamic point lights feeding vanilla `GlowGrid` |
+| 点光 / Point lights | 效果节点上的纯视觉光池，不写入原版 `GlowGrid`、不影响游戏逻辑 / purely visual light pools on effect nodes; never written to vanilla `GlowGrid`, no gameplay effect |
 
 三种原生接入方式 / three entry points：XML `LumenEffectDef`、`1.7/Data/RimLumen/**/*.lumen.json`、C# `RimLumenApi`。
 可选 `Chezhou.RimUnity` 桥接位于 `1.7/Compat/RimUnity`，仅在该模组启用时加载（`LoadFolders.xml` 的 `IfModActive`）/ optional bridge, loaded only when that mod is active.
@@ -59,7 +59,7 @@ Plug and play: eligible vanilla and third-party additive glows automatically get
           <startSpeedMax>2</startSpeedMax>
           <startSizeMin>0.2</startSizeMin>
           <startSizeMax>0.5</startSizeMax>
-          <startColorLinear>(1, 0.45, 0.1, 1)</startColorLinear>
+          <startColor>(1, 0.45, 0.1, 1)</startColor>
           <hdrIntensity>4</hdrIntensity>
           <shape>Sphere</shape>
           <shapeExtents>(0.3, 0.3, 0.3)</shapeExtents>
@@ -67,7 +67,7 @@ Plug and play: eligible vanilla and third-party additive glows automatically get
           <softParticleFadeDistance>0.5</softParticleFadeDistance>
         </emitter>
         <pointLight>
-          <colorLinear>(1, 0.5, 0.15, 1)</colorLinear>
+          <color>(1, 0.5, 0.15, 1)</color>
           <radiusCells>6</radiusCells>
           <intensity>1</intensity>
         </pointLight>
@@ -108,7 +108,7 @@ RimLumen.Core.Api.RimLumenApi.PlayAtCell("MyFireball", map, pawn.Position);
         "startLifetime": 0.9,
         "startSpeed": 2,
         "startSize": 0.5,
-        "startColorLinear": [1.0, 0.45, 0.1, 1.0],
+        "startColor": [1.0, 0.45, 0.1, 1.0],
         "hdrIntensity": 4,
         "shape": "Sphere",
         "shapeExtents": [0.3, 0.3, 0.3],
@@ -117,7 +117,7 @@ RimLumen.Core.Api.RimLumenApi.PlayAtCell("MyFireball", map, pawn.Position);
         "sizeOverLifetime": [[0, 1], [1, 0]],
         "colorOverLifetime": [[0, [1, 1, 1, 1]], [1, [1, 0.3, 0.1, 0]]]
       },
-      "pointLight": { "glowRadius": 6, "colorRgb": [1, 0.5, 0.15], "intensity": 1.5 }
+      "pointLight": { "glowRadius": 6, "color": [1, 0.5, 0.15], "intensity": 1.5 }
     }
   ]
 }
@@ -125,9 +125,9 @@ RimLumen.Core.Api.RimLumenApi.PlayAtCell("MyFireball", map, pawn.Position);
 
 播放 / play：`RimLumenApi.PlayAtCell("Fireball", map, cell)`；同一 id 也可写成 `<packageId>:<effectId>`。
 
-JSON 规则 / rules：键名 camelCase、大小写不敏感，允许 `//` 注释与尾逗号，**未知键直接报错**。枚举写名称字符串（或整数）。向量 `[x,y,z]` / `{x,y,z}` / 单个数字（等比）；颜色为线性 RGBA `[r,g,b,a]`（`[r,g,b]` 时 a=1）。`startLifetime` / `startSpeed` / `startSize` 写单值即 min=max，也可分写 `...Min` / `...Max`。点光键为 `glowRadius`（格）、`overlightRadius`（格）、`colorRgb`、`intensity`（XML 里对应 `radiusCells` / `colorLinear`）。
+JSON 规则 / rules：键名 camelCase、大小写不敏感，允许 `//` 注释与尾逗号，**未知键直接报错**。枚举写名称字符串（或整数）。向量 `[x,y,z]` / `{x,y,z}` / 单个数字（等比）；颜色为线性 RGBA `[r,g,b,a]`（`[r,g,b]` 时 a=1）。`startLifetime` / `startSpeed` / `startSize` 写单值即 min=max，也可分写 `...Min` / `...Max`。点光键为 `glowRadius`（格）、`color`、`intensity`（XML 里对应 `radiusCells` / `color`）。
 
-Keys are camelCase and case-insensitive; `//` comments and trailing commas are allowed; unknown keys throw. Enums are name strings or integers. Vectors: `[x,y,z]`, `{x,y,z}` or one number (uniform); colors are linear RGBA. A single `startLifetime` / `startSpeed` / `startSize` sets min = max. Point-light keys differ from XML: JSON uses `glowRadius` / `colorRgb`, XML uses `radiusCells` / `colorLinear`.
+Keys are camelCase and case-insensitive; `//` comments and trailing commas are allowed; unknown keys throw. Enums are name strings or integers. Vectors: `[x,y,z]`, `{x,y,z}` or one number (uniform); colors are linear RGBA. A single `startLifetime` / `startSpeed` / `startSize` sets min = max. Point-light keys differ from XML: JSON uses `glowRadius` / `color`, XML uses `radiusCells` / `color`.
 
 ## 构建与发布 / Build and release
 

@@ -147,7 +147,6 @@ public static class NativePipelineSuite
 
         PointLightSpec light = node.PointLight ?? throw new InvalidOperationException("Point light missing");
         NativeTestData.Close(6f, light.GlowRadius, "glowRadius");
-        NativeTestData.Close(1.5f, light.OverlightRadius, "overlightRadius");
         NativeTestData.Check(light.ColorRgb == new Vector3(1f, 0.5f, 0.25f), "color");
         NativeTestData.Check(light.IntensityOverTime is not null, "Intensity rides on the curve multiplier");
         NativeTestData.Close(2f, CurveEvaluator.Evaluate(light.IntensityOverTime!, 0.1f), "intensity");
@@ -376,7 +375,6 @@ public static class NativePipelineSuite
                     {
                         color = "(1,0.5,0.25,1)",
                         radiusCells = 6f,
-                        overlightRadius = 1.5f,
                         intensity = 2f,
                     },
                 },
@@ -412,7 +410,6 @@ public static class NativePipelineSuite
 
         PointLightSpec light = node.PointLight ?? throw new InvalidOperationException("Point light missing");
         NativeTestData.Close(6f, light.GlowRadius, "glowRadius");
-        NativeTestData.Close(1.5f, light.OverlightRadius, "overlightRadius");
         NativeTestData.Check(light.ColorRgb == new Vector3(1f, 0.5f, 0.25f), "point light colour");
         NativeTestData.Close(2f, CurveEvaluator.Evaluate(light.IntensityOverTime!, 0f), "point light intensity");
 
@@ -772,7 +769,7 @@ public static class NativePipelineSuite
             "preferredTier": "L1_NativeCpu",
             "killBelowFloor": true
           },
-          "pointLight": { "glowRadius": 6, "overlightRadius": 1.5, "color": [1, 0.5, 0.25], "intensity": 2 }
+          "pointLight": { "glowRadius": 6, "color": [1, 0.5, 0.25], "intensity": 2 }
         },
         { "name": "child", "parentIndex": 0, "localPosition": [0, 1, 0] }
       ],
@@ -791,7 +788,6 @@ internal static class NativeTestData
         return new LumenVfxService(new CpuParticleSimulator())
         {
             GpuEngineProvider = static () => null,
-            GlowerDriverProvider = static _ => null,
         };
     }
 

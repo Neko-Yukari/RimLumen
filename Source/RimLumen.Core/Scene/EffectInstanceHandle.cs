@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Lighting;
 using RimLumen.Core.ParticlesGpu;
@@ -9,7 +10,7 @@ namespace RimLumen.Core.Scene;
 
 /// <summary>
 /// Runtime instance of one played <see cref="EffectAsset"/>: owns the per-node world transforms, the
-/// emitter bindings (L1 or L2), the point-light bindings and the state-machine playback.
+/// emitter bindings (L1 or L2), the visual light pools and the state-machine playback.
 /// Created by <see cref="LumenVfxService.Play"/>; advanced once per frame by the service.
 /// Time starts at 0 on creation (Play does not simulate); node matrices, emitter bindings and the initial
 /// state are established in the constructor, so a caller can inspect them before the first frame.
@@ -26,7 +27,10 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private readonly Quaternion[] nodeWorldRotations;
     private readonly int[] cpuIds;
     private readonly int[] gpuIds;
-    private readonly int[] lightIds;
+    // A node's light is on from the frame its node emits until its LightFadeSeconds fade has ended.
+    private readonly bool[] lightOn;
+    // This frame's ColorRgb * effective intensity for every node whose light is on.
+    private readonly Vector3[] lightRgb;
     private readonly bool[] nodeActive;
     // PlaybackTime of the node's last (re)start: the origin of its light's IntensityOverTime curve.
     private readonly float[] nodeActivatedAt;
@@ -38,7 +42,6 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     {
         ["intensity"] = 1f, ["rate"] = 1f, ["scale"] = 1f,
     };
-    private MapGlowerDriver? driver;
     private PlaybackState state;
     private int currentState = -1;
     private double stateTime;
@@ -63,13 +66,13 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         nodeWorldRotations = new Quaternion[asset.Nodes.Length];
         cpuIds = new int[asset.Nodes.Length];
         gpuIds = new int[asset.Nodes.Length];
-        lightIds = new int[asset.Nodes.Length];
+        lightOn = new bool[asset.Nodes.Length];
+        lightRgb = new Vector3[asset.Nodes.Length];
         nodeActive = new bool[asset.Nodes.Length];
         nodeActivatedAt = new float[asset.Nodes.Length];
         nodeDeactivatedAt = new float[asset.Nodes.Length];
         Array.Fill(cpuIds, -1);
         Array.Fill(gpuIds, -1);
-        Array.Fill(lightIds, -1);
         origin = request.OriginWorld;
         rotation = request.TargetWorld is Vector3 target
             ? SpacePlaneTransform.ComputeFacingDegrees(origin, target) : request.RotationDegrees;
@@ -79,7 +82,6 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         {
             RefreshTransforms();
             engine = owner.GpuEngineProvider?.Invoke();
-            driver = owner.GlowerDriverProvider?.Invoke(request.MapIndex);
             bool[] initialNodes = graph.States[initial].NodeMask;
             for (int i = 0; i < asset.Nodes.Length; i++)
             {
@@ -136,8 +138,17 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     public int CpuEmitterCount => CountBindings(cpuIds);
     public int GpuEmitterCount => CountBindings(gpuIds);
 
-    // Ensures: point lights currently registered on a MapGlowerDriver.
-    public int LightCount => driver is { IsDisposed: false } ? CountBindings(lightIds) : 0;
+    // Ensures: node lights currently on (lit, or still fading out).
+    public int LightCount
+    {
+        get
+        {
+            int count = 0;
+            foreach (bool on in lightOn)
+                if (on) count++;
+            return count;
+        }
+    }
 
     public event Action<string>? Notify;
     public event Action<string>? StateChanged;
@@ -224,12 +235,8 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     //   3. the state clock advances by deltaTime (AdvanceStates): timeline events fire, and a state that
     //      reaches its Duration enters its Next or finishes the effect, possibly several times in one frame.
     //   4. every emitter binding is pushed to its backend (SetEmitterTransform/SetEmitterParams or
-    //      UpdateInstance), every light binding calls MapGlowerDriver.Update with this frame's cell.
-    //      The map driver is bound once, at the first frame that resolves one while the handle emits, and
-    //      then kept for the handle's life: an effect belongs to the map it was played on, so a later
-    //      registration (another map, or a reload of the same one) must not steal its lights. A bound
-    //      driver that has been disposed means the map is gone, and the handle calls Stop(false).
-    //   5. a drain that has finished (all emitters released, lights removed) marks the handle dead.
+    //      UpdateInstance), and every node light computes this frame's colour (UpdateLights).
+    //   5. a drain that has finished (all emitters released, lights faded out) marks the handle dead.
     //   Notify, StateChanged and Finished are only queued here; LumenVfxService raises them (RaiseEvents) after it
     //   has advanced every handle. A dead handle does nothing.
     internal void Advance(float deltaTime)
@@ -441,42 +448,42 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         if (timelineEvent.Notify) pendingEvents.Enqueue((EventKind.Notify, timelineEvent.EventName));
     }
 
+    // Ensures: a node's light colour this frame is ColorRgb * intensity * fade * (IntensityOverTime is null ? 1 :
+    //          Evaluate(IntensityOverTime, seconds since the node's last restart)); fade is 1 while the node emits and
+    //          falls linearly to 0 over LightFadeSeconds after it stops, when the light turns off.
     private void UpdateLights(float intensity)
     {
-        if (driver is null && IsEmitting)
-            driver = owner.GlowerDriverProvider?.Invoke(request.MapIndex);
-        if (driver is null) return;
-        if (driver.IsDisposed)
-        {
-            Stop(false);
-            return;
-        }
         for (int i = 0; i < asset.Nodes.Length; i++)
         {
             if (asset.Nodes[i].PointLight is not { } spec) continue;
             bool lit = IsEmitting && nodeActive[i];
-            if (lit && lightIds[i] < 0) lightIds[i] = driver.Add(spec);
-            if (lightIds[i] < 0) continue;
             float fade = lit ? 1f : Math.Clamp(1f - (playbackTime - nodeDeactivatedAt[i]) / LightFadeSeconds, 0f, 1f);
-            if (fade == 0f)
-            {
-                driver.Remove(lightIds[i]);
-                lightIds[i] = -1;
-                continue;
-            }
-            driver.Update(lightIds[i], MapGlowerDriver.CellFromWorld(nodeWorldMatrices[i].Translation),
-                playbackTime - nodeActivatedAt[i], intensity * fade);
+            lightOn[i] = lit || (lightOn[i] && fade > 0f);
+            if (!lightOn[i]) continue;
+            float curve = spec.IntensityOverTime is { } overTime
+                ? CurveEvaluator.Evaluate(overTime, playbackTime - nodeActivatedAt[i]) : 1f;
+            lightRgb[i] = spec.ColorRgb * (intensity * fade * curve);
         }
     }
 
-    private void RemoveLights()
+    // Requires: main thread, after this frame's Advance.
+    // Ensures: when the handle plays on currentMapIndex, appends one light pool per node light that is on with a
+    //          positive radius and a positive colour, centred on the node's world position projected to the ground.
+    internal void CollectLights(int currentMapIndex, List<VisualPointLight> into)
     {
-        for (int i = 0; i < lightIds.Length; i++)
+        if (request.MapIndex != currentMapIndex) return;
+        for (int i = 0; i < asset.Nodes.Length; i++)
         {
-            if (lightIds[i] >= 0) driver?.Remove(lightIds[i]);
-            lightIds[i] = -1;
+            if (!lightOn[i]) continue;
+            float radius = asset.Nodes[i].PointLight!.Value.GlowRadius;
+            Vector3 rgb = lightRgb[i];
+            if (radius <= 0f || MathF.Max(rgb.X, MathF.Max(rgb.Y, rgb.Z)) <= 0f) continue;
+            Vector3 world = nodeWorldMatrices[i].Translation;
+            into.Add(new VisualPointLight(world.X, world.Z, radius, rgb));
         }
     }
+
+    private void RemoveLights() => Array.Clear(lightOn);
 
     private void FinishDrain()
     {

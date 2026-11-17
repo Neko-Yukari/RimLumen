@@ -26,6 +26,7 @@ internal sealed class RimLumenPipeline : IDisposable
     internal bool IsDisposed => disposed;
     internal PipelineFrame? Captured;
     internal L1ParticleBatchRenderer L1Renderer { get; private set; } = null!;
+    internal LightPoolRenderer LightPool { get; private set; } = null!;
     private ulong captureIndex;
     private float gameSeconds;
     private float gameDeltaSeconds;
@@ -70,6 +71,7 @@ internal sealed class RimLumenPipeline : IDisposable
     {
         LumenSceneBootstrap.EnsureInitialized();
         L1Renderer ??= new L1ParticleBatchRenderer(DepthProxy, App.RenderContext?.FramesInFlight ?? 3);
+        LightPool ??= new LightPoolRenderer();
         LumenSceneBootstrap.Simulator.HdrRendererAttached = true;
         string[] names = App.FrameRenderer.Features.Select(feature => feature.GetType().Name).ToArray();
         int index = FeatureOrderGuard.ComputePreBackbufferInsertIndex(names);
@@ -161,6 +163,8 @@ internal sealed class RimLumenPipeline : IDisposable
                     LumenSceneBootstrap.Simulator.SubBatches, depthParams,
                     new Vector4(proj.M33, proj.M34, proj.M43, proj.M44));
             }
+            if (ReferenceEquals(contributor, LumenSceneBootstrap.Service))
+                LightPool.Submit(LumenSceneBootstrap.Service.Lights);
         }
     }
 
@@ -348,6 +352,7 @@ internal sealed class RimLumenPipeline : IDisposable
         App.OnShutdown -= Quiesce;
         LumenSceneBootstrap.Simulator.HdrRendererAttached = false;
         Release("L1Particles", L1Renderer.Dispose);
+        Release("LightPool", LightPool.Dispose);
         Release("MapLightField", () => MapLightFieldCollector.DisposeGpu(App));
         Release("DepthProxy", DepthProxy.Dispose);
         // Destroy framebuffers/textures before the render passes and their pipelines.

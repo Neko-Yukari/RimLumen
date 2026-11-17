@@ -106,8 +106,24 @@ public static class NativeAssetBoundarySuite
         => RejectJson("\"pointLight\": { \"glowRadius\": 40.1 }", "glowRadius", "[0,40]");
 
     [LumenFact]
-    public static void D8PointLightOverlightRadiusBounds()
-        => RejectJson("\"pointLight\": { \"overlightRadius\": -0.1 }", "overlightRadius", "[0,40]");
+    public static void D8PointLightOverlightRadiusIsRemoved()
+        => RejectJson("\"pointLight\": { \"overlightRadius\": 0 }", "overlightRadius", "unknown property");
+
+    [LumenFact]
+    public static void D8PointLightNegativeIntensity()
+        => RejectJson("\"pointLight\": { \"intensity\": -0.5 }", "pointLight", "intensity must be >= 0");
+
+    [LumenFact]
+    public static void D8PointLightNegativeCurveKey()
+        => RejectJson("\"pointLight\": { \"intensityOverTime\": [[0, 1], [1, -0.5]] }", "intensityOverTime[1]", "value must be >= 0");
+
+    [LumenFact]
+    public static void D8PointLightOverlightRadiusIsRemovedXml()
+    {
+        var light = new LumenPointLightXml();
+        SetLegacyXmlField(light, "overlightRadius");
+        RejectXml(new LumenNodeXml { pointLight = light }, "overlightRadius", "removed");
+    }
 
     [LumenFact]
     public static void D8PointLightColorBounds()

@@ -9,6 +9,7 @@ using System.Xml.Linq;
 using RimLumen.Core.ParticlesGpu;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Lighting;
 using Waylith.Assets;
 using Waylith.Graphics.Meshes;
 using Waylith.Rendering;
@@ -352,6 +353,30 @@ public static class ParticleShaderTests
     }
 
     [LumenFact]
+    public static void LightPoolShaderMatchesSceneDefaultStageAndMaterialContract()
+    {
+        string buildProperties = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Directory.Build.props"));
+        string gameRoot = Environment.GetEnvironmentVariable("GameRoot")
+            ?? XDocument.Load(buildProperties).Descendants("GameRoot").Single().Value;
+        string vertex = File.ReadAllText(Path.Combine(gameRoot, "Rendering", "Shaders", LightPoolRenderer.VertexFile));
+        string fragmentPath = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", LightPoolRenderer.FragmentFile));
+        string fragment = ShaderSourceLoader.ReadShaderSource(fragmentPath);
+
+        MaterialLayout layout = ShaderMetadataParser.ExtractMaterialLayout(fragment, "RimLumenLightPool.frag.glsl");
+        Require(!layout.HasErrors, "Waylith rejected the light-pool material metadata.");
+        Require(layout.UniformSize == 16, $"Light-pool material UBO must be 16 bytes; got {layout.UniformSize}.");
+        CheckOverrideSlots(layout, ("_LumenLight", 0));
+        Require(layout.TextureSlots.Length == 0 && layout.StorageBufferSlots.Length == 0,
+            "Light-pool shader declares only the _LumenLight uniform.");
+        Require(!ShaderMetadataParser.ValidateStageInterface(vertex, fragment, LightPoolRenderer.VertexFile, "RimLumenLightPool.frag.glsl"),
+            "Waylith reports mismatched SceneDefault/RimLumenLightPool varyings.");
+        Require(fragment.Contains("vec2 d = vUv * 2.0 - 1.0;", StringComparison.Ordinal)
+            && fragment.Contains("float q = max(0.0, 1.0 - dot(d, d));", StringComparison.Ordinal)
+            && fragment.Contains("vec4(uMaterial._LumenLight.rgb * (q * q), 0.0)", StringComparison.Ordinal),
+            "Light-pool shader must evaluate (1 - (d/R)^2)^2 with zero alpha.");
+    }
+
+    [LumenFact]
     public static void RuntimeSlangCompilesAllStagesAndPreservesStorageStrides()
     {
         // Brutal.Slang.PInvoke explicitly calls NativeLibrary.Load, then installs its own DllImportResolver.
@@ -410,6 +435,7 @@ public static class ParticleShaderTests
         CompileFile("PostFx/RimLumenBloomDown.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomUp.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenComposite.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("RimLumen/RimLumenLightPool.frag.glsl", RuntimeShaderStage.Fragment);
         Console.WriteLine("[SPIR-V] compute strides=64,320,48,4; vertex strides=64,320,32; LocalSize=64,1,1");
     }
 

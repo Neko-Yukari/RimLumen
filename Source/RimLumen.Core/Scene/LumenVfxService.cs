@@ -10,7 +10,7 @@ namespace RimLumen.Core.Scene;
 /// <summary>
 /// Native <see cref="ILumenVfxService"/>: resolves effects through <see cref="LumenHostRegistry"/>,
 /// plays them as <see cref="EffectInstanceHandle"/> instances, routes each emitter to L2 or L1, and
-/// routes point lights to the per-map <see cref="MapGlowerDriver"/>.
+/// collects the current map's visual light pools for the render pipeline each frame.
 /// It is also the frame contributor that advances live handles; it must be registered BEFORE
 /// <see cref="CpuParticleSimulator"/> so handle updates land in the same frame as the simulation.
 /// </summary>
@@ -20,6 +20,7 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
 
     private readonly List<EffectInstanceHandle> handles = new();
     private readonly HashSet<string> warnedUnknownEffects = new(StringComparer.Ordinal);
+    private readonly List<VisualPointLight> lights = new();
     // Per-frame scratch: how many queued events each handle raises this frame (fixed before any handler runs).
     private int[] eventBatches = Array.Empty<int>();
     private bool hasWarnedPoolExhausted;
@@ -46,8 +47,6 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     {
         Simulator = simulator;
         GpuEngineProvider = static () => LumenHostRegistry.GpuParticleEngine;
-        GlowerDriverProvider = static mapIndex =>
-            LumenMapLightingRegistry.TryResolve(mapIndex, out var driver) ? driver : null;
     }
 
     public CpuParticleSimulator Simulator { get; }
@@ -56,9 +55,8 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     //          up. Default resolves LumenHostRegistry.GpuParticleEngine.
     public Func<ILumenGpuParticleEngine?>? GpuEngineProvider { get; set; }
 
-    // Ensures: per-map glower resolver, read on every Play and every frame. Default resolves through
-    //          LumenMapLightingRegistry.TryResolve with the exact map uniqueID normalized at Play.
-    public Func<int, MapGlowerDriver?>? GlowerDriverProvider { get; set; }
+    // Ensures: the light pools of handles played on the last CaptureMainThread's CurrentMapIndex, as of that frame.
+    internal IReadOnlyList<VisualPointLight> Lights => lights;
 
     internal Func<long> ClockMsProvider { get; set; } = static () => Environment.TickCount64;
     internal Action<string> PoolExhaustedWarningSink { get; set; } = static message => Verse.Log.Warning(message);
@@ -160,11 +158,14 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     //          positive); then each handle raises the events queued before any handler of this frame ran, so an
     //          event a handler causes on any handle (including Finished after Stop(false)) waits for the next frame
     //          whatever the handle order; finally drops dead handles that have raised all their events.
-    //          Handles played from a handler start on the next frame.
+    //          Handles played from a handler start on the next frame. Lights holds the advanced handles' light pools
+    //          on context.CurrentMapIndex, collected after the handlers ran, so a handler's Stop(false) or Dispose
+    //          already removes its lights from this frame.
     public void CaptureMainThread(in LumenCaptureContext context)
     {
         int count = handles.Count;
         if (eventBatches.Length < count) eventBatches = new int[count];
+        lights.Clear();
         for (int i = 0; i < count; i++)
         {
             var handle = handles[i];
@@ -172,6 +173,7 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
             eventBatches[i] = handle.PendingEventCount;
         }
         for (int i = 0; i < count; i++) handles[i].RaiseEvents(eventBatches[i]);
+        for (int i = 0; i < count; i++) handles[i].CollectLights(context.CurrentMapIndex, lights);
         handles.RemoveAll(static handle => !handle.IsAlive && !handle.HasPendingEvents);
     }
 

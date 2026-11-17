@@ -62,25 +62,25 @@ public static class LumenVfxServiceSuite
             MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new Vector3(10f, 0f, 20f),
         });
         VfxAssert.Check(handle.IsAlive && handle.IsEmitting && service.HasActiveWork, "Hit is live immediately");
-        GlowAssert.Equal(0f, handle.PlaybackTime);
-        GlowAssert.Equal(asset.EffectId, handle.EffectId);
-        GlowAssert.Equal(3, handle.NodeWorldMatrices.Length);
-        GlowAssert.Equal(new Vector3(12f, 0f, 20f), handle.NodeWorldMatrices[1].Translation);
-        GlowAssert.Equal(2, handle.CpuEmitterCount);
-        GlowAssert.Equal(1, service.LiveHandleCount);
-        GlowAssert.Equal(0, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(0f, handle.PlaybackTime);
+        VfxAssert.Equal(asset.EffectId, handle.EffectId);
+        VfxAssert.Equal(3, handle.NodeWorldMatrices.Length);
+        VfxAssert.Equal(new Vector3(12f, 0f, 20f), handle.NodeWorldMatrices[1].Translation);
+        VfxAssert.Equal(2, handle.CpuEmitterCount);
+        VfxAssert.Equal(1, service.LiveHandleCount);
+        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
         int emitterId = service.Simulator.LiveParticles[0].EmitterId;
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(2, service.Simulator.ActiveEmitterCount);
-        GlowAssert.Equal(emitterId, service.Simulator.LiveParticles[0].EmitterId);
-        GlowAssert.Equal(0.5f, handle.PlaybackTime);
+        VfxAssert.Equal(2, service.Simulator.ActiveEmitterCount);
+        VfxAssert.Equal(emitterId, service.Simulator.LiveParticles[0].EmitterId);
+        VfxAssert.Equal(0.5f, handle.PlaybackTime);
         handle.Dispose();
-        GlowAssert.Equal(0, service.LiveHandleCount);
+        VfxAssert.Equal(0, service.LiveHandleCount);
         VfxAssert.Check(service.HasActiveWork, "A disposed handle still owes Finished for one frame");
         VfxTestData.Step(service, 0f);
         VfxAssert.Check(!service.HasActiveWork, "Dead handles cannot keep the render pipeline active");
-        GlowAssert.Equal(0, service.Simulator.ActiveEmitterCount);
+        VfxAssert.Equal(0, service.Simulator.ActiveEmitterCount);
     }
 
     [LumenFact]
@@ -98,76 +98,55 @@ public static class LumenVfxServiceSuite
         SpyGpuEngine? available = null;
         service.GpuEngineProvider = () => available;
         using var fallback = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
-        GlowAssert.Equal(2, fallback.CpuEmitterCount);
-        GlowAssert.Equal(0, fallback.GpuEmitterCount);
+        VfxAssert.Equal(2, fallback.CpuEmitterCount);
+        VfxAssert.Equal(0, fallback.GpuEmitterCount);
         var firstEngine = available = new SpyGpuEngine();
         using var routed = (EffectInstanceHandle)service.Play(new LumenPlayRequest
         {
             MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new Vector3(10f, 0f, 20f),
         });
-        GlowAssert.Equal(1, routed.CpuEmitterCount);
-        GlowAssert.Equal(1, routed.GpuEmitterCount);
-        GlowAssert.Equal(1, firstEngine.Creates.Count);
-        GlowAssert.Equal(asset.Nodes[0].Emitter, firstEngine.Creates[0].Spec);
-        GlowAssert.Equal(routed.NodeWorldMatrices[0], firstEngine.Creates[0].World);
-        GlowAssert.Equal(new Vector3(12f, 0f, 20f), firstEngine.Creates[0].World.Translation);
+        VfxAssert.Equal(1, routed.CpuEmitterCount);
+        VfxAssert.Equal(1, routed.GpuEmitterCount);
+        VfxAssert.Equal(1, firstEngine.Creates.Count);
+        VfxAssert.Equal(asset.Nodes[0].Emitter, firstEngine.Creates[0].Spec);
+        VfxAssert.Equal(routed.NodeWorldMatrices[0], firstEngine.Creates[0].World);
+        VfxAssert.Equal(new Vector3(12f, 0f, 20f), firstEngine.Creates[0].World.Translation);
         available = new SpyGpuEngine();
         routed.SetParam("intensity", 2f);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(1, firstEngine.Updates.Count);
-        GlowAssert.Equal(2f, firstEngine.Updates[0].Intensity);
-        GlowAssert.Equal(0, available.Creates.Count);
-        GlowAssert.Equal(0, available.Updates.Count);
-        GlowAssert.Equal(2, fallback.CpuEmitterCount);
+        VfxAssert.Equal(1, firstEngine.Updates.Count);
+        VfxAssert.Equal(2f, firstEngine.Updates[0].Intensity);
+        VfxAssert.Equal(0, available.Creates.Count);
+        VfxAssert.Equal(0, available.Updates.Count);
+        VfxAssert.Equal(2, fallback.CpuEmitterCount);
         service.EnqueuePreCompute(default);
         service.RecordBufferBarriers(default);
         service.RecordHdrDraws(default);
-        GlowAssert.Equal(0, firstEngine.FrameCalls);
+        VfxAssert.Equal(0, firstEngine.FrameCalls);
         routed.Stop(false);
-        GlowAssert.Equal((0, true), firstEngine.Destroys[0]);
-    }
-
-    [LumenFact]
-    public static void P2cD9MapLookupNeverSelectsAnotherRegisteredMap()
-    {
-        using var first = new MapGlowerDriver(new RecordingGlowGridSink());
-        using var last = new MapGlowerDriver(new RecordingGlowGridSink());
-        LumenMapLightingRegistry.Register(7101, first);
-        LumenMapLightingRegistry.Register(7102, last);
-        try
-        {
-            VfxAssert.Check(!LumenMapLightingRegistry.TryResolve(-1, out var unresolved) && unresolved is null,
-                "An unresolved Play map must not select the last registered map.");
-            VfxAssert.Check(LumenMapLightingRegistry.TryResolve(7101, out var exact) && ReferenceEquals(first, exact),
-                "An explicit RimWorld map uniqueID must resolve its own light driver.");
-        }
-        finally
-        {
-            LumenMapLightingRegistry.Unregister(7101, first);
-            LumenMapLightingRegistry.Unregister(7102, last);
-        }
+        VfxAssert.Equal((0, true), firstEngine.Destroys[0]);
     }
 
     [LumenFact]
     public static void P2cD9PlayMapRuleRejectsMissingOrInvalidMapAndKeepsExplicitIdsHostFree()
     {
-        GlowAssert.Equal(7101, LumenPlayMap.ResolveMapIndex(-1, 7101));
-        GlowAssert.Equal(7102, LumenPlayMap.ResolveMapIndex(7102, null));
-        GlowAssert.Throws<InvalidOperationException>(() => LumenPlayMap.ResolveMapIndex(-1, null));
-        GlowAssert.Throws<InvalidOperationException>(() => LumenPlayMap.ResolveMapIndex(-1, -1));
-        GlowAssert.Throws<ArgumentOutOfRangeException>(() => LumenPlayMap.ResolveMapIndex(-2, 7101));
+        VfxAssert.Equal(7101, LumenPlayMap.ResolveMapIndex(-1, 7101));
+        VfxAssert.Equal(7102, LumenPlayMap.ResolveMapIndex(7102, null));
+        VfxAssert.Throws<InvalidOperationException>(() => LumenPlayMap.ResolveMapIndex(-1, null));
+        VfxAssert.Throws<InvalidOperationException>(() => LumenPlayMap.ResolveMapIndex(-1, -1));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => LumenPlayMap.ResolveMapIndex(-2, 7101));
 
     }
 
     [LumenFact]
-    public static void P2cD9PlayBindsOneMapAcrossCpuGpuAndDeferredLights()
+    public static void P2cD9PlayBindsOneMapAcrossCpuGpuAndLights()
     {
         var asset = new EffectAsset
         {
             EffectId = "p2c.map-propagation", Nodes = new[]
             {
                 new EffectNodeSpec { Name = "cpu", Emitter = VfxTestData.Emitter(tier: LumenParticleTier.L1_NativeCpu),
-                    PointLight = new PointLightSpec { GlowRadius = 2f } },
+                    PointLight = new PointLightSpec(2f, Vector3.One) },
                 new EffectNodeSpec { Name = "gpu", Emitter = VfxTestData.Emitter() },
             },
         };
@@ -178,35 +157,23 @@ public static class LumenVfxServiceSuite
         var service = new LumenVfxService(simulator);
         var gpu = new SpyGpuEngine();
         service.GpuEngineProvider = () => gpu;
-        var sinkA = new RecordingGlowGridSink();
-        var sinkB = new RecordingGlowGridSink();
-        using var driverA = new MapGlowerDriver(sinkA);
-        using var driverB = new MapGlowerDriver(sinkB);
         using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7101 });
-        GlowAssert.Equal(7101, gpu.Creates[0].MapIndex);
-        LumenMapLightingRegistry.Register(7101, driverA);
-        LumenMapLightingRegistry.Register(7102, driverB);
-        try
+        VfxAssert.Equal(7101, gpu.Creates[0].MapIndex);
+        var context = new LumenCaptureContext
         {
-            var context = new LumenCaptureContext
-            {
-                CurrentMapIndex = 7102, FrameIndex = 1, DeltaTime = 0.25f, ViewportWidth = 640, ViewportHeight = 480,
-                ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
-            };
-            service.CaptureMainThread(context);
-            simulator.CaptureMainThread(context);
-            GlowAssert.Equal(1, simulator.LiveParticleCount);
-            GlowAssert.Equal(0, simulator.Vertices.Length);
-            GlowAssert.Equal(1, sinkA.Registrations.Count);
-            GlowAssert.Equal(0, sinkB.Registrations.Count);
-            simulator.CaptureMainThread(context with { CurrentMapIndex = 7101, FrameIndex = 2, DeltaTime = 0f });
-            GlowAssert.Equal(4, simulator.Vertices.Length);
-        }
-        finally
-        {
-            LumenMapLightingRegistry.Unregister(7101, driverA);
-            LumenMapLightingRegistry.Unregister(7102, driverB);
-        }
+            CurrentMapIndex = 7102, FrameIndex = 1, DeltaTime = 0.25f, ViewportWidth = 640, ViewportHeight = 480,
+            ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
+        };
+        service.CaptureMainThread(context);
+        simulator.CaptureMainThread(context);
+        VfxAssert.Equal(1, simulator.LiveParticleCount);
+        VfxAssert.Equal(0, simulator.Vertices.Length);
+        VfxAssert.Equal(0, service.Lights.Count);
+        var shown = context with { CurrentMapIndex = 7101, FrameIndex = 2, DeltaTime = 0f };
+        service.CaptureMainThread(shown);
+        simulator.CaptureMainThread(shown);
+        VfxAssert.Equal(4, simulator.Vertices.Length);
+        VfxAssert.Equal(1, service.Lights.Count);
     }
 
     [LumenFact]
@@ -214,9 +181,9 @@ public static class LumenVfxServiceSuite
     {
         using var engine = new LumenGpuParticleEngine(64);
         var service = new LumenVfxService(new CpuParticleSimulator()) { GpuEngineProvider = () => engine };
-        GlowAssert.Equal(64, service.Capabilities.MaxGpuParticlesPerFrame);
+        VfxAssert.Equal(64, service.Capabilities.MaxGpuParticlesPerFrame);
         service.GpuEngineProvider = () => null;
-        GlowAssert.Equal(0, service.Capabilities.MaxGpuParticlesPerFrame);
+        VfxAssert.Equal(0, service.Capabilities.MaxGpuParticlesPerFrame);
     }
 
     [LumenFact]
@@ -228,13 +195,13 @@ public static class LumenVfxServiceSuite
         try
         {
             RimLumenRenderHost.SetFrameCapabilities(false, false);
-            GlowAssert.Equal("LumenVfxService", service.Name);
-            GlowAssert.Equal(new LumenCapabilities(false, false, false, 0), service.Capabilities);
+            VfxAssert.Equal("LumenVfxService", service.Name);
+            VfxAssert.Equal(new LumenCapabilities(false, false, false, 0), service.Capabilities);
             simulator.HdrRendererAttached = true;
             service.GpuEngineProvider = () => new SpyGpuEngine();
-            GlowAssert.Equal(new LumenCapabilities(false, false, true, 1_048_576), service.Capabilities);
+            VfxAssert.Equal(new LumenCapabilities(false, false, true, 1_048_576), service.Capabilities);
             RimLumenRenderHost.SetFrameCapabilities(true, true);
-            GlowAssert.Equal(new LumenCapabilities(true, true, true, 1_048_576), service.Capabilities);
+            VfxAssert.Equal(new LumenCapabilities(true, true, true, 1_048_576), service.Capabilities);
             service.EnqueuePreCompute(default);
             service.RecordBufferBarriers(default);
             service.RecordHdrDraws(default);
@@ -249,11 +216,11 @@ public static class LumenVfxServiceSuite
     public static void R1SelectedServiceOwnsBackendCapacityAndHostOnlyOwnsFrameFacts()
     {
         var host = new LumenCapabilities(true, false, true, 1_048_576);
-        GlowAssert.Equal(new LumenCapabilities(true, false, true, 64),
+        VfxAssert.Equal(new LumenCapabilities(true, false, true, 64),
             RimLumenApi.MergeCapabilities(host, new LumenCapabilities(false, true, true, 64)));
-        GlowAssert.Equal(new LumenCapabilities(true, false, false, 0),
+        VfxAssert.Equal(new LumenCapabilities(true, false, false, 0),
             RimLumenApi.MergeCapabilities(host, new LumenCapabilities(false, true, false, 0)));
-        GlowAssert.Equal(host, RimLumenApi.MergeCapabilities(host, null));
+        VfxAssert.Equal(host, RimLumenApi.MergeCapabilities(host, null));
     }
 
     [LumenFact]
@@ -266,9 +233,9 @@ public static class LumenVfxServiceSuite
         {
             LumenHostRegistry.RegisterVfxService(new CapabilityService(new LumenCapabilities(true, true, true, 1_048_576)));
             RimLumenRenderHost.SetFrameCapabilities(false, false);
-            GlowAssert.Equal(new LumenCapabilities(false, false, true, 1_048_576), RimLumenApi.Capabilities);
+            VfxAssert.Equal(new LumenCapabilities(false, false, true, 1_048_576), RimLumenApi.Capabilities);
             RimLumenRenderHost.SetFrameCapabilities(true, false);
-            GlowAssert.Equal(new LumenCapabilities(true, false, true, 1_048_576), RimLumenApi.Capabilities);
+            VfxAssert.Equal(new LumenCapabilities(true, false, true, 1_048_576), RimLumenApi.Capabilities);
         }
         finally
         {
@@ -287,9 +254,9 @@ public static class LumenVfxServiceSuite
     public static void BootstrapRegistersStableInstancesOnceInServiceThenSimulatorOrder()
     {
         VfxAssert.Check(!LumenSceneBootstrap.IsInitialized, "Bootstrap is initially uninitialized in the offline runner");
-        GlowAssert.Throws<InvalidOperationException>(() => _ = LumenSceneBootstrap.Catalog);
-        GlowAssert.Throws<InvalidOperationException>(() => _ = LumenSceneBootstrap.Simulator);
-        GlowAssert.Throws<InvalidOperationException>(() => _ = LumenSceneBootstrap.Service);
+        VfxAssert.Throws<InvalidOperationException>(() => _ = LumenSceneBootstrap.Catalog);
+        VfxAssert.Throws<InvalidOperationException>(() => _ = LumenSceneBootstrap.Simulator);
+        VfxAssert.Throws<InvalidOperationException>(() => _ = LumenSceneBootstrap.Service);
         LumenSceneBootstrap.EnsureInitialized();
         var catalog = LumenSceneBootstrap.Catalog;
         var simulator = LumenSceneBootstrap.Simulator;
@@ -302,9 +269,9 @@ public static class LumenVfxServiceSuite
             ReferenceEquals(simulator, LumenSceneBootstrap.Simulator) &&
             ReferenceEquals(service, LumenSceneBootstrap.Service), "Repeated bootstrap keeps stable instances");
         VfxAssert.Check(ReferenceEquals(service, LumenHostRegistry.VfxService), "Service is publicly registered");
-        GlowAssert.Equal(before.Length, after.Length);
-        GlowAssert.Equal(1, Array.FindAll(after, x => ReferenceEquals(x, service)).Length);
-        GlowAssert.Equal(1, Array.FindAll(after, x => ReferenceEquals(x, simulator)).Length);
+        VfxAssert.Equal(before.Length, after.Length);
+        VfxAssert.Equal(1, Array.FindAll(after, x => ReferenceEquals(x, service)).Length);
+        VfxAssert.Equal(1, Array.FindAll(after, x => ReferenceEquals(x, simulator)).Length);
         VfxAssert.Check(Array.IndexOf(after, service) < Array.IndexOf(after, simulator), "Service updates land before simulation");
         var asset = new EffectAsset { EffectId = "b3.bootstrap", Nodes = new[] { new EffectNodeSpec { Name = "root" } } };
         catalog.Register(asset);
@@ -316,7 +283,7 @@ public static class LumenVfxServiceSuite
     [LumenFact]
     public static void PlayReturnsInertHandleAndThrottlesPoolExhaustedWarningEveryTenSeconds()
     {
-        GlowAssert.Equal(1_048_576, EmitterSlotAllocator.DefaultCapacity);
+        VfxAssert.Equal(1_048_576, EmitterSlotAllocator.DefaultCapacity);
 
         var asset = new EffectAsset
         {
@@ -355,24 +322,24 @@ public static class LumenVfxServiceSuite
         var request = new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, OriginWorld = Vector3.Zero };
         using ILumenEffectHandle first = service.Play(request);
         VfxAssert.Check(first.IsAlive, "First allocation fits within 200 GPU slots");
-        GlowAssert.Equal(1, service.Simulator.ActiveEmitterCount);
-        GlowAssert.Equal(0, warnings.Count);
+        VfxAssert.Equal(1, service.Simulator.ActiveEmitterCount);
+        VfxAssert.Equal(0, warnings.Count);
 
         using ILumenEffectHandle second = service.Play(request);
         VfxAssert.Check(!second.IsAlive, "Second play drops cleanly to an inert handle instead of throwing");
-        GlowAssert.Equal(1, service.Simulator.ActiveEmitterCount);
-        GlowAssert.Equal(1, service.LiveHandleCount);
-        GlowAssert.Equal(1, warnings.Count);
+        VfxAssert.Equal(1, service.Simulator.ActiveEmitterCount);
+        VfxAssert.Equal(1, service.LiveHandleCount);
+        VfxAssert.Equal(1, warnings.Count);
 
         nowMs = 10_999;
         using ILumenEffectHandle third = service.Play(request);
         VfxAssert.Check(!third.IsAlive, "Still returns inert handle inside 10s cooldown");
-        GlowAssert.Equal(1, warnings.Count);
+        VfxAssert.Equal(1, warnings.Count);
 
         nowMs = 11_000;
         using ILumenEffectHandle fourth = service.Play(request);
         VfxAssert.Check(!fourth.IsAlive, "Still returns inert handle after 10s cooldown");
-        GlowAssert.Equal(2, warnings.Count);
+        VfxAssert.Equal(2, warnings.Count);
     }
 
 }
@@ -393,15 +360,15 @@ internal static class VfxTestData
         LumenHostRegistry.RegisterAssetProvider(catalog);
         return new LumenVfxService(new CpuParticleSimulator())
         {
-            GpuEngineProvider = () => null, GlowerDriverProvider = _ => null,
+            GpuEngineProvider = () => null,
         };
     }
 
-    public static void Step(LumenVfxService service, float deltaTime)
+    public static void Step(LumenVfxService service, float deltaTime, int currentMapIndex = -1)
     {
         var context = new LumenCaptureContext
         {
-            FrameIndex = 1, DeltaTime = deltaTime, ViewportWidth = 640, ViewportHeight = 480,
+            CurrentMapIndex = currentMapIndex, FrameIndex = 1, DeltaTime = deltaTime, ViewportWidth = 640, ViewportHeight = 480,
             ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
         };
         service.CaptureMainThread(context);
@@ -450,4 +417,20 @@ internal static class VfxAssert
 
     public static void Close(Vector3 expected, Vector3 actual)
         => Check(Vector3.Distance(expected, actual) < 0.0001f, $"Expected {expected}, got {actual}");
+
+    public static void Equal<T>(T expected, T actual)
+        => Check(EqualityComparer<T>.Default.Equals(expected, actual), $"Expected {expected}, got {actual}.");
+
+    public static void Throws<T>(Action action) where T : Exception
+    {
+        try
+        {
+            action();
+        }
+        catch (T)
+        {
+            return;
+        }
+        throw new InvalidOperationException($"Expected {typeof(T).Name}.");
+    }
 }

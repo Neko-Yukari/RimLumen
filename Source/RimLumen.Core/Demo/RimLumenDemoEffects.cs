@@ -234,7 +234,6 @@ internal static class RimLumenDemoEffects
                     LocalPosition = new Vector3(0f, apexY, 0f),
                     PointLight = new PointLightSpec(
                         9f,
-                        3f,
                         new Vector3(hue.X, hue.Y, hue.Z),
                         new ScalarCurve(new[]
                         {
@@ -360,7 +359,7 @@ internal static class RimLumenDemoEffects
                 {
                     Name = "light_core",
                     LocalPosition = new Vector3(0f, 0.6f, 0f),
-                    PointLight = new PointLightSpec(7f, 2f, new Vector3(0.35f, 0.78f, 1f)),
+                    PointLight = new PointLightSpec(7f, new Vector3(0.35f, 0.78f, 1f)),
                 },
             },
         };

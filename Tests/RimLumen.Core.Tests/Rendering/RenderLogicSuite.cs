@@ -1,7 +1,11 @@
 using System;
+using System.Numerics;
+using RimLumen.Core.Compat;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Lighting;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Rendering.Logic;
+using Waylith.Rendering;
 
 namespace RimLumen.Core.Tests.Rendering;
 
@@ -171,6 +175,49 @@ public static class RenderLogicSuite
             "L2 particles append mesh draws, not direct HDR draws.");
         Require(RimLumenPipeline.HasDirectHdrContributor([directHdr]),
             "A contributor that records its own HDR draws needs the pass.");
+    }
+
+    [LumenFact]
+    public static void LightPoolFalloffIsUnitAtCentreZeroAtAndBeyondRadiusAndStrictlyMonotonic()
+    {
+        const float radius = 6f;
+        Equal(1f, VisualPointLight.Falloff(0f, radius));
+        Equal(0f, VisualPointLight.Falloff(radius, radius));
+        Equal(0f, VisualPointLight.Falloff(radius + 0.001f, radius));
+        Equal(0f, VisualPointLight.Falloff(100f, radius));
+        Equal(0f, VisualPointLight.Falloff(0f, 0f));
+        Equal(0f, VisualPointLight.Falloff(0f, -2f));
+        ThrowsOutOfRange(() => VisualPointLight.Falloff(-0.1f, radius));
+
+        // Half-radius closed form: (1 - 0.5^2)^2 = 9/16 = 0.5625; sub-cell offsets must not quantize to cells.
+        Require(MathF.Abs(VisualPointLight.Falloff(3f, radius) - 0.5625f) < 1e-6f, "Expected exact (1 - (d/R)^2)^2 at d = R/2.");
+        float previous = VisualPointLight.Falloff(0f, radius);
+        foreach (float sample in new[] { 0.05f, 0.37f, 1.0f, 1.49f, 2.5f, 4.13f, 5.95f, radius })
+        {
+            float current = VisualPointLight.Falloff(sample, radius);
+            Require(current < previous, $"Falloff must strictly decrease: f({sample})={current} >= previous {previous}.");
+            previous = current;
+        }
+
+        var pool = new VisualPointLight(10.25f, -4.5f, 4f, new Vector3(2f, 0.5f, 0f));
+        Equal(new Vector3(2f, 0.5f, 0f), pool.EvaluateAt(10.25f, -4.5f));
+        Equal(Vector3.Zero, pool.EvaluateAt(14.25f, -4.5f));
+    }
+
+    [LumenFact]
+    public static void LightPoolDefinitionFollowsLightOverlayWithSceneMultiplierBlendAndSkipsHdrRedraw()
+    {
+        ShaderProgramDefinition definition = LightPoolRenderer.CreateDefinition();
+        Equal(3101, definition.renderQueue.Value);
+        Equal(GlowGroup.Early, GlowGroups.Classify(definition.renderQueue.Value));
+        PipelineState state = definition.ToPipelineState();
+        Require(state.Blend.Enabled
+            && state.Blend.SrcColor == BlendFactor.DstColor
+            && state.Blend.DstColor == BlendFactor.One
+            && state.Blend.ColorOp == BlendOp.Add
+            && state.Depth.Test && !state.Depth.Write,
+            "Light pool must blend DstColor + One with depth test and no depth write.");
+        Equal(false, AdditiveEmissiveFilter.IsAdditiveEmissive(in state, "RimLumen.LightPool"));
     }
 
     // Minimal third-party contributor: not a built-in appender or simulator, so it owns its HDR draws.

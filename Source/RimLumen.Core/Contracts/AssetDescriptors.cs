@@ -248,16 +248,13 @@ public sealed class EmitterSpec
     public LumenParticleTier PreferredTier { get; init; } = LumenParticleTier.L2_GpuCompute;
 }
 
-// Radii [0,40] cells: vanilla GlowGrid.RegisterCustomGlower clamps [0,40] (Assembly-CSharp:69649),
-// and CompProperties_Glower.ConfigErrors rejects >40 (:344536). Colour components are [0,1]; ColorInt stores 1/255 steps.
-// MapGlowerDriver's 0.05-cell radius / 4/255 colour steps are RimLumen re-register (re-flood) thresholds,
-// not vanilla storage precision: they prevent steady lights from re-flooding every frame. Curve time is seconds.
-// GlowRadius and OverlightRadius: finite [0,40] cells; ColorRgb: finite [0,1] per component.
-// IntensityOverTime: null means 1; otherwise Hermite in elapsed node-light seconds, endpoint-held. Effective
-// intensity <= 0 deregisters; otherwise scaled RGB is clamped to [0,1] before channel quantization.
+// Purely visual effect light: a round ground light pool drawn after vanilla LightOverlay; it never changes
+// game logic (mood, plant growth, work speed). GlowRadius: finite [0,40] cells, the pool's radius around the node
+// projected to the ground. ColorRgb: finite [0,1] per component. IntensityOverTime: null means 1; otherwise Hermite
+// in elapsed node-light seconds, endpoint-held, multiplier and key values finite >= 0. Light = ColorRgb * intensity with no upper
+// clamp (the 8-bit scene saturates); effective intensity <= 0 draws nothing.
 public readonly record struct PointLightSpec(
     float GlowRadius,
-    float OverlightRadius,
     Vector3 ColorRgb,
     ScalarCurve? IntensityOverTime = null);
 

@@ -76,7 +76,7 @@ public static class RepeatedScalarCurveSuite
             EffectId = "repeat-csharp", Nodes = new[] { new EffectNodeSpec
             {
                 Name = "root", Emitter = new EmitterSpec { Name = "repeat", SizeOverLifetime = StepCurve() },
-                PointLight = new PointLightSpec(1f, 0f, Vector3.One, new ScalarCurve(new[]
+                PointLight = new PointLightSpec(1f, Vector3.One, new ScalarCurve(new[]
                 { new CurveKey(0f, 2f), new CurveKey(2f, 2f), new CurveKey(2f, 6f), new CurveKey(2f, 10f), new CurveKey(4f, 10f) })),
             } },
         };
