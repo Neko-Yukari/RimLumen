@@ -20,19 +20,21 @@
     <li>brrainz.harmony</li>
   </loadAfter>
   <description>【中文】
-RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可编程光影包与 GPU 粒子框架，随游戏暂停与倍速同步推进。
+RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的旁路/叠加层（sidecar/overlay）HDR 视效增强层、可编程后处理光影包宿主与 GPU 粒子框架，随游戏暂停与倍速同步推进——并非接管全图的 HDR 替换管线。
+- 原版地形、建筑、殖民者与 LightOverlay 仍留在 Waylith 原生 8-bit UNorm 管线中保持原样，因此可与 RimIris、IsoRim Waylith 和 RimUnity ScreenEfx 自然兼容。
+- 真正的 RGBA16F 浮点渲染在 RimLumen 的旁路 HDR 图层执行（原生 L1/L2 粒子、拷贝符合条件的原版/模组加法发光与 0–7 级 HDR Bloom），并在分段地图渲染队列边界回填合成，使屋顶、迷雾和下游模组调色仍可自然作用于画面。
 这里的 HDR 指游戏内部的高动态范围渲染，最终色调映射回普通画面输出：不需要 HDR 显示器，也不需要开启 Windows HDR，能运行 RimWorld 1.7 的 Vulkan 驱动即可。
 
 【面向模组开发者】
-1. 原生 RGBA16F HDR 通道与可编程光影包（ShaderPacks）
-- 在地图与 UI 之间分配 RGBA16F 浮点目标与 0–7 级可配 Bloom 链，高亮中心自然向白炽感过渡且保留边缘色相；自动增强符合条件的原版与第三方加法混合发光绘制；队列 ≥3152 的发光使用宿主 Bloom，不包含光影包完整自定义效果，地图末尾泛光不进入此前的 Screen 和 VoidNode 抓取。
+1. 旁路 RGBA16F HDR 图层与可编程光影包（ShaderPacks）
+- 在旁路 HDR 图层分配 RGBA16F 浮点目标与 0–7 级可配 Bloom 链，并在地图渲染队列分段切点回填合成，高亮中心自然向白炽感过渡且保留边缘色相；自动拷贝并增强符合条件的原版与第三方加法混合发光绘制；队列 ≥3152 的发光使用宿主 Bloom，不包含光影包完整自定义效果，地图末尾泛光不进入此前的 Screen 和 VoidNode 抓取。
 - 在 Mod 的 ShaderPacks/ 或 Config/RimLumen/ShaderPacks/ 放入 pack.json 与 GLSL 片段着色器，支持自定义中间渲染目标（R16G16B16A16SFloat / R8G8B8A8UNorm / R16SFloat）、跨帧持久化历史缓冲、场景深度与地图光场（mapLightField：屋顶、人工地面光、存在使用室外温度的房间、战争迷雾）采样。
 - 支持设置页实时参数滑杆与热重载；外部着色器编译或管线校验失败时隔离报错并保留上一份有效包继续运行。
 
 2. L2 GPU Compute 与 L1 原生 CPU 双路粒子
 - L2 GPU 粒子：位置、生命周期、重力阻尼、点吸引子、旋涡与 3D 旋度湍流在 Vulkan Compute 着色器内模拟并常驻显存，经引擎 MeshBatchRenderer 实例化直接上屏。
 - L1 CPU 粒子：适合轻量化或逻辑驱动特效，支持自定义贴图、Flipbook 序列帧动画与按速度方向拉伸的流火效果。
-- 深度感知软粒子与动态点光：转存 R32SFloat 场景深度使粒子靠近墙体和地形边缘时平滑淡出，支持随节点移动的动态 GlowGrid 点光。
+- 深度感知软粒子与动态点光：转存 R32SFloat 场景深度使粒子靠近墙体和地形边缘时平滑淡出；点光在渲染队列 3101 绘制连续的纯视觉光池，不写入原版 GlowGrid、不产生游戏逻辑影响；需要逻辑照明的自定义建筑可额外挂载纯逻辑地表发光 ThingComp。
 
 3. 真 3D 垂直空间模式（Vertical3D）
 - Vertical3D 在朝天的真 3D 空间进行物理模拟，绘制阶段按当前相机矩阵自适应投影：在原版 2D 正俯视下自动上投，在 IsoRim Waylith 等 3D 视角下还原真实立体高度、景深与速度拉伸比例。
@@ -48,7 +50,7 @@ RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可�
   · Cinematic（电影光丝）：横向变形光丝、6 级柔和泛光与跨帧自适应曝光。
   · Vibrant（霓虹高饱和）：抑制高光泛白，强化色彩饱和度与能量光晕。
   · Crisp（锐利克制）：高起辉阈值与 3 级紧致泛光，保留地形与 UI 锐利清晰。
-- 实时滑杆与热重载：设置页支持实时调节当前光影包参数、热重载、原版发光增强开关（仅在无活动特效且当前光影包不重写场景时，关闭后逐像素还原原版）、粒子密度（10%–100%）与可选娱乐演示建筑（烟花发射器与粒子喷泉）。
+- 实时滑杆与热重载：设置页支持实时调节当前光影包参数、热重载、原版发光增强开关（仅在无活动特效且当前光影包不重写场景时，关闭后逐像素还原原版）、粒子密度（10%–100%）与可选娱乐演示建筑（烟花发射器、粒子喷泉与三盏照明对照路灯）。
 - 6 站对照演示说明（见宣传图）：#1 LDR vs HDR 泛光 / #2 L1 速度拉伸 / #3 动态点光照地 / #4 深度软粒子穿墙淡出 / #5 L2 GPU 12k 旋涡 / #6 原版发光自动 HDR。
 - 实测性能参考（1080p · RTX 4080 SUPER · 无校验层 · 3 力场 + 5 级 Bloom + 软粒子，每档 60 帧）：0–50,000 粒子整帧均值 5.54–5.55 ms（~180 FPS），100,000 粒子 5.76 ms（174 FPS），250,000 粒子 8.49 ms（118 FPS），500,000 粒子 14.79 ms（68 FPS）；全档位主线程耗时低于 0.01 ms。1,048,576 个共享槽位耗尽时，跳过新特效，最多每 10 秒记录一次警告。
 
@@ -59,19 +61,21 @@ RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的 HDR 视效、可�
 内置渲染异常熔断机制。
 
 【English】
-RimLumen is an HDR VFX, programmable ShaderPack, and GPU particle framework for RimWorld 1.7 (Waylith / Vulkan), synchronized with game pause and speed multipliers.
+RimLumen is a sidecar/overlay HDR VFX enhancement layer, programmable post-processing ShaderPack host, and GPU particle framework for RimWorld 1.7 (Waylith / Vulkan), synchronized with game pause and speed multipliers—not a full-map HDR takeover.
+- Vanilla terrain, buildings, pawns, and LightOverlay stay untouched in Waylith's native 8-bit UNorm pipeline, keeping RimLumen naturally compatible with RimIris, IsoRim Waylith, and RimUnity ScreenEfx.
+- True RGBA16F floating-point rendering runs in RimLumen's sidecar HDR layer (native L1/L2 particles, copied qualifying vanilla/mod additive glows, and 0–7 mip HDR bloom), composited back at segmented map render-queue boundaries so roofs, fog, and downstream mod color grading still apply naturally.
 HDR here means internal high-dynamic-range rendering, tone-mapped back to a standard image: no HDR monitor or Windows HDR needed, and no driver requirement beyond what RimWorld 1.7's Vulkan renderer already needs.
 
 [For Modders]
-1. Native RGBA16F HDR Pipeline and Programmable ShaderPacks
-- Allocates an RGBA16F floating-point target and a configurable 0–7 mip HDR bloom chain before UI rendering, keeping bright cores warm without clipping edge hues. Automatically enhances eligible vanilla and third-party additive glow draws. Glows at render queues >=3152 use host bloom rather than the pack's complete custom effects; map-end bloom is absent from earlier Screen and VoidNode grabs.
+1. Sidecar RGBA16F HDR Layer and Programmable ShaderPacks
+- Allocates an RGBA16F sidecar target and a configurable 0–7 mip HDR bloom chain composited at segmented map render-queue split points, keeping bright cores warm without clipping edge hues. Automatically copies and enhances eligible vanilla and third-party additive glow draws. Glows at render queues >=3152 use host bloom rather than the pack's complete custom effects; map-end bloom is absent from earlier Screen and VoidNode grabs.
 - Place pack.json and fragment GLSL shaders in a mod's ShaderPacks/ folder or Config/RimLumen/ShaderPacks/ to declare custom intermediate targets (R16G16B16A16SFloat, R8G8B8A8UNorm, R16SFloat), persistent history buffers, scene depth sampling, and the built-in mapLightField texture (roof state, artificial ground glow, presence of an outdoor-temperature room, fog of war).
 - Exposes live UI sliders and hot-reload in Mod Settings; broken shaders or invalid graphs report an isolated diagnostic message and keep the last valid pack active without tripping the fail-safe.
 
 2. GPU Compute and Native CPU Particle Paths
 - L2 GPU Compute: simulates position, lifetime, gravity/drag, point attractors, vortex, and 3D curl turbulence in Vulkan Compute shaders, rendering via MeshBatchRenderer instanced draws.
 - L1 Native CPU: designed for lighter or logic-driven emitters with custom textures, flipbooks, and velocity-stretched sparks.
-- Depth-Aware Soft Particles and Dynamic Point Lights: copies scene depth to R32SFloat for smooth wall/terrain edge fading and supports moving dynamic GlowGrid point lights.
+- Depth-Aware Soft Particles and Dynamic Point Lights: copies scene depth to R32SFloat for smooth wall/terrain edge fading, draws continuous visual point-light pools at render queue 3101 without touching vanilla GlowGrid, and provides an optional pure-logical ground-glow ThingComp for custom buildings.
 
 3. True-3D Vertical Space (Vertical3D)
 - Simulates physics in true skyward 3D space and adapts automatically at render time—projecting upward in vanilla 2D top-down view while preserving real altitude, depth, and velocity stretch under 3D camera mods such as IsoRim Waylith.
@@ -87,8 +91,8 @@ HDR here means internal high-dynamic-range rendering, tone-mapped back to a stan
   · Cinematic: anamorphic streaks, 6-mip soft bloom, and adaptive exposure.
   · Vibrant: suppresses highlight desaturation and boosts energy glow chroma.
   · Crisp: high threshold with tight 3-mip bloom to keep terrain and UI sharp in combat.
-- Live Tuning and Demo Buildings: adjust per-pack sliders, hot-reload shaders, toggle vanilla additive glow (pixel-identical when off only if no RimLumen effects play and the active pack does not rewrite the scene), scale Particle Density (10%–100%), and optionally enable Demo Joy Buildings (Firework Launcher and Particle Fountain).
-- 6-Station Showcase Legend (see screenshots): #1 LDR vs HDR Bloom / #2 L1 Velocity Stretch / #3 Moving GlowGrid Light / #4 Soft Particle Wall Fade / #5 L2 GPU 12k Vortex / #6 Auto Vanilla HDR.
+- Live Tuning and Demo Buildings: adjust per-pack sliders, hot-reload shaders, toggle vanilla additive glow (pixel-identical when off only if no RimLumen effects play and the active pack does not rewrite the scene), scale Particle Density (10%–100%), and optionally enable Demo Joy Buildings (Firework Launcher, Particle Fountain, and three lighting-comparison Street Lamps).
+- 6-Station Showcase Legend (see screenshots): #1 LDR vs HDR Bloom / #2 L1 Velocity Stretch / #3 Dynamic Point Light Pool / #4 Soft Particle Wall Fade / #5 L2 GPU 12k Vortex / #6 Auto Vanilla HDR.
 - Measured Benchmark (1080p, RTX 4080 SUPER, validation off, 3 force fields + 5-mip bloom + soft particles, 60 frames/step): 0–50,000 particles at 5.54–5.55 ms (~180 FPS), 100,000 at 5.76 ms (174 FPS), 250,000 at 8.49 ms (118 FPS), and 500,000 at 14.79 ms (68 FPS), with main-thread capture under 0.01 ms. When the 1,048,576 shared slots are exhausted, new effects are skipped and a warning is logged at most every 10 seconds.
 
 [Recommended Companions]
