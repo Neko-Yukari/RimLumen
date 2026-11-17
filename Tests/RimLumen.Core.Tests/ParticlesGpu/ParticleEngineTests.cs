@@ -405,6 +405,29 @@ public static class ParticleEngineTests
     }
 
     [LumenFact]
+    public static void BurstStateIndicesAreCompactPerInstanceAndReusedAfterRelease()
+    {
+        using var engine = new LumenGpuParticleEngine(64);
+        var spec = new EmitterSpec { Name = "state", MaxParticles = 16, RateOverTime = 0, StartLifetimeMin = 1, StartLifetimeMax = 1 };
+        var transform = new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity);
+        int a = engine.CreateInstance(spec, transform, -1, false, 1u);
+        int b = engine.CreateInstance(spec, transform, -1, false, 2u);
+        engine.CaptureMainThread(Frame(0.01f));
+        uint slotA = StateSlot(engine, a), slotB = StateSlot(engine, b);
+        Require(slotA == 0u && slotB == 1u, $"Expected compact state indices 0/1, actual {slotA}/{slotB}.");
+        engine.DestroyInstance(a, immediate: true);
+        engine.CaptureMainThread(Frame(0.01f, 1));
+        int c = engine.CreateInstance(spec, transform, -1, false, 3u);
+        engine.CaptureMainThread(Frame(0.01f, 2));
+        Require(StateSlot(engine, c) == slotA && StateSlot(engine, b) == slotB,
+            $"A released index is reused and live indices stay stable, actual c={StateSlot(engine, c)} b={StateSlot(engine, b)}.");
+        Require(engine.CapturedFrame!.StateSlotCount == 2, "The state buffer is sized by peak concurrent instances.");
+    }
+
+    private static uint StateSlot(LumenGpuParticleEngine engine, int instanceId) =>
+        Array.Find(engine.CapturedFrame!.Emitters, e => e.InstanceId == instanceId).Parameters.StateSlot;
+
+    [LumenFact]
     public static void EmitterDrawsAreScopedToTheCapturingMap()
     {
         var onSeven = new ParticleEmitterFrame(1, default, Array.Empty<GpuCurveSample>(), null, LumenBlendMode.Additive, 7);

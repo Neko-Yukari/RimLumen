@@ -17,6 +17,8 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         public required int Id;
         public required EmitterSpec Spec;
         public required EmitterSlotRange Slots;
+        // Index into the persistent BurstState buffer, stable for the instance's lifetime.
+        public required int StateSlot;
         public required EmissionScheduler Scheduler;
         public required GpuCurveSample[] Curves;
         public LumenEmitterTransform Transform;
@@ -52,6 +54,8 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
     private readonly Dictionary<int, int> rowByInstance = new();
     private readonly Dictionary<int, int> mapOffsets = new();
     private int nextId;
+    private readonly Stack<int> freeStateSlots = new();
+    private int stateSlotCount;
     private bool disposed;
     private ParticleFrame? captured;
     internal ParticleFrame? CapturedFrame => captured;
@@ -83,6 +87,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         instances.Add(id, new Instance
         {
             Id = id, Spec = spec, Slots = range, Scheduler = scheduler,
+            StateSlot = freeStateSlots.Count != 0 ? freeStateSlots.Pop() : stateSlotCount++,
             Curves = curves, Transform = initialTransform, MapIndex = mapIndex, RealTime = realTime
         });
         lock (lifecycleGate)
@@ -294,7 +299,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 Events = new(eventCapacity, ownEventCapacity, instance.GpuBurstCarry ? 1f : 0f, 0f),
                 DensityQ = (uint)MathF.Floor(density * 65536f), ResetVersion = instance.ResetVersion,
                 ExplicitOffset = (uint)explicitOffset, ExplicitCount = (uint)explicitCount,
-                StateSlot = (uint)instance.Slots.Offset, EmitEvents = instance.Targets.Length == 0 ? 0u : 1u
+                StateSlot = (uint)instance.StateSlot, EmitEvents = instance.Targets.Length == 0 ? 0u : 1u
             };
             rows.Add(new ParticleEmitterFrame(instance.Id, parameters, instance.Curves, spec.TextureKey, spec.BlendMode,
                 instance.MapIndex, instance.IsVertical3D, instance.Origin.Y, spec.KillBelowFloor)
@@ -326,10 +331,12 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         {
             foreach (int target in instances[id].Targets)
                 if (instances.TryGetValue(target, out Instance? child)) child.Sources.Remove(id);
+            // A reused index is reinitialised by the new instance's first-frame flag (State.z) on the GPU.
+            freeStateSlots.Push(instances[id].StateSlot);
             instances.Remove(id);
         }
         captured = new ParticleFrame(context, rows.ToArray(), fields.ToArray(), clears.ToArray())
-        { Maps = captureMaps.ToArray(), CellCount = cellCount, SubLinks = captureLinks.ToArray(), ExplicitBursts = captureBursts.ToArray(), EventCapacity = eventCapacity };
+        { Maps = captureMaps.ToArray(), CellCount = cellCount, SubLinks = captureLinks.ToArray(), ExplicitBursts = captureBursts.ToArray(), EventCapacity = eventCapacity, StateSlotCount = stateSlotCount };
         System.Threading.Volatile.Write(ref idleRequested, rows.Count == 0);
     }
 
@@ -363,4 +370,6 @@ internal sealed record ParticleFrame(LumenCaptureContext Context, ParticleEmitte
     internal GpuSubLink[] SubLinks { get; init; } = Array.Empty<GpuSubLink>();
     internal GpuExplicitBurst[] ExplicitBursts { get; init; } = Array.Empty<GpuExplicitBurst>();
     internal int EventCapacity { get; init; }
+    // Persistent BurstState entries required: one past the highest state index in use.
+    internal int StateSlotCount { get; init; }
 }

@@ -269,6 +269,7 @@ internal sealed class ParticleGpuFrame : IDisposable
     internal readonly bool[] TexturePresent;
     internal readonly bool[] TextureSrgb;
     internal readonly GpuComputeBuffer[] ComputeBuffers;
+    internal GpuComputeBuffer BurstStates => ComputeBuffers[6];
     private readonly GpuEmitterParams[] parameters;
     private RimLumen.Core.Scene.ParticleMapGrid[] uploadedMaps = Array.Empty<RimLumen.Core.Scene.ParticleMapGrid>();
     private readonly int[] curveInstanceIds;
