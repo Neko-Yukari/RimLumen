@@ -7,8 +7,8 @@
   <RimLumen_ColorBlendLegacy>经典</RimLumen_ColorBlendLegacy>
   <RimLumen_ColorBlendLinear>线性</RimLumen_ColorBlendLinear>
   <RimLumen_ColorBlendSpaceTooltip>经典方式保持原有画面。线性方式下，半透明粒子和粒子柔和的边缘会更亮，不透明粒子相互叠加的地方会更暗。</RimLumen_ColorBlendSpaceTooltip>
-  <RimLumen_EnableDemoBuildings>启用娱乐演示建筑：烟花发射器与粒子喷泉</RimLumen_EnableDemoBuildings>
-  <RimLumen_EnableDemoBuildingsTooltip>开启后，「娱乐」建造菜单会多出两座零成本演示建筑：烟花发射器与粒子喷泉。</RimLumen_EnableDemoBuildingsTooltip>
+  <RimLumen_EnableDemoBuildings>启用娱乐演示建筑：烟花发射器、粒子喷泉与光照对照路灯</RimLumen_EnableDemoBuildings>
+  <RimLumen_EnableDemoBuildingsTooltip>开启后，「娱乐」建造菜单会多出五座零成本演示建筑：烟花发射器、粒子喷泉，以及三盏光照对照路灯（仅视觉光、仅逻辑光、视觉光加逻辑光）。</RimLumen_EnableDemoBuildingsTooltip>
   <RimLumen_ShaderPacks>光影包与后处理</RimLumen_ShaderPacks>
   <RimLumen_ShaderPackError>光影包加载/编译错误（已回退安全默认）：\n{0}</RimLumen_ShaderPackError>
   <RimLumen_CopyError>复制错误</RimLumen_CopyError>

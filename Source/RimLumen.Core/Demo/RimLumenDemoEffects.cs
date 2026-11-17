@@ -7,7 +7,7 @@ using CurveKey = RimLumen.Core.Contracts.CurveKey;
 
 namespace RimLumen.Core.Demo;
 
-// Built-in optional demo EffectAssets for the Firework Launcher and Particle Fountain joy buildings.
+// Built-in optional demo EffectAssets for the Firework Launcher, Particle Fountain and street lamp joy buildings.
 //
 // Coordinates follow docs/api.md section 2: world +X is east, +Y is altitude and +Z is north (up on
 // screen). Every emitter that should shoot upwards uses Vertical3D: the simulation is true 3D (the Cone
@@ -20,6 +20,10 @@ internal static class RimLumenDemoEffects
     internal const string FireworkCyanId = "RimLumen.Demo.Firework.Cyan";
     internal const string FireworkMagentaId = "RimLumen.Demo.Firework.Magenta";
     internal const string ParticleFountainId = "RimLumen.Demo.ParticleFountain";
+    internal const string StreetLampId = "RimLumen.Demo.StreetLamp";
+
+    // Shared by the street lamp's visual pool and CompProperties_RimLumenLogicalLight in the lamp ThingDefs.
+    internal const float StreetLampRadius = 5f;
 
     internal static readonly string[] FireworkEffectIds =
     {
@@ -50,7 +54,7 @@ internal static class RimLumenDemoEffects
     };
 
     // Requires: LumenSceneBootstrap.Catalog is initialized.
-    // Ensures: registers the 3 firework variants and the fluid fountain asset idempotently.
+    // Ensures: registers the 3 firework variants, the fluid fountain and the street lamp asset idempotently.
     internal static void EnsureRegistered()
     {
         InMemoryAssetCatalog catalog = LumenSceneBootstrap.Catalog;
@@ -63,6 +67,11 @@ internal static class RimLumenDemoEffects
         if (!catalog.TryResolveEffect(ParticleFountainId, out _))
         {
             catalog.Register(CreateParticleFountainAsset());
+        }
+
+        if (!catalog.TryResolveEffect(StreetLampId, out _))
+        {
+            catalog.Register(CreateStreetLampAsset());
         }
     }
 
@@ -361,6 +370,29 @@ internal static class RimLumenDemoEffects
                     LocalPosition = new Vector3(0f, 0.6f, 0f),
                     PointLight = new PointLightSpec(7f, new Vector3(0.35f, 0.78f, 1f)),
                 },
+            },
+        };
+    }
+
+    // Ensures: returns a light-only lamp: one steady warm point light at the lamp head, held by a single loop
+    //          state so the handle lives until the building releases it.
+    internal static EffectAsset CreateStreetLampAsset()
+    {
+        return new EffectAsset
+        {
+            EffectId = StreetLampId,
+            Nodes = new[]
+            {
+                new EffectNodeSpec
+                {
+                    Name = "lamp_light",
+                    LocalPosition = new Vector3(0f, 1.2f, 0f),
+                    PointLight = new PointLightSpec(StreetLampRadius, new Vector3(1f, 0.78f, 0.46f)),
+                },
+            },
+            States = new[]
+            {
+                new EffectStateSpec { Name = "lit", Nodes = new[] { "lamp_light" }, Loop = true },
             },
         };
     }

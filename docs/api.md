@@ -164,7 +164,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
   粒子尺寸曲线由 L1 和 L2 使用相同的 64 点查找表（LUT）：采样点为 `i/63`（`i = 0…63`），包含两端，再对相邻样本插值。阶跃可能在宽度为 `1/63` 的采样区间内被平滑，不能保证精确保留。点光曲线按秒直接求值，不使用该粒子查找表。
 - **材质颜色**：`materialTint` 默认为 `(1,1,1,1)`，与 `startColor` 和渐变遵循上述颜色范围；`colorSpace` 为 `Stored`（默认）或 `Linear`。令 `vertex = startColor × gradient`，并仅对其 RGB 乘以 `hdrIntensity × intensity`。Stored 的 RGB 为 `vertex × tint × texel`；Linear 的 RGB 为 `E(vertex × D(tint) × (贴图为 sRGB ? D(texel) : texel))`。`vertex` 不解码；`D` / `E` 分别为 sRGB 解码 / 编码，在非负值上延伸至大于 1，不截断。alpha 始终为三个原始 alpha 的乘积，再应用软粒子覆盖度和混合模式要求的预乘。逐分量计算中，`D(x) = x/12.92`（`x <= 0.04045`），否则为 `((x+0.055)/1.055)^2.4`；`E(x) = 12.92*x`（`x <= 0.0031308`），否则为 `1.055*x^(1/2.4)-0.055`。依据 RimUnity 固定版本 `45ca90987f7d3721715b45c021cab986ee14c468` 的 `Source/Shared/ShaderColorSpace.cs:69-103,122-134`。此处只描述材质计算，不改变玩家混合空间。
 - **渐变（`colorOverLifetime`）**：支持颜色数组（单色常量）或停靠点数组 `[[time, [r,g,b,a]], ...]` 或对象 `{ "stops": [{ "time": 0, "color": [r,g,b,a] }] }`，要求 `time` 严格递增。
-- **`pointLight`**：JSON 下颜色键为 `color`（RGBA），半径键为 `glowRadius`（单位：地图格）。点光是纯视觉光池，不写入原版 `GlowGrid`，不影响心情、种植和工作速度。圆心取节点世界位置在地面上的投影，半径 `R = glowRadius`，衰减公式为 `w = (1 - (d/R)^2)^2`，在 `d >= R` 处精确为 `0`。光源项 `L = color × intensityOverTime × w` 使场景变为 `scene × (1 + L)`，绘制在原版光照层之后，迷雾、黑暗和屋顶照常覆盖。光池每帧跟随节点。`intensity` 和曲线关键帧值须有限且 `>= 0`，无上限；有效强度 `<= 0` 时不绘制。`overlightRadius` 已移除，JSON 和 XML 解析均直接拒绝。
+- **`pointLight`**：JSON 下颜色键为 `color`（RGBA），半径键为 `glowRadius`（单位：地图格）。点光是纯视觉光池，不写入原版 `GlowGrid`，不影响心情、种植和工作速度。圆心取节点世界位置在地面上的投影，半径 `R = glowRadius`，衰减公式为 `w = (1 - (d/R)^2)^2`，在 `d >= R` 处精确为 `0`。光源项 `L = color × intensityOverTime × w` 使场景变为 `scene × (1 + L)`，绘制在原版光照层之后，迷雾、黑暗和屋顶照常覆盖。光池每帧跟随节点。`intensity` 和曲线关键帧值须有限且 `>= 0`，无上限；有效强度 `<= 0` 时不绘制。`overlightRadius` 已移除，JSON 和 XML 解析均直接拒绝。需要游戏逻辑光时，见第七章第 3 节的 `CompRimLumenLogicalLight`。
 - **力场 `strength`**：JSON、XML 与 C# 均须显式提供；省略时拒绝资产，不使用默认值。
 - **`timelineEvents` / `states` / `initialState` / `stopState`**：见下一节「状态机」。
 - **粒子密度设置**：公开 setter `RimLumenRenderHost.ParticleDensityScale` 接受范围为 `0.1`～`1.0`；范围外的有限值静默截到边界，不记录日志，NaN 和正负无穷抛出 `ArgumentOutOfRangeException`。设置滑条连续取值，显示时四舍五入为整数百分比。密度 `1` 精确；截断后的密度为 `d` 时，脉冲有效密度为 `floor(d * 65536) / 65536`。
@@ -525,6 +525,28 @@ RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled
 已安装原版及 DLC 的静态清单中，3155 仪式蜡烛在 3169 组增强，位于天气雾 3169 和太阳阴影 3170 之前；3177 轨道 / 电力光束及端点在 3178 组增强，位于战争迷雾 3175 之后、Gravship 抓取及 Darkness 3180 之前；3181 重力场、3185 引擎、3201 推进火焰和 4000 Noctol 眼睛在地图末尾增强。清单中 `[3169, 3174]` 和 `[3178, 3179]` 没有符合条件的绘制。末组 Bloom 晚于 3201 Screen 和 3251 VoidNode 抓取，因此不包含在这两次抓取中；不保证所有覆盖层、抓取或第三方绘制顺序。这些是静态顺序契约，实机表现尚未验证。
 
 如果在自定义 `ShaderDef` 上不想被自动重画增强，可以挂载 `<li Class="RimLumen.Core.Compat.LumenEmissiveModExtension"><EnableHdrBloom>false</EnableHdrBloom></li>` 进行逐 `ShaderDef` 排除。（`HdrMultiplier` 字段已移除，写 `<hdrMultiplier>` 会在 Def 校验时报错；只有 `EnableHdrBloom` 生效。）
+
+### 3. 游戏逻辑光（`CompRimLumenLogicalLight`）
+
+`pointLight` 只照亮画面。建筑需要影响心情、工作速度、植物生长和光照读数时，在 ThingDef 上挂逻辑光组件：
+
+```xml
+<comps>
+  <li Class="RimLumen.Core.Lighting.CompProperties_RimLumenLogicalLight">
+    <glowRadius>6</glowRadius>
+  </li>
+</comps>
+```
+
+- **作用范围**：只抬高 `GlowGrid.GroundGlowAt`，效果等同同半径的白色、无过亮原版 `CompGlower`。不进入原版 `GlowGrid`，`VisualGlowAt`、原版八角形光照层和光影包 `mapLightField` 的 G 通道都保持不变。
+- **光照曲线**：按原版八邻域洪泛计算距离，墙体等 `blockLight` 建筑会遮挡，光线可以绕过门洞和墙角。光源附近为 50%（「明亮」），`glowRadius` 外为 0。多个逻辑光重叠时取最大值，再与原版结果（含天光）取最大值；真空地形没有地面光。
+- **点亮条件**：与 `CompGlower` 相同。建筑已生成，`FlickUtility.WantsToBeOn` 为真，且建筑及其全部实现 `IThingGlower` 的组件都返回 `ShouldBeLitNow()`。因此电力、开关、燃料和日程表组件无需额外配置，组件也响应同一组信号（`PowerTurnedOn`、`FlickedOff`、`RanOutOfFuel` 等）。
+- **生效时机**：与原版光照一致，在每帧 `GlowGridUpdate_First` 重算并触发 `GlowChanged` 事件。光源开关或光照范围内的墙体变化时才重算。
+- **校验**：`glowRadius` 必须是有限值，取值范围为 `(0, 40]` 格，越界时 Def 校验报错。组件没有颜色、强度和过亮半径字段。
+- **搭配视觉光**：需要可见的光池时，再播放带 `pointLight` 的特效。两者互不影响，不会在画面上叠加原版光照。
+- **不要同时挂 `CompGlower`**：原版发光组件会写入 `GlowGrid`，并在画面上画出八角形光照。
+
+启用「娱乐演示建筑」设置后，「娱乐」建造菜单提供三盏对照路灯：`RimLumen_StreetLamp_Visual` 只有视觉光，`RimLumen_StreetLamp_Logic` 只有逻辑光，`RimLumen_StreetLamp_Both` 两者都有。
 
 ---
 

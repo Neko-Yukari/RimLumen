@@ -2,8 +2,8 @@
 <Defs>
 
   <!--
-    Optional demo buildings. Both are zero-cost, one-work-unit Joy buildings that only play a RimLumen
-    effect, and both are hidden unless RimLumen's "Enable demo joy buildings" setting is on:
+    Optional demo buildings. All are zero-cost, one-work-unit Joy buildings that only show RimLumen
+    effects or lights, and all are hidden unless RimLumen's "Enable demo joy buildings" setting is on:
     DemoBuildingRegistry adds/removes their Designator_Build entries in DesignationCategoryDef "Joy" at
     runtime, which is why canGenerateDefaultDesignator is false (vanilla's resolve must not add them).
     Emitter geometry lives in RimLumenDemoEffects; see docs/api.md section 2 for the axes.
@@ -67,6 +67,80 @@
     <comps>
       <li Class="RimLumen.Core.Demo.CompProperties_RimLumenDemoEmitter">
         <kind>Fountain</kind>
+      </li>
+    </comps>
+  </ThingDef>
+
+  <!--
+    Three lighting-comparison street lamps, radius 5 each. The visual pool comes from the RimLumen street lamp
+    effect (CompRimLumenDemoEmitter kind StreetLamp); the gameplay light comes from CompRimLumenLogicalLight,
+    which raises GroundGlowAt without entering vanilla GlowGrid. None of them has a vanilla CompGlower.
+  -->
+  <ThingDef Name="RimLumen_StreetLampBase" ParentName="BuildingBase" Abstract="True">
+    <thingClass>Building</thingClass>
+    <rotatable>false</rotatable>
+    <designationCategory>Joy</designationCategory>
+    <canGenerateDefaultDesignator>false</canGenerateDefaultDesignator>
+    <passability>PassThroughOnly</passability>
+    <pathCost>30</pathCost>
+    <fillPercent>0.15</fillPercent>
+    <graphicData>
+      <graphicClass>Graphic_Single</graphicClass>
+    </graphicData>
+    <statBases>
+      <MaxHitPoints>120</MaxHitPoints>
+      <WorkToBuild>1</WorkToBuild>
+      <Flammability>0</Flammability>
+    </statBases>
+    <building>
+      <isEdifice>true</isEdifice>
+    </building>
+  </ThingDef>
+
+  <ThingDef ParentName="RimLumen_StreetLampBase">
+    <defName>RimLumen_StreetLamp_Visual</defName>
+    <label>street lamp (visual light only)</label>
+    <description>一个零成本的光照对照路灯：只有 RimLumen 视觉光（暖色圆形光池），没有游戏逻辑光。画面被照亮，但地面光照读数保持黑暗，不影响心情、工作速度与植物生长。\n\nA zero-cost lighting comparison lamp with a RimLumen visual light only: a warm round light pool. The ground looks lit, but the gameplay light level stays dark, so mood, work speed and plant growth are unaffected.</description>
+    <tickerType>Normal</tickerType>
+    <graphicData>
+      <texPath>RimLumen/Buildings/StreetLampVisual</texPath>
+    </graphicData>
+    <comps>
+      <li Class="RimLumen.Core.Demo.CompProperties_RimLumenDemoEmitter">
+        <kind>StreetLamp</kind>
+      </li>
+    </comps>
+  </ThingDef>
+
+  <ThingDef ParentName="RimLumen_StreetLampBase">
+    <defName>RimLumen_StreetLamp_Logic</defName>
+    <label>street lamp (logical light only)</label>
+    <description>一个零成本的光照对照路灯：只有 RimLumen 逻辑光，没有任何可见光。画面保持黑暗，但地面光照读数被点亮（穿墙遮挡与原版一致），会影响心情、工作速度与植物生长。\n\nA zero-cost lighting comparison lamp with a RimLumen logical light only and nothing visible. The ground stays dark on screen, but the gameplay light level is lit (walls block it as in vanilla), so it affects mood, work speed and plant growth.</description>
+    <tickerType>Never</tickerType>
+    <graphicData>
+      <texPath>RimLumen/Buildings/StreetLampLogic</texPath>
+    </graphicData>
+    <comps>
+      <li Class="RimLumen.Core.Lighting.CompProperties_RimLumenLogicalLight">
+        <glowRadius>5</glowRadius>
+      </li>
+    </comps>
+  </ThingDef>
+
+  <ThingDef ParentName="RimLumen_StreetLampBase">
+    <defName>RimLumen_StreetLamp_Both</defName>
+    <label>street lamp (visual + logical light)</label>
+    <description>一个零成本的光照对照路灯：同时带 RimLumen 视觉光与逻辑光。画面上只有一个干净的圆形光池，没有原版八角形光照叠加，地面光照读数也被点亮。\n\nA zero-cost lighting comparison lamp with both a RimLumen visual light and a logical light. On screen there is a single clean round light pool with no vanilla octagonal overlay on top, and the gameplay light level is lit.</description>
+    <tickerType>Normal</tickerType>
+    <graphicData>
+      <texPath>RimLumen/Buildings/StreetLampBoth</texPath>
+    </graphicData>
+    <comps>
+      <li Class="RimLumen.Core.Demo.CompProperties_RimLumenDemoEmitter">
+        <kind>StreetLamp</kind>
+      </li>
+      <li Class="RimLumen.Core.Lighting.CompProperties_RimLumenLogicalLight">
+        <glowRadius>5</glowRadius>
       </li>
     </comps>
   </ThingDef>

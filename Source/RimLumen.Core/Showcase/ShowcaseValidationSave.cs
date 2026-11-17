@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using RimLumen.Core.Demo;
 using RimWorld;
 using Verse;
 using Waylith;
@@ -129,6 +130,16 @@ internal static class ShowcaseValidationSave
         Report("RimLumen_FireworkLauncher (auto-launch on)", Rect(4, 6, 4, 6));
         Report("RimLumen_ParticleFountain (active)", Rect(12, 6, 12, 6));
 
+        IntVec3 visualLamp = Cell(22, 12);
+        IntVec3 logicLamp = Cell(22, 0);
+        IntVec3 bothLamp = Cell(22, -12);
+        Spawn(map, DefDatabase<ThingDef>.GetNamed(DemoBuildingRegistry.StreetLampVisualDefName), visualLamp);
+        Spawn(map, DefDatabase<ThingDef>.GetNamed(DemoBuildingRegistry.StreetLampLogicDefName), logicLamp);
+        Spawn(map, DefDatabase<ThingDef>.GetNamed(DemoBuildingRegistry.StreetLampBothDefName), bothLamp);
+        Report("RimLumen_StreetLamp_Visual (visual light only)", Rect(22, 12, 22, 12));
+        Report("RimLumen_StreetLamp_Logic (logical light only)", Rect(22, 0, 22, 0));
+        Report("RimLumen_StreetLamp_Both (visual + logical light)", Rect(22, -12, 22, -12));
+
         map.regionAndRoomUpdater.RebuildAllRegionsAndRooms();
         Room outdoor = Cell(-19, 7).GetRoom(map);
         Room indoor = Cell(-7, 6).GetRoom(map);
@@ -149,6 +160,11 @@ internal static class ShowcaseValidationSave
         if (delta < 0f) delta += 1f;
         Find.TickManager.DebugSetTicksGame(Find.TickManager.TicksGame + (int)MathF.Round(delta * GenDate.TicksPerDay));
         map.skyManager.SkyManagerUpdate();
+        // Logical lights publish their field where vanilla recomputes its own: GlowGridUpdate_First.
+        map.glowGrid.GlowGridUpdate_First();
+        CheckLampGlow(map, DemoBuildingRegistry.StreetLampVisualDefName, visualLamp, logicalLight: false);
+        CheckLampGlow(map, DemoBuildingRegistry.StreetLampLogicDefName, logicLamp, logicalLight: true);
+        CheckLampGlow(map, DemoBuildingRegistry.StreetLampBothDefName, bothLamp, logicalLight: true);
         map.mapDrawer.WholeMapChanged((ulong)MapMeshFlagDefOf.GroundGlow | (ulong)MapMeshFlagDefOf.Things | (ulong)MapMeshFlagDefOf.Terrain);
         Current.CameraDriver.JumpToCurrentMapLoc(center.ToVector3Shifted());
         Current.CameraDriver.SetRootSize(32f);
@@ -183,6 +199,19 @@ internal static class ShowcaseValidationSave
         fuel.Refuel(fuel.Props.fuelCapacity / fuel.Props.FuelMultiplierCurrentDifficulty);
         if (!fuel.HasFuel || fuel.FuelPercentOfMax < 1f || !thing.TryGetComp<CompGlower>().Glows)
             throw new InvalidOperationException($"{def.defName} at {cell} is not fully fuelled and glowing.");
+    }
+
+    // Ensures: artificial ground light (sky excluded) is >= 0.5 on a logical lamp's cell and exactly 0 otherwise,
+    //          and no lamp puts anything into vanilla's visual glow; throws otherwise.
+    private static void CheckLampGlow(Map map, string defName, IntVec3 cell, bool logicalLight)
+    {
+        float ground = map.glowGrid.GroundGlowAt(cell, ignoreSky: true);
+        UnityEngine.Color32 visual = map.glowGrid.VisualGlowAt(cell);
+        Log.Message($"[RimLumen] Validation scene {defName} at {cell}: GroundGlowAt(ignoreSky)={ground:F3}, " +
+                    $"GroundGlowAt={map.glowGrid.GroundGlowAt(cell):F3}, VisualGlowAt=({visual.r},{visual.g},{visual.b},{visual.a})");
+        bool groundOk = logicalLight ? ground >= 0.5f : ground == 0f;
+        if (!groundOk || visual.r != 0 || visual.g != 0 || visual.b != 0 || visual.a != 0)
+            throw new InvalidOperationException($"{defName} at {cell}: unexpected glow (ground={ground}, visual={visual.r},{visual.g},{visual.b},{visual.a}).");
     }
 
     private static void Report(string label, CellRect rect) =>
