@@ -400,11 +400,11 @@ public static class ParticleParitySuite
         gpuService.GpuEngineProvider = () => gpu;
         using var cpuHandle = cpuService.Play(new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7 });
         using var gpuHandle = gpuService.Play(new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7 });
-        GlowAssert.Throws<ArgumentOutOfRangeException>(() => cpuHandle.SetParam("rate", -1f));
-        GlowAssert.Throws<ArgumentOutOfRangeException>(() => gpuHandle.SetParam("rate", -1f));
-        GlowAssert.Throws<ArgumentOutOfRangeException>(() => cpuHandle.SetParam("rate", float.NaN));
-        GlowAssert.Throws<ArgumentOutOfRangeException>(() => cpuHandle.SetParam("rate", float.PositiveInfinity));
-        GlowAssert.Throws<ArgumentOutOfRangeException>(() => cpuHandle.SetParam("rate", float.NegativeInfinity));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => cpuHandle.SetParam("rate", -1f));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => gpuHandle.SetParam("rate", -1f));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => cpuHandle.SetParam("rate", float.NaN));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => cpuHandle.SetParam("rate", float.PositiveInfinity));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => cpuHandle.SetParam("rate", float.NegativeInfinity));
         cpuHandle.SetParam("rate", 0f);
         gpuHandle.SetParam("rate", 0f);
         VfxTestData.Step(cpuService, 0.25f);

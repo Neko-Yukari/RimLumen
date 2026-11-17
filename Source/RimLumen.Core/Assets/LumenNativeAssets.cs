@@ -193,7 +193,7 @@ public sealed class LumenEffectDef : Def
     private static PointLightSpec ToPointLightSpec(LumenPointLightXml xml, string path)
     {
         xml.RejectLegacyFields(path + ".pointLight");
-        // PointLightSpec carries no intensity column: the map glower driver multiplies the colour by
+        // PointLightSpec carries no intensity column: the light pool multiplies the colour by
         // Evaluate(IntensityOverTime) * runtime multiplier, so the authored intensity rides on the curve's multiplier.
         ScalarCurve? intensity;
         if (xml.intensityOverTime is { Count: > 0 })
@@ -208,7 +208,6 @@ public sealed class LumenEffectDef : Def
         Vector4 color = ParseColor(xml.color, path + ".pointLight.color");
         return new PointLightSpec(
             xml.radiusCells,
-            xml.overlightRadius,
             new Vector3(color.X, color.Y, color.Z),
             intensity);
     }
@@ -443,6 +442,7 @@ public sealed class LumenPointLightXml
     public string color = "(1,1,1,1)";
     private string? colorLinear = null;
     private string? colorRgb = null;
+    private string? overlightRadius = null;
 
     internal void RejectLegacyFields(string path)
     {
@@ -450,9 +450,10 @@ public sealed class LumenPointLightXml
             throw new InvalidDataException($"{path}: 'colorLinear' renamed to color.");
         if (colorRgb is not null)
             throw new InvalidDataException($"{path}: 'colorRgb' renamed to color.");
+        if (overlightRadius is not null)
+            throw new InvalidDataException($"{path}: 'overlightRadius' removed; point lights are visual-only.");
     }
     public float radiusCells = 5f;
-    public float overlightRadius;
     public float intensity = 1f;
     public List<LumenCurveKeyXml>? intensityOverTime;
 }
@@ -467,8 +468,8 @@ internal static class LumenAssetRules
     //          empty EffectId, no nodes, an empty node name, a parent index that is neither -1 nor an
     //          earlier node (the only cycle-free ordering the runtime accepts), a non-positive particle
     //          budget/duration/lifetime, an invalid flipbook grid or enum, empty/nonfinite/unordered curves,
-    //          particle curve times outside [0,1], light curve times below zero seconds, light radii outside [0,40],
-    //          light colour outside [0,1], start/tint/gradient RGB non-finite or negative, colour alpha outside [0,1],
+    //          particle curve times outside [0,1], light curve times below zero seconds, a light glowRadius outside [0,40],
+    //          light colour outside [0,1], a negative light intensity multiplier or curve key value, start/tint/gradient RGB non-finite or negative, colour alpha outside [0,1],
     //          a non-finite or negative hdrIntensity, or state references that EffectStateGraph.For rejects.
     public static void Validate(EffectAsset asset, string source)
     {
@@ -520,14 +521,19 @@ internal static class LumenAssetRules
                 string lightPath = $"{path} ('{node.Name}').pointLight";
                 if (!float.IsFinite(light.GlowRadius) || light.GlowRadius < 0f || light.GlowRadius > 40f)
                     throw new InvalidDataException($"{lightPath}: glowRadius must be in [0,40], got {light.GlowRadius}.");
-                if (!float.IsFinite(light.OverlightRadius) || light.OverlightRadius < 0f || light.OverlightRadius > 40f)
-                    throw new InvalidDataException($"{lightPath}: overlightRadius must be in [0,40], got {light.OverlightRadius}.");
                 Vector3 color = light.ColorRgb;
                 if (!float.IsFinite(color.X) || !float.IsFinite(color.Y) || !float.IsFinite(color.Z) ||
                     color.X < 0f || color.X > 1f || color.Y < 0f || color.Y > 1f || color.Z < 0f || color.Z > 1f)
                     throw new InvalidDataException($"{lightPath}: color components must be in [0,1].");
                 if (light.IntensityOverTime is { } intensity)
+                {
                     ValidateCurve(intensity, lightPath + ".intensityOverTime", normalized: false);
+                    if (intensity.Multiplier < 0f)
+                        throw new InvalidDataException($"{lightPath}: intensity must be >= 0, got {intensity.Multiplier}.");
+                    for (int k = 0; k < intensity.Keys.Length; k++)
+                        if (intensity.Keys[k].Value < 0f)
+                            throw new InvalidDataException($"{lightPath}.intensityOverTime[{k}]: value must be >= 0, got {intensity.Keys[k].Value}.");
+                }
             }
         }
 
@@ -883,7 +889,7 @@ public static class LumenJsonAssetLoader
 
     private static readonly string[] PointLightProperties =
     {
-        "glowRadius", "overlightRadius", "color", "intensity", "intensityOverTime",
+        "glowRadius", "color", "intensity", "intensityOverTime",
     };
 
     private static readonly string[] BurstProperties = { "time", "count", "probability" };
@@ -1023,7 +1029,7 @@ public static class LumenJsonAssetLoader
             overTime = ScalarCurve.Constant(intensity);
         }
 
-        return new PointLightSpec(scope.Float("glowRadius", 5f), scope.Float("overlightRadius", 0f), rgb, overTime);
+        return new PointLightSpec(scope.Float("glowRadius", 5f), rgb, overTime);
     }
 
     private static ScalarCurve Multiply(ScalarCurve curve, float factor) =>

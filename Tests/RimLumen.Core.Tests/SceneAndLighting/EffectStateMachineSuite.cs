@@ -23,14 +23,14 @@ public static class EffectStateMachineSuite
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(5, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(5, service.Simulator.LiveParticleCount);
         VfxAssert.Check(handle.IsEmitting, "the implicit state plays until defaultDuration");
         VfxTestData.Step(service, 0.25f);
         VfxAssert.Check(handle.IsAlive && !handle.IsEmitting, "defaultDuration ends emission, live particles keep the handle alive");
         VfxTestData.Step(service, 1f);
         VfxTestData.Step(service, 0f);
         VfxAssert.Check(!handle.IsAlive && !service.HasActiveWork, "the handle dies once its particles are gone");
-        GlowAssert.Equal("finished", string.Join(",", log));
+        VfxAssert.Equal("finished", string.Join(",", log));
     }
 
     [LumenFact]
@@ -75,17 +75,17 @@ public static class EffectStateMachineSuite
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(2, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(2, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(5, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(5, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal("state:charge,state:release,notify:impact", string.Join(",", log));
+        VfxAssert.Equal("state:charge,state:release,notify:impact", string.Join(",", log));
         VfxTestData.Step(service, 0.25f);
         VfxAssert.Check(handle.IsAlive && !handle.IsEmitting, "the last state without next ends the effect");
-        GlowAssert.Equal(5, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(5, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 10f);
         VfxTestData.Step(service, 0f);
-        GlowAssert.Equal("state:charge,state:release,notify:impact,finished", string.Join(",", log));
+        VfxAssert.Equal("state:charge,state:release,notify:impact,finished", string.Join(",", log));
     }
 
     [LumenFact]
@@ -107,7 +107,7 @@ public static class EffectStateMachineSuite
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         VfxTestData.Step(service, 1f);
-        GlowAssert.Equal("state:a,state:b,state:c,notify:c0,finished", string.Join(",", log));
+        VfxAssert.Equal("state:a,state:b,state:c,notify:c0,finished", string.Join(",", log));
         VfxAssert.Check(!handle.IsAlive, "an effect without particles or lights dies on the frame it ends");
     }
 
@@ -134,7 +134,7 @@ public static class EffectStateMachineSuite
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         for (int i = 0; i < 6; i++) VfxTestData.Step(service, 0.5f);
-        GlowAssert.Equal("state:idle,notify:tick,notify:tick,notify:tick", string.Join(",", log));
+        VfxAssert.Equal("state:idle,notify:tick,notify:tick,notify:tick", string.Join(",", log));
         VfxAssert.Check(handle.IsEmitting, "a loop state never ends on its own");
     }
 
@@ -159,20 +159,20 @@ public static class EffectStateMachineSuite
         var service = VfxTestData.Service(asset);
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
-        GlowAssert.Throws<ArgumentException>(() => handle.GoTo("missing"));
+        VfxAssert.Throws<ArgumentException>(() => handle.GoTo("missing"));
         VfxTestData.Step(service, 0.25f);
         handle.Stop(true);
         handle.Stop(true);
         handle.GoTo("idle");
         VfxAssert.Check(handle.IsEmitting, "the stop state is still playing");
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal("state:idle,state:outro", string.Join(",", log));
+        VfxAssert.Equal("state:idle,state:outro", string.Join(",", log));
         VfxTestData.Step(service, 0.25f);
         VfxAssert.Check(handle.IsAlive && !handle.IsEmitting, "the stop state ended and the effect drains");
         VfxTestData.Step(service, 1f);
         VfxTestData.Step(service, 0f);
         VfxAssert.Check(!handle.IsAlive, "drained after the stop state");
-        GlowAssert.Equal("state:idle,state:outro,finished", string.Join(",", log));
+        VfxAssert.Equal("state:idle,state:outro,finished", string.Join(",", log));
     }
 
     [LumenFact]
@@ -193,16 +193,16 @@ public static class EffectStateMachineSuite
         service.GpuEngineProvider = () => engine;
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
-        GlowAssert.Equal(1, engine.Restarts.Count);
+        VfxAssert.Equal(1, engine.Restarts.Count);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(3, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(3, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(3, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(3, service.Simulator.LiveParticleCount);
         handle.GoTo("hit");
-        GlowAssert.Equal(2, engine.Restarts.Count);
+        VfxAssert.Equal(2, engine.Restarts.Count);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(6, service.Simulator.LiveParticleCount);
-        GlowAssert.Equal("state:hit,state:hit", string.Join(",", log));
+        VfxAssert.Equal(6, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal("state:hit,state:hit", string.Join(",", log));
     }
 
     [LumenFact]
@@ -219,14 +219,14 @@ public static class EffectStateMachineSuite
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         VfxTestData.Step(service, 0.5f);
-        GlowAssert.Equal((0, false), engine.Destroys[^1]);
+        VfxAssert.Equal((0, false), engine.Destroys[^1]);
         VfxTestData.Step(service, 5f);
         VfxAssert.Check(handle.IsAlive && !handle.IsEmitting && log.Count == 0, "GPU particles still drain");
         engine.Drained.Add(0);
         VfxTestData.Step(service, 0f);
         VfxAssert.Check(!handle.IsAlive, "the handle dies once the engine reclaimed the instance");
-        GlowAssert.Equal("finished", string.Join(",", log));
-        GlowAssert.Equal(1, engine.Destroys.Count);
+        VfxAssert.Equal("finished", string.Join(",", log));
+        VfxAssert.Equal(1, engine.Destroys.Count);
     }
 
     [LumenFact]
@@ -252,11 +252,11 @@ public static class EffectStateMachineSuite
         var log = Record(handle);
         handle.Notify += _ => handle.GoTo("B");
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(0, service.Simulator.LiveParticleCount);
-        GlowAssert.Equal("state:A,notify:switch", string.Join(",", log));
+        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal("state:A,notify:switch", string.Join(",", log));
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal("state:A,notify:switch,state:B", string.Join(",", log));
-        GlowAssert.Equal(0, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal("state:A,notify:switch,state:B", string.Join(",", log));
+        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
     }
 
     [LumenFact]
@@ -281,10 +281,10 @@ public static class EffectStateMachineSuite
             else handle.Stop(false);
         };
         for (int i = 0; i < 3; i++) VfxTestData.Step(service, 0f);
-        GlowAssert.Equal("state:A,state:B,state:A", string.Join(",", log));
+        VfxAssert.Equal("state:A,state:B,state:A", string.Join(",", log));
         VfxAssert.Check(!handle.IsAlive && service.HasActiveWork, "Finished after a handler's Stop(false) is still owed");
         VfxTestData.Step(service, 0f);
-        GlowAssert.Equal("state:A,state:B,state:A,finished", string.Join(",", log));
+        VfxAssert.Equal("state:A,state:B,state:A,finished", string.Join(",", log));
         VfxAssert.Check(!service.HasActiveWork, "the dead handle is dropped once Finished is raised");
     }
 
@@ -326,7 +326,7 @@ public static class EffectStateMachineSuite
         for (int i = 0; i < 9; i++) reused.Advance(0.15f, emitting: true);
         reused.Restart();
         for (int i = 0; i < 9; i++)
-            GlowAssert.Equal(fresh.Advance(0.15f, emitting: true), reused.Advance(0.15f, emitting: true));
+            VfxAssert.Equal(fresh.Advance(0.15f, emitting: true), reused.Advance(0.15f, emitting: true));
     }
 
     [LumenFact]
@@ -350,13 +350,13 @@ public static class EffectStateMachineSuite
         EffectAsset xml = def.ToEffectAsset();
         foreach (EffectAsset asset in new[] { json, xml })
         {
-            GlowAssert.Equal(3, asset.States.Length);
-            GlowAssert.Equal("release", asset.States[0].Next);
-            GlowAssert.Equal(0.5f, asset.States[0].Duration!.Value);
+            VfxAssert.Equal(3, asset.States.Length);
+            VfxAssert.Equal("release", asset.States[0].Next);
+            VfxAssert.Equal(0.5f, asset.States[0].Duration!.Value);
             VfxAssert.Check(asset.States[1].Loop && asset.States[2].Duration is null, "loop flag and inherited duration");
-            GlowAssert.Equal("charge", asset.InitialState);
-            GlowAssert.Equal("end", asset.StopState);
-            GlowAssert.Equal(new TimelineEventSpec(0.25f, "impact", -1, "release", true), asset.TimelineEvents[0]);
+            VfxAssert.Equal("charge", asset.InitialState);
+            VfxAssert.Equal("end", asset.StopState);
+            VfxAssert.Equal(new TimelineEventSpec(0.25f, "impact", -1, "release", true), asset.TimelineEvents[0]);
         }
     }
 
@@ -382,7 +382,7 @@ public static class EffectStateMachineSuite
             """{ "nodes": [ { "name": "n" } ], "states": [ { "name": "a" } ], "initialState": "" }""",
         };
         foreach (string json in invalid)
-            GlowAssert.Throws<InvalidDataException>(() => LumenJsonAssetLoader.Parse(json, "fsm.invalid"));
+            VfxAssert.Throws<InvalidDataException>(() => LumenJsonAssetLoader.Parse(json, "fsm.invalid"));
         var registered = new EffectAsset
         {
             EffectId = "fsm.unvalidated", Nodes = new[] { new EffectNodeSpec { Name = "n" } },
@@ -393,11 +393,11 @@ public static class EffectStateMachineSuite
             defName = "fsm.xml-empty", nodes = new List<LumenNodeXml> { new() { name = "n" } },
             states = new List<LumenStateXml> { new() { name = "a" } }, initialState = "",
         };
-        GlowAssert.Throws<InvalidDataException>(() => emptyXmlState.ToEffectAsset());
+        VfxAssert.Throws<InvalidDataException>(() => emptyXmlState.ToEffectAsset());
         var service = VfxTestData.Service(registered);
         using var rejectedState = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = registered.EffectId });
         VfxAssert.Check(!rejectedState.IsAlive, "Invalid provider state graph is rejected before Play.");
-        GlowAssert.Equal(0, service.LiveHandleCount);
+        VfxAssert.Equal(0, service.LiveHandleCount);
         var nanDefault = new EffectAsset
         {
             EffectId = "fsm.nan-default", DefaultDuration = float.NaN, Nodes = registered.Nodes,
@@ -417,20 +417,20 @@ public static class EffectStateMachineSuite
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         var log = Record(handle);
         for (int i = 0; i < 8; i++) VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal("state:spawn,notify:touchdown,state:sustain", string.Join(",", log));
+        VfxAssert.Equal("state:spawn,notify:touchdown,state:sustain", string.Join(",", log));
         for (int i = 0; i < 40; i++) VfxTestData.Step(service, 0.25f);
         VfxAssert.Check(handle.IsEmitting && log.Count == 3, "sustain loops until the caller stops it");
         handle.Stop();
         handle.GoTo("sustain");
         for (int i = 0; i < 2; i++) VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal("state:spawn,notify:touchdown,state:sustain,state:collapse,notify:impact", string.Join(",", log));
+        VfxAssert.Equal("state:spawn,notify:touchdown,state:sustain,state:collapse,notify:impact", string.Join(",", log));
         VfxAssert.Check(handle.IsEmitting, "collapse is still playing");
         for (int i = 0; i < 3; i++) VfxTestData.Step(service, 0.25f);
         VfxAssert.Check(handle.IsAlive && !handle.IsEmitting, "collapse ended, the last particles drain");
         VfxTestData.Step(service, 5f);
         VfxTestData.Step(service, 0f);
         VfxAssert.Check(!handle.IsAlive, "the tornado finished");
-        GlowAssert.Equal("state:spawn,notify:touchdown,state:sustain,state:collapse,notify:impact,finished", string.Join(",", log));
+        VfxAssert.Equal("state:spawn,notify:touchdown,state:sustain,state:collapse,notify:impact,finished", string.Join(",", log));
     }
 
     private static EmitterSpec Burst(string name, int count, float lifetime = 10f,

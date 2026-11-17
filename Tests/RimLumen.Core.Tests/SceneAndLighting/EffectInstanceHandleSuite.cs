@@ -35,9 +35,9 @@ public static class EffectInstanceHandleSuite
         var service = VfxTestData.Service(asset);
         using var engine = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
         service.GpuEngineProvider = () => engine;
-        GlowAssert.Throws<NotSupportedException>(() => service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId }));
-        GlowAssert.Equal(0, service.Simulator.ActiveEmitterCount);
-        GlowAssert.Equal(0, service.LiveHandleCount);
+        VfxAssert.Throws<NotSupportedException>(() => service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId }));
+        VfxAssert.Equal(0, service.Simulator.ActiveEmitterCount);
+        VfxAssert.Equal(0, service.LiveHandleCount);
     }
 
     [LumenFact]
@@ -53,19 +53,19 @@ public static class EffectInstanceHandleSuite
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         handle.SetParam("rate", 0f);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(0.25f, handle.PlaybackTime);
-        GlowAssert.Equal(0, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(0.25f, handle.PlaybackTime);
+        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(4, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(4, service.Simulator.LiveParticleCount);
         for (int i = 0; i < 3; i++) VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(4, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(4, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(1.5f, handle.PlaybackTime);
-        GlowAssert.Equal(8, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(1.5f, handle.PlaybackTime);
+        VfxAssert.Equal(8, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 1f);
-        GlowAssert.Equal(8, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(8, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0f);
-        GlowAssert.Equal(8, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(8, service.Simulator.LiveParticleCount);
     }
 
     [LumenFact]
@@ -81,17 +81,17 @@ public static class EffectInstanceHandleSuite
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         handle.SetParam("rate", 0f);
         VfxTestData.Step(service, 0.5f);
-        GlowAssert.Equal(4, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(4, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 1.5f);
-        GlowAssert.Equal(4, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(4, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.5f);
-        GlowAssert.Equal(2.5f, handle.PlaybackTime);
-        GlowAssert.Equal(8, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(2.5f, handle.PlaybackTime);
+        VfxAssert.Equal(8, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 4f);
-        GlowAssert.Equal(6.5f, handle.PlaybackTime);
-        GlowAssert.Equal(16, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(6.5f, handle.PlaybackTime);
+        VfxAssert.Equal(16, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0f);
-        GlowAssert.Equal(16, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(16, service.Simulator.LiveParticleCount);
     }
 
     [LumenFact]
@@ -119,28 +119,28 @@ public static class EffectInstanceHandleSuite
             },
         };
         var service = VfxTestData.Service(asset);
-        GlowAssert.Throws<ArgumentException>(() => service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, InitialState = "missing" }));
-        GlowAssert.Equal(0, service.LiveHandleCount);
+        VfxAssert.Throws<ArgumentException>(() => service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, InitialState = "missing" }));
+        VfxAssert.Equal(0, service.LiveHandleCount);
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, InitialState = "aura" });
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
         handle.Trigger("flash");
-        GlowAssert.Equal(1, service.Simulator.LiveParticleCount); // D7 queues the pulse; this call does not simulate.
+        VfxAssert.Equal(1, service.Simulator.LiveParticleCount); // D7 queues the pulse; this call does not simulate.
         VfxTestData.Step(service, 0f);
-        GlowAssert.Equal(4, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(4, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(5, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(5, service.Simulator.LiveParticleCount);
         // Trigger restarts the idle node's own schedule (rate 4/s) without leaving the aura state.
         handle.Trigger("idle");
-        GlowAssert.Equal(5, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(5, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(7, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(7, service.Simulator.LiveParticleCount);
         handle.Trigger("unknown-state");
-        GlowAssert.Equal(7, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(7, service.Simulator.LiveParticleCount);
         handle.Dispose();
         handle.Trigger("flash");
         handle.Trigger("idle");
-        GlowAssert.Equal(0, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
     }
 
     [LumenFact]
@@ -153,22 +153,19 @@ public static class EffectInstanceHandleSuite
                 new EffectNodeSpec
                 {
                     Name = "glow", Emitter = VfxTestData.Emitter(),
-                    PointLight = new PointLightSpec(4f, 1f, new Vector3(0.5f, 0.25f, 0.125f)),
+                    PointLight = new PointLightSpec(4f, new Vector3(0.5f, 0.25f, 0.125f)),
                 },
             },
         };
         var service = VfxTestData.Service(asset);
-        var sink = new RecordingGlowGridSink();
-        using var driver = new MapGlowerDriver(sink);
-        service.GlowerDriverProvider = _ => driver;
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest
         {
             MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new Vector3(10f, 2f, 20f), Scale = 2f,
         });
-        VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
-        GlowAssert.Equal(Vector4.One, service.Simulator.Vertices[0].Color);
-        GlowAssert.Equal(new ColorInt(128, 64, 32, 255), sink.Registrations[^1].Color);
+        VfxTestData.Step(service, 0.25f, currentMapIndex: 111);
+        VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(Vector4.One, service.Simulator.Vertices[0].Color);
+        VfxAssert.Equal(new VisualPointLight(10f, 20f, 4f, new Vector3(0.5f, 0.25f, 0.125f)), service.Lights[0]);
         handle.SetParam("intensity", 2f);
         handle.SetParam("rate", 2f);
         handle.SetParam("scale", 3f);
@@ -178,16 +175,17 @@ public static class EffectInstanceHandleSuite
         VfxAssert.Check(handle.TryGetParam("rate", out float rate) && rate == 2f, "Rate is stored");
         VfxAssert.Check(handle.TryGetParam("scale", out float scale) && scale == 3f, "Scale is stored");
         VfxAssert.Check(!handle.TryGetParam("missing", out _), "Missing param is not invented");
-        VfxTestData.Step(service, 0.5f);
-        GlowAssert.Equal(5, service.Simulator.LiveParticleCount);
-        GlowAssert.Equal(new Vector4(2f, 2f, 2f, 1f), service.Simulator.Vertices[0].Color);
-        GlowAssert.Equal(new ColorInt(255, 128, 64, 255), sink.Registrations[^1].Color);
-        GlowAssert.Equal(new Vector3(10f, 2f, 20f), handle.RootWorld.Translation);
-        GlowAssert.Equal(new Vector3(6f, 0f, 0f), Vector3.TransformNormal(Vector3.UnitX, handle.RootWorld));
+        VfxTestData.Step(service, 0.5f, currentMapIndex: 111);
+        VfxAssert.Equal(5, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(new Vector4(2f, 2f, 2f, 1f), service.Simulator.Vertices[0].Color);
+        // Unclamped: the light pool radius is not scaled with the effect, and intensity 2 doubles the colour.
+        VfxAssert.Equal(new VisualPointLight(10f, 20f, 4f, new Vector3(1f, 0.5f, 0.25f)), service.Lights[0]);
+        VfxAssert.Equal(new Vector3(10f, 2f, 20f), handle.RootWorld.Translation);
+        VfxAssert.Equal(new Vector3(6f, 0f, 0f), Vector3.TransformNormal(Vector3.UnitX, handle.RootWorld));
         handle.Dispose();
         handle.SetParam("custom", 100f);
         VfxAssert.Check(handle.TryGetParam("custom", out custom) && custom == 7f, "Dead handles ignore params");
-        GlowAssert.Equal(sink.Registrations.Count, sink.DeregisterCount);
+        VfxAssert.Equal(0, handle.LightCount);
     }
 
     [LumenFact]
@@ -197,10 +195,10 @@ public static class EffectInstanceHandleSuite
         var service = VfxTestData.Service(asset);
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         handle.SetParam("intensity", 2f);
-        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", -1f));
-        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.NaN));
-        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.PositiveInfinity));
-        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.NegativeInfinity));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", -1f));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.NaN));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.PositiveInfinity));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.NegativeInfinity));
         VfxAssert.Check(handle.TryGetParam("intensity", out float intensity) && intensity == 2f, "Invalid intensity must not mutate state");
     }
 
@@ -225,21 +223,21 @@ public static class EffectInstanceHandleSuite
             MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new Vector3(-20f), RotationDegrees = 180f,
             TargetWorld = new Vector3(-20f, -20f, 10f), Follow = Follow,
         });
-        GlowAssert.Equal(position, handle.RootWorld.Translation);
+        VfxAssert.Equal(position, handle.RootWorld.Translation);
         VfxAssert.Close(Vector3.UnitX, Vector3.TransformNormal(Vector3.UnitZ, handle.RootWorld));
         position = new Vector3(30f, 0f, 40f);
         facing = 0f;
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(position, handle.RootWorld.Translation);
-        GlowAssert.Equal(new Vector3(32f, 0f, 40f), handle.NodeWorldMatrices[1].Translation);
+        VfxAssert.Equal(position, handle.RootWorld.Translation);
+        VfxAssert.Equal(new Vector3(32f, 0f, 40f), handle.NodeWorldMatrices[1].Translation);
         var frozen = handle.RootWorld;
         var frozenChild = handle.NodeWorldMatrices[1];
         attached = false;
         position = new Vector3(100f);
         facing = 270f;
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(frozen, handle.RootWorld);
-        GlowAssert.Equal(frozenChild, handle.NodeWorldMatrices[1]);
+        VfxAssert.Equal(frozen, handle.RootWorld);
+        VfxAssert.Equal(frozenChild, handle.NodeWorldMatrices[1]);
         using var targeted = (EffectInstanceHandle)service.Play(new LumenPlayRequest
         {
             MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new Vector3(10f, 0f, 20f), TargetWorld = new Vector3(20f, 0f, 20f),
@@ -249,138 +247,76 @@ public static class EffectInstanceHandleSuite
     }
 
     [LumenFact]
-    public static void LightsResolveLazilyAndUseCurrentNodeCellAndPlaybackCurve()
+    public static void LightFollowsNodeGroundPositionEveryFrameAndPlaysItsCurve()
     {
         var asset = new EffectAsset
         {
-            EffectId = "b3.light-lazy", Nodes = new[]
+            EffectId = "b3.light-follow", Nodes = new[]
             {
+                new EffectNodeSpec { Name = "root" },
                 new EffectNodeSpec
                 {
-                    Name = "light", LocalPosition = new Vector3(2f, 0f, 0f),
-                    PointLight = new PointLightSpec(5f, 1f, Vector3.One,
+                    Name = "light", ParentIndex = 0, LocalPosition = new Vector3(2f, 3f, 0f),
+                    PointLight = new PointLightSpec(5f, Vector3.One,
                         new ScalarCurve(new[] { new RimLumen.Core.Contracts.CurveKey(0f, 0f, 1f, 1f),
                             new RimLumen.Core.Contracts.CurveKey(1f, 1f, 1f, 1f) })),
                 },
             },
         };
         var service = VfxTestData.Service(asset);
-        var sink = new RecordingGlowGridSink();
-        using var driver = new MapGlowerDriver(sink);
-        MapGlowerDriver? available = null;
-        int observedMap = -1;
-        service.GlowerDriverProvider = map => { observedMap = map; return available; };
+        Vector3 position = new(10f, 0f, 20f);
+        bool Follow(out Vector3 world, out float degrees) { world = position; degrees = 0f; return true; }
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest
         {
-            EffectId = asset.EffectId, MapIndex = 42, OriginWorld = new Vector3(10f, 0f, 20f),
+            EffectId = asset.EffectId, MapIndex = 42, OriginWorld = position, Follow = Follow,
         });
-        GlowAssert.Equal(42, observedMap);
-        GlowAssert.Equal(0, handle.LightCount);
-        VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(0, handle.LightCount);
-        available = driver;
-        VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(1, handle.LightCount);
-        GlowAssert.Equal(new IntVec3(12, 0, 20), sink.Registrations[^1].Cell);
-        GlowAssert.Equal(new ColorInt(128, 128, 128, 255), sink.Registrations[^1].Color);
+        VfxTestData.Step(service, 0.25f, currentMapIndex: 42);
+        // The node's height (Y = 3) is dropped: the pool lies on the ground under the node.
+        VfxAssert.Equal(1, service.Lights.Count);
+        VfxAssert.Check(service.Lights[0] is { X: 12f, Z: 20f, Radius: 5f }, $"Pool centre/radius, got {service.Lights[0]}");
+        VfxAssert.Close(new Vector3(0.25f), service.Lights[0].Light);
+        // A 0.01-cell move shows up in the very next frame: no cell or re-registration quantization.
+        position = new Vector3(10.01f, 0f, 20f);
+        VfxTestData.Step(service, 0.25f, currentMapIndex: 42);
+        VfxAssert.Check(MathF.Abs(service.Lights[0].X - 12.01f) < 0.0001f, $"Pool follows the node, got X={service.Lights[0].X}");
+        VfxAssert.Close(new Vector3(0.5f), service.Lights[0].Light);
         handle.Dispose();
-        GlowAssert.Equal(0, driver.TrackedLightCount);
-        GlowAssert.Equal(sink.Registrations.Count, sink.DeregisterCount);
+        VfxAssert.Equal(0, handle.LightCount);
     }
 
     [LumenFact]
-    public static void DisposedMapStopsItsHandleWithoutMigratingLightsToAnotherMap()
+    public static void LightPoolsOnlyReachTheMapTheirEffectWasPlayedOn()
     {
-        var asset = LitAsset("b3.map-dispose");
+        var asset = LitAsset("b3.light-map");
         var service = VfxTestData.Service(asset);
-        service.GlowerDriverProvider = mapIndex =>
-            LumenMapLightingRegistry.TryResolve(mapIndex, out var driver) ? driver : null;
-        var firstSink = new RecordingGlowGridSink();
-        var secondSink = new RecordingGlowGridSink();
-        using var first = new MapGlowerDriver(firstSink);
-        using var second = new MapGlowerDriver(secondSink);
-        LumenMapLightingRegistry.Register(111, first);
-        LumenMapLightingRegistry.Register(222, second);
-        try
+        using var onFirst = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
+        using var onSecond = (EffectInstanceHandle)service.Play(new LumenPlayRequest
         {
-            using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest
-            {
-                EffectId = asset.EffectId, MapIndex = 111,
-            });
-            VfxTestData.Step(service, 0.25f);
-            GlowAssert.Equal(true, handle.IsAlive);
-            GlowAssert.Equal(1, firstSink.Registrations.Count);
-            GlowAssert.Equal(1, firstSink.LiveHandles.Count);
-            GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
-            first.Dispose();
-            VfxTestData.Step(service, 0.25f);
-
-            VfxAssert.Check(!handle.IsAlive && secondSink.Registrations.Count == 0,
-                $"Map 111 teardown expected IsAlive=False and map 222 registrations=0; got IsAlive={handle.IsAlive}, map 222 registrations={secondSink.Registrations.Count}.");
-            GlowAssert.Equal(false, handle.IsEmitting);
-            GlowAssert.Equal(0, handle.LightCount);
-            GlowAssert.Equal(0, handle.CpuEmitterCount);
-            GlowAssert.Equal(0, service.Simulator.ActiveEmitterCount);
-            GlowAssert.Equal(0, service.Simulator.LiveParticleCount);
-            GlowAssert.Equal(0, service.LiveHandleCount);
-            GlowAssert.Equal(0, firstSink.LiveHandles.Count);
-            GlowAssert.Equal(1, firstSink.DeregisterCount);
-            GlowAssert.Equal(firstSink.Registrations.Count, firstSink.DeregisterCount);
-            GlowAssert.Equal(0, secondSink.LiveHandles.Count);
-            GlowAssert.Equal(0, second.TrackedLightCount);
-        }
-        finally
-        {
-            LumenMapLightingRegistry.Unregister(111, first);
-            LumenMapLightingRegistry.Unregister(222, second);
-        }
+            MapIndex = 222, EffectId = asset.EffectId, OriginWorld = new Vector3(5f, 0f, 6f),
+        });
+        VfxTestData.Step(service, 0.25f, currentMapIndex: 222);
+        VfxAssert.Check(onFirst.LightCount == 1 && onSecond.LightCount == 1, "Both lights stay on while their maps are not shown");
+        VfxAssert.Equal(1, service.Lights.Count);
+        VfxAssert.Check(service.Lights[0] is { X: 5f, Z: 6f }, $"Only the map 222 pool is drawn, got {service.Lights[0]}");
+        VfxTestData.Step(service, 0f, currentMapIndex: 333);
+        VfxAssert.Equal(0, service.Lights.Count);
     }
 
     [LumenFact]
-    public static void ExplicitMapKeepsBoundDriverWhenSecondMapRegistersAndStopsWhenBoundDriverDisposes()
+    public static void HandlerImmediateStopRemovesTheLightFromTheSameFrame()
     {
-        var asset = LitAsset("b3.sticky-default-map");
+        var asset = LitAsset("b3.light-handler-stop", new[] { new TimelineEventSpec(0.25f, "ping", -1, Notify: true) });
         var service = VfxTestData.Service(asset);
-        service.GlowerDriverProvider = mapIndex =>
-            LumenMapLightingRegistry.TryResolve(mapIndex, out var driver) ? driver : null;
-        var sinkA = new RecordingGlowGridSink();
-        var sinkB = new RecordingGlowGridSink();
-        using var driverA = new MapGlowerDriver(sinkA);
-        using var driverB = new MapGlowerDriver(sinkB);
-        LumenMapLightingRegistry.Register(111, driverA);
-        try
+        using var stopped = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
+        using var kept = (EffectInstanceHandle)service.Play(new LumenPlayRequest
         {
-            using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest
-            {
-                MapIndex = 111, EffectId = asset.EffectId,
-            });
-            VfxTestData.Step(service, 0.25f);
-            GlowAssert.Equal(1, sinkA.Registrations.Count);
-            GlowAssert.Equal(0, sinkA.DeregisterCount);
-            GlowAssert.Equal(1, handle.LightCount);
-
-            LumenMapLightingRegistry.Register(222, driverB);
-            VfxTestData.Step(service, 0.25f);
-            VfxAssert.Check(sinkA.Registrations.Count == 1 && sinkA.DeregisterCount == 0 && sinkB.Registrations.Count == 0,
-                $"Expected map A to keep 1 registration (0 deregistrations) and map B to have 0; got A=({sinkA.Registrations.Count}, dereg={sinkA.DeregisterCount}), B={sinkB.Registrations.Count}.");
-            GlowAssert.Equal(true, handle.IsAlive);
-            GlowAssert.Equal(1, handle.LightCount);
-            GlowAssert.Equal(0, driverB.TrackedLightCount);
-
-            driverA.Dispose();
-            VfxTestData.Step(service, 0.25f);
-            GlowAssert.Equal(false, handle.IsAlive);
-            GlowAssert.Equal(false, handle.IsEmitting);
-            GlowAssert.Equal(0, handle.LightCount);
-            GlowAssert.Equal(0, sinkB.Registrations.Count);
-            GlowAssert.Equal(0, driverB.TrackedLightCount);
-            GlowAssert.Equal(sinkA.Registrations.Count, sinkA.DeregisterCount);
-        }
-        finally
-        {
-            LumenMapLightingRegistry.Unregister(111, driverA);
-            LumenMapLightingRegistry.Unregister(222, driverB);
-        }
+            MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new Vector3(5f, 0f, 6f),
+        });
+        stopped.Notify += _ => stopped.Stop(false);
+        VfxTestData.Step(service, 0.25f, currentMapIndex: 111);
+        VfxAssert.Check(!stopped.IsAlive, "The handler stopped its handle");
+        VfxAssert.Equal(1, service.Lights.Count);
+        VfxAssert.Check(service.Lights[0] is { X: 5f, Z: 6f }, $"Only the surviving pool is drawn, got {service.Lights[0]}");
     }
 
     [LumenFact]
@@ -388,33 +324,29 @@ public static class EffectInstanceHandleSuite
     {
         var asset = LitAsset("b3.fade");
         var service = VfxTestData.Service(asset);
-        var sink = new RecordingGlowGridSink();
-        using var driver = new MapGlowerDriver(sink);
-        service.GlowerDriverProvider = _ => driver;
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
-        VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
-        GlowAssert.Equal(new ColorInt(255, 255, 255, 255), sink.Registrations[^1].Color);
+        VfxTestData.Step(service, 0.25f, currentMapIndex: 111);
+        VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
+        VfxAssert.Close(Vector3.One, service.Lights[0].Light);
         handle.Stop(true);
         VfxAssert.Check(handle.IsAlive && !handle.IsEmitting, "Fade stops new emission, not existing particles");
         handle.Trigger("glow");
         handle.Trigger("flash");
-        GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
-        VfxTestData.Step(service, 0.125f);
-        GlowAssert.Equal(new ColorInt(128, 128, 128, 255), sink.Registrations[^1].Color);
-        GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
+        VfxTestData.Step(service, 0.125f, currentMapIndex: 111);
+        VfxAssert.Close(new Vector3(0.5f), service.Lights[0].Light);
+        VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
         handle.Stop(true);
-        VfxTestData.Step(service, 0.125f);
-        GlowAssert.Equal(0, handle.LightCount);
-        GlowAssert.Equal(0, driver.TrackedLightCount);
+        VfxTestData.Step(service, 0.125f, currentMapIndex: 111);
+        VfxAssert.Equal(0, handle.LightCount);
+        VfxAssert.Equal(0, service.Lights.Count);
         VfxAssert.Check(handle.IsAlive, "L1 particles gate death after lights finish");
-        GlowAssert.Equal(sink.Registrations.Count, sink.DeregisterCount);
         VfxTestData.Step(service, 0.75f);
-        GlowAssert.Equal(0, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0f);
         VfxAssert.Check(!handle.IsAlive && !service.HasActiveWork, "Next pre-simulation capture sees the drained L1 emitter");
-        GlowAssert.Equal(0, handle.CpuEmitterCount);
-        GlowAssert.Equal(0, service.LiveHandleCount);
+        VfxAssert.Equal(0, handle.CpuEmitterCount);
+        VfxAssert.Equal(0, service.LiveHandleCount);
     }
 
     [LumenFact]
@@ -422,33 +354,30 @@ public static class EffectInstanceHandleSuite
     {
         var asset = LitAsset("b3.immediate");
         var service = VfxTestData.Service(asset);
-        var sink = new RecordingGlowGridSink();
-        using var driver = new MapGlowerDriver(sink);
-        service.GlowerDriverProvider = _ => driver;
         using var first = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         using var second = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         int finished = 0;
         first.Finished += () => finished++;
         second.Finished += () => finished++;
-        VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(2, driver.TrackedLightCount);
-        GlowAssert.Equal(2, service.Simulator.LiveParticleCount);
+        VfxTestData.Step(service, 0.25f, currentMapIndex: 111);
+        VfxAssert.Equal(2, service.Lights.Count);
+        VfxAssert.Equal(2, service.Simulator.LiveParticleCount);
         first.Stop(false);
         VfxAssert.Check(!first.IsAlive, "Immediate stop is immediate");
-        GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
-        GlowAssert.Equal(1, driver.TrackedLightCount);
+        VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(0, first.LightCount);
+        VfxAssert.Equal(1, second.LightCount);
         second.Dispose();
         second.Dispose();
-        GlowAssert.Equal(0, service.Simulator.LiveParticleCount);
-        GlowAssert.Equal(0, service.Simulator.ActiveEmitterCount);
-        GlowAssert.Equal(0, driver.TrackedLightCount);
-        GlowAssert.Equal(0, first.LightCount);
-        GlowAssert.Equal(0, first.CpuEmitterCount);
-        GlowAssert.Equal(sink.Registrations.Count, sink.DeregisterCount);
-        GlowAssert.Equal(0, finished);
+        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(0, service.Simulator.ActiveEmitterCount);
+        VfxAssert.Equal(0, second.LightCount);
+        VfxAssert.Equal(0, first.CpuEmitterCount);
+        VfxAssert.Equal(0, finished);
         VfxAssert.Check(service.HasActiveWork, "Finished is still owed, so the service needs one more frame");
-        VfxTestData.Step(service, 0f);
-        GlowAssert.Equal(2, finished);
+        VfxTestData.Step(service, 0f, currentMapIndex: 111);
+        VfxAssert.Equal(0, service.Lights.Count);
+        VfxAssert.Equal(2, finished);
         VfxAssert.Check(!service.HasActiveWork, "Immediate teardown leaves no service work once Finished is raised");
     }
 
@@ -472,35 +401,35 @@ public static class EffectInstanceHandleSuite
         var engine = new SpyGpuEngine();
         service.GpuEngineProvider = () => engine;
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
-        GlowAssert.Equal(false, engine.Updates[^1].Emitting);
+        VfxAssert.Equal(false, engine.Updates[^1].Emitting);
         handle.Trigger("flash");
-        GlowAssert.Equal((0, 4), engine.Bursts[^1]);
-        GlowAssert.Equal(0, engine.Restarts.Count);
+        VfxAssert.Equal((0, 4), engine.Bursts[^1]);
+        VfxAssert.Equal(0, engine.Restarts.Count);
         handle.GoTo("lit");
-        GlowAssert.Equal(0, engine.Restarts[^1]);
+        VfxAssert.Equal(0, engine.Restarts[^1]);
         VfxTestData.Step(service, 0.25f);
-        GlowAssert.Equal(true, engine.Updates[^1].Emitting);
+        VfxAssert.Equal(true, engine.Updates[^1].Emitting);
         handle.Stop(true);
-        GlowAssert.Equal((0, false), engine.Destroys[0]);
+        VfxAssert.Equal((0, false), engine.Destroys[0]);
         VfxTestData.Step(service, 2f);
         VfxAssert.Check(handle.IsAlive && handle.GpuEmitterCount == 1, "the handle owns the GPU drain until the engine reclaims it");
         handle.Dispose();
-        GlowAssert.Equal((0, true), engine.Destroys[^1]);
+        VfxAssert.Equal((0, true), engine.Destroys[^1]);
         VfxAssert.Check(!handle.IsAlive && handle.GpuEmitterCount == 0, "Dispose during the GPU drain tears it down");
         VfxTestData.Step(service, 0f);
-        GlowAssert.Equal(0, service.LiveHandleCount);
+        VfxAssert.Equal(0, service.LiveHandleCount);
     }
 
-    private static EffectAsset LitAsset(string id) => new()
+    private static EffectAsset LitAsset(string id, TimelineEventSpec[]? timelineEvents = null) => new()
     {
         EffectId = id, Nodes = new[]
         {
             new EffectNodeSpec
             {
                 Name = "glow", Emitter = VfxTestData.Emitter(lifetime: 1f),
-                PointLight = new PointLightSpec(4f, 1f, Vector3.One),
+                PointLight = new PointLightSpec(4f, Vector3.One),
             },
         },
-        TimelineEvents = new[] { new TimelineEventSpec(1f, "flash", 0) },
+        TimelineEvents = timelineEvents ?? new[] { new TimelineEventSpec(1f, "flash", 0) },
     };
 }
