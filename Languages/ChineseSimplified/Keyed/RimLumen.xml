@@ -6,7 +6,7 @@
   <RimLumen_ColorBlendSpace>粒子混合方式：</RimLumen_ColorBlendSpace>
   <RimLumen_ColorBlendLegacy>经典</RimLumen_ColorBlendLegacy>
   <RimLumen_ColorBlendLinear>线性</RimLumen_ColorBlendLinear>
-  <RimLumen_ColorBlendSpaceTooltip>经典方式保持原有画面。线性方式会改变半透明粒子重叠时的混合效果。</RimLumen_ColorBlendSpaceTooltip>
+  <RimLumen_ColorBlendSpaceTooltip>经典方式保持原有画面。线性方式下，半透明粒子和粒子柔和的边缘会更亮，不透明粒子相互叠加的地方会更暗。</RimLumen_ColorBlendSpaceTooltip>
   <RimLumen_EnableDemoBuildings>启用娱乐演示建筑：烟花发射器与粒子喷泉</RimLumen_EnableDemoBuildings>
   <RimLumen_EnableDemoBuildingsTooltip>开启后，「娱乐」建造菜单会多出两座零成本演示建筑：烟花发射器与粒子喷泉。</RimLumen_EnableDemoBuildingsTooltip>
   <RimLumen_ShaderPacks>光影包与后处理</RimLumen_ShaderPacks>

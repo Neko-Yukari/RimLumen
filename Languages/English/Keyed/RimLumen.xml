@@ -6,7 +6,7 @@
   <RimLumen_ColorBlendSpace>Particle blending:</RimLumen_ColorBlendSpace>
   <RimLumen_ColorBlendLegacy>Legacy</RimLumen_ColorBlendLegacy>
   <RimLumen_ColorBlendLinear>Linear</RimLumen_ColorBlendLinear>
-  <RimLumen_ColorBlendSpaceTooltip>Legacy preserves the existing appearance. Linear changes how overlapping translucent particles combine.</RimLumen_ColorBlendSpaceTooltip>
+  <RimLumen_ColorBlendSpaceTooltip>Legacy preserves the existing appearance. Linear makes translucent particles and soft particle edges brighter, and overlaps of opaque particles darker.</RimLumen_ColorBlendSpaceTooltip>
   <RimLumen_EnableDemoBuildings>Enable demo recreation buildings: firework launcher and particle fountain</RimLumen_EnableDemoBuildings>
   <RimLumen_EnableDemoBuildingsTooltip>Adds two zero-cost demo buildings to the Recreation build menu: a firework launcher and a particle fountain.</RimLumen_EnableDemoBuildingsTooltip>
   <RimLumen_ShaderPacks>Shader packs and post-processing</RimLumen_ShaderPacks>
