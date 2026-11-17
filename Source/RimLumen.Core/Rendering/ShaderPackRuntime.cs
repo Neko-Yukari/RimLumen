@@ -153,11 +153,13 @@ internal sealed class ShaderPackRuntime : IDisposable
             uniformBinding: 5);
     }
 
+    // distortion: this frame's DistortionPass target, null when the frame has no distortion draws.
     internal void RecordOffscreen(
         in FrameContext ctx,
         HdrTargets.Slot slot,
         RenderTexture hdrSource,
         RenderTexture scene,
+        RenderTexture? distortion,
         in ShaderPackUniforms uniforms,
         bool hasHdrDraws,
         bool hasGlowDraws,
@@ -173,6 +175,7 @@ internal sealed class ShaderPackRuntime : IDisposable
             RecordBloom(in ctx, slot, in uniforms, bloomDown, bloomUp, hdrSource, glowTex, scene, depthTex);
 
         RenderTexture bloomTex = skipBuiltInBloom || slot.Bloom is null ? black1x1! : slot.Bloom;
+        RenderTexture distortionTex = distortion ?? black1x1!;
         ulong writeOrdinal = persistentFrameOrdinal;
 
         for (int i = 0; i < customOffscreenPasses.Length; i++)
@@ -181,7 +184,8 @@ internal sealed class ShaderPackRuntime : IDisposable
             PostEffectPass pass = customOffscreenPasses[i];
             foreach (PlannedInput input in passSpec.Inputs)
             {
-                BindInputSource(pass, input, hdrSource, glowTex, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, writeOrdinal);
+                BindInputSource(pass, input, hdrSource, glowTex, bloomTex, scene, depthTex, distortionTex, ctx.SubmissionFrameIndex,
+                    writeOrdinal);
             }
             pass.SetUniforms(in uniforms);
             RenderTexture output = ResolveWriteTarget(passSpec.OutputTargetIndex, ctx.SubmissionFrameIndex, writeOrdinal);
@@ -248,6 +252,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         HdrTargets.Slot slot,
         RenderTexture hdrSource,
         RenderTexture scene,
+        RenderTexture? distortion,
         in ShaderPackUniforms uniforms,
         bool hasHdrDraws,
         bool hasGlowDraws,
@@ -257,15 +262,17 @@ internal sealed class ShaderPackRuntime : IDisposable
         RenderTexture glowTex = hasGlowDraws ? slot.Glow : black1x1!;
         bool skipBuiltInBloom = plan.BloomMipLevels == 0 || (!hasHdrDraws && !plan.HasCustomBloomShader);
         RenderTexture bloomTex = skipBuiltInBloom || slot.Bloom is null ? black1x1! : slot.Bloom;
+        RenderTexture distortionTex = distortion ?? black1x1!;
 
         PlannedPass finalSpec = plan.Passes[^1];
         foreach (PlannedInput input in finalSpec.Inputs)
         {
-            BindInputSource(compositePass, input, hdrSource, glowTex, bloomTex, scene, depthTex, ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
+            BindInputSource(compositePass, input, hdrSource, glowTex, bloomTex, scene, depthTex, distortionTex,
+                ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
         }
         compositePass.SetUniforms(in uniforms);
         Vector4 finalPc = finalSpec.UsesBuiltInComposite
-            ? new Vector4(uniforms.BloomParams.X, 0f, 1f / scene.Width, 1f / scene.Height)
+            ? new Vector4(uniforms.BloomParams.X, 0f, 0f, 0f)
             : new Vector4(1f / scene.Width, 1f / scene.Height, finalSpec.ExtraParams.X, finalSpec.ExtraParams.Y);
         compositePass.SetPushConstants(in finalPc);
         compositePass.RecordInline(in ctx, ctx.RenderPass, ctx.SampleCount);
@@ -427,6 +434,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         RenderTexture bloomTex,
         RenderTexture scene,
         RenderTexture depthTex,
+        RenderTexture distortionTex,
         int submissionIndex,
         ulong writeOrdinal)
     {
@@ -438,6 +446,7 @@ internal sealed class ShaderPackRuntime : IDisposable
             case InputKind.Scene: pass.SetInput(input.Binding, scene); return;
             case InputKind.Depth: pass.SetInput(input.Binding, depthTex); return;
             case InputKind.MapLightField: BindMapLightField(pass, input.Binding); return;
+            case InputKind.Distortion: pass.SetInput(input.Binding, distortionTex); return;
             case InputKind.Target:
                 CustomTargetAllocation alloc = customTargets[input.TargetIndex];
                 int index = alloc.Spec.Persistent

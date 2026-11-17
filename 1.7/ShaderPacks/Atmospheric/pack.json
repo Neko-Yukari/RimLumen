@@ -43,7 +43,8 @@
         { "binding": 1, "source": "bloom" },
         { "binding": 2, "source": "scene" },
         { "binding": 3, "source": "fogBlur" },
-        { "binding": 4, "source": "mapLightField" }
+        { "binding": 4, "source": "mapLightField" },
+        { "binding": 6, "source": "distortion" }
       ]
     }
   ],

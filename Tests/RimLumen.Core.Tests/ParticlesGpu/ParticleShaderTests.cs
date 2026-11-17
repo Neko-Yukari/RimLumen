@@ -105,7 +105,7 @@ public static class ParticleShaderTests
         Require(!File.Exists(Path.Combine(postFx, "RimLumenEncodeStored.frag.glsl")),
             "The pre-encoded E(L*a) layer is retired; composites blend in linear light instead.");
         string composite = ShaderSourceLoader.ReadShaderSource(Path.Combine(postFx, "RimLumenComposite.frag.glsl"));
-        Require(composite.Contains("if (hdr == vec4(0.0) && bloom == vec3(0.0))", StringComparison.Ordinal)
+        Require(composite.Contains("if (hdr == vec4(0.0) && bloom == vec3(0.0)", StringComparison.Ordinal)
             && composite.Contains("float a = clamp(hdr.a, 0.0, 1.0);", StringComparison.Ordinal)
             && composite.Contains("scene * (1.0 - a) + hdr.rgb + bloom", StringComparison.Ordinal)
             && composite.Contains("vec4(lumenEncodeStored(compressHighlights(linear)), 1.0)", StringComparison.Ordinal),
