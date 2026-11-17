@@ -4,6 +4,7 @@ using System.Numerics;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Scene;
+using RimLumen.Core.ParticleWorld;
 
 namespace RimLumen.Core.ParticlesGpu;
 
@@ -30,6 +31,12 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         public double DrainRemaining;
         public int PendingBurst;
         public InstanceState State;
+        public float NodeTime;
+        public int[] Targets = Array.Empty<int>();
+        public readonly HashSet<int> Sources = new();
+        public bool GpuBurstCarry;
+        public uint ResetVersion;
+        public readonly List<GpuExplicitBurst> ExplicitBursts = new();
     }
 
     private readonly int capacity;
@@ -39,6 +46,11 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
     private readonly List<EmitterSlotRange> captureClears = new();
     private readonly List<int> captureRemoved = new();
     private readonly List<GpuForceField> captureFields = new();
+    private readonly List<ParticleMapGrid> captureMaps = new();
+    private readonly List<GpuSubLink> captureLinks = new();
+    private readonly List<GpuExplicitBurst> captureBursts = new();
+    private readonly Dictionary<int, int> rowByInstance = new();
+    private readonly Dictionary<int, int> mapOffsets = new();
     private int nextId;
     private bool disposed;
     private ParticleFrame? captured;
@@ -79,6 +91,23 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
             idleStartedAt = null;
         }
         return id;
+    }
+
+    public void BindNodeInstances(int[] ids)
+    {
+        foreach (int id in ids)
+        {
+            if (id < 0) continue;
+            Instance source = instances[id];
+            source.Targets = new int[source.Spec.SubEmitters.Length];
+            for (int i = 0; i < source.Targets.Length; i++)
+            {
+                int target = ids[source.Spec.SubEmitters[i].TargetNodeIndex];
+                source.Targets[i] = target;
+                instances[target].Sources.Add(id);
+                instances[target].GpuBurstCarry = true;
+            }
+        }
     }
 
     // Requires: main thread. Unknown ids are ignored.
@@ -127,6 +156,8 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!instances.TryGetValue(instanceId, out Instance? instance) || instance.State != InstanceState.Emitting) return;
         instance.Scheduler.Restart();
+        instance.NodeTime = 0f;
+        instance.ResetVersion++;
         instance.Emitting = true;
         instance.Activated = true;
     }
@@ -137,8 +168,13 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!instances.TryGetValue(instanceId, out Instance? instance) || instance.State != InstanceState.Emitting) return;
-        int accepted = instance.Scheduler.AcceptBurst(Math.Max(0, count), RimLumenRenderHost.ParticleDensityScale);
-        instance.PendingBurst = (int)Math.Min((long)instance.PendingBurst + accepted, instance.Slots.Capacity);
+        if (instance.GpuBurstCarry)
+            instance.ExplicitBursts.Add(new((uint)count, (uint)MathF.Floor(RimLumenRenderHost.ParticleDensityScale * 65536f), instance.ResetVersion, 0));
+        else
+        {
+            int accepted = instance.Scheduler.AcceptBurst(count, RimLumenRenderHost.ParticleDensityScale);
+            instance.PendingBurst = (int)Math.Min((long)instance.PendingBurst + accepted, instance.Slots.Capacity);
+        }
     }
 
     // Requires: main thread capture.
@@ -155,20 +191,26 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         var removed = captureRemoved;
         var fields = captureFields;
         rows.Clear(); clears.Clear(); removed.Clear(); fields.Clear();
+        captureMaps.Clear(); captureLinks.Clear(); captureBursts.Clear(); rowByInstance.Clear(); mapOffsets.Clear();
+        int cellCount = 0;
+        ParticleEnvironment.BeginFrame(context.FrameIndex, context.CurrentMapIndex);
+        int eventCapacity = 0;
         // Player-facing density setting; the default 1.0 leaves the emission budget untouched.
         float density = RimLumenRenderHost.ParticleDensityScale;
         foreach (Instance instance in instances.Values)
         {
             float dt = instance.RealTime && context.UnscaledDeltaTime > 0f ? context.UnscaledDeltaTime : context.DeltaTime;
             instance.Activated |= instance.Emitting;
+            bool drainedBeforeFrame = instance.State == InstanceState.Draining && instance.DrainRemaining <= 0;
             if (instance.State == InstanceState.Draining)
             {
                 instance.DrainRemaining -= dt;
-                // A pulse accepted before DestroyInstance spawns now, so the drain lasts its full lifetime from now.
-                if (instance.PendingBurst > 0) instance.DrainRemaining = Math.Max(instance.DrainRemaining, instance.Spec.StartLifetimeMax);
+                // A target can receive new particles until all sources finish; then it gets a full final lifetime.
+                if (instance.PendingBurst > 0 || instance.ExplicitBursts.Count != 0 || instance.Sources.Count != 0)
+                    instance.DrainRemaining = instance.Spec.StartLifetimeMax;
             }
             if (instance.State == InstanceState.Remove ||
-                (instance.State == InstanceState.Draining && instance.DrainRemaining <= 0))
+                (instance.State == InstanceState.Draining && (instance.Targets.Length == 0 ? instance.DrainRemaining <= 0 : drainedBeforeFrame)))
             {
                 clears.Add(instance.Slots);
                 removed.Add(instance.Id);
@@ -176,6 +218,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 continue;
             }
             EmitterSpec spec = instance.Spec;
+            if (instance.Activated) instance.NodeTime += dt;
             double requested = instance.PendingBurst;
             if (instance.State == InstanceState.Emitting && instance.Activated && dt > 0f)
                 requested += instance.Scheduler.Advance(dt, instance.Emitting, density, instance.RateMultiplier);
@@ -192,6 +235,38 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                     StrengthAndFrequency = new Vector4(field.Strength, field.Frequency, 0, 0)
                 });
             }
+            Matrix4x4 inverse = default;
+            bool worldInteraction = spec.WorldSpaceSimulation || Matrix4x4.Invert(instance.Transform.World, out inverse);
+            if (worldInteraction)
+                foreach (ParticleEnvironmentSource source in ParticleEnvironment.ForMap(instance.MapIndex))
+                {
+                    if ((source.Channel & spec.EnvironmentChannels) == 0) continue;
+                    fields.Add(new GpuForceField
+                    {
+                        CenterOrAxisAndKind = new(source.Center, source.Channel == LumenEnvironmentChannel.Explosion ? 5f : 6f),
+                        ParametersAndRadius = new(source.WaveRadius, source.Thickness, 0f, source.Radius),
+                        StrengthAndFrequency = new(source.Strength * spec.EnvironmentForceScale, 0f, 0f, 0f)
+                    });
+                }
+            Vector4 mapInfo = Vector4.Zero;
+            ParticleMapGrid? grid = worldInteraction ? ParticleCollisionFields.Capture(instance.MapIndex, spec.Collision) : null;
+            if (grid is not null)
+            {
+                if (!mapOffsets.TryGetValue(grid.MapId, out int cellOffset))
+                {
+                    cellOffset = cellCount;
+                    mapOffsets.Add(grid.MapId, cellOffset);
+                    captureMaps.Add(grid);
+                    cellCount += grid.Cells.Length;
+                }
+                mapInfo = new(cellOffset, grid.Width, grid.Height, spec.Collision.KillUnderRoof ? 1f : 0f);
+            }
+            int ownEventCapacity = instance.Targets.Length == 0 ? 0 : checked(2 * spec.MaxParticles);
+            int explicitOffset = captureBursts.Count;
+            captureBursts.AddRange(instance.ExplicitBursts);
+            int explicitCount = instance.ExplicitBursts.Count;
+            instance.ExplicitBursts.Clear();
+            rowByInstance.Add(instance.Id, row);
             var parameters = new GpuEmitterParams
             {
                 // Slang's RowMajor SSBO uses matrix * column vector; scene transforms use row vectors.
@@ -203,7 +278,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 StartColor = spec.StartColor,
                 Flipbook = new Vector4(spec.FlipbookTilesX, spec.FlipbookTilesY, spec.FlipbookCycles, (float)spec.BillboardMode),
                 Appearance = new Vector4(spec.VelocityStretchFactor, spec.LengthScale, spec.HdrIntensity, ParticleAppearanceMath.SizeScale(instance.Transform.World)),
-                Tables = new Vector4(row, fieldOffset, spec.ForceFields.Length, instance.Id & 0x00ffffff),
+                Tables = new Vector4(row, fieldOffset, fields.Count - fieldOffset, instance.Id & 0x00ffffff),
                 State = new Vector4(dt, spec.SoftParticleFadeDistance, 0, instance.Intensity),
                 ShapePosition = new Vector4(spec.ShapePosition, instance.Origin.X),
                 ShapeRotation = new Vector4(spec.ShapeRotation.X, spec.ShapeRotation.Y, spec.ShapeRotation.Z, spec.ShapeRotation.W),
@@ -211,14 +286,50 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 ShapeOptions = new Vector4(spec.RadiusThickness, spec.ArcDegrees * (MathF.PI / 180f), spec.ArcSpread, spec.RadiusSpread),
                 ShapeMix = new Vector4(spec.RandomDirectionAmount, spec.SphericalDirectionAmount, spec.RandomPositionAmount, spec.ConeLength),
                 BoxThicknessDonut = new Vector4(spec.BoxThickness, spec.DonutRadius),
-                WorldRotation = new Vector4(instance.Transform.Rotation.X, instance.Transform.Rotation.Y, instance.Transform.Rotation.Z, instance.Transform.Rotation.W)
+                WorldRotation = new Vector4(instance.Transform.Rotation.X, instance.Transform.Rotation.Y, instance.Transform.Rotation.Z, instance.Transform.Rotation.W),
+                WorldInverse = Matrix4x4.Transpose(inverse),
+                WorldPhysics = new(instance.NodeTime, worldInteraction ? 1f : 0f, 0f, 0f),
+                Collision = new((float)spec.Collision.Mode, spec.Collision.Bounce, spec.Collision.Dampen, spec.Collision.LifetimeLoss),
+                Map = mapInfo,
+                Events = new(eventCapacity, ownEventCapacity, instance.GpuBurstCarry ? 1f : 0f, 0f),
+                DensityQ = (uint)MathF.Floor(density * 65536f), ResetVersion = instance.ResetVersion,
+                ExplicitOffset = (uint)explicitOffset, ExplicitCount = (uint)explicitCount,
+                StateSlot = (uint)instance.Slots.Offset, EmitEvents = instance.Targets.Length == 0 ? 0u : 1u
             };
             rows.Add(new ParticleEmitterFrame(instance.Id, parameters, instance.Curves, spec.TextureKey, spec.BlendMode,
                 instance.MapIndex, instance.IsVertical3D, instance.Origin.Y, spec.KillBelowFloor)
                 { MaterialTint = spec.MaterialTint, ColorSpace = spec.ColorSpace });
+            eventCapacity += ownEventCapacity;
         }
-        foreach (int id in removed) instances.Remove(id);
-        captured = new ParticleFrame(context, rows.ToArray(), fields.ToArray(), clears.ToArray());
+        // Links are grouped by target so one GPU invocation owns its carry and consumes every source event.
+        for (int row = 0; row < rows.Count; row++)
+        {
+            Instance target = instances[rows[row].InstanceId];
+            GpuEmitterParams parameters = rows[row].Parameters;
+            parameters.SourceLinkOffset = (uint)captureLinks.Count;
+            foreach (int sourceId in target.Sources)
+            {
+                if (!rowByInstance.TryGetValue(sourceId, out int sourceRow)) continue;
+                Instance source = instances[sourceId];
+                for (int i = 0; i < source.Targets.Length; i++)
+                    if (source.Targets[i] == target.Id)
+                    {
+                        SubEmitterSpec sub = source.Spec.SubEmitters[i];
+                        captureLinks.Add(new() { Source = (uint)sourceRow, Trigger = (uint)sub.Trigger, Count = (uint)sub.Count,
+                            Inherit = (uint)sub.Inherit, Probability = sub.Probability });
+                    }
+            }
+            parameters.SourceLinkCount = (uint)captureLinks.Count - parameters.SourceLinkOffset;
+            rows[row] = rows[row] with { Parameters = parameters };
+        }
+        foreach (int id in removed)
+        {
+            foreach (int target in instances[id].Targets)
+                if (instances.TryGetValue(target, out Instance? child)) child.Sources.Remove(id);
+            instances.Remove(id);
+        }
+        captured = new ParticleFrame(context, rows.ToArray(), fields.ToArray(), clears.ToArray())
+        { Maps = captureMaps.ToArray(), CellCount = cellCount, SubLinks = captureLinks.ToArray(), ExplicitBursts = captureBursts.ToArray(), EventCapacity = eventCapacity };
         System.Threading.Volatile.Write(ref idleRequested, rows.Count == 0);
     }
 
@@ -245,4 +356,11 @@ internal readonly record struct ParticleEmitterFrame(int InstanceId, GpuEmitterP
 }
 
 internal sealed record ParticleFrame(LumenCaptureContext Context, ParticleEmitterFrame[] Emitters,
-    GpuForceField[] Fields, EmitterSlotRange[] Clears);
+    GpuForceField[] Fields, EmitterSlotRange[] Clears)
+{
+    internal ParticleMapGrid[] Maps { get; init; } = Array.Empty<ParticleMapGrid>();
+    internal int CellCount { get; init; }
+    internal GpuSubLink[] SubLinks { get; init; } = Array.Empty<GpuSubLink>();
+    internal GpuExplicitBurst[] ExplicitBursts { get; init; } = Array.Empty<GpuExplicitBurst>();
+    internal int EventCapacity { get; init; }
+}

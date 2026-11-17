@@ -225,9 +225,9 @@ public static class ParticleShaderTests
     {
         string shader = Read("ParticleTypes.glsl");
         Match body = Regex.Match(shader, @"struct\s+GpuEmitterParams\s*\{(?<body>[^}]+)\}");
-        // This protocol contains only mat4/vec4, whose std140/std430 alignments are both 16 bytes.
-        int shaderStride = Regex.Matches(body.Groups["body"].Value, @"\b(vec4|mat4)\s+\w+\s*;")
-            .Cast<Match>().Sum(member => member.Groups[1].Value == "mat4" ? 64 : 16);
+        // Scalar tail groups are padded to 16 bytes; check each actual member below as well as the row stride.
+        int shaderStride = Regex.Matches(body.Groups["body"].Value, @"\b(vec4|mat4|uint)\s+\w+\s*;")
+            .Cast<Match>().Sum(member => member.Groups[1].Value switch { "mat4" => 64, "vec4" => 16, _ => 4 });
         CheckStruct<GpuEmitterParams>(shader, shaderStride);
         int structStride = Marshal.SizeOf<GpuEmitterParams>();
         int uploadedBytes = MemoryMarshal.AsBytes(new GpuEmitterParams[3].AsSpan()).Length;
@@ -247,7 +247,9 @@ public static class ParticleShaderTests
     {
         string source = Read("ParticleTypes.glsl");
         CheckStruct<GpuParticle>(source, 64);
-        CheckStruct<GpuEmitterParams>(source, 320);
+        CheckStruct<GpuEmitterParams>(source, 480);
+        CheckStruct<GpuSubEvent>(source, 48);
+        CheckStruct<GpuSubLink>(source, 32);
         CheckStruct<GpuForceField>(source, 48);
         CheckStruct<GpuCurveSample>(source, 32);
         Require(Marshal.SizeOf<GpuSimPushConstants>() == 16, "Compute push constants must be 16 bytes.");
@@ -291,7 +293,7 @@ public static class ParticleShaderTests
             int index = int.Parse(binding.Groups[1].Value);
             Require(index < 16 && bindings.Add(index), "Compute bindings must be unique and in [0,15].");
         }
-        Require(bindings.SetEquals(new[] { 0, 1, 2, 3 }), "Compute must expose exactly particle/emitter/field/dead-block bindings 0/1/2/3.");
+        Require(bindings.SetEquals(Enumerable.Range(0, 10)), "Compute bindings must match the ten host-bound particle/world/event buffers.");
         Require(pushBlocks == 1 && pushBytes <= 128 && pushBytes == Marshal.SizeOf<GpuSimPushConstants>(),
             $"Compute push layout is {pushBytes} bytes; expected fixed CPU layout within host 128-byte limit.");
     }
@@ -446,9 +448,9 @@ public static class ParticleShaderTests
         byte[] fragment = Compile("ParticleBillboard.frag.glsl", RuntimeShaderStage.Fragment);
         var computeInstructions = Instructions(compute);
         var vertexInstructions = Instructions(vertex);
-        foreach (uint stride in new uint[] { 64, 320, 48, 4 })
+        foreach (uint stride in new uint[] { 64, 480, 48, 4, 16, 32 })
             Require(HasArrayStride(computeInstructions, stride), $"Compute SPIR-V missing {stride}-byte storage array stride.");
-        foreach (uint stride in new uint[] { 64, 320, 32 })
+        foreach (uint stride in new uint[] { 64, 480, 32 })
             Require(HasArrayStride(vertexInstructions, stride), $"Vertex SPIR-V missing {stride}-byte storage array stride.");
         Require(computeInstructions.Any(x => x[0] == 16 && x.Length >= 6 && x[2] == 17 && x[3] == 64 && x[4] == 1 && x[5] == 1),
             "SPIR-V workgroup must be LocalSize 64,1,1.");
@@ -463,7 +465,7 @@ public static class ParticleShaderTests
         CompileFile("PostFx/RimLumenComposite.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("RimLumen/RimLumenLightPool.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("RimLumen/RimLumenLightPoolAccumulate.frag.glsl", RuntimeShaderStage.Fragment);
-        Console.WriteLine("[SPIR-V] compute strides=64,320,48,4; vertex strides=64,320,32; LocalSize=64,1,1");
+        Console.WriteLine("[SPIR-V] compute strides=64,480,48,4,16,32; vertex strides=64,480,32; LocalSize=64,1,1");
     }
 
     private static void CheckUniforms(MaterialLayout layout)

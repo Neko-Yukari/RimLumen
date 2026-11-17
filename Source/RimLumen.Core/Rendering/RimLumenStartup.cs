@@ -29,6 +29,7 @@ internal static class RimLumenStartup
         {
             // Gameplay hooks: armed before any map exists, and independent of the graphics device.
             RimLumen.Core.Lighting.LogicalLightHooks.Arm();
+            RimLumen.Core.ParticleWorld.ParticleEnvironmentHooks.Arm();
             RimLumenRenderHost.Install(root);
             RimLumen.Core.Scene.LumenSceneBootstrap.EnsureInitialized();
             RimLumen.Core.ParticlesGpu.LumenGpuParticlesBootstrap.EnsureInitialized();

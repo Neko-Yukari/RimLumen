@@ -34,8 +34,39 @@ internal struct GpuEmitterParams
     public Vector4 ShapeOptions; // offset 256: radiusThickness, arc radians, arcSpread, radiusSpread
     public Vector4 ShapeMix; // offset 272: randomDirection, sphericalDirection, randomPosition cells, coneLength cells
     public Vector4 BoxThicknessDonut; // offset 288: boxThickness xyz, donutRadius cells
-    public Vector4 WorldRotation; // offset 304: unit world quaternion xyzw, independent of World scale/shear; stride 320
+    public Vector4 WorldRotation; // offset 304: unit world quaternion xyzw, independent of World scale/shear; world-physics extension begins at 320
+    public Matrix4x4 WorldInverse;
+    public Vector4 WorldPhysics; // node time, world-interaction enabled, unused xy
+    public Vector4 Collision; // mode, bounce, dampen, lifetime loss
+    public Vector4 Map; // cell offset, width, height, kill under roof
+    public Vector4 Events; // event offset, capacity, GPU burst carry owner, unused
+    public uint DensityQ;
+    public uint ResetVersion;
+    public uint ExplicitOffset;
+    public uint ExplicitCount;
+    public uint SourceLinkOffset;
+    public uint SourceLinkCount;
+    public uint StateSlot;
+    public uint EmitEvents;
 }
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct GpuSubEvent
+{
+    public Vector4 PositionAndTrigger;
+    public Vector4 Color;
+    public Vector4 Size;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct GpuSubLink
+{
+    public uint Source, Trigger, Count, Inherit;
+    public float Probability, Padding0, Padding1, Padding2;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal readonly record struct GpuExplicitBurst(uint Count, uint DensityQ, uint ResetVersion, uint Padding);
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct GpuForceField

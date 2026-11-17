@@ -1,7 +1,7 @@
 #ifndef LUMEN_PARTICLE_TYPES
 #define LUMEN_PARTICLE_TYPES
 
-// std430 matches the sequential C# structs: 64 / 320 / 48 / 32 bytes.
+// std430 matches the sequential C# structs: 64 / 480 / 48 / 32 bytes.
 struct GpuParticle
 {
     vec4 PositionAndAge;
@@ -35,7 +35,42 @@ struct GpuEmitterParams
     vec4 ShapeMix; // 272: randomDirection, sphericalDirection, randomPosition, coneLength
     vec4 BoxThicknessDonut; // 288: boxThickness xyz, donutRadius
     vec4 WorldRotation; // 304: unit world quaternion xyzw
+    mat4 WorldInverse;
+    vec4 WorldPhysics;
+    vec4 Collision;
+    vec4 Map;
+    vec4 Events;
+    uint DensityQ;
+    uint ResetVersion;
+    uint ExplicitOffset;
+    uint ExplicitCount;
+    uint SourceLinkOffset;
+    uint SourceLinkCount;
+    uint StateSlot;
+    uint EmitEvents;
 };
+
+struct GpuSubEvent
+{
+    vec4 PositionAndTrigger;
+    vec4 Color;
+    vec4 Size;
+};
+
+struct GpuSubLink
+{
+    uint Source;
+    uint Trigger;
+    uint Count;
+    uint Inherit;
+    float Probability;
+    float Padding0;
+    float Padding1;
+    float Padding2;
+};
+
+struct GpuBurstState { uint Debt; uint ResetVersion; uint Budget; uint EventCount; };
+struct GpuExplicitBurst { uint Count; uint DensityQ; uint ResetVersion; uint Padding; };
 
 struct GpuForceField
 {
