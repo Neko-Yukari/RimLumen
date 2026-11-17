@@ -198,6 +198,13 @@ public static class ParticleShaderTests
             && draw.Contains("right = vec3(1.0, 0.0, 0.0)", StringComparison.Ordinal)
             && draw.Contains("up = vec3(0.0, 0.0, 1.0)", StringComparison.Ordinal),
             "Canonical stretch units or horizontal axes changed.");
+        string twin = File.ReadAllText(Path.Combine(ShaderDirectory(), "..", "..", "..", "Source", "RimLumen.Core", "Rendering", "CameraBillboardBasis.cs"));
+        Require(draw.Contains("(along * (0.8660254 - 1.0) + value.y * 0.5) * groundUp", StringComparison.Ordinal)
+            && twin.Contains("(along * (SinPitch - 1f) + value.Y * CosPitch) * groundUp", StringComparison.Ordinal)
+            && twin.Contains("SinPitch = 0.8660254f", StringComparison.Ordinal) && twin.Contains("CosPitch = 0.5f", StringComparison.Ordinal)
+            && draw.Contains("emitter.SizeCone.w > 0.5 ? lumenUnpackAnchor(particle.SpawnAnchorXZ)", StringComparison.Ordinal)
+            && sim.Contains("lumenPackAnchor(vec2(emitter.ShapePosition.w, emitter.ShapeScale.w))", StringComparison.Ordinal),
+            "Vertical3D top-down pitch or the world-space birth anchor drifted between CPU and GPU.");
     }
 
     [LumenFact]
@@ -472,13 +479,13 @@ public static class ParticleShaderTests
     {
         Match body = Regex.Match(source, @"struct\s+" + typeof(T).Name + @"\s*\{(?<body>[^}]+)\}");
         Require(body.Success, $"Missing shader struct {typeof(T).Name}.");
-        MatchCollection fields = Regex.Matches(body.Groups["body"].Value, @"\b(vec4|mat4)\s+(\w+)\s*;");
+        MatchCollection fields = Regex.Matches(body.Groups["body"].Value, @"\b(vec4|mat4|float|uint)\s+(\w+)\s*;");
         int offset = 0;
         foreach (Match field in fields)
         {
             string name = field.Groups[2].Value;
             Require(Marshal.OffsetOf<T>(name).ToInt32() == offset, $"{typeof(T).Name}.{name} byte offset mismatch.");
-            offset += field.Groups[1].Value == "mat4" ? 64 : 16;
+            offset += field.Groups[1].Value switch { "mat4" => 64, "vec4" => 16, _ => 4 };
         }
         Require(offset == expectedSize && Marshal.SizeOf<T>() == expectedSize, $"{typeof(T).Name} byte size mismatch.");
     }

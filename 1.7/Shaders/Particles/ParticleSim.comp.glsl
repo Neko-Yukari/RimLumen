@@ -152,8 +152,10 @@ GpuParticle spawnParticle(GpuEmitterParams emitter, uint slot)
     particle.VelocityAndLifetime = vec4(velocity, mix(emitter.Ranges.z, emitter.Ranges.w, randomUnit(seed)));
     particle.StartColor = emitter.StartColor;
     float sizeScale = emitter.SizeCone.w > 0.5 ? emitter.Appearance.w : 1.0;
-    particle.SizeSeedEmitterFlags = vec4(mix(emitter.SizeCone.x, emitter.SizeCone.y, randomUnit(seed)) * sizeScale,
-        float(seed & 0x00ffffffu), float(sim.emitterIndex), 1.0);
+    particle.Size = mix(emitter.SizeCone.x, emitter.SizeCone.y, randomUnit(seed)) * sizeScale;
+    particle.Seed = seed;
+    particle.ActiveEmitter = sim.emitterIndex + 1u;
+    particle.SpawnAnchorXZ = lumenPackAnchor(vec2(emitter.ShapePosition.w, emitter.ShapeScale.w));
     return particle;
 }
 
@@ -240,14 +242,14 @@ vec3 acceleration(GpuEmitterParams emitter, vec3 position, out float drag)
 
 GpuParticle integrateParticle(GpuEmitterParams emitter, uint slot)
 {
-    GpuParticle particle = GpuParticle(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0));
+    GpuParticle particle = GpuParticle(vec4(0.0), vec4(0.0), vec4(0.0), 0.0, 0u, 0u, 0u);
     if (emitter.State.z <= 0.5)
         particle = particles[slot];
-    if (particle.SizeSeedEmitterFlags.w > 0.5)
+    if (particle.ActiveEmitter != 0u)
     {
         particle.PositionAndAge.w += emitter.State.x;
         if (particle.PositionAndAge.w >= particle.VelocityAndLifetime.w)
-            particle.SizeSeedEmitterFlags.w = 0.0;
+            particle.ActiveEmitter = 0u;
         else
         {
             float drag;
@@ -265,7 +267,7 @@ GpuParticle integrateParticle(GpuEmitterParams emitter, uint slot)
                 float worldVelY = worldSpace ? particle.VelocityAndLifetime.y
                     : (emitter.World * vec4(particle.VelocityAndLifetime.xyz, 0.0)).y;
                 if (worldY < floorY && worldVelY < 0.0)
-                    particle.SizeSeedEmitterFlags.w = 0.0;
+                    particle.ActiveEmitter = 0u;
             }
         }
     }
@@ -319,12 +321,12 @@ void main()
         uint ordinal = block * 64u + lane;
         bool valid = ordinal < capacity;
         uint slot = uint(emitter.Slots.x) + ((uint(emitter.Slots.w) + ordinal) % capacity);
-        GpuParticle particle = GpuParticle(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0));
+        GpuParticle particle = GpuParticle(vec4(0.0), vec4(0.0), vec4(0.0), 0.0, 0u, 0u, 0u);
         bool dead = false;
         if (valid)
         {
             particle = phase == 1u ? integrateParticle(emitter, slot) : particles[slot];
-            dead = particle.SizeSeedEmitterFlags.w < 0.5;
+            dead = particle.ActiveEmitter == 0u;
         }
         if (phase == 1u && budget == 0u)
         {
@@ -349,12 +351,12 @@ void main()
         uint ordinal = chunk + lane;
         bool valid = ordinal < capacity;
         uint slot = uint(emitter.Slots.x) + ((uint(emitter.Slots.w) + ordinal) % capacity);
-        GpuParticle particle = GpuParticle(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0));
+        GpuParticle particle = GpuParticle(vec4(0.0), vec4(0.0), vec4(0.0), 0.0, 0u, 0u, 0u);
         bool dead = false;
         if (valid)
         {
             particle = integrateParticle(emitter, slot);
-            dead = particle.SizeSeedEmitterFlags.w < 0.5;
+            dead = particle.ActiveEmitter == 0u;
         }
         uint rank = inclusivePrefix(dead ? 1u : 0u);
         if (valid)

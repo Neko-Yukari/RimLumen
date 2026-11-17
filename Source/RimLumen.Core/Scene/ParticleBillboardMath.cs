@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using RimLumen.Core.Rendering;
 
 namespace RimLumen.Core.Scene;
 
@@ -28,16 +29,16 @@ internal static class ParticleBillboardMath
 
     // Requires: unit world quaternion composed independently of scale; validated display-space inputs.
     // Ensures: Local axes are rotation * X/Y, projected once for Vertical3D, never screen-facing;
-    // top-down uses (x,0,z+y), tilted uses inverse-Y once without renormalization.
+    // top-down uses CameraBillboardBasis.ProjectTopDownPitch, tilted uses inverse-Y once without renormalization.
     internal static void Local(in Quaternion worldRotation, bool isVertical3D, bool isTopDown2D,
-        float yScaleRatio, out Vector3 right, out Vector3 up)
+        float yScaleRatio, in Vector3 groundUp, out Vector3 right, out Vector3 up)
     {
         right = Vector3.Transform(Vector3.UnitX, worldRotation);
         up = Vector3.Transform(Vector3.UnitY, worldRotation);
         if (isVertical3D && isTopDown2D)
         {
-            right = new Vector3(right.X, 0f, right.Z + right.Y);
-            up = new Vector3(up.X, 0f, up.Z + up.Y);
+            right = CameraBillboardBasis.ProjectTopDownPitch(right, groundUp);
+            up = CameraBillboardBasis.ProjectTopDownPitch(up, groundUp);
         }
         else if (isVertical3D)
         {

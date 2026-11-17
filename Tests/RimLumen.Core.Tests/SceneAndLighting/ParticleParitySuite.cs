@@ -517,7 +517,7 @@ public static class ParticleParitySuite
         Vector(before.Position, cpu.LiveParticles[0].Position);
         Vector(before.Velocity, cpu.LiveParticles[0].Velocity);
         Near(before.Age, cpu.LiveParticles[0].Age);
-        cpu.SetEmitterVerticalState(id, false, 1f);
+        cpu.SetEmitterVerticalState(id, false, new Vector3(0f, 1f, 0f));
         cpu.CaptureMainThread(paused);
         Require(cpu.LiveParticleCount == 0, "A zero-dt capture still expires a descending particle below a moved floor.");
         using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);

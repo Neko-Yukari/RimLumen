@@ -29,20 +29,42 @@ internal static class CameraBillboardBasis
     internal static bool IsStraightTopDown2D(in Vector3 up, float yScaleRatio)
         => yScaleRatio >= 0.9f && MathF.Abs(up.Y) <= 0.05f * MathF.Max(1e-6f, up.Length());
 
-    // Display-only remap for Vertical3D emitters, whose simulation stays true 3D (+Y up). `baseY` is the effect's
-    // play-origin height. Callers pass scaleVelocityY: false to ComputeStretchedAxes afterwards.
-    // Ensures: straight-down 2D: height above baseY moves onto screen-up (+Z), the draw altitude is
-    //          max(baseY, vanillaMoteY) and velocity.Y is folded into velocity.Z.
+    // Vertical3D under the straight-down 2D camera is drawn as a true orthographic view pitched 60 degrees.
+    internal const float SinPitch = 0.8660254f;
+    internal const float CosPitch = 0.5f;
+
+    // Ensures: unit screen-up in the ground plane, normalize(up.X, 0, up.Z); +Z when up has no ground component.
+    internal static Vector3 GroundUp(in Vector3 up)
+    {
+        float lengthSq = up.X * up.X + up.Z * up.Z;
+        return lengthSq < 1e-12f ? Vector3.UnitZ : new Vector3(up.X, 0f, up.Z) / MathF.Sqrt(lengthSq);
+    }
+
+    // Linear part of the 60-degree pitch for the straight-down 2D camera; groundUp comes from GroundUp.
+    // Ensures: the ground component along groundUp shrinks by SinPitch, height adds CosPitch along groundUp,
+    //          the camera-right component is kept and the result lies in the ground plane (Y = 0).
+    internal static Vector3 ProjectTopDownPitch(in Vector3 value, in Vector3 groundUp)
+    {
+        float along = value.X * groundUp.X + value.Z * groundUp.Z;
+        return new Vector3(value.X, 0f, value.Z) + (along * (SinPitch - 1f) + value.Y * CosPitch) * groundUp;
+    }
+
+    // Display-only remap for Vertical3D emitters, whose simulation stays true 3D (+Y up). `anchorXZ` and `baseY` are
+    // the 3D pivot: the play origin's ground position (at birth for world-space particles) and height.
+    // Callers pass scaleVelocityY: false to ComputeStretchedAxes afterwards.
+    // Ensures: straight-down 2D: the offset from the pivot goes through ProjectTopDownPitch, so a sphere draws as a
+    //          circle; the draw altitude is max(baseY, vanillaMoteY) and velocity goes through the same operator.
     //          Otherwise (3D / IsoRim): height above baseY is divided by the view's Y squash so it reaches the screen
     //          at full size; velocity is untouched.
-    internal static void ProjectVertical3D(bool isTopDown2D, float yScaleRatio, float baseY, float vanillaMoteY,
-        ref Vector3 position, ref Vector3 velocity)
+    internal static void ProjectVertical3D(bool isTopDown2D, float yScaleRatio, in Vector3 groundUp, Vector2 anchorXZ,
+        float baseY, float vanillaMoteY, ref Vector3 position, ref Vector3 velocity)
     {
         if (isTopDown2D)
         {
-            float dy = position.Y - baseY;
-            position = new Vector3(position.X, MathF.Max(baseY, vanillaMoteY), position.Z + dy);
-            velocity = new Vector3(velocity.X, 0f, velocity.Z + velocity.Y);
+            Vector3 offset = ProjectTopDownPitch(
+                new Vector3(position.X - anchorXZ.X, position.Y - baseY, position.Z - anchorXZ.Y), groundUp);
+            position = new Vector3(anchorXZ.X + offset.X, MathF.Max(baseY, vanillaMoteY), anchorXZ.Y + offset.Z);
+            velocity = ProjectTopDownPitch(velocity, groundUp);
             return;
         }
 

@@ -63,7 +63,7 @@ public static class ParticleEngineTests
             ShapeRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f),
             ShapeScale = new Vector3(5f, 6f, 7f),
         };
-        engine.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.CreateTranslation(10f, 20f, 30f), Quaternion.Identity), -1, false, 1u);
+        int id = engine.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.CreateTranslation(10f, 20f, 30f), Quaternion.Identity), -1, false, 1u);
         engine.CaptureMainThread(Frame(0));
         GpuEmitterParams p = engine.CapturedFrame!.Emitters[0].Parameters;
         Require(p.ShapePosition == new Vector4(1f, 2f, 3f, 0f) && p.ShapeScale == new Vector4(5f, 6f, 7f, 0f),
@@ -71,6 +71,12 @@ public static class ParticleEngineTests
         Require(p.ShapeRotation == new Vector4(0f, 0f, spec.ShapeRotation.Z, spec.ShapeRotation.W)
             && p.World.M14 == 10f && p.World.M24 == 20f && p.World.M34 == 30f && p.Appearance.W == 1f,
             "Quaternion xyzw and node matrix/size scale must remain independent.");
+        engine.SetInstanceVerticalState(id, true, new Vector3(12f, 3f, 34f));
+        engine.CaptureMainThread(Frame(0));
+        ParticleEmitterFrame row = engine.CapturedFrame!.Emitters[0];
+        Require(row.Parameters.ShapePosition == new Vector4(1f, 2f, 3f, 12f) && row.Parameters.ShapeScale == new Vector4(5f, 6f, 7f, 34f)
+            && row.IsVertical3D && row.BaseY == 3f,
+            "Vertical3D play origin must upload as ground anchor ShapePosition.w/ShapeScale.w and floor BaseY.");
     }
 
     [LumenFact]

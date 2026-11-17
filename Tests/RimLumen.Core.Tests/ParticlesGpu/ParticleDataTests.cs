@@ -280,9 +280,9 @@ public static class ParticleDataTests
         ParticleBillboardMath.Vertical(Vector3.UnitX, Vector3.UnitZ, 1f, false, out var right, out var up);
         Equal(Vector3.UnitX, right);
         Equal(Vector3.UnitY, up);
-        ParticleBillboardMath.Local(Quaternion.Identity, true, true, 1f, out right, out up);
+        ParticleBillboardMath.Local(Quaternion.Identity, true, true, 1f, Vector3.UnitZ, out right, out up);
         Equal(Vector3.UnitX, right);
-        Equal(Vector3.UnitZ, up);
+        Equal(new Vector3(0f, 0f, 0.5f), up);
     }
 
     [LumenFact]
@@ -303,7 +303,10 @@ public static class ParticleDataTests
         Offset<GpuParticle>(nameof(GpuParticle.PositionAndAge), 0);
         Offset<GpuParticle>(nameof(GpuParticle.VelocityAndLifetime), 16);
         Offset<GpuParticle>(nameof(GpuParticle.StartColor), 32);
-        Offset<GpuParticle>(nameof(GpuParticle.SizeSeedEmitterFlags), 48);
+        Offset<GpuParticle>(nameof(GpuParticle.Size), 48);
+        Offset<GpuParticle>(nameof(GpuParticle.Seed), 52);
+        Offset<GpuParticle>(nameof(GpuParticle.ActiveEmitter), 56);
+        Offset<GpuParticle>(nameof(GpuParticle.SpawnAnchorXZ), 60);
         Equal(320, Marshal.SizeOf<GpuEmitterParams>());
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.World), 0);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Slots), 64);

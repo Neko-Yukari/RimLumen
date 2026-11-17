@@ -29,9 +29,11 @@
 | 枚举值 | 数值 | 旋转行为 | 常见用途 |
 | --- | --- | --- | --- |
 | `GroundXZ` | `0` | 原样使用节点自身的 `LocalRotation`，不加额外俯仰旋转；显示不做相机适配 | 贴地法阵、地面光环、水平扩散波、任意 3D 朝向子发射器（如 RimUnity 导入资产） |
-| `Vertical3D` | `3` | 节点矩阵与 `GroundXZ` 相同，局部 `+Y` 即世界 `+Y`；模拟保持真 3D，**仅显示**按相机适配：IsoRim（Y 被压扁）下把高于 `baseY` 的高度除以压扁系数，还原为真实高度；原版正俯视 2D 相机下把高度投影到屏幕上方（`+Z`），绘制高度取 `max(baseY, MoteOverhead)`；`StretchedVelocity` 的拉伸方向同步取真 3D 速度 | 烟花、喷泉等真正向上喷射并落回地面的特效 |
+| `Vertical3D` | `3` | 节点矩阵与 `GroundXZ` 相同，局部 `+Y` 即世界 `+Y`；模拟保持真 3D，**仅显示**按相机适配：IsoRim（Y 被压扁）下把高于 `baseY` 的高度除以压扁系数，还原为真实高度；原版正俯视 2D 相机下按俯仰 60° 的真正交视图绘制：以播放原点为轴心，沿屏幕上方的地面分量乘 `sin60°≈0.866`，高度乘 `cos60°=0.5` 后加到屏幕上方，屏幕右方分量不变，绘制高度取 `max(baseY, MoteOverhead)`；`StretchedVelocity` 速度与 `Local` 轴经同一线性映射 | 烟花、喷泉等真正向上喷射并落回地面的特效 |
 
-`Vertical3D` 的 `baseY` 是播放原点（`LumenPlayRequest.OriginWorld.Y`）的高度；节点 `LocalPosition.Y` 是相对该原点的高度（例如烟花爆点 `4.8`）。`GroundXZ` 的显示不受影响。数值 `1`、`2` 不再有效，解析时报错。
+`Vertical3D` 的 `baseY` 是播放原点（`LumenPlayRequest.OriginWorld.Y`）的高度；节点 `LocalPosition.Y` 是相对该原点的高度（例如烟花爆点 `4.8` 在 2D 中画在原点上方 `2.4` 格）。`GroundXZ` 的显示不受影响。数值 `1`、`2` 不再有效，解析时报错。
+
+正俯视 2D 的 60° 视图是真正交投影：球画成正圆，水平圆环画成纵向 `0.866` 的椭圆，相机绕 Y 轴旋转时投影方向跟随屏幕上方。轴心的地面坐标取播放原点 `OriginWorld.XZ`，同一特效的所有节点共用；本地空间粒子取当前原点，世界空间粒子取出生时的原点，因此移动的发射器或弹体留下的拖尾不会随之漂移。L2 以 `1/32` 格精度记录出生原点，范围为 `±1024` 格。
 
 ### 地面接触过期（`EmitterSpec.KillBelowFloor` / `killBelowFloor`）
 
