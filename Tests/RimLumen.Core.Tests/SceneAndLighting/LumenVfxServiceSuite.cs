@@ -397,6 +397,7 @@ internal sealed class SpyGpuEngine : ILumenGpuParticleEngine
     public readonly List<int> Restarts = new();
     public readonly List<(int Id, int Count)> Bursts = new();
     public void RestartInstance(int instanceId) => Restarts.Add(instanceId);
+    public void BindNodeInstances(int[] instanceIdsByNode) { }
     public void EmitBurst(int instanceId, int count) => Bursts.Add((instanceId, count));
     // Ids the test has declared drained; every other created, not immediately destroyed id is alive.
     public readonly HashSet<int> Drained = new();

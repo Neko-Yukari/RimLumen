@@ -3,6 +3,14 @@
   <RimLumen_EnhanceAdditiveGlow>自动增强原版与第三方加色发光特效</RimLumen_EnhanceAdditiveGlow>
   <RimLumen_EnhanceAdditiveGlowTooltip>开启后，火焰、爆炸、能量护盾等加色发光特效会自动获得 HDR 泛光。\n关闭后，在未开启全屏光影包时回到零像素差的纯框架模式（与未安装 RimLumen 时画面逐像素一致）。</RimLumen_EnhanceAdditiveGlowTooltip>
   <RimLumen_ParticleDensity>全局粒子密度倍率：{0}%</RimLumen_ParticleDensity>
+  <RimLumen_ExplosionForces>爆炸推动粒子（仅视觉效果）</RimLumen_ExplosionForces>
+  <RimLumen_ExplosionForceScale>爆炸粒子推力：{0} 倍</RimLumen_ExplosionForceScale>
+  <RimLumen_CursorForceMode>光标粒子力：{0}</RimLumen_CursorForceMode>
+  <RimLumen_CursorOff>关闭</RimLumen_CursorOff>
+  <RimLumen_CursorRepel>排斥</RimLumen_CursorRepel>
+  <RimLumen_CursorAttract>吸引</RimLumen_CursorAttract>
+  <RimLumen_CursorForceRadius>光标半径：{0} 格</RimLumen_CursorForceRadius>
+  <RimLumen_CursorForceStrength>光标加速度：{0} 格/秒²</RimLumen_CursorForceStrength>
   <RimLumen_ColorBlendSpace>粒子混合方式：</RimLumen_ColorBlendSpace>
   <RimLumen_ColorBlendLegacy>经典</RimLumen_ColorBlendLegacy>
   <RimLumen_ColorBlendLinear>线性</RimLumen_ColorBlendLinear>

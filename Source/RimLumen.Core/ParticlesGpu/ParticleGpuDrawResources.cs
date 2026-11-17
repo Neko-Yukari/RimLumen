@@ -71,7 +71,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
     internal static unsafe VkDescriptorPool CreateComputePool(DeviceEx device)
     {
         VkDescriptorPoolSize* sizes = stackalloc VkDescriptorPoolSize[1];
-        sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageBuffer, DescriptorCount = 4 };
+        sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageBuffer, DescriptorCount = 10 };
         return device.CreateDescriptorPool(new VkDescriptorPoolCreateInfo
         {
             MaxSets = 1, PoolSizeCount = 1, PoolSizes = sizes
@@ -262,30 +262,40 @@ internal sealed class ParticleGpuFrame : IDisposable
 {
     private readonly DeviceEx device;
     internal readonly VkDescriptorPool Pool;
-    internal readonly GpuComputeBuffer Emitters, Fields, Curves;
-    internal readonly int EmitterCapacity, FieldCapacity;
+    internal readonly GpuComputeBuffer Emitters, Fields, Curves, MapCells, Events, SubLinks, ExplicitBursts;
+    internal readonly int EmitterCapacity, FieldCapacity, CellCapacity, EventCapacity, LinkCapacity, BurstCapacity;
     internal readonly ParticleEmitterFrame[] SimulationEmitters;
     internal readonly Texture[] Textures;
     internal readonly bool[] TexturePresent;
     internal readonly bool[] TextureSrgb;
     internal readonly GpuComputeBuffer[] ComputeBuffers;
+    internal GpuComputeBuffer BurstStates => ComputeBuffers[6];
     private readonly GpuEmitterParams[] parameters;
+    private RimLumen.Core.Scene.ParticleMapGrid[] uploadedMaps = Array.Empty<RimLumen.Core.Scene.ParticleMapGrid>();
     private readonly int[] curveInstanceIds;
     private readonly InstanceStorageBinding[] storageBindings;
     private readonly InstancedDrawInfo?[] instancing;
 
     internal static long EmitterBufferBytes(int emitterCapacity) => (long)emitterCapacity * Marshal.SizeOf<GpuEmitterParams>();
 
-    internal ParticleGpuFrame(EngineApplication app, int emitterCount, int fieldCount,
-        GpuComputeBuffer particles, GpuComputeBuffer deadBlocks)
+    internal ParticleGpuFrame(EngineApplication app, ParticleFrame snapshot, int emitterCount,
+        GpuComputeBuffer particles, GpuComputeBuffer deadBlocks, GpuComputeBuffer burstStates)
     {
         device = app.Device;
         EmitterCapacity = Math.Max(1, emitterCount);
-        FieldCapacity = Math.Max(1, fieldCount);
+        FieldCapacity = Math.Max(1, snapshot.Fields.Length);
+        CellCapacity = Math.Max(1, snapshot.CellCount);
+        EventCapacity = Math.Max(1, snapshot.EventCapacity);
+        LinkCapacity = Math.Max(1, snapshot.SubLinks.Length);
+        BurstCapacity = Math.Max(1, snapshot.ExplicitBursts.Length);
         Pool = ParticleGpuDrawResources.CreateComputePool(device);
         Emitters = GpuComputeBuffer.Create(device, app.GraphicsDevice!.Allocator, "Lumen.Emitters", EmitterBufferBytes(EmitterCapacity));
         Fields = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Fields", (long)FieldCapacity * 48);
         Curves = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Curves", (long)EmitterCapacity * 64 * 32);
+        MapCells = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.CollisionCells", (long)CellCapacity * 4);
+        Events = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.SubEvents", (long)EventCapacity * 48, deviceLocal: true);
+        SubLinks = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.SubLinks", (long)LinkCapacity * 32);
+        ExplicitBursts = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.ExplicitBursts", (long)BurstCapacity * 16);
         SimulationEmitters = new ParticleEmitterFrame[EmitterCapacity];
         Textures = new Texture[EmitterCapacity];
         TexturePresent = new bool[EmitterCapacity];
@@ -293,7 +303,7 @@ internal sealed class ParticleGpuFrame : IDisposable
         parameters = new GpuEmitterParams[EmitterCapacity];
         curveInstanceIds = new int[EmitterCapacity];
         Array.Fill(curveInstanceIds, -1);
-        ComputeBuffers = new[] { particles, Emitters, Fields, deadBlocks };
+        ComputeBuffers = new[] { particles, Emitters, Fields, deadBlocks, MapCells, Events, burstStates, SubLinks, Curves, ExplicitBursts };
         storageBindings = ParticleGpuDrawResources.CreateStorageBindings(particles, Emitters, Curves);
         instancing = new InstancedDrawInfo?[EmitterCapacity];
     }
@@ -322,11 +332,26 @@ internal sealed class ParticleGpuFrame : IDisposable
         }
         Emitters.Upload<GpuEmitterParams>(parameters.AsSpan(0, emitters.Length));
         if (frame.Fields.Length > 0) Fields.Upload<GpuForceField>(frame.Fields);
+        bool mapsChanged = uploadedMaps.Length != frame.Maps.Length;
+        for (int i = 0; !mapsChanged && i < frame.Maps.Length; i++) mapsChanged = !ReferenceEquals(uploadedMaps[i], frame.Maps[i]);
+        if (mapsChanged)
+        {
+            long offset = 0;
+            foreach (var map in frame.Maps)
+            {
+                MapCells.Upload<uint>(map.Cells, offset);
+                offset += (long)map.Cells.Length * 4;
+            }
+            uploadedMaps = frame.Maps;
+        }
+        if (frame.SubLinks.Length > 0) SubLinks.Upload<GpuSubLink>(frame.SubLinks);
+        if (frame.ExplicitBursts.Length > 0) ExplicitBursts.Upload<GpuExplicitBurst>(frame.ExplicitBursts);
     }
 
     public void Dispose()
     {
         device.DestroyDescriptorPool(Pool, device.VkAllocator);
         Emitters.Dispose(); Fields.Dispose(); Curves.Dispose();
+        MapCells.Dispose(); Events.Dispose(); SubLinks.Dispose(); ExplicitBursts.Dispose();
     }
 }

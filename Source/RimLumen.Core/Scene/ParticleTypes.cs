@@ -39,6 +39,7 @@ public struct CpuParticle
     public float Age;
     public float Lifetime;
     public float StartSize;
+    public Vector4 StartColor;
     public float Size;
     public Vector4 Color;
     public int FlipbookFrame;

@@ -5,6 +5,7 @@ using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.ParticlesGpu;
+using RimLumen.Core.ParticleWorld;
 
 namespace RimLumen.Core.Scene;
 
@@ -35,6 +36,13 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         public bool IsVertical3D;
         public float BaseY;
         public Vector2 AnchorXZ;
+        public Matrix4x4 InverseWorld;
+        public bool WorldInteraction;
+        public float NodeTime;
+        public ParticleMapGrid? CollisionGrid;
+        public ParticleEnvironmentSource[] Environment = Array.Empty<ParticleEnvironmentSource>();
+        public int[] Targets = Array.Empty<int>();
+        public readonly HashSet<int> Sources = new();
     }
 
     private readonly int seed;
@@ -49,6 +57,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     private int batchCount;
     private int activeMapIndex = -1;
     private Matrix4x4 view = Matrix4x4.Identity;
+    private readonly List<ParticleSubEvent> subEvents = new();
 
     // Requires: seed is any int; identical seeds and inputs produce identical particle states.
     public CpuParticleSimulator(int seed = 0x5EED) => this.seed = seed;
@@ -182,10 +191,28 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     {
         if (!emitters.TryGetValue(emitterId, out var emitter) || emitter.State == EmissionState.Draining) return;
         emitter.Scheduler.Restart();
+        emitter.NodeTime = 0f;
         emitter.State = EmissionState.Emitting;
     }
 
     internal bool IsEmitterAlive(int emitterId) => emitters.ContainsKey(emitterId);
+
+    internal void BindNodeInstances(int[] ids, ILumenGpuParticleEngine? gpu, int[] gpuIds)
+    {
+        foreach (int id in ids)
+        {
+            if (id < 0) continue;
+            Emitter source = emitters[id];
+            source.Targets = new int[source.Spec.SubEmitters.Length];
+            for (int i = 0; i < source.Targets.Length; i++)
+            {
+                int target = ids[source.Spec.SubEmitters[i].TargetNodeIndex];
+                source.Targets[i] = target;
+                emitters[target].Sources.Add(id);
+            }
+        }
+        gpu?.BindNodeInstances(gpuIds);
+    }
 
     // Ensures: live particle count owned by this emitter; 0 for unknown ids.
     public int GetLiveParticleCount(int emitterId)
@@ -204,11 +231,11 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 if (particles[i].EmitterId == emitterId) RemoveParticle(i);
             BuildBatch();
         }
-        if (emitter.LiveCount == 0 && emitter.PendingBurst == 0) RemoveEmitter(emitterId);
+        if (immediate || (emitter.LiveCount == 0 && emitter.PendingBurst == 0 && emitter.Sources.Count == 0)) RemoveEmitter(emitterId);
     }
 
     // Requires: main thread; context.DeltaTime >= 0.
-    // Ensures: advances emitter time, spawns rate/burst particles, integrates the four force-field
+    // Ensures: advances emitter time, spawns rate/burst particles, integrates the force-field
     //          kinds, expires particles, and rebuilds the quad/vertex/index batch for this frame.
     // Ensures: a real-time emitter uses context.UnscaledDeltaTime when it is positive, so it keeps
     //          running while the game is paused; every particle owned by it uses the same delta.
@@ -226,17 +253,51 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         float dt = context.DeltaTime;
         float unscaledDt = context.UnscaledDeltaTime;
         float density = RimLumenRenderHost.ParticleDensityScale;
+        ParticleEnvironment.BeginFrame(context.FrameIndex, context.CurrentMapIndex);
+        subEvents.Clear();
+        foreach (int id in emitterIds)
+        {
+            Emitter emitter = emitters[id];
+            emitter.WorldInteraction = emitter.Spec.WorldSpaceSimulation || Matrix4x4.Invert(emitter.Transform.World, out emitter.InverseWorld);
+            emitter.CollisionGrid = emitter.WorldInteraction ? ParticleCollisionFields.Capture(emitter.MapIndex, emitter.Spec.Collision) : null;
+            ReadOnlySpan<ParticleEnvironmentSource> environment = ParticleEnvironment.ForMap(emitter.MapIndex);
+            if (emitter.Environment.Length != environment.Length) Array.Resize(ref emitter.Environment, environment.Length);
+            environment.CopyTo(emitter.Environment);
+            if (emitter.State != EmissionState.Dormant)
+                emitter.NodeTime += emitter.RealTime && unscaledDt > 0f ? unscaledDt : dt;
+        }
         for (int i = 0; i < particleCount; i++)
         {
             ref var particle = ref particles[i];
             Emitter owner = emitters[particle.EmitterId];
             float particleDt = owner.RealTime && unscaledDt > 0f ? unscaledDt : dt;
             particle.Age += particleDt;
-            if (particle.Age >= particle.Lifetime) continue;
-            ApplyForces(ref particle, owner, particleDt);
-            particle.Position += particle.Velocity * particleDt;
-            if (owner.Spec.KillBelowFloor && IsDescendingBelow(owner, particle, owner.BaseY))
-                particle.Age = particle.Lifetime;
+            if (particle.Age < particle.Lifetime)
+            {
+                Vector3 before = particle.Position;
+                ApplyForces(ref particle, owner, particleDt);
+                particle.Position += particle.Velocity * particleDt;
+                if (owner.CollisionGrid is { } grid)
+                {
+                    bool world = owner.Spec.WorldSpaceSimulation;
+                    Vector3 from = world ? before : Vector3.Transform(before, owner.Transform.World);
+                    Vector3 position = world ? particle.Position : Vector3.Transform(particle.Position, owner.Transform.World);
+                    Vector3 velocity = world ? particle.Velocity : Vector3.TransformNormal(particle.Velocity, owner.Transform.World);
+                    ParticleMapHit hit = ParticleCollisionMath.Trace(grid, from, position, owner.Spec.Collision);
+                    bool collision = ParticleCollisionMath.Respond(owner.Spec.Collision, hit, ref position, ref velocity, ref particle.Age, particle.Lifetime);
+                    particle.Position = world ? position : Vector3.Transform(position, owner.InverseWorld);
+                    particle.Velocity = world ? velocity : Vector3.TransformNormal(velocity, owner.InverseWorld);
+                    if (collision) RecordEvent(owner, particle, LumenSubEmitterTrigger.Collision);
+                }
+                if (owner.Spec.KillBelowFloor && IsDescendingBelow(owner, particle, owner.BaseY))
+                {
+                    // L2 clears ActiveEmitter without advancing age: inherit the appearance at contact.
+                    RecordEvent(owner, particle, LumenSubEmitterTrigger.Death);
+                    particle.Age = particle.Lifetime;
+                    continue;
+                }
+            }
+            if (particle.Age >= particle.Lifetime) RecordEvent(owner, particle, LumenSubEmitterTrigger.Death);
         }
         for (int i = particleCount - 1; i >= 0; i--)
             if (particles[i].Age >= particles[i].Lifetime) RemoveParticle(i);
@@ -254,11 +315,32 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             }
             Spawn(id, emitter, (int)Math.Min(requested, spec.MaxParticles - emitter.LiveCount));
         }
-        for (int i = emitterIds.Count - 1; i >= 0; i--)
+        foreach (ParticleSubEvent ev in subEvents)
         {
-            int id = emitterIds[i];
-            if (emitters[id].State == EmissionState.Draining && emitters[id].LiveCount == 0) RemoveEmitter(id);
+            Emitter source = emitters[ev.Source];
+            for (int i = 0; i < source.Targets.Length; i++)
+            {
+                SubEmitterSpec sub = source.Spec.SubEmitters[i];
+                if (sub.Trigger != ev.Trigger || ParticleRandom.Next01(ref source.RandomState) >= sub.Probability) continue;
+                int targetId = source.Targets[i];
+                Emitter target = emitters[targetId];
+                int count = target.Scheduler.AcceptBurst(sub.Count, density);
+                // A zero-volume local target cannot represent the world event position; admission is not refunded.
+                if (target.WorldInteraction) Spawn(targetId, target, count, ev, sub.Inherit);
+            }
         }
+        bool removed;
+        do
+        {
+            removed = false;
+            for (int i = emitterIds.Count - 1; i >= 0; i--)
+            {
+                int id = emitterIds[i];
+                if (emitters[id].State != EmissionState.Draining || emitters[id].LiveCount != 0 || emitters[id].Sources.Count != 0) continue;
+                RemoveEmitter(id);
+                removed = true;
+            }
+        } while (removed);
         view = context.ViewMatrix;
         BuildBatch();
     }
@@ -281,7 +363,10 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
 
     private void RemoveEmitter(int id)
     {
-        reservedCapacity -= emitters[id].Spec.MaxParticles;
+        Emitter emitter = emitters[id];
+        foreach (int target in emitter.Targets)
+            if (emitters.TryGetValue(target, out Emitter? child)) child.Sources.Remove(id);
+        reservedCapacity -= emitter.Spec.MaxParticles;
         emitters.Remove(id);
         emitterIds.Remove(id);
     }
@@ -295,7 +380,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         return value ^ (value >> 16);
     }
 
-    private void Spawn(int id, Emitter emitter, int count)
+    private void Spawn(int id, Emitter emitter, int count, ParticleSubEvent? subEvent = null, LumenSubEmitterInherit inherit = LumenSubEmitterInherit.None)
     {
         var spec = emitter.Spec;
         count = Math.Min(count, spec.MaxParticles - emitter.LiveCount);
@@ -311,10 +396,19 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 direction = Vector3.TransformNormal(direction, emitter.Transform.World);
                 size *= ParticleAppearanceMath.SizeScale(emitter.Transform.World);
             }
+            Vector4 color = spec.StartColor;
+            if (subEvent is { } ev)
+            {
+                position = spec.WorldSpaceSimulation ? ev.Position : Vector3.Transform(ev.Position, emitter.InverseWorld);
+                // RimUnity ParticleSystem.SubEmissionEvents.cs:144-155 @45ca90987f7d3721715b45c021cab986ee14c468:
+                // inherited colour/size multiply the child's own birth values.
+                if ((inherit & LumenSubEmitterInherit.Color) != 0) color *= ev.Color;
+                if ((inherit & LumenSubEmitterInherit.Size) != 0) size *= ev.Size;
+            }
             particles[particleCount++] = new CpuParticle
             {
                 EmitterId = id, Position = position, Velocity = direction * speed,
-                Lifetime = lifetime, StartSize = size, SpawnAnchorXZ = emitter.AnchorXZ,
+                Lifetime = lifetime, StartSize = size, StartColor = color, SpawnAnchorXZ = emitter.AnchorXZ,
             };
             emitter.LiveCount++;
         }
@@ -345,8 +439,20 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
 
     private static void ApplyForces(ref CpuParticle particle, Emitter emitter, float dt)
     {
-        Vector3 force = ParticleForceMath.Acceleration(emitter.Spec, emitter.Transform.World, particle.Position, out float drag);
+        Vector3 force = ParticleForceMath.Acceleration(emitter.Spec, emitter.Transform.World, particle.Position, out float drag, emitter.NodeTime);
+        if (emitter.WorldInteraction)
+            force += ParticleEnvironmentMath.Acceleration(emitter.Environment, emitter.Spec, emitter.Transform.World,
+                emitter.InverseWorld, particle.Position);
         particle.Velocity = (particle.Velocity + force * dt) * MathF.Exp(-drag * dt);
+    }
+
+    private void RecordEvent(Emitter emitter, in CpuParticle particle, LumenSubEmitterTrigger trigger)
+    {
+        if (emitter.Targets.Length == 0) return;
+        bool world = emitter.Spec.WorldSpaceSimulation;
+        (Vector4 color, float size) = ParticleSubEmitterMath.Appearance(emitter.Curves, particle,
+            world ? 1f : ParticleAppearanceMath.SizeScale(emitter.Transform.World));
+        subEvents.Add(new(particle.EmitterId, trigger, world ? particle.Position : Vector3.Transform(particle.Position, emitter.Transform.World), color, size));
     }
 
     private void BuildBatch()
@@ -392,13 +498,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             var emitter = emitters[particle.EmitterId];
             var spec = emitter.Spec;
             float age = Math.Clamp(particle.Age / particle.Lifetime, 0f, 1f);
-            float samplePosition = age * (GpuCurveAtlasPacker.SamplesPerRow - 1);
-            int lower = (int)samplePosition;
-            GpuCurveSample a = emitter.Curves[lower], b = emitter.Curves[Math.Min(lower + 1, GpuCurveAtlasPacker.SamplesPerRow - 1)];
-            float blend = samplePosition - lower;
-            particle.Size = particle.StartSize * float.Lerp(a.Size.X, b.Size.X, blend)
-                * (spec.WorldSpaceSimulation ? 1f : ParticleAppearanceMath.SizeScale(emitter.Transform.World));
-            particle.Color = spec.StartColor * Vector4.Lerp(a.Color, b.Color, blend);
+            (particle.Color, particle.Size) = ParticleSubEmitterMath.Appearance(emitter.Curves, particle,
+                spec.WorldSpaceSimulation ? 1f : ParticleAppearanceMath.SizeScale(emitter.Transform.World));
             float gain = spec.HdrIntensity * emitter.IntensityMultiplier;
             int tiles = spec.FlipbookTilesX * spec.FlipbookTilesY;
             int frame = (int)MathF.Floor(age * spec.FlipbookCycles * tiles);

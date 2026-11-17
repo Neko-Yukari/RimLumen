@@ -307,7 +307,7 @@ public static class ParticleDataTests
         Offset<GpuParticle>(nameof(GpuParticle.Seed), 52);
         Offset<GpuParticle>(nameof(GpuParticle.ActiveEmitter), 56);
         Offset<GpuParticle>(nameof(GpuParticle.SpawnAnchorXZ), 60);
-        Equal(320, Marshal.SizeOf<GpuEmitterParams>());
+        Equal(480, Marshal.SizeOf<GpuEmitterParams>());
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.World), 0);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Slots), 64);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Shape), 80);
@@ -325,6 +325,19 @@ public static class ParticleDataTests
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ShapeMix), 272);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.BoxThicknessDonut), 288);
         Offset<GpuEmitterParams>(nameof(GpuEmitterParams.WorldRotation), 304);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.WorldInverse), 320);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.WorldPhysics), 384);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Collision), 400);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Map), 416);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.Events), 432);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.DensityQ), 448);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ResetVersion), 452);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ExplicitOffset), 456);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.ExplicitCount), 460);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.SourceLinkOffset), 464);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.SourceLinkCount), 468);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.StateSlot), 472);
+        Offset<GpuEmitterParams>(nameof(GpuEmitterParams.EmitEvents), 476);
         Equal(64, Marshal.SizeOf<Matrix4x4>());
         Offset<Matrix4x4>(nameof(Matrix4x4.M11), 0);
         Offset<Matrix4x4>(nameof(Matrix4x4.M21), 16);

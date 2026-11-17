@@ -126,6 +126,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                 }
                 PushVerticalState(i);
             }
+            owner.Simulator.BindNodeInstances(cpuIds, engine, gpuIds);
             EnterState(initial);
         }
         catch

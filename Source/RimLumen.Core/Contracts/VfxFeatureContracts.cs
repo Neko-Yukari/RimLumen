@@ -20,7 +20,7 @@ public enum LumenEnvironmentChannel : byte
 public enum LumenCollisionMode : byte
 {
     None = 0,
-    // Reflect off blocking map cells with Bounce restitution and Dampen tangential loss.
+    // Reflect off blocking map cells: v' = (v - (1+Bounce)*dot(v,n)*n)*(1-Dampen) against a static wall (RimUnity ParticleSystem.Collision.cs:109-110 @45ca9098).
     Bounce = 1,
     // Expire on the first hit.
     Kill = 2,

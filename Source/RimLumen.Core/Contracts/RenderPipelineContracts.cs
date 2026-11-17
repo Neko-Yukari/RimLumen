@@ -142,6 +142,11 @@ public interface ILumenGpuParticleEngine : ILumenFrameContributor
     // acceptance uses the shared CPU scheduler with this seed, independent of particle-birth randomness.
     int CreateInstance(EmitterSpec spec, LumenEmitterTransform initialTransform, int mapIndex, bool realTime, uint emissionSeed);
 
+    // Called once after this Play's nodes are created, before state entry. Array indices are asset node indices;
+    // -1 means no instance on this backend. Resolves sub-emitter targets within this Play and keeps draining
+    // targets alive until every upstream source has ended. The backend owns the resolved bindings.
+    void BindNodeInstances(int[] instanceIdsByNode);
+
     // Requires: rateMultiplier is finite and >= 0, validated by the caller's parameter boundary.
     // Ensures: updates transform, emission state, RGB intensity and scheduled particles/s multiplier for next capture.
     //          A zero rateMultiplier does not suppress authored or explicit bursts.

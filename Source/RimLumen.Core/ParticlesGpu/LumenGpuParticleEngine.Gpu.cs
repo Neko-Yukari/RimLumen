@@ -22,6 +22,19 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
     private ParticleGpuDrawResources? drawResources;
     private GpuComputeBuffer? particles;
     private GpuComputeBuffer? deadBlocks;
+    private GpuComputeBuffer? burstStates;
+    private int burstStateEntries;
+    // Replaced BurstState buffers in growth order. The render thread stamps the capture index of the frame that
+    // copied past each one; it is disposed after the same reuse distance as a frame slot.
+    private readonly List<SupersededBuffer> supersededBurstStates = new();
+    // Render thread only: the BurstState buffer of the last recorded frame, the source of a growth copy.
+    private GpuComputeBuffer? recordedBurstStates;
+
+    private sealed class SupersededBuffer
+    {
+        public required GpuComputeBuffer Buffer;
+        public ulong? CopiedAt;
+    }
     // One prepared frame resource set per capture slot. Slot reuse waits 2*FramesInFlight+2 frames, so a
     // submission that may still reference a set has been retired before the slot is rewritten.
     private ParticleGpuFrame?[] frameSlots = Array.Empty<ParticleGpuFrame?>();
@@ -59,6 +72,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             }
             // The graphics device may not exist yet (headless/idle host): keep the captured work pending.
             if (!EnsureGpu()) return;
+            EnsureBurstStates(snapshot.StateSlotCount);
             // Only the frame slot is prepared here; emitter/curve contents are uploaded by the render
             // thread when it records the simulation (first-frame markers and clear rows live there).
             ParticleGpuFrame gpu = FrameSlot(snapshot);
@@ -125,16 +139,40 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             ParticleGpuDrawResources.Binding(0, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
             ParticleGpuDrawResources.Binding(1, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
             ParticleGpuDrawResources.Binding(2, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(3, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit)
+            ParticleGpuDrawResources.Binding(3, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(4, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(5, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(6, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(7, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(8, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(9, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit)
         });
         kernel = ComputeKernelCache.Load("Particles/ParticleSim.comp.glsl", "main", new[]
         {
             new ComputeBinding(0, ComputeBindingType.StorageBuffer),
             new ComputeBinding(1, ComputeBindingType.StorageBuffer),
             new ComputeBinding(2, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(3, ComputeBindingType.StorageBuffer)
+            new ComputeBinding(3, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(4, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(5, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(6, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(7, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(8, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(9, ComputeBindingType.StorageBuffer)
         }, 16);
         return true;
+    }
+
+    // Requires: main thread under lifecycleGate, device resources exist.
+    // Ensures: the persistent BurstState buffer holds at least `required` entries, one per live instance index.
+    //   Growth doubles; RecordSimulation copies the previous contents forward before the new buffer's first use.
+    private void EnsureBurstStates(int required)
+    {
+        if (burstStates is not null && required <= burstStateEntries) return;
+        if (burstStates is not null) supersededBurstStates.Add(new SupersededBuffer { Buffer = burstStates });
+        burstStateEntries = Math.Max(Math.Max(64, required), 2 * burstStateEntries);
+        burstStates = GpuComputeBuffer.Create(application!.Device, application.GraphicsDevice!.Allocator,
+            "Lumen.BurstStates", (long)burstStateEntries * 16, VkBufferUsageFlags.TransferSrcBit, deviceLocal: true);
     }
 
     // Requires: main thread, device resources exist.
@@ -144,28 +182,57 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         int requiredRows = snapshot.Emitters.Length + snapshot.Clears.Length;
         int index = (int)(snapshot.Context.FrameIndex % (ulong)frameSlots.Length);
         ParticleGpuFrame? existing = frameSlots[index];
-        if (existing is not null && existing.EmitterCapacity >= requiredRows && existing.FieldCapacity >= snapshot.Fields.Length)
+        if (existing is not null && existing.EmitterCapacity >= requiredRows && existing.FieldCapacity >= snapshot.Fields.Length
+            && existing.CellCapacity >= snapshot.CellCount && existing.EventCapacity >= snapshot.EventCapacity
+            && existing.LinkCapacity >= snapshot.SubLinks.Length && existing.BurstCapacity >= snapshot.ExplicitBursts.Length
+            && ReferenceEquals(existing.BurstStates, burstStates)
+            && (snapshot.CellCount != 0 || existing.CellCapacity == 1)
+            && (snapshot.EventCapacity != 0 || existing.EventCapacity == 1))
             return existing;
         if (existing is not null)
         {
             existing.Dispose();
             frameSlots[index] = null;
         }
-        var created = new ParticleGpuFrame(application!, requiredRows, snapshot.Fields.Length, particles!, deadBlocks!);
+        var created = new ParticleGpuFrame(application!, snapshot, requiredRows, particles!, deadBlocks!, burstStates!);
         frameSlots[index] = created;
         return created;
     }
 
     private void RecordSimulation(in FrameContext frame, ParticleFrame snapshot, ParticleGpuFrame resources)
     {
+        GpuComputeBuffer states = resources.BurstStates;
+        lock (lifecycleGate)
+        {
+            if (!ReferenceEquals(recordedBurstStates, states))
+            {
+                // Frames record in capture order and buffers only grow, so every older buffer is done after this copy.
+                if (recordedBurstStates is not null) RecordBurstStateCopy(frame, recordedBurstStates, states);
+                recordedBurstStates = states;
+                foreach (SupersededBuffer old in supersededBurstStates)
+                {
+                    if (ReferenceEquals(old.Buffer, states)) break;
+                    old.CopiedAt ??= snapshot.Context.FrameIndex;
+                }
+            }
+            for (int i = supersededBurstStates.Count - 1; i >= 0; i--)
+            {
+                if (supersededBurstStates[i].CopiedAt is not ulong copiedAt
+                    || snapshot.Context.FrameIndex < copiedAt + (ulong)frameSlots.Length) continue;
+                supersededBurstStates[i].Buffer.Dispose();
+                supersededBurstStates.RemoveAt(i);
+            }
+        }
         // Do not clear on CPU capture: frames may be dropped before recording, and
         // allocated ranges can already have a newer owner in a subsequent snapshot.
         Span<ParticleEmitterFrame> emitters = resources.SimulationEmitters.AsSpan(0, snapshot.Emitters.Length + snapshot.Clears.Length);
         snapshot.Emitters.AsSpan().CopyTo(emitters);
         liveInstanceIds.Clear();
+        bool eventWork = false;
         for (int i = 0; i < snapshot.Emitters.Length; i++)
         {
             liveInstanceIds.Add(emitters[i].InstanceId);
+            eventWork |= emitters[i].Parameters.Events.Z != 0f || emitters[i].Parameters.EmitEvents != 0;
             if (initializedInstances.Add(emitters[i].InstanceId))
             {
                 GpuEmitterParams parameters = emitters[i].Parameters;
@@ -193,12 +260,25 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         ParticleGpuDrawResources.WriteBuffers(frame.Device, set, resources.ComputeBuffers, VkDescriptorType.StorageBuffer);
         frame.CommandBuffer.BindPipeline(VkPipelineBindPoint.Compute, kernel!.Pipeline);
         frame.CommandBuffer.BindDescriptorSet(VkPipelineBindPoint.Compute, kernel.PipelineLayout, 0, set, default(Span<ByteSize32>));
+        // Reset per-frame event counts and prepare GPU-owned explicit bursts before any source integrates.
+        if (eventWork)
+        {
+            RecordSimulationStageBarrier(frame, resources, true);
+            for (int i = 0; i < snapshot.Emitters.Length; i++)
+            {
+                GpuEmitterParams parameters = emitters[i].Parameters;
+                if (parameters.EmitEvents == 0 && parameters.Events.Z == 0f) continue;
+                DispatchSimulation(frame, new GpuSimPushConstants { EmitterIndex = (uint)i, Padding0 = 8u }, 1);
+            }
+            RecordSimulationStageBarrier(frame, resources, true);
+        }
         for (int i = 0; i < emitters.Length; i++)
         {
             ParticleEmitterFrame emitterFrame = emitters[i];
             // Local-space transforms can move a particle below its floor even while game time is paused.
             if (emitterFrame.Parameters.State.X == 0f && emitterFrame.Parameters.Slots.Z == 0f &&
-                emitterFrame.Parameters.State.Z == 0f && !emitterFrame.KillBelowFloor) continue;
+                emitterFrame.Parameters.State.Z == 0f && !emitterFrame.KillBelowFloor &&
+                emitterFrame.Parameters.Map.Y == 0f && emitterFrame.Parameters.ExplicitCount == 0u) continue;
             // Padding0 bit 0 = KillBelowFloor, upper bits = simulation phase; Padding1 = floor height bits.
             var push = new GpuSimPushConstants
             {
@@ -215,19 +295,53 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             int blocks = ParticleSimulationDispatch.BlockCount(emitterCapacity);
             push.Padding0 |= 2u; // Integrate and count dead slots in parallel.
             DispatchSimulation(frame, push, blocks);
-            if (emitterFrame.Parameters.Slots.Z == 0f) continue;
-            RecordSimulationStageBarrier(frame);
+            if (emitterFrame.Parameters.Slots.Z == 0f && emitterFrame.Parameters.Events.Z == 0f) continue;
+            RecordSimulationStageBarrier(frame, resources, eventWork);
             push.Padding0 = (push.Padding0 & 1u) | 4u; // Exclusive prefix of block counts.
             DispatchSimulation(frame, push, 1);
-            RecordSimulationStageBarrier(frame);
+            RecordSimulationStageBarrier(frame, resources, eventWork);
             push.Padding0 = (push.Padding0 & 1u) | 6u; // Respawn in cursor order.
             DispatchSimulation(frame, push, blocks);
-            RecordSimulationStageBarrier(frame); // Scratch is reused by the next emitter.
+            RecordSimulationStageBarrier(frame, resources, eventWork); // Scratch is reused by the next emitter.
+        }
+        if (snapshot.SubLinks.Length != 0)
+        {
+            RecordSimulationStageBarrier(frame, resources, eventWork);
+            for (int i = 0; i < snapshot.Emitters.Length; i++)
+            {
+                if (emitters[i].Parameters.SourceLinkCount == 0u) continue;
+                DispatchSimulation(frame, new GpuSimPushConstants
+                {
+                    EmitterIndex = (uint)i, FrameSeed = unchecked((uint)snapshot.Context.FrameIndex), Padding0 = 10u
+                }, 1);
+            }
         }
         var exit = ParticleBarrier(VkAccessFlags.ShaderWriteBit, VkAccessFlags.ShaderReadBit | VkAccessFlags.IndirectCommandReadBit);
         frame.CommandBuffer.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit,
             VkPipelineStageFlags.VertexShaderBit | VkPipelineStageFlags.DrawIndirectBit, VkDependencyFlags.None,
             default(ReadOnlySpan<VkMemoryBarrier>), new ReadOnlySpan<VkBufferMemoryBarrier>(in exit), default(ReadOnlySpan<VkImageMemoryBarrier>));
+    }
+
+    private static void RecordBurstStateCopy(in FrameContext frame, GpuComputeBuffer from, GpuComputeBuffer to)
+    {
+        var read = new VkBufferMemoryBarrier
+        {
+            SrcAccessMask = VkAccessFlags.ShaderWriteBit, DstAccessMask = VkAccessFlags.TransferReadBit,
+            SrcQueueFamilyIndex = -1, DstQueueFamilyIndex = -1, Buffer = from.Buffer, Offset = ByteSize.Zero, Size = from.Size
+        };
+        frame.CommandBuffer.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit, VkPipelineStageFlags.TransferBit,
+            VkDependencyFlags.None, default(ReadOnlySpan<VkMemoryBarrier>), new ReadOnlySpan<VkBufferMemoryBarrier>(in read),
+            default(ReadOnlySpan<VkImageMemoryBarrier>));
+        var copy = new VkBufferCopy { SrcOffset = ByteSize.Zero, DstOffset = ByteSize.Zero, Size = from.Size };
+        frame.CommandBuffer.CopyBuffer(from.Buffer, to.Buffer, new ReadOnlySpan<VkBufferCopy>(in copy));
+        var written = new VkBufferMemoryBarrier
+        {
+            SrcAccessMask = VkAccessFlags.TransferWriteBit, DstAccessMask = VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
+            SrcQueueFamilyIndex = -1, DstQueueFamilyIndex = -1, Buffer = to.Buffer, Offset = ByteSize.Zero, Size = to.Size
+        };
+        frame.CommandBuffer.PipelineBarrier(VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.ComputeShaderBit,
+            VkDependencyFlags.None, default(ReadOnlySpan<VkMemoryBarrier>), new ReadOnlySpan<VkBufferMemoryBarrier>(in written),
+            default(ReadOnlySpan<VkImageMemoryBarrier>));
     }
 
     private void DispatchSimulation(in FrameContext frame, GpuSimPushConstants push, int groups)
@@ -237,9 +351,9 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         frame.CommandBuffer.Dispatch(groups, 1, 1);
     }
 
-    private void RecordSimulationStageBarrier(in FrameContext frame)
+    private void RecordSimulationStageBarrier(in FrameContext frame, ParticleGpuFrame resources, bool eventWork)
     {
-        Span<VkBufferMemoryBarrier> barriers = stackalloc VkBufferMemoryBarrier[2];
+        Span<VkBufferMemoryBarrier> barriers = stackalloc VkBufferMemoryBarrier[4];
         barriers[0] = ParticleBarrier(VkAccessFlags.ShaderWriteBit, VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
         barriers[1] = new VkBufferMemoryBarrier
         {
@@ -248,8 +362,21 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             SrcQueueFamilyIndex = -1, DstQueueFamilyIndex = -1,
             Buffer = deadBlocks!.Buffer, Offset = ByteSize.Zero, Size = deadBlocks.Size
         };
+        if (eventWork)
+        {
+            barriers[2] = new VkBufferMemoryBarrier
+            {
+                SrcAccessMask = VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
+                DstAccessMask = VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
+                SrcQueueFamilyIndex = -1, DstQueueFamilyIndex = -1,
+                Buffer = resources.BurstStates.Buffer, Offset = ByteSize.Zero, Size = resources.BurstStates.Size
+            };
+            barriers[3] = barriers[2];
+            barriers[3].Buffer = resources.Events.Buffer;
+            barriers[3].Size = resources.Events.Size;
+        }
         frame.CommandBuffer.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit, VkPipelineStageFlags.ComputeShaderBit,
-            VkDependencyFlags.None, default(ReadOnlySpan<VkMemoryBarrier>), barriers, default(ReadOnlySpan<VkImageMemoryBarrier>));
+            VkDependencyFlags.None, default(ReadOnlySpan<VkMemoryBarrier>), barriers[..(eventWork ? 4 : 2)], default(ReadOnlySpan<VkImageMemoryBarrier>));
     }
 
     private VkBufferMemoryBarrier ParticleBarrier(VkAccessFlags source, VkAccessFlags destination) => new()
@@ -316,6 +443,12 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         particles = null;
         deadBlocks?.Dispose();
         deadBlocks = null;
+        burstStates?.Dispose();
+        burstStates = null;
+        burstStateEntries = 0;
+        foreach (SupersededBuffer old in supersededBurstStates) old.Buffer.Dispose();
+        supersededBurstStates.Clear();
+        recordedBurstStates = null;
         if (!computeLayout.IsNull()) device.DestroyDescriptorSetLayout(computeLayout, device.VkAllocator);
         computeLayout = default;
         initializedInstances.Clear();

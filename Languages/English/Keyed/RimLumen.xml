@@ -3,6 +3,14 @@
   <RimLumen_EnhanceAdditiveGlow>Enhance vanilla and mod additive glow</RimLumen_EnhanceAdditiveGlow>
   <RimLumen_EnhanceAdditiveGlowTooltip>Gives fire, explosions and energy shields HDR bloom automatically.\nTurning it off returns to zero-pixel-difference framework mode when no fullscreen shader pack is enabled (the image matches an installation without RimLumen pixel for pixel).</RimLumen_EnhanceAdditiveGlowTooltip>
   <RimLumen_ParticleDensity>Global particle density: {0}%</RimLumen_ParticleDensity>
+  <RimLumen_ExplosionForces>Explosions push particles (visual only)</RimLumen_ExplosionForces>
+  <RimLumen_ExplosionForceScale>Explosion particle force: {0}×</RimLumen_ExplosionForceScale>
+  <RimLumen_CursorForceMode>Cursor particle force: {0}</RimLumen_CursorForceMode>
+  <RimLumen_CursorOff>Off</RimLumen_CursorOff>
+  <RimLumen_CursorRepel>Repel</RimLumen_CursorRepel>
+  <RimLumen_CursorAttract>Attract</RimLumen_CursorAttract>
+  <RimLumen_CursorForceRadius>Cursor radius: {0} cells</RimLumen_CursorForceRadius>
+  <RimLumen_CursorForceStrength>Cursor acceleration: {0} cells/s²</RimLumen_CursorForceStrength>
   <RimLumen_ColorBlendSpace>Particle blending:</RimLumen_ColorBlendSpace>
   <RimLumen_ColorBlendLegacy>Legacy</RimLumen_ColorBlendLegacy>
   <RimLumen_ColorBlendLinear>Linear</RimLumen_ColorBlendLinear>

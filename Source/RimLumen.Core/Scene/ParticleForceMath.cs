@@ -7,7 +7,7 @@ namespace RimLumen.Core.Scene;
 // CPU twin of ParticleSim.comp.glsl acceleration/potentialGradient.
 internal static class ParticleForceMath
 {
-    internal static Vector3 Acceleration(EmitterSpec spec, in Matrix4x4 world, Vector3 position, out float drag)
+    internal static Vector3 Acceleration(EmitterSpec spec, in Matrix4x4 world, Vector3 position, out float drag, float nodeTime = 0f)
     {
         Vector3 total = Vector3.Zero;
         drag = 0f;
@@ -34,6 +34,10 @@ internal static class ParticleForceMath
                     float attraction = field.Radius > 0f ? MathF.Max(0f, 1f - delta.Length() / field.Radius) : 1f;
                     total += Direction(delta, Vector3.Zero) * (field.Strength * attraction);
                     break;
+                case ForceFieldKind.RingWave:
+                    Vector3 waveCenter = spec.WorldSpaceSimulation ? Vector3.Transform(field.CenterOrAxis, world) : field.CenterOrAxis;
+                    total += RingWave(position - waveCenter, field.Parameters.X * nodeTime, field.Parameters.Y, field.Radius, field.Strength);
+                    break;
                 case ForceFieldKind.CurlTurbulence:
                     Vector3 q = (position - field.Parameters) * field.Frequency;
                     Vector3 dx = PotentialGradient(q, 0x68bc21ebu);
@@ -45,6 +49,13 @@ internal static class ParticleForceMath
             }
         }
         return total;
+    }
+
+    internal static Vector3 RingWave(Vector3 delta, float waveRadius, float halfThickness, float endRadius, float strength)
+    {
+        if (waveRadius > endRadius) return Vector3.Zero;
+        float weight = MathF.Max(0f, 1f - MathF.Abs(delta.Length() - waveRadius) / halfThickness);
+        return Direction(delta, Vector3.Zero) * (strength * weight);
     }
 
     private static Vector3 Direction(Vector3 value, Vector3 fallback)
