@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using Brutal;
 using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
@@ -15,11 +16,13 @@ using Shader = Waylith.Rendering.Shader;
 namespace RimLumen.Core.ParticlesGpu;
 
 // L2 GPU particles are one static quad Mesh drawn once per instance through MeshBatchRenderer. Every
-// emitter owns one Material per (instance, blend): the material UBO carries the per-frame draw flags and
-// camera axes, and the emitter/particle/curve buffers arrive as InstancedDrawInfo storage bindings.
+// draw shares a cached Material per (texture, blend): per-draw arena vectors carry flags, camera axes
+// and material colour; emitter/particle/curve buffers arrive as InstancedDrawInfo storage bindings.
 // Main-thread only: it builds Mesh/Shader/Material objects and never touches a command buffer.
 internal sealed class ParticleGpuDrawResources : IDisposable
 {
+    private static readonly int TintPropertyId = Shader.PropertyToID("_LumenMaterialTint");
+    private static readonly int ColorPropertyId = Shader.PropertyToID("_LumenColor");
     private static readonly int DrawPropertyId = Shader.PropertyToID("_LumenDraw");
     private static readonly int CameraRightPropertyId = Shader.PropertyToID("_LumenCameraRight");
     private static readonly int CameraUpPropertyId = Shader.PropertyToID("_LumenCameraUp");
@@ -98,7 +101,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
     //   mutating the cached Material); drops draws after one Log.Error when the capture needs more than
     //   MaxActiveMaterials distinct materials.
     internal void AppendDraws(ParticleFrame snapshot, ParticleGpuFrame resources,
-        Texture sceneDepth, Texture[] textures, bool[] texturePresent, List<FinalDrawItem> draws,
+        Texture sceneDepth, Texture[] textures, bool[] texturePresent, bool[] textureSrgb, List<FinalDrawItem> draws,
         DrawItemFactory maker, DrawPropertyArena arena, int queueOrder, ulong frameIndex)
     {
         if (disposed || snapshot.Emitters.Length == 0) return;
@@ -122,7 +125,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             bool present = texturePresent[i];
             Material? material = MaterialFor(emitter.Blend, present ? texture : Texture2D.whiteTexture, sceneDepth, frameIndex);
             if (material is null) continue;
-            Span<DrawProperty> properties = arena.Allocate(6, out DrawPropertyRange range);
+            Span<DrawProperty> properties = arena.Allocate(8, out DrawPropertyRange range);
             properties[0] = DrawProperty.Vector(DrawPropertyId, new Vector4(i, present ? 1f : 0f, 1f,
                 emitter.Blend == LumenBlendMode.AlphaBlend ? 0f : 1f));
             properties[1] = DrawProperty.Vector(CameraRightPropertyId, cameraRight);
@@ -131,6 +134,10 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             properties[4] = DrawProperty.Vector(DepthUvPropertyId, depthUv);
             properties[5] = DrawProperty.Vector(VerticalPropertyId, emitter.IsVertical3D
                 ? new Vector4(verticalMode, emitter.BaseY, vanillaMoteY, 0f) : Vector4.Zero);
+            properties[6] = DrawProperty.Vector(TintPropertyId, emitter.MaterialTint);
+            properties[7] = DrawProperty.Vector(ColorPropertyId,
+                new Vector4(emitter.ColorSpace == LumenColorSpace.Linear ? 1f : 0f, textureSrgb[i] ? 1f : 0f,
+                    snapshot.Context.ColorBlendSpace == LumenColorBlendSpace.Linear ? 1f : 0f, 0f));
             InstancedDrawInfo instancing = resources.DrawInstances(i, instances);
             var command = new MeshDrawCommand(quad, material, range, Matrix4x4.Identity, 0,
                 RimLumenRenderHost.LumenRenderPassId, instancing);
@@ -260,11 +267,14 @@ internal sealed class ParticleGpuFrame : IDisposable
     internal readonly ParticleEmitterFrame[] SimulationEmitters;
     internal readonly Texture[] Textures;
     internal readonly bool[] TexturePresent;
+    internal readonly bool[] TextureSrgb;
     internal readonly GpuComputeBuffer[] ComputeBuffers;
     private readonly GpuEmitterParams[] parameters;
     private readonly int[] curveInstanceIds;
     private readonly InstanceStorageBinding[] storageBindings;
     private readonly InstancedDrawInfo?[] instancing;
+
+    internal static long EmitterBufferBytes(int emitterCapacity) => (long)emitterCapacity * Marshal.SizeOf<GpuEmitterParams>();
 
     internal ParticleGpuFrame(EngineApplication app, int emitterCount, int fieldCount,
         GpuComputeBuffer particles, GpuComputeBuffer deadBlocks)
@@ -273,12 +283,13 @@ internal sealed class ParticleGpuFrame : IDisposable
         EmitterCapacity = Math.Max(1, emitterCount);
         FieldCapacity = Math.Max(1, fieldCount);
         Pool = ParticleGpuDrawResources.CreateComputePool(device);
-        Emitters = GpuComputeBuffer.Create(device, app.GraphicsDevice!.Allocator, "Lumen.Emitters", (long)EmitterCapacity * 208);
+        Emitters = GpuComputeBuffer.Create(device, app.GraphicsDevice!.Allocator, "Lumen.Emitters", EmitterBufferBytes(EmitterCapacity));
         Fields = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Fields", (long)FieldCapacity * 48);
         Curves = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Curves", (long)EmitterCapacity * 64 * 32);
         SimulationEmitters = new ParticleEmitterFrame[EmitterCapacity];
         Textures = new Texture[EmitterCapacity];
         TexturePresent = new bool[EmitterCapacity];
+        TextureSrgb = new bool[EmitterCapacity];
         parameters = new GpuEmitterParams[EmitterCapacity];
         curveInstanceIds = new int[EmitterCapacity];
         Array.Fill(curveInstanceIds, -1);

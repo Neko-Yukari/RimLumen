@@ -18,11 +18,40 @@ public static class RimLumenRenderHost
 
     public static bool EnableVanillaAdditiveBloom { get; set; } = true;
 
-    // Ensures: stored value is within [0.1, 1.0]; the simulators read it without re-clamping.
+    // Requires: main thread.
+    // Ensures: requests next frame's space; undefined values throw without changing either state.
+    private static LumenColorBlendSpace requestedColorBlendSpace;
+    private static LumenColorBlendSpace currentFrameColorBlendSpace;
+
+    public static LumenColorBlendSpace ColorBlendSpace
+    {
+        get => requestedColorBlendSpace;
+        set
+        {
+            if (value is not LumenColorBlendSpace.Legacy and not LumenColorBlendSpace.Linear)
+                throw new ArgumentOutOfRangeException(nameof(value));
+            requestedColorBlendSpace = value;
+        }
+    }
+
+    // Requires: main thread after Install. Producers read this latch, never the requested setting.
+    // Ensures: fixed before input/Update; an Update setting change takes effect on the next frame.
+    public static LumenColorBlendSpace CurrentFrameColorBlendSpace => currentFrameColorBlendSpace;
+
+    // Requires: main thread, once at Install and once per PrePollEvents before input and Update.
+    // Ensures: snapshots the request; capture/recording only copy this value until the next latch.
+    internal static void LatchColorBlendSpace() => currentFrameColorBlendSpace = requestedColorBlendSpace;
+
+    // Ensures: finite input silently clamps to [0.1, 1.0]; nonfinite input throws ArgumentOutOfRangeException
+    // without replacing the prior value. Simulators read the stored value without re-clamping.
     public static float ParticleDensityScale
     {
         get => particleDensityScale;
-        set => particleDensityScale = System.Math.Clamp(value, 0.1f, 1.0f);
+        set
+        {
+            if (!float.IsFinite(value)) throw new ArgumentOutOfRangeException(nameof(value));
+            particleDensityScale = System.Math.Clamp(value, 0.1f, 1.0f);
+        }
     }
 
     private static float particleDensityScale = 1.0f;

@@ -2,15 +2,17 @@
 #define LUMEN_PARTICLE_MATERIAL
 #include "ParticleTypes.glsl"
 
-// std140, 96 bytes. Set all six vectors for each draw.
+// std140, 128 bytes. Set all eight vectors for each draw.
 layout(std140, set = 2, binding = 0) uniform MaterialUniforms
 {
     vec4 _LumenDraw;        // emitter index, texture present, depth present, premultiply output
-    vec4 _LumenCameraRight; // normalized world camera right xyz
-    vec4 _LumenCameraUp;    // normalized world camera up xyz
+    vec4 _LumenCameraRight; // display camera right xyz, inverse-Y compensated
+    vec4 _LumenCameraUp;    // display camera up xyz, inverse-Y compensated; w is Y scale ratio
     vec4 _LumenProjection; // System.Numerics projection M33, M43, M34, M44 (A,B,C,D)
     vec4 _LumenDepthUv;    // gl_FragCoord.xy * xy + zw -> depth texture UV
     vec4 _LumenVertical;   // Vertical3D display: x mode (0 legacy, 1 un-squash for 3D/IsoRim, 2 oblique for straight-down 2D), y baseY, z vanilla MoteOverhead altitude, w 0
+    vec4 _LumenMaterialTint;
+    vec4 _LumenColor;       // x: Linear material, y: resolved sRGB texture, z: Linear blending
 } material;
 
 // Waylith derives the material (set 2) descriptor layout from the FRAGMENT source only, so the

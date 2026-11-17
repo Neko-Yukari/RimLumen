@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using RimLumen.Core.Assets;
 
 namespace RimLumen.Core.Contracts;
+
+internal enum LumenAssetResolution { Found, NotFound, Rejected }
 
 public static class LumenHostRegistry
 {
@@ -10,6 +13,7 @@ public static class LumenHostRegistry
     private static readonly List<ILumenFrameContributor> Contributors = new();
     private static ILumenFrameContributor[] contributorSnapshot = Array.Empty<ILumenFrameContributor>();
     private static readonly List<ILumenAssetProvider> AssetProviders = new();
+    private static readonly LumenAssetValidationCache ValidatedAssets = new();
 
     public static ILumenVfxService? VfxService { get; private set; }
     public static ILumenGpuParticleEngine? GpuParticleEngine { get; private set; }
@@ -73,6 +77,9 @@ public static class LumenHostRegistry
     }
 
     public static bool TryResolveAsset(string effectId, out EffectAsset? asset)
+        => ResolveAsset(effectId, out asset) == LumenAssetResolution.Found;
+
+    internal static LumenAssetResolution ResolveAsset(string effectId, out EffectAsset? asset)
     {
         lock (Sync)
         {
@@ -80,11 +87,15 @@ public static class LumenHostRegistry
             {
                 if (AssetProviders[i].TryResolveEffect(effectId, out asset) && asset is not null)
                 {
-                    return true;
+                    bool valid = ValidatedAssets.TryValidate(asset, AssetProviders[i], out string? rejection);
+                    if (rejection is not null) Verse.Log.Error(rejection);
+                    if (valid) return LumenAssetResolution.Found;
+                    asset = null;
+                    return LumenAssetResolution.Rejected;
                 }
             }
         }
         asset = null;
-        return false;
+        return LumenAssetResolution.NotFound;
     }
 }

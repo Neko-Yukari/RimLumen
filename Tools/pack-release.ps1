@@ -127,6 +127,7 @@ foreach ($relative in @(
         'About/Preview.png',
         'LoadFolders.xml',
         'README.md',
+        'THIRD_PARTY_NOTICES.md',
         'docs/api.md',
         '1.7/Compat/RimUnity/Assemblies/RimLumen.Adapter.RimUnity.dll')) {
     Copy-ToPackage $relative
@@ -168,6 +169,7 @@ Copy-FilesToPackage 'Languages'
 Copy-FilesToPackage '1.7/Defs'
 Copy-FilesToPackage '1.7/Textures'
 Copy-FilesToPackage '1.7/ShaderPacks'
+Copy-FilesToPackage '1.7/Shaders/RimLumen'
 Copy-FilesToPackage '1.7/Shaders/Particles'
 Copy-FilesToPackage '1.7/Shaders/PostFx'
 
@@ -179,9 +181,11 @@ foreach ($required in @(
         'About/About.xml',
         'About/Preview.png',
         'LoadFolders.xml',
+        'THIRD_PARTY_NOTICES.md',
         'docs/api.md',
         'Languages/English/Keyed/RimLumen.xml',
         'Languages/ChineseSimplified/Keyed/RimLumen.xml',
+        '1.7/Shaders/RimLumen/RimLumenColorSpace.glsl',
         '1.7/Assemblies/RimLumen.Core.dll',
         '1.7/Compat/RimUnity/Assemblies/RimLumen.Adapter.RimUnity.dll')) {
     if (-not (Test-Path -LiteralPath (Join-Path $outFull $required) -PathType Leaf)) {

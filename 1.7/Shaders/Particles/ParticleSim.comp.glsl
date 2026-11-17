@@ -39,6 +39,30 @@ vec3 sphereDirection(inout uint state)
     return vec3(radius * cos(angle), y, radius * sin(angle));
 }
 
+vec3 rotateShape(vec4 quaternion, vec3 value)
+{
+    return value + 2.0 * cross(quaternion.xyz, cross(quaternion.xyz, value) + quaternion.w * value);
+}
+
+// RimUnity ParticleSystem.Shapes.cs, upstream 45ca90987f7d3721715b45c021cab986ee14c468; mapped from +Z to +Y.
+float shapePhase(float spread, inout uint state)
+{
+    float phase = randomUnit(state);
+    return spread > 0.0 ? floor(phase / spread) * spread : phase;
+}
+
+vec3 shapeNormalize(vec3 value)
+{
+    float len = length(value);
+    return len > 1e-5 ? value / len : vec3(0.0);
+}
+
+float radialSample(float thickness, inout uint state)
+{
+    float inner = 1.0 - thickness;
+    return sqrt(mix(inner * inner, 1.0, randomUnit(state)));
+}
+
 GpuParticle spawnParticle(GpuEmitterParams emitter, uint slot)
 {
     uint seed = uint(emitter.Tables.w) ^ sim.frameSeed ^ (slot * 0x27d4eb2du);
@@ -46,33 +70,76 @@ GpuParticle spawnParticle(GpuEmitterParams emitter, uint slot)
     vec3 direction = vec3(0.0, 1.0, 0.0);
     uint shape = uint(emitter.Shape.x);
     vec3 extents = emitter.Shape.yzw;
-    if (shape == 1u)
+    float angle = shapePhase(emitter.ShapeOptions.z, seed) * emitter.ShapeOptions.y;
+    vec3 radial = vec3(cos(angle), 0.0, -sin(angle));
+    if (shape == 1u || shape == 5u || shape == 6u || shape == 7u)
     {
-        direction = sphereDirection(seed);
-        position = direction * pow(randomUnit(seed), 1.0 / 3.0) * extents;
+        float y = 2.0 * randomUnit(seed) - 1.0;
+        if (shape == 6u || shape == 7u) y = abs(y);
+        direction = radial * sqrt(max(0.0, 1.0 - y * y)) + vec3(0.0, y, 0.0);
+        float inner = 1.0 - emitter.ShapeOptions.x;
+        float radius = shape == 5u || shape == 7u ? 1.0 : pow(mix(inner * inner * inner, 1.0, randomUnit(seed)), 1.0 / 3.0);
+        position = direction * radius * extents;
     }
-    else if (shape == 2u || shape == 3u)
+    else if (shape == 2u || shape == 8u)
     {
-        float angle = 6.28318530718 * randomUnit(seed);
-        float radius = sqrt(randomUnit(seed));
-        vec3 radial = vec3(cos(angle), 0.0, sin(angle));
+        float radius = shape == 8u ? 1.0 : radialSample(emitter.ShapeOptions.x, seed);
         position = radial * radius * extents;
-        if (shape == 2u)
-            direction = radial;
-        else
-        {
-            float cosTheta = mix(1.0, cos(emitter.SizeCone.z), randomUnit(seed));
-            direction = radial * sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
-            direction.y = cosTheta;
-        }
+        direction = radial;
     }
-    else if (shape == 4u)
+    else if (shape == 3u || shape == 9u || shape == 10u || shape == 11u)
     {
-        float x = randomUnit(seed);
-        float y = randomUnit(seed);
-        float z = randomUnit(seed);
-        position = (vec3(x, y, z) * 2.0 - 1.0) * extents;
+        float radius = shape == 9u || shape == 11u ? 1.0 : radialSample(emitter.ShapeOptions.x, seed);
+        direction = shapeNormalize(radial * (sin(emitter.SizeCone.z) * radius) + vec3(0.0, cos(emitter.SizeCone.z), 0.0));
+        position = radial * radius * extents;
+        if (shape == 10u || shape == 11u)
+            position += direction * (randomUnit(seed) * emitter.ShapeMix.w / max(0.001, direction.y));
     }
+    else if (shape == 4u || shape == 13u || shape == 14u)
+    {
+        vec3 sample = vec3(randomUnit(seed), randomUnit(seed), randomUnit(seed)) * 2.0 - 1.0;
+        if (shape != 4u)
+        {
+            vec3 extent = abs(extents * emitter.ShapeScale.xyz);
+            vec3 weights = shape == 14u ? extent : vec3(extent.y * extent.z, extent.x * extent.z, extent.x * extent.y);
+            float total = weights.x + weights.y + weights.z;
+            float pick = randomUnit(seed) * total;
+            int axis = total == 0.0 || pick < weights.x ? 0 : pick < weights.x + weights.y ? 1 : 2;
+            for (int i = 0; i < 3; ++i)
+            {
+                if (shape == 14u ? i != axis : i == axis)
+                {
+                    float offset = 1.0 - randomUnit(seed) * emitter.BoxThicknessDonut[i];
+                    sample[i] = randomUnit(seed) < 0.5 ? -offset : offset;
+                }
+            }
+        }
+        position = sample * extents;
+    }
+    else if (shape == 12u)
+    {
+        position.x = (shapePhase(emitter.ShapeOptions.w, seed) * 2.0 - 1.0) * extents.x;
+        direction = vec3(0.0, 0.0, -1.0);
+    }
+    else if (shape == 15u)
+    {
+        float tubeAngle = randomUnit(seed) * 6.28318530718;
+        float tubeRadius = emitter.BoxThicknessDonut.w * radialSample(emitter.ShapeOptions.x, seed);
+        direction = radial * cos(tubeAngle) + vec3(0.0, sin(tubeAngle), 0.0);
+        position = radial * extents + direction * tubeRadius;
+    }
+    else if (shape == 16u)
+        position = vec3((randomUnit(seed) * 2.0 - 1.0) * extents.x, 0.0, (randomUnit(seed) * 2.0 - 1.0) * extents.z);
+
+    position = rotateShape(emitter.ShapeRotation, position * emitter.ShapeScale.xyz) + emitter.ShapePosition.xyz;
+    direction = rotateShape(emitter.ShapeRotation, direction);
+    if (emitter.ShapeMix.x != 0.0)
+        direction = shapeNormalize(mix(direction, sphereDirection(seed), emitter.ShapeMix.x));
+    vec3 offset = position - emitter.ShapePosition.xyz;
+    if (emitter.ShapeMix.y != 0.0 && dot(offset, offset) > 0.0)
+        direction = shapeNormalize(mix(direction, shapeNormalize(offset), emitter.ShapeMix.y));
+    if (emitter.ShapeMix.z != 0.0)
+        position += sphereDirection(seed) * (pow(randomUnit(seed), 1.0 / 3.0) * emitter.ShapeMix.z);
     float speed = mix(emitter.Ranges.x, emitter.Ranges.y, randomUnit(seed));
     vec3 velocity = direction * speed;
     if (emitter.SizeCone.w > 0.5)
@@ -84,7 +151,8 @@ GpuParticle spawnParticle(GpuEmitterParams emitter, uint slot)
     particle.PositionAndAge = vec4(position, 0.0);
     particle.VelocityAndLifetime = vec4(velocity, mix(emitter.Ranges.z, emitter.Ranges.w, randomUnit(seed)));
     particle.StartColor = emitter.StartColor;
-    particle.SizeSeedEmitterFlags = vec4(mix(emitter.SizeCone.x, emitter.SizeCone.y, randomUnit(seed)),
+    float sizeScale = emitter.SizeCone.w > 0.5 ? emitter.Appearance.w : 1.0;
+    particle.SizeSeedEmitterFlags = vec4(mix(emitter.SizeCone.x, emitter.SizeCone.y, randomUnit(seed)) * sizeScale,
         float(seed & 0x00ffffffu), float(sim.emitterIndex), 1.0);
     return particle;
 }
@@ -136,8 +204,10 @@ vec3 acceleration(GpuEmitterParams emitter, vec3 position, out float drag)
         else if (kind == 1u)
         {
             vec3 axis = lumenDirection(axisOrCenter, vec3(0.0, 1.0, 0.0));
-            // Center is the simulation origin. Parameters.x pulls inward (negative pushes), y lifts along axis.
-            vec3 radial = position - dot(position, axis) * axis;
+            // Local origin follows the node even for world-space particles; the authored axis does not rotate.
+            vec3 center = emitter.SizeCone.w > 0.5 ? (emitter.World * vec4(0.0, 0.0, 0.0, 1.0)).xyz : vec3(0.0);
+            vec3 relative = position - center;
+            vec3 radial = relative - dot(relative, axis) * axis;
             float distanceToAxis = length(radial);
             float weight = radius > 0.0 ? max(0.0, 1.0 - distanceToAxis / radius) : 1.0;
             vec3 radialDirection = lumenDirection(radial, vec3(0.0));
@@ -158,7 +228,8 @@ vec3 acceleration(GpuEmitterParams emitter, vec3 position, out float drag)
         }
         else if (kind == 3u)
         {
-            vec3 delta = axisOrCenter - position;
+            vec3 center = emitter.SizeCone.w > 0.5 ? (emitter.World * vec4(axisOrCenter, 1.0)).xyz : axisOrCenter;
+            vec3 delta = center - position;
             float distanceToCenter = length(delta);
             float weight = radius > 0.0 ? max(0.0, 1.0 - distanceToCenter / radius) : 1.0;
             total += lumenDirection(delta, vec3(0.0)) * (strength * weight);

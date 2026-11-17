@@ -4,6 +4,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using RimLumen.Core.Contracts;
 using RimUnity.Serialization;
 using static RimLumen.Adapter.RimUnity.Tests.Export;
 
@@ -79,6 +80,39 @@ internal static class FileTests
     }
 
     private static readonly JsonSerializerOptions Json = new() { IncludeFields = true };
+
+    internal static void Reload()
+    {
+        using var temp = new TestDirectory();
+        string prefabPath = Path.Combine(temp.Root, "prefab.json");
+        var manifest = new Manifest
+        {
+            formatVersion = 2,
+            assets = [new AssetRecord { id = "effect", name = "Effect", path = "Effects/Effect", file = "prefab.json", type = "Prefab" }],
+        };
+        File.WriteAllText(Path.Combine(temp.Root, "catalog.json"), JsonSerializer.Serialize(manifest, Json));
+        File.WriteAllText(prefabPath, JsonSerializer.Serialize(Prefab(Particles(64)), Json));
+
+        var provider = new RimUnityAssetProvider();
+        provider.RegisterPackageRoot("Reload.Package", temp.Root);
+        Check.True(provider.TryResolveEffect("Reload.Package:effect", out EffectAsset? first) && first is not null, "initial effect resolves");
+        Check.Equal(64, first!.Nodes[0].Emitter!.MaxParticles, "initial prefab");
+
+        File.WriteAllText(prefabPath, JsonSerializer.Serialize(Prefab(Particles(128)), Json));
+        provider.RegisterPackageRoot("Reload.Package", temp.Root);
+        Check.True(provider.TryResolveEffect("Reload.Package:effect", out EffectAsset? second) && second is not null,
+            "effect resolves after same-root reload");
+        Check.Equal(128, second!.Nodes[0].Emitter!.MaxParticles, "same-root reload re-reads the prefab");
+        Check.True(!ReferenceEquals(first, second), "reload creates a new immutable instance");
+        Check.Equal(64, first.Nodes[0].Emitter!.MaxParticles, "old instance keeps its content");
+
+        manifest.assets.Add(new AssetRecord { id = "added", name = "Added", path = "Effects/Added", file = "added.json", type = "Prefab" });
+        File.WriteAllText(Path.Combine(temp.Root, "catalog.json"), JsonSerializer.Serialize(manifest, Json));
+        File.WriteAllText(Path.Combine(temp.Root, "added.json"), JsonSerializer.Serialize(Prefab(Particles()), Json));
+        provider.RegisterPackageRoot("Reload.Package", temp.Root);
+        Check.True(provider.TryResolveEffect("Reload.Package:added", out EffectAsset? added) && added is not null,
+            "changed manifest adds a resolvable id");
+    }
 
     private static void WriteGzipJson(string path, object value)
     {

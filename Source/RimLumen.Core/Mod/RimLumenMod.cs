@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using RimLumen.Core.Contracts;
 using RimLumen.Core.Demo;
 using RimLumen.Core.Rendering;
 using UnityEngine;
@@ -12,6 +13,7 @@ public sealed class RimLumenSettings : ModSettings
 {
     public bool EnhanceVanillaAdditiveGlow = true;
     public float ParticleDensityScale = 1.0f;
+    public LumenColorBlendSpace ColorBlendSpace = LumenColorBlendSpace.Legacy;
     public bool EnableDemoBuildings = false;
     public string SelectedShaderPackId = ShaderPackCatalog.DefaultPackId;
     public Dictionary<string, float> PackParamOverrides = new(StringComparer.OrdinalIgnoreCase);
@@ -23,6 +25,9 @@ public sealed class RimLumenSettings : ModSettings
     {
         Scribe_Values.Look(ref EnhanceVanillaAdditiveGlow, "enhanceVanillaAdditiveGlow", true);
         Scribe_Values.Look(ref ParticleDensityScale, "particleDensityScale", 1.0f);
+        string blendSpace = ColorBlendSpace.ToString();
+        Scribe_Values.Look(ref blendSpace, "colorBlendSpace", nameof(LumenColorBlendSpace.Legacy));
+        ColorBlendSpace = Enum.Parse<LumenColorBlendSpace>(blendSpace);
         Scribe_Values.Look(ref EnableDemoBuildings, "enableDemoBuildings", false);
         Scribe_Values.Look(ref SelectedShaderPackId, "selectedShaderPackId", ShaderPackCatalog.DefaultPackId);
         Scribe_Collections.Look(ref PackParamOverrides, "packParamOverrides", LookMode.Value, LookMode.Value);
@@ -39,11 +44,12 @@ public sealed class RimLumenSettings : ModSettings
             ApplyToRuntime();
     }
 
-    // Ensures: pushes the scalar settings (glow toggle, density, demo buildings) to the host; never touches shader packs.
+    // Ensures: pushes the scalar settings to the host; never touches shader packs.
     internal void ApplyScalarsToRuntime()
     {
         RimLumenRenderHost.EnableVanillaAdditiveBloom = EnhanceVanillaAdditiveGlow;
         RimLumenRenderHost.ParticleDensityScale = ParticleDensityScale;
+        RimLumenRenderHost.ColorBlendSpace = ColorBlendSpace;
         DemoBuildingRegistry.SyncWithSettings(EnableDemoBuildings);
     }
 
@@ -81,6 +87,7 @@ public sealed class RimLumenSettings : ModSettings
     {
         EnhanceVanillaAdditiveGlow = true;
         ParticleDensityScale = 1.0f;
+        ColorBlendSpace = LumenColorBlendSpace.Legacy;
         EnableDemoBuildings = false;
         SelectedShaderPackId = ShaderPackCatalog.DefaultPackId;
         PackParamOverrides.Clear();
@@ -124,6 +131,9 @@ public sealed class RimLumenMod : Verse.Mod
 
         listing.Label("RimLumen_ParticleDensity".Translate((int)Mathf.Round(Settings.ParticleDensityScale * 100f)));
         Settings.ParticleDensityScale = listing.Slider(Settings.ParticleDensityScale, 0.10f, 1.00f);
+        listing.Gap(6f);
+
+        DrawColorBlendSpaceSelector(listing);
         listing.Gap(6f);
 
         listing.CheckboxLabeled(
@@ -182,6 +192,39 @@ public sealed class RimLumenMod : Verse.Mod
         // Push only what the player actually changed; a pipeline rebuild stays tied to the pack id.
         if (settingsChanged)
             Settings.ApplyToRuntime();
+    }
+
+    private static void DrawColorBlendSpaceSelector(Listing_Standard listing)
+    {
+        Rect row = listing.GetRect(30f);
+        float labelWidth = Mathf.Min(230f, row.width * 0.42f);
+        Rect labelRect = new(row.x, row.y, labelWidth, row.height);
+        Rect buttonRect = new(row.x + labelWidth + 8f, row.y, row.width - labelWidth - 8f, row.height);
+        TextAnchor oldAnchor = Text.Anchor;
+        Text.Anchor = TextAnchor.MiddleLeft;
+        Widgets.Label(labelRect, "RimLumen_ColorBlendSpace".Translate());
+        Text.Anchor = oldAnchor;
+        TooltipHandler.TipRegion(row, "RimLumen_ColorBlendSpaceTooltip".Translate());
+
+        string current = Settings.ColorBlendSpace == LumenColorBlendSpace.Legacy
+            ? "RimLumen_ColorBlendLegacy" : "RimLumen_ColorBlendLinear";
+        if (Widgets.ButtonText(buttonRect, current.Translate()))
+        {
+            var menu = new List<FloatMenuOption>
+            {
+                new("RimLumen_ColorBlendLegacy".Translate(), () =>
+                {
+                    Settings.ColorBlendSpace = LumenColorBlendSpace.Legacy;
+                    Settings.ApplyToRuntime();
+                }),
+                new("RimLumen_ColorBlendLinear".Translate(), () =>
+                {
+                    Settings.ColorBlendSpace = LumenColorBlendSpace.Linear;
+                    Settings.ApplyToRuntime();
+                }),
+            };
+            Find.WindowStack.Add(new FloatMenu(menu));
+        }
     }
 
     private static void DrawShaderPackSelector(Listing_Standard listing, IReadOnlyList<ShaderPackEntry> packs, ShaderPackEntry activeEntry)

@@ -16,7 +16,7 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
     public ILumenEffectHandle Play(in LumenPlayRequest request, RimUnityTranslationReport report)
     {
         if (EngineApplication.Instance?.GraphicsDevice is null)
-            throw new InvalidOperationException("L0 playback requires the RimUnity game runtime; inject IRimUnityExternalPlayer for offline playback.");
+            throw new InvalidOperationException("External playback requires the RimUnity game runtime; inject IRimUnityExternalPlayer for offline playback.");
         RU.GameObject? anchor = null;
         using (NativeRuntime.DeferLifecycle())
         {
@@ -25,7 +25,7 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
                 anchor = new RU.GameObject("RimLumen external: " + request.EffectId);
                 anchor.SetActive(false);
                 RU.GameObject instance = RU.Object.Instantiate(PrefabLoader.LoadDirectory(report.DataDirectory, report.LogicalPath), anchor.transform, false);
-                var externalIds = report.Nodes.Where(node => node.Tier == LumenParticleTier.L0_ExternalCpu)
+                var externalIds = report.Nodes.Where(node => node.Tier == LumenParticleTier.External)
                     .Select(node => node.NodeId).ToHashSet(StringComparer.Ordinal);
                 var objects = MapNodes(report.Prefab, instance);
                 var selected = new List<RU.ParticleSystem>();
@@ -109,18 +109,18 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
             var subTargets = systems.Where(system => system.subEmitters.enabled)
                 .SelectMany(system => system.subEmitters.entries).Select(entry => entry.system).ToHashSet();
             // request.InitialState names a native asset state; translated RimUnity assets declare none, so the native
-            // handle has already rejected any non-null value and the L0 part starts every system.
+            // handle has already rejected any non-null value and the External part starts every system.
             foreach (var system in systems)
                 if (system.gameObject.activeInHierarchy && !subTargets.Contains(system)) system.Play(false);
             LumenHostRegistry.RegisterContributor(this);
         }
 
         public bool IsAlive => state != Playback.Dead && anchor != null;
-        public string Name => "RimUnity L0: " + request.EffectId;
+        public string Name => "RimUnity External: " + request.EffectId;
         // A released handle still needs one capture to unregister this contributor and raise Finished.
         public bool HasActiveWork => state != Playback.Dead || finishPending;
 
-        // L0 systems carry no timeline events and no states: Trigger restarts the systems named like the node,
+        // External systems carry no timeline events and no states: Trigger restarts the systems named like the node,
         // as the native handle restarts its nodes, and GoTo has nothing to switch (the native handle owns states).
         public void Trigger(string name)
         {

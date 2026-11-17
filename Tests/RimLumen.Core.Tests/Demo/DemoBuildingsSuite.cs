@@ -57,7 +57,7 @@ public static class DemoBuildingsSuite
             NativeTestData.Check(HasGravityDown(burst), $"{id}: L2 burst gravity pulls toward -Y");
             NativeTestData.Check(HasCurl(burst), $"{id}: L2 burst has curl turbulence");
             NativeTestData.Close(8f, burst.HdrIntensity, $"{id}: HDR burst intensity");
-            NativeTestData.Check(burst.ColorOverLifetime.Stops[^1].RgbaLinear.W == 0f, $"{id}: sparks fade to alpha 0");
+            NativeTestData.Check(burst.ColorOverLifetime.Stops[^1].Rgba.W == 0f, $"{id}: sparks fade to alpha 0");
 
             EffectNodeSpec sparkleNode = asset.Nodes[2];
             EmitterSpec sparkle = sparkleNode.Emitter!;
@@ -76,7 +76,7 @@ public static class DemoBuildingsSuite
             NativeTestData.Close(0f, curve.Keys[^1].Value, $"{id}: flash is gone before the handle is retired");
             NativeTestData.Check(curve.Keys[^1].Time <= RimLumenDemoEffects.FireworkVisibleSeconds, $"{id}: flash ends inside the visible window");
 
-            hues[i] = burst.ColorOverLifetime.Stops[1].RgbaLinear;
+            hues[i] = burst.ColorOverLifetime.Stops[1].Rgba;
         }
 
         NativeTestData.Check(hues[0].X > 0.9f && hues[0].Z < 0.3f, "gold variant is warm");
@@ -105,7 +105,7 @@ public static class DemoBuildingsSuite
         NativeTestData.Check(HasGravityDown(jet), "jet falls back down");
         NativeTestData.Check(HasCurl(jet), "jet wobbles");
         NativeTestData.Check(jet.SoftParticleFadeDistance > 0f, "jet fades against geometry");
-        NativeTestData.Check(jet.ColorOverLifetime.Stops[^1].RgbaLinear.W == 0f, "jet droplets fade to alpha 0");
+        NativeTestData.Check(jet.ColorOverLifetime.Stops[^1].Rgba.W == 0f, "jet droplets fade to alpha 0");
 
         EffectNodeSpec mistNode = asset.Nodes[1];
         EmitterSpec mist = mistNode.Emitter!;
@@ -133,7 +133,7 @@ public static class DemoBuildingsSuite
 
         using ILumenEffectHandle handle = service.Play(new LumenPlayRequest
         {
-            EffectId = asset.EffectId,
+            MapIndex = 111, EffectId = asset.EffectId,
             OriginWorld = new Vector3(10f, 0f, 20f),
             RealTime = false,
         });
@@ -173,7 +173,7 @@ public static class DemoBuildingsSuite
 
         using ILumenEffectHandle handle = service.Play(new LumenPlayRequest
         {
-            EffectId = asset.EffectId,
+            MapIndex = 111, EffectId = asset.EffectId,
             OriginWorld = new Vector3(4f, 0f, 6f),
         });
         var typed = (EffectInstanceHandle)handle;
@@ -196,7 +196,7 @@ public static class DemoBuildingsSuite
         var engine = new SpyGpuEngine();
         service.GpuEngineProvider = () => engine;
 
-        ILumenEffectHandle handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        ILumenEffectHandle handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         for (int i = 0; i < 10; i++) VfxTestData.Step(service, 0.05f);
         VfxAssert.Check(service.Simulator.ActiveEmitterCount == 2, "both L1 emitters are alive before the stop");
 
@@ -220,14 +220,17 @@ public static class DemoBuildingsSuite
     {
         bool originalGlow = RimLumenRenderHost.EnableVanillaAdditiveBloom;
         float originalDensity = RimLumenRenderHost.ParticleDensityScale;
+        LumenColorBlendSpace originalBlendSpace = RimLumenRenderHost.ColorBlendSpace;
         try
         {
             var settings = new RimLumenSettings();
             VfxAssert.Check(!settings.EnableDemoBuildings, "demo buildings default to off");
 
             settings.EnableDemoBuildings = true;
+            settings.ColorBlendSpace = LumenColorBlendSpace.Linear;
             settings.ApplyScalarsToRuntime();
             VfxAssert.Check(RimLumenRenderHost.EnableVanillaAdditiveBloom, "ApplyScalarsToRuntime still applies the glow toggle");
+            VfxAssert.Check(RimLumenRenderHost.ColorBlendSpace == LumenColorBlendSpace.Linear, "ApplyScalarsToRuntime requests linear blending");
 
             VfxAssert.Check(!DemoBuildingRegistry.SyncWithSettings(true), "Sync reports no Joy category before defs load");
             VfxAssert.Check(!DemoBuildingRegistry.SyncWithSettings(false), "Sync stays false before defs load");
@@ -239,6 +242,7 @@ public static class DemoBuildingsSuite
         {
             RimLumenRenderHost.EnableVanillaAdditiveBloom = originalGlow;
             RimLumenRenderHost.ParticleDensityScale = originalDensity;
+            RimLumenRenderHost.ColorBlendSpace = originalBlendSpace;
         }
     }
 
@@ -249,20 +253,20 @@ public static class DemoBuildingsSuite
     {
         EffectAsset asset = RimLumenDemoEffects.CreateFireworkAsset(RimLumenDemoEffects.FireworkGoldId, 0);
         EmitterSpec burst = asset.Nodes[1].Emitter!;
-        var scheduler = new EmissionScheduler(burst);
+        var scheduler = new EmissionScheduler(burst, 1u);
 
-        int beforeApex = 0;
+        double beforeApex = 0;
         for (int i = 0; i < 12; i++) beforeApex += scheduler.Advance(0.05f, emitting: true);
         GlowAssert.Equal(0, beforeApex);
 
-        int atApex = scheduler.Advance(0.05f, emitting: true);
+        double atApex = scheduler.Advance(0.05f, emitting: true);
         GlowAssert.Equal(1800, atApex);
 
-        int afterApex = 0;
+        double afterApex = 0;
         for (int i = 0; i < 10; i++) afterApex += scheduler.Advance(0.05f, emitting: true);
         GlowAssert.Equal(0, afterApex);
 
-        var trail = new EmissionScheduler(asset.Nodes[0].Emitter!);
+        var trail = new EmissionScheduler(asset.Nodes[0].Emitter!, 1u);
         VfxAssert.Check(trail.Advance(0.1f, emitting: true) > 0, "the launch trail emits by rate from the first frame");
     }
 
@@ -271,7 +275,7 @@ public static class DemoBuildingsSuite
     {
         var asset = RimLumenDemoEffects.CreateFireworkAsset(RimLumenDemoEffects.FireworkGoldId, 0);
         var service = VfxTestData.Service(asset);
-        using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         VfxTestData.Step(service, 0.016f);
         EmitterSpec spec = asset.Nodes[0].Emitter!;
         GlowAssert.Equal("launch_trail", spec.Name);

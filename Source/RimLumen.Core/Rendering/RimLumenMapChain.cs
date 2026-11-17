@@ -16,6 +16,7 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
     private readonly MeshBatchRenderer renderer = new(owner.App.GraphicsDevice!, owner.App.RenderContext!);
     private readonly MeshBatchRenderer glowRenderer = new(owner.App.GraphicsDevice!, owner.App.RenderContext!);
     private readonly OffscreenPostEffectPass depthCopy = new("RimLumenDepthCopy", "PostFx/RimLumenDepthCopy.frag.glsl", new[] { 0 });
+    private readonly OffscreenPostEffectPass encodeStored = new("RimLumenEncodeStored", "PostFx/RimLumenEncodeStored.frag.glsl", new[] { 0 });
     private bool labelOpen;
     private bool renderPassOpen;
 
@@ -82,7 +83,8 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         var draw = new LumenHdrDrawContext
         {
             Frame = frame, FrameIndex = payload.Index, HdrColorTarget = slot.Color,
-            CurrentMapIndex = payload.MapIndex, SceneColorDepthSource = payload.HasSceneDepth ? slot.DepthSnapshot : null,
+            CurrentMapIndex = payload.MapIndex, ColorBlendSpace = payload.ColorBlendSpace,
+            SceneColorDepthSource = payload.HasSceneDepth ? slot.DepthSnapshot : null,
             ViewProjection = payload.Mesh.View.ViewProjection, SoftParticleDepthParams = payload.DepthParams
         };
         foreach (ILumenFrameContributor contributor in payload.Contributors) contributor.RecordHdrDraws(in draw);
@@ -93,16 +95,24 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         }
         EndPass(in frame);
         slot.Color.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
+        RenderTexture hdrSource = slot.Color;
+        if (payload.ColorBlendSpace == LumenColorBlendSpace.Linear && payload.HasHdrDraws)
+        {
+            hdrSource = owner.Targets.EnsureStoredColor(ctx.SubmissionFrameIndex);
+            encodeStored.SetInput(0, slot.Color);
+            encodeStored.Output = hdrSource;
+            encodeStored.Record(in ctx, null);
+        }
         ShaderPackSpec pack = owner.ShaderPack.Spec;
         try
         {
-            owner.ShaderPack.RecordOffscreen(in ctx, slot, slot.SceneSnapshot, in uniforms,
+            owner.ShaderPack.RecordOffscreen(in ctx, slot, hdrSource, slot.SceneSnapshot, in uniforms,
                 payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
             FrameContext composite = attachment.MakeFrameContext(in ctx);
             BeginPass(in composite, clear: false);
             try
             {
-                owner.ShaderPack.RecordComposite(in composite, slot, slot.SceneSnapshot, in uniforms,
+                owner.ShaderPack.RecordComposite(in composite, slot, hdrSource, slot.SceneSnapshot, in uniforms,
                     payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
             }
             finally { EndPass(in composite); }
@@ -176,6 +186,7 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         renderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         glowRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         depthCopy.Invalidate();
+        encodeStored.Invalidate();
         owner.ShaderPack.InvalidateOffscreen();
         owner.ShaderPack.InvalidateInline();
     }
@@ -185,5 +196,6 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         renderer.Dispose();
         glowRenderer.Dispose();
         depthCopy.Dispose();
+        encodeStored.Dispose();
     }
 }

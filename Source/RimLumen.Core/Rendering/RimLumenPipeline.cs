@@ -33,6 +33,7 @@ internal sealed class RimLumenPipeline : IDisposable
     private CameraView view;
     private Vector4 depthParams;
     private int mapIndex = -1;
+    private LumenColorBlendSpace colorBlendSpace;
     private ILumenFrameContributor[] contributors = Array.Empty<ILumenFrameContributor>();
     private ILumenFrameContributor[] activeContributors = Array.Empty<ILumenFrameContributor>();
     private readonly List<ILumenFrameContributor> activeContributorBuffer = new();
@@ -46,6 +47,8 @@ internal sealed class RimLumenPipeline : IDisposable
         ShaderPack = new ShaderPackRuntime(app, RimLumenRenderHost.ActiveShaderPack);
         MapChain = new RimLumenMapChain(this);
         Pre = new RimLumenPreBackbufferFeature(this);
+        RimLumenRenderHost.LatchColorBlendSpace();
+        app.PrePollEvents += LatchColorBlendSpace;
         app.BeforeGraphicsShutdown += Shutdown;
         app.OnShutdown += Quiesce;
     }
@@ -105,6 +108,7 @@ internal sealed class RimLumenPipeline : IDisposable
         // FrameRenderer.BeginMainThreadFrame:220-230 runs all early hooks before CaptureFrame:186-192.
         // This is before ComputeRenderFeature drains Enqueue.
         captureIndex = (ulong)timing.FrameNumber;
+        colorBlendSpace = RimLumenRenderHost.CurrentFrameColorBlendSpace;
         mapIndex = -1;
         contributors = Array.Empty<ILumenFrameContributor>();
         var camera = Current.CameraDriver?.MyCamera;
@@ -139,6 +143,7 @@ internal sealed class RimLumenPipeline : IDisposable
         var capture = new LumenCaptureContext
         {
             CurrentMapIndex = currentMapIndex,
+            ColorBlendSpace = colorBlendSpace,
             FrameIndex = captureIndex, DeltaTime = simDt, UnscaledDeltaTime = unscaledDt,
             ViewportWidth = extent.Width, ViewportHeight = extent.Height,
             ViewMatrix = view.View, ProjectionMatrix = view.Projection,
@@ -252,7 +257,7 @@ internal sealed class RimLumenPipeline : IDisposable
         // Particles were staged on the main thread in BeginCapture and their mesh upload was just drained
         // by CaptureFlushedSnapshot, so they join this frame's sorted pass-0 list instead of recording
         // their own command-buffer work inside the HDR pass.
-        L1Renderer.AppendDraws(draws, maker, snapshot.PropertyArena, draws.Count, captureIndex);
+        L1Renderer.AppendDraws(draws, maker, snapshot.PropertyArena, draws.Count, captureIndex, colorBlendSpace);
         foreach (ILumenFrameContributor contributor in contributors)
             if (contributor is ILumenHdrDrawAppender appender)
                 appender.AppendHdrDraws(captureIndex, draws, maker, snapshot.PropertyArena, draws.Count, DepthProxy);
@@ -311,7 +316,7 @@ internal sealed class RimLumenPipeline : IDisposable
             in rtParams);
 
         return new PipelineFrame(captureIndex, mesh, glowMesh, contributors, depthParams, mapIndex, renderHdr,
-            hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms, glowGroups, earlyWork);
+            hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms, glowGroups, earlyWork, colorBlendSpace);
     }
 
     internal static bool HasDirectHdrContributor(IEnumerable<ILumenFrameContributor> frameContributors)
@@ -330,12 +335,15 @@ internal sealed class RimLumenPipeline : IDisposable
         Dispose();
     }
 
+    private static void LatchColorBlendSpace(EngineApplication _) => RimLumenRenderHost.LatchColorBlendSpace();
+
     private void Shutdown(EngineApplication _) => Dispose();
 
     public void Dispose()
     {
         if (disposed) return;
         disposed = true;
+        App.PrePollEvents -= LatchColorBlendSpace;
         App.BeforeGraphicsShutdown -= Shutdown;
         App.OnShutdown -= Quiesce;
         LumenSceneBootstrap.Simulator.HdrRendererAttached = false;
@@ -369,8 +377,10 @@ internal sealed class PipelineFrame(
     int bloomMipLevels,
     ShaderPackUniforms uniforms,
     GlowGroupMask glowGroups,
-    bool earlyWork) : IDisposable
+    bool earlyWork,
+    LumenColorBlendSpace colorBlendSpace) : IDisposable
 {
+    internal LumenColorBlendSpace ColorBlendSpace { get; } = colorBlendSpace;
     internal bool RenderHdr { get; } = renderHdr;
     internal bool HasHdrDraws { get; } = hasHdrDraws;
     internal bool HasSceneDepth { get; } = hasSceneDepth;

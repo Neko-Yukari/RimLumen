@@ -11,6 +11,79 @@ namespace RimLumen.Core.Tests.ParticlesGpu;
 public static class ParticleEngineTests
 {
     [LumenFact]
+    public static void PhaseACaptureFreezesMaterialSeparatelyFromVertexFactors()
+    {
+        using var engine = new LumenGpuParticleEngine(8);
+        var spec = new EmitterSpec { Name = "material", MaxParticles = 8,
+            StartColor = new Vector4(0.4f), MaterialTint = new Vector4(0.5f),
+            ColorSpace = LumenColorSpace.Linear, HdrIntensity = 3f };
+        int id = engine.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
+        engine.UpdateInstance(id, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), false, 2f, 1f);
+        engine.CaptureMainThread(Frame(0));
+        ParticleEmitterFrame row = engine.CapturedFrame!.Emitters[0];
+        Require(row.MaterialTint == spec.MaterialTint && row.ColorSpace == LumenColorSpace.Linear,
+            "Capture must freeze the material tint and mode for the real draw path.");
+        Require(row.Parameters.StartColor == spec.StartColor && row.Parameters.Appearance.Z == 3f && row.Parameters.State.W == 2f,
+            "GPU vertex factors must retain raw StartColor and both intensity scales, without material tint folding.");
+    }
+
+    [LumenFact]
+    public static void P2A6RateParameterReachesGpuScheduler()
+    {
+        using var engine = new LumenGpuParticleEngine(32);
+        var asset = new EffectAsset
+        {
+            EffectId = "rate-param", DefaultDuration = 10f,
+            Nodes = new[] { new EffectNodeSpec { Name = "gpu", Emitter = new EmitterSpec
+            {
+                Name = "rate", MaxParticles = 32, Looping = true, Duration = 1f, RateOverTime = 4f,
+                StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+            } } },
+        };
+        var service = SceneAndLighting.VfxTestData.Service(asset);
+        service.GpuEngineProvider = () => engine;
+        using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7 });
+        handle.SetParam("rate", 3f);
+        SceneAndLighting.VfxTestData.Step(service, 0.25f);
+        engine.CaptureMainThread(Frame(0.25f));
+        Require(engine.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 3f, "Rate 4 times multiplier 3 for 0.25s must admit 3 particles, not 1.");
+        handle.SetParam("rate", 0f);
+        SceneAndLighting.VfxTestData.Step(service, 0.25f);
+        engine.CaptureMainThread(Frame(0.25f, 1));
+        Require(engine.CapturedFrame!.Emitters[0].Parameters.Slots.Z == 0f, "Rate zero must stop scheduled rate emission.");
+    }
+
+    [LumenFact]
+    public static void ShapeLocalGpuUploadPreservesNodeAndShapeFramesSeparately()
+    {
+        using var engine = new LumenGpuParticleEngine(8);
+        var spec = new EmitterSpec
+        {
+            Name = "shape-upload", MaxParticles = 8, ShapePosition = new Vector3(1f, 2f, 3f),
+            ShapeRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f),
+            ShapeScale = new Vector3(5f, 6f, 7f),
+        };
+        engine.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.CreateTranslation(10f, 20f, 30f), Quaternion.Identity), -1, false, 1u);
+        engine.CaptureMainThread(Frame(0));
+        GpuEmitterParams p = engine.CapturedFrame!.Emitters[0].Parameters;
+        Require(p.ShapePosition == new Vector4(1f, 2f, 3f, 0f) && p.ShapeScale == new Vector4(5f, 6f, 7f, 0f),
+            "Shape position/scale must upload in the node-local frame, not premultiply the node matrix.");
+        Require(p.ShapeRotation == new Vector4(0f, 0f, spec.ShapeRotation.Z, spec.ShapeRotation.W)
+            && p.World.M14 == 10f && p.World.M24 == 20f && p.World.M34 == 30f && p.Appearance.W == 1f,
+            "Quaternion xyzw and node matrix/size scale must remain independent.");
+    }
+
+    [LumenFact]
+    public static void P2A3fGpuCaptureCarriesDeterminantSizeScale()
+    {
+        using var engine = new LumenGpuParticleEngine(8);
+        engine.CreateInstance(Looping(), new LumenEmitterTransform(Matrix4x4.CreateScale(-2f, 4f, 8f), Quaternion.Identity), -1, false, 1u);
+        engine.CaptureMainThread(Frame(0));
+        Require(MathF.Abs(engine.CapturedFrame!.Emitters[0].Parameters.Appearance.W - 4f) < 0.0001f,
+            "Appearance.w must carry cbrt(abs(det(World3x3))) = 4, including mirrored transforms.");
+    }
+
+    [LumenFact]
     public static void DensityBudgetsMatchCpuAcrossUnevenSubparticleSteps()
     {
         float originalDensity = RimLumenRenderHost.ParticleDensityScale;
@@ -23,9 +96,9 @@ public static class ParticleEngineTests
                 RateOverTime = 4, StartLifetimeMin = 20, StartLifetimeMax = 20,
             };
             var cpu = new CpuParticleSimulator();
-            cpu.AcquireEmitter(spec, Matrix4x4.Identity);
+            cpu.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u);
             using var gpu = new LumenGpuParticleEngine(64);
-            gpu.CreateInstance(spec, Matrix4x4.Identity);
+            gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
 
             Require(DensityStep(cpu, gpu, 0.125f, 0) == 0, "A half-rate subparticle step must retain its fraction.");
             Require(DensityStep(cpu, gpu, 0.375f, 1) == 1, "The retained fraction must produce one particle.");
@@ -53,9 +126,9 @@ public static class ParticleEngineTests
                 RateOverTime = 4, StartLifetimeMin = 20, StartLifetimeMax = 20,
             };
             var cpu = new CpuParticleSimulator();
-            cpu.AcquireEmitter(spec, Matrix4x4.Identity);
+            cpu.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u);
             using var gpu = new LumenGpuParticleEngine(64);
-            gpu.CreateInstance(spec, Matrix4x4.Identity);
+            gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
 
             Require(DensityStep(cpu, gpu, 0.125f, 0) == 0, "First quarter-particle remains fractional.");
             Require(DensityStep(cpu, gpu, 0.125f, 1) == 0, "Second quarter-particle remains fractional.");
@@ -69,7 +142,7 @@ public static class ParticleEngineTests
     }
 
     [LumenFact]
-    public static void DensityBurstBudgetsMatchCpuPerOccurrenceRounding()
+    public static void DensityBurstBudgetsMatchCpuSharedCeilingCarry()
     {
         float originalDensity = RimLumenRenderHost.ParticleDensityScale;
         try
@@ -78,22 +151,46 @@ public static class ParticleEngineTests
             var spec = new EmitterSpec
             {
                 Name = "density-bursts", MaxParticles = 64, Looping = true, Duration = 1,
-                Bursts = new[] { (0f, 1), (0.5f, 5), (1f, 3) },
+                Bursts = new[] { new ParticleBurstSpec(0f, 1), new ParticleBurstSpec(0.5f, 5), new ParticleBurstSpec(1f, 3) },
                 StartLifetimeMin = 20, StartLifetimeMax = 20,
             };
             var cpu = new CpuParticleSimulator();
-            cpu.AcquireEmitter(spec, Matrix4x4.Identity);
+            cpu.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u);
             using var gpu = new LumenGpuParticleEngine(64);
-            gpu.CreateInstance(spec, Matrix4x4.Identity);
+            gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
 
-            Require(DensityStep(cpu, gpu, 0.25f, 0) == 1, "A nonzero burst never scales below one.");
-            Require(DensityStep(cpu, gpu, 0.25f, 1) == 2, "Five at half density rounds to even, not up.");
-            Require(DensityStep(cpu, gpu, 1.5f, 2) == 8, "Each crossed burst is scaled before summing occurrences.");
+            Require(DensityStep(cpu, gpu, 0.25f, 0) == 1, "The fresh count1 at half density admits ceil(.5)=1 and retains -.5.");
+            Require(DensityStep(cpu, gpu, 0.25f, 1) == 2, "The next count5 consumes the shared carry: ceil(-.5+2.5)=2.");
+            int crossed = DensityStep(cpu, gpu, 1.5f, 2);
+            Console.WriteLine($"Shared burst carry frame2: CPU/GPU={crossed}, expected=7; cumulative authored counts19 * .5 -> ceil9.5=10, previous admitted3.");
+            Require(crossed == 7, "Crossed counts1,1,5,3,3 add13 at half density: ceil6.5=7 from zero carry, not independently rounded8.");
         }
         finally
         {
             RimLumenRenderHost.ParticleDensityScale = originalDensity;
         }
+    }
+
+    [LumenFact]
+    public static void ProbabilityDecisionsMatchCpuAndGpuForSameNodeSeed()
+    {
+        float originalDensity = RimLumenRenderHost.ParticleDensityScale;
+        try
+        {
+            RimLumenRenderHost.ParticleDensityScale = 1f;
+            var spec = new EmitterSpec { Name = "probability-backends", MaxParticles = 64, Duration = 1f, Looping = true,
+                StartLifetimeMin = 20f, StartLifetimeMax = 20f,
+                Bursts = new[] { new ParticleBurstSpec(.25f, 2, .5f), new ParticleBurstSpec(.75f, 3, .5f) } };
+            var cpu = new CpuParticleSimulator();
+            cpu.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 123u);
+            using var gpu = new LumenGpuParticleEngine(64);
+            gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 123u);
+            DensityStep(cpu, gpu, .25f, 0);
+            DensityStep(cpu, gpu, .5f, 1);
+            DensityStep(cpu, gpu, .5f, 2);
+            DensityStep(cpu, gpu, .5f, 3);
+        }
+        finally { RimLumenRenderHost.ParticleDensityScale = originalDensity; }
     }
 
     private static int DensityStep(CpuParticleSimulator cpu, LumenGpuParticleEngine gpu, float dt, ulong frameIndex)
@@ -111,13 +208,13 @@ public static class ParticleEngineTests
     public static void CaptureKeepsEarlierSnapshotsImmutableWhenRowsAreReusedAndCompacted()
     {
         using var engine = new LumenGpuParticleEngine(16);
-        int first = engine.CreateInstance(Looping(), Matrix4x4.Identity);
-        int second = engine.CreateInstance(Looping(), Matrix4x4.CreateTranslation(2, 0, 0));
+        int first = engine.CreateInstance(Looping(), new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
+        int second = engine.CreateInstance(Looping(), new LumenEmitterTransform(Matrix4x4.CreateTranslation(2, 0, 0), Quaternion.Identity), -1, false, 1u);
         engine.CaptureMainThread(Frame(0.25f, 0));
         ParticleFrame previous = engine.CapturedFrame!;
 
         engine.DestroyInstance(first, immediate: true);
-        engine.UpdateInstance(second, Matrix4x4.CreateTranslation(7, 0, 0), emitting: true);
+        engine.UpdateInstance(second, new LumenEmitterTransform(Matrix4x4.CreateTranslation(7, 0, 0), Quaternion.Identity), emitting: true, 1f, 1f);
         engine.CaptureMainThread(Frame(0.125f, 1));
         ParticleFrame current = engine.CapturedFrame!;
 
@@ -143,17 +240,17 @@ public static class ParticleEngineTests
     public static void DrainStopsLoopingEmitterAndReleasesCapacityWithoutGpu()
     {
         using var engine = new LumenGpuParticleEngine(8);
-        int id = engine.CreateInstance(Looping(), Matrix4x4.Identity);
+        int id = engine.CreateInstance(Looping(), new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
         Require(id >= 0, "Runtime IDs must be non-negative.");
         engine.CaptureMainThread(Frame(0.1f));
         engine.DestroyInstance(id);
         engine.CaptureMainThread(Frame(0.5f, 1));
         Require(engine.HasActiveWork, "Particles must survive before maximum lifetime elapses.");
         engine.DestroyInstance(id);
-        engine.UpdateInstance(id, Matrix4x4.Identity, true);
+        engine.UpdateInstance(id, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), true, 1f, 1f);
         engine.CaptureMainThread(Frame(0.5f, 2));
         Require(!engine.HasActiveWork, "Repeated destroy/update must not restart a draining emitter.");
-        int replacement = engine.CreateInstance(Looping(), Matrix4x4.Identity);
+        int replacement = engine.CreateInstance(Looping(), new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
         Require(replacement > id, "Reclaimed ranges must not resurrect stale runtime IDs.");
     }
 
@@ -161,12 +258,12 @@ public static class ParticleEngineTests
     public static void ImmediateDestroyReclaimsOnlyAtNextCapture()
     {
         using var engine = new LumenGpuParticleEngine(8);
-        int id = engine.CreateInstance(Looping(), Matrix4x4.Identity);
+        int id = engine.CreateInstance(Looping(), new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
         engine.DestroyInstance(id, immediate: true);
         Require(engine.HasActiveWork, "Removal remains pending until capture.");
         engine.CaptureMainThread(Frame(0));
         Require(!engine.HasActiveWork, "Immediate removal must not wait for lifetime.");
-        engine.CreateInstance(Looping(), Matrix4x4.Identity);
+        engine.CreateInstance(Looping(), new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
     }
 
     [LumenFact]
@@ -176,8 +273,8 @@ public static class ParticleEngineTests
         int id = engine.CreateInstance(new EmitterSpec
         {
             Name = "one-shot", MaxParticles = 8, Duration = 0.25f,
-            Bursts = new[] { (0f, 8) }, StartLifetimeMin = 1, StartLifetimeMax = 1
-        }, Matrix4x4.Identity);
+            Bursts = new[] { new ParticleBurstSpec(0f, 8) }, StartLifetimeMin = 1, StartLifetimeMax = 1
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
         engine.CaptureMainThread(Frame(2));
         engine.CaptureMainThread(Frame(2, 1));
         Require(engine.HasActiveWork, "A spent schedule keeps its slots until the owner destroys it.");
@@ -193,11 +290,11 @@ public static class ParticleEngineTests
     {
         using var engine = new LumenGpuParticleEngine(8);
         engine.DestroyInstance(123);
-        int id = engine.CreateInstance(Looping(), Matrix4x4.Identity);
+        int id = engine.CreateInstance(Looping(), new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), -1, false, 1u);
         engine.DestroyInstance(id, true);
         engine.CaptureMainThread(Frame(0));
         engine.DestroyInstance(id);
-        engine.UpdateInstance(id, Matrix4x4.Identity, true);
+        engine.UpdateInstance(id, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), true, 1f, 1f);
         Require(!engine.HasActiveWork, "An expired handle must not recreate work.");
     }
 
@@ -233,7 +330,7 @@ public static class ParticleEngineTests
                 new EffectNodeSpec { Name = "waiting", Emitter = new EmitterSpec
                 {
                     Name = "waiting", MaxParticles = 8, Duration = 0.25f,
-                    Bursts = new[] { (0f, 8) }, StartLifetimeMin = 1f, StartLifetimeMax = 1f,
+                    Bursts = new[] { new ParticleBurstSpec(0f, 8) }, StartLifetimeMin = 1f, StartLifetimeMax = 1f,
                 } },
             },
             States = new[]
@@ -244,7 +341,7 @@ public static class ParticleEngineTests
         };
         var service = SceneAndLighting.VfxTestData.Service(asset);
         service.GpuEngineProvider = () => engine;
-        using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         engine.CaptureMainThread(Frame(2f));
         engine.CaptureMainThread(Frame(2f, 1));
         Require(engine.HasActiveWork, "A node outside the initial state must not expire before its state is entered.");
@@ -272,7 +369,7 @@ public static class ParticleEngineTests
         };
         var service = SceneAndLighting.VfxTestData.Service(asset);
         service.GpuEngineProvider = () => engine;
-        using var handle = (Scene.EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (Scene.EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         SceneAndLighting.VfxTestData.Step(service, 1f);
         Require(!handle.IsEmitting, "The effect ended on this frame.");
         engine.CaptureMainThread(Frame(1f));
@@ -291,8 +388,8 @@ public static class ParticleEngineTests
         engine.CreateInstance(new EmitterSpec
         {
             Name = "paused-initial-burst", MaxParticles = 16, Duration = 1f,
-            Bursts = new[] { (0f, 12) }, StartLifetimeMin = 1f, StartLifetimeMax = 1f,
-        }, Matrix4x4.Identity, mapIndex: 7, realTime: false);
+            Bursts = new[] { new ParticleBurstSpec(0f, 12) }, StartLifetimeMin = 1f, StartLifetimeMax = 1f,
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), mapIndex: 7, realTime: false, emissionSeed: 1u);
         engine.CaptureMainThread(PausedFrame(0.016f));
         float pausedBudget = engine.CapturedFrame!.Emitters[0].Parameters.Slots.Z;
         engine.CaptureMainThread(Frame(0.016f, 1));
@@ -322,8 +419,8 @@ public static class ParticleEngineTests
             Name = "drain", MaxParticles = 8, Looping = true, Duration = 1,
             StartLifetimeMin = 0.5f, StartLifetimeMax = 0.5f,
         };
-        int fast = realTime.CreateInstance(spec, Matrix4x4.Identity, 3, realTime: true);
-        int slow = gameTime.CreateInstance(spec, Matrix4x4.Identity, 3, realTime: false);
+        int fast = realTime.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 3, realTime: true, emissionSeed: 1u);
+        int slow = gameTime.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 3, realTime: false, emissionSeed: 1u);
         realTime.DestroyInstance(fast);
         gameTime.DestroyInstance(slow);
         realTime.CaptureMainThread(PausedFrame(1f));

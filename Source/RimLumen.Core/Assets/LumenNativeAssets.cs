@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Numerics;
 using System.Text;
 using System.Text.Json;
@@ -43,6 +45,8 @@ public sealed class LumenEffectDef : Def
             LumenNodeXml node = nodes[i] ?? throw new InvalidDataException($"{source}: node {i} is null.");
             string nodePath = $"{source}: node {i}";
             string nodeName = string.IsNullOrEmpty(node.name) ? $"node{i}" : node.name!;
+            if (!float.IsFinite(node.localYawDegrees))
+                throw new InvalidDataException($"{nodePath}.localYawDegrees: must be finite.");
             specs[i] = new EffectNodeSpec
             {
                 Name = nodeName,
@@ -128,6 +132,7 @@ public sealed class LumenEffectDef : Def
 
     private static EmitterSpec ToEmitterSpec(LumenEmitterXml xml, string nodeName, string path)
     {
+        xml.RejectLegacyFields(path + ".emitter");
         var emitter = new EmitterSpec
         {
             Name = string.IsNullOrEmpty(xml.name) ? nodeName : xml.name!,
@@ -139,14 +144,29 @@ public sealed class LumenEffectDef : Def
             Bursts = ToBursts(xml.bursts, path),
             Shape = xml.shape,
             ShapeExtents = new Vector3(xml.shapeExtents.x, xml.shapeExtents.y, xml.shapeExtents.z),
+            ShapePosition = new Vector3(xml.shapePosition.x, xml.shapePosition.y, xml.shapePosition.z),
+            ShapeRotation = LumenAssetRules.NormalizeRotation(new Quaternion(xml.shapeRotation.x, xml.shapeRotation.y, xml.shapeRotation.z, xml.shapeRotation.w), path + ".emitter.shapeRotation"),
+            ShapeScale = new Vector3(xml.shapeScale.x, xml.shapeScale.y, xml.shapeScale.z),
             ConeAngleDegrees = xml.coneAngleDegrees,
+            ConeLength = xml.coneLength,
+            DonutRadius = xml.donutRadius,
+            RadiusThickness = xml.radiusThickness,
+            BoxThickness = new Vector3(xml.boxThickness.x, xml.boxThickness.y, xml.boxThickness.z),
+            ArcDegrees = xml.arcDegrees,
+            ArcSpread = xml.arcSpread,
+            RadiusSpread = xml.radiusSpread,
+            RandomDirectionAmount = xml.randomDirectionAmount,
+            SphericalDirectionAmount = xml.sphericalDirectionAmount,
+            RandomPositionAmount = xml.randomPositionAmount,
             StartLifetimeMin = xml.startLifetimeMin,
             StartLifetimeMax = xml.startLifetimeMax,
             StartSpeedMin = xml.startSpeedMin,
             StartSpeedMax = xml.startSpeedMax,
             StartSizeMin = xml.startSizeMin,
             StartSizeMax = xml.startSizeMax,
-            StartColorLinear = ToVector4(xml.startColorLinear),
+            StartColor = ParseColor(xml.startColor, path + ".emitter.startColor"),
+            ColorSpace = xml.colorSpace,
+            MaterialTint = ParseColor(xml.materialTint, path + ".emitter.materialTint"),
             SizeOverLifetime = xml.sizeOverLifetime is { Count: > 0 }
                 ? new ScalarCurve(ToCurveKeys(xml.sizeOverLifetime, path + ".sizeOverLifetime"))
                 : ScalarCurve.Constant(1f),
@@ -164,7 +184,6 @@ public sealed class LumenEffectDef : Def
             LengthScale = xml.lengthScale,
             SoftParticleFadeDistance = xml.softParticleFadeDistance,
             HdrIntensity = xml.hdrIntensity,
-            BloomWeight = xml.bloomWeight,
             PreferredTier = xml.preferredTier,
             KillBelowFloor = xml.killBelowFloor,
         };
@@ -173,6 +192,7 @@ public sealed class LumenEffectDef : Def
 
     private static PointLightSpec ToPointLightSpec(LumenPointLightXml xml, string path)
     {
+        xml.RejectLegacyFields(path + ".pointLight");
         // PointLightSpec carries no intensity column: the map glower driver multiplies the colour by
         // Evaluate(IntensityOverTime) * runtime multiplier, so the authored intensity rides on the curve's multiplier.
         ScalarCurve? intensity;
@@ -185,35 +205,26 @@ public sealed class LumenEffectDef : Def
             intensity = xml.intensity == 1f ? null : ScalarCurve.Constant(xml.intensity);
         }
 
+        Vector4 color = ParseColor(xml.color, path + ".pointLight.color");
         return new PointLightSpec(
             xml.radiusCells,
             xml.overlightRadius,
-            new Vector3(xml.colorLinear.r, xml.colorLinear.g, xml.colorLinear.b),
+            new Vector3(color.X, color.Y, color.Z),
             intensity);
     }
 
-    private static (float Time, int Count)[] ToBursts(List<LumenBurstXml>? bursts, string path)
+    private static ParticleBurstSpec[] ToBursts(List<LumenBurstXml>? bursts, string path)
     {
         if (bursts is null || bursts.Count == 0)
         {
-            return Array.Empty<(float, int)>();
+            return Array.Empty<ParticleBurstSpec>();
         }
 
-        var result = new (float Time, int Count)[bursts.Count];
+        var result = new ParticleBurstSpec[bursts.Count];
         for (int i = 0; i < bursts.Count; i++)
         {
             LumenBurstXml burst = bursts[i] ?? throw new InvalidDataException($"{path}.bursts[{i}] is null.");
-            if (!float.IsFinite(burst.time) || burst.time < 0f)
-            {
-                throw new InvalidDataException($"{path}.bursts[{i}]: time must be finite and >= 0, got {burst.time}.");
-            }
-
-            if (burst.count < 0)
-            {
-                throw new InvalidDataException($"{path}.bursts[{i}]: count must be >= 0, got {burst.count}.");
-            }
-
-            result[i] = (burst.time, burst.count);
+            result[i] = new ParticleBurstSpec(burst.time, burst.count, burst.probability);
         }
 
         return result;
@@ -225,11 +236,6 @@ public sealed class LumenEffectDef : Def
         for (int i = 0; i < keys.Count; i++)
         {
             LumenCurveKeyXml key = keys[i] ?? throw new InvalidDataException($"{path}[{i}] is null.");
-            if (i > 0 && key.time < keys[i - 1].time)
-            {
-                throw new InvalidDataException($"{path}: keys must be ordered by non-decreasing time; key {i} ({key.time}) follows {keys[i - 1].time}.");
-            }
-
             result[i] = new CurveKey(key.time, key.value);
         }
 
@@ -242,12 +248,8 @@ public sealed class LumenEffectDef : Def
         for (int i = 0; i < stops.Count; i++)
         {
             LumenGradientStopXml stop = stops[i] ?? throw new InvalidDataException($"{path}[{i}] is null.");
-            if (i > 0 && stop.time < stops[i - 1].time)
-            {
-                throw new InvalidDataException($"{path}: stops must be ordered by non-decreasing time; stop {i} ({stop.time}) follows {stops[i - 1].time}.");
-            }
-
-            result[i] = new ColorStop(stop.time, ToVector4(stop.rgbaLinear));
+            stop.RejectLegacyFields($"{path}[{i}]");
+            result[i] = new ColorStop(stop.time, ParseColor(stop.color, $"{path}[{i}].color"));
         }
 
         return result;
@@ -269,14 +271,33 @@ public sealed class LumenEffectDef : Def
                 new Vector3(field.centerOrAxis.x, field.centerOrAxis.y, field.centerOrAxis.z),
                 new Vector3(field.parameters.x, field.parameters.y, field.parameters.z),
                 field.radius,
-                field.strength,
+                field.strength ?? throw new InvalidDataException($"{path}.forceFields[{i}].strength: required."),
                 field.frequency);
         }
 
         return result;
     }
 
-    private static Vector4 ToVector4(UnityEngine.Color color) => new(color.r, color.g, color.b, color.a);
+    // Keep raw floats until shared domain validation; Verse.ParseColor interprets RGB > 1 as byte values.
+    private static Vector4 ParseColor(string text, string path)
+    {
+        if (text is null)
+            throw new InvalidDataException($"{path}: expected (r,g,b) or (r,g,b,a) raw float colour, got null.");
+        string value = text.Trim();
+        if (value.Length < 2 || value[0] != '(' || value[^1] != ')')
+            throw new InvalidDataException($"{path}: expected (r,g,b) or (r,g,b,a) raw float colour, got '{text}'.");
+        string[] components = value[1..^1].Split(',');
+        if (components.Length != 3 && components.Length != 4)
+            throw new InvalidDataException($"{path}: expected 3 or 4 colour components, got {components.Length}.");
+        Span<float> rgba = stackalloc float[4];
+        rgba[3] = 1f;
+        for (int i = 0; i < components.Length; i++)
+        {
+            if (!float.TryParse(components[i], NumberStyles.Float, CultureInfo.InvariantCulture, out rgba[i]))
+                throw new InvalidDataException($"{path}: colour component {i} must be a float, got '{components[i]}'.");
+        }
+        return new Vector4(rgba[0], rgba[1], rgba[2], rgba[3]);
+    }
 }
 
 public sealed class LumenNodeXml
@@ -309,12 +330,43 @@ public sealed class LumenEmitterXml
     public float startSpeedMax = 0f;
     public float startSizeMin = 1f;
     public float startSizeMax = 1f;
-    public UnityEngine.Color startColorLinear = UnityEngine.Color.white;
+    public string startColor = "(1,1,1,1)";
+    // Material calculation: Stored multiplies raw factors; Linear decodes tint and sRGB texture RGB and
+    // encodes the product back to stored values. Alpha is never gamma-converted.
+    public LumenColorSpace colorSpace = LumenColorSpace.Stored;
+    // RGBA material factor: RGB finite >= 0 without an upper bound, alpha finite in [0,1].
+    public string materialTint = "(1,1,1,1)";
+    private string? startColorLinear = null;
+    private string? bloomWeight = null;
+    private string? hdrMultiplier = null;
+
+    internal void RejectLegacyFields(string path)
+    {
+        if (bloomWeight is not null)
+            throw new InvalidDataException($"{path}: 'bloomWeight' was removed.");
+        if (hdrMultiplier is not null)
+            throw new InvalidDataException($"{path}: 'hdrMultiplier' was removed; use hdrIntensity.");
+        if (startColorLinear is not null)
+            throw new InvalidDataException($"{path}: 'startColorLinear' renamed to startColor.");
+    }
     public float hdrIntensity = 1f;
-    public float bloomWeight = 1f;
     public LumenShapeKind shape = LumenShapeKind.Point;
     public UnityEngine.Vector3 shapeExtents = UnityEngine.Vector3.one;
+    public UnityEngine.Vector3 shapePosition;
+    // DirectXmlToObject supports ParseHelper's (x,y,z,w) Unity quaternion format (Assembly-CSharp:20720,21002,142245).
+    public UnityEngine.Quaternion shapeRotation = UnityEngine.Quaternion.identity;
+    public UnityEngine.Vector3 shapeScale = UnityEngine.Vector3.one;
     public float coneAngleDegrees = 25f;
+    public float coneLength = 5f;
+    public float donutRadius = 0.2f;
+    public float radiusThickness = 1f;
+    public UnityEngine.Vector3 boxThickness;
+    public float arcDegrees = 360f;
+    public float arcSpread;
+    public float radiusSpread;
+    public float randomDirectionAmount;
+    public float sphericalDirectionAmount;
+    public float randomPositionAmount;
     public LumenBillboardMode billboardMode = LumenBillboardMode.Camera;
     public float velocityStretchFactor;
     public float lengthScale = 1f;
@@ -354,6 +406,7 @@ public sealed class LumenBurstXml
 {
     public float time;
     public int count = 1;
+    public float probability = 1f;
 }
 
 public sealed class LumenCurveKeyXml
@@ -365,7 +418,14 @@ public sealed class LumenCurveKeyXml
 public sealed class LumenGradientStopXml
 {
     public float time;
-    public UnityEngine.Color rgbaLinear = UnityEngine.Color.white;
+    public string color = "(1,1,1,1)";
+    private string? rgbaLinear = null;
+
+    internal void RejectLegacyFields(string path)
+    {
+        if (rgbaLinear is not null)
+            throw new InvalidDataException($"{path}: 'rgbaLinear' renamed to color.");
+    }
 }
 
 public sealed class LumenForceFieldXml
@@ -373,14 +433,24 @@ public sealed class LumenForceFieldXml
     public ForceFieldKind kind;
     public UnityEngine.Vector3 centerOrAxis;
     public UnityEngine.Vector3 parameters;
-    public float strength = 1f;
+    public float? strength;
     public float frequency = 1f;
     public float radius = 5f;
 }
 
 public sealed class LumenPointLightXml
 {
-    public UnityEngine.Color colorLinear = UnityEngine.Color.white;
+    public string color = "(1,1,1,1)";
+    private string? colorLinear = null;
+    private string? colorRgb = null;
+
+    internal void RejectLegacyFields(string path)
+    {
+        if (colorLinear is not null)
+            throw new InvalidDataException($"{path}: 'colorLinear' renamed to color.");
+        if (colorRgb is not null)
+            throw new InvalidDataException($"{path}: 'colorRgb' renamed to color.");
+    }
     public float radiusCells = 5f;
     public float overlightRadius;
     public float intensity = 1f;
@@ -396,8 +466,10 @@ internal static class LumenAssetRules
     // Ensures: throws InvalidDataException naming <paramref name="source"/> when the asset cannot be played:
     //          empty EffectId, no nodes, an empty node name, a parent index that is neither -1 nor an
     //          earlier node (the only cycle-free ordering the runtime accepts), a non-positive particle
-    //          budget, a non-positive or inverted lifetime range, a flipbook grid below 1 tile, or a states /
-    //          initialState / stopState / timeline-event state reference that EffectStateGraph.For rejects.
+    //          budget/duration/lifetime, an invalid flipbook grid or enum, empty/nonfinite/unordered curves,
+    //          particle curve times outside [0,1], light curve times below zero seconds, light radii outside [0,40],
+    //          light colour outside [0,1], start/tint/gradient RGB non-finite or negative, colour alpha outside [0,1],
+    //          a non-finite or negative hdrIntensity, or state references that EffectStateGraph.For rejects.
     public static void Validate(EffectAsset asset, string source)
     {
         if (string.IsNullOrEmpty(asset.EffectId))
@@ -435,14 +507,27 @@ internal static class LumenAssetRules
                 throw new InvalidDataException($"{path} ('{node.Name}'): localScale must be finite.");
             }
 
+            ValidateRotation(node.LocalRotation, $"{path} ('{node.Name}').localRotation");
+            ValidateEnum(node.SpacePlane, $"{path} ('{node.Name}').spacePlane");
+
             if (node.Emitter is { } emitter)
             {
                 ValidateEmitter(emitter, $"{path} ('{node.Name}').emitter");
             }
 
-            if (node.PointLight is { } light && (!float.IsFinite(light.GlowRadius) || light.GlowRadius < 0f))
+            if (node.PointLight is { } light)
             {
-                throw new InvalidDataException($"{path} ('{node.Name}').pointLight: glowRadius must be finite and >= 0, got {light.GlowRadius}.");
+                string lightPath = $"{path} ('{node.Name}').pointLight";
+                if (!float.IsFinite(light.GlowRadius) || light.GlowRadius < 0f || light.GlowRadius > 40f)
+                    throw new InvalidDataException($"{lightPath}: glowRadius must be in [0,40], got {light.GlowRadius}.");
+                if (!float.IsFinite(light.OverlightRadius) || light.OverlightRadius < 0f || light.OverlightRadius > 40f)
+                    throw new InvalidDataException($"{lightPath}: overlightRadius must be in [0,40], got {light.OverlightRadius}.");
+                Vector3 color = light.ColorRgb;
+                if (!float.IsFinite(color.X) || !float.IsFinite(color.Y) || !float.IsFinite(color.Z) ||
+                    color.X < 0f || color.X > 1f || color.Y < 0f || color.Y > 1f || color.Z < 0f || color.Z > 1f)
+                    throw new InvalidDataException($"{lightPath}: color components must be in [0,1].");
+                if (light.IntensityOverTime is { } intensity)
+                    ValidateCurve(intensity, lightPath + ".intensityOverTime", normalized: false);
             }
         }
 
@@ -469,6 +554,74 @@ internal static class LumenAssetRules
         EffectStateGraph.For(asset, source);
     }
 
+    private static void ValidateEnum<TEnum>(TEnum value, string path) where TEnum : struct, Enum
+    {
+        if (!Enum.IsDefined(value))
+            throw new InvalidDataException($"{path}: unknown {typeof(TEnum).Name} value {value} (known: {string.Join(", ", Enum.GetNames<TEnum>())}).");
+    }
+
+    private static void ValidateCurve(ScalarCurve curve, string path, bool normalized)
+    {
+        if (curve.Keys.Length == 0)
+            throw new InvalidDataException($"{path}: at least one key is required.");
+        if (!float.IsFinite(curve.Multiplier))
+            throw new InvalidDataException($"{path}: multiplier must be finite.");
+        for (int i = 0; i < curve.Keys.Length; i++)
+        {
+            CurveKey key = curve.Keys[i];
+            ValidateTime(key.Time, i > 0 ? curve.Keys[i - 1].Time : -1f, $"{path}[{i}]", normalized, allowEqual: true);
+            if (!float.IsFinite(key.Value) || !float.IsFinite(key.InTangent) || !float.IsFinite(key.OutTangent))
+                throw new InvalidDataException($"{path}[{i}]: value and tangents must be finite.");
+        }
+    }
+
+    // Stored scene encoding: RGB finite >= 0 without an upper bound (HDR), alpha finite in [0,1] as coverage.
+    private static void ValidateStoredColor(Vector4 color, string path)
+    {
+        if (!float.IsFinite(color.X) || !float.IsFinite(color.Y) || !float.IsFinite(color.Z) ||
+            color.X < 0f || color.Y < 0f || color.Z < 0f)
+            throw new InvalidDataException($"{path}: RGB components must be finite and >= 0, got ({color.X}, {color.Y}, {color.Z}).");
+        if (!float.IsFinite(color.W) || color.W < 0f || color.W > 1f)
+            throw new InvalidDataException($"{path}: alpha must be finite and in [0,1], got {color.W}.");
+    }
+
+    // Scalar CurveKeys allow equal times (D22); ColorGradient stops remain strict.
+    private static void ValidateTime(float time, float previous, string path, bool normalized, bool allowEqual)
+    {
+        if (!float.IsFinite(time) || time < 0f || (normalized && time > 1f))
+            throw new InvalidDataException($"{path}.time: must be finite and {(normalized ? "in [0,1] (normalized lifetime)" : ">= 0 (seconds)")}.");
+        if (allowEqual ? time < previous : time <= previous)
+            throw new InvalidDataException($"{path}.time: {(allowEqual ? "keys must have non-decreasing time" : "stops must have strictly increasing time")}.");
+    }
+
+    // Parser-only normalization; preserve the existing localRotation degeneracy threshold.
+    internal static Quaternion NormalizeRotation(Quaternion rotation, string path)
+    {
+        float lengthSquared = rotation.LengthSquared();
+        if (!(lengthSquared > 1e-8f) || !float.IsFinite(lengthSquared))
+            throw new InvalidDataException($"{path}: quaternion {rotation} must be finite and nondegenerate.");
+        return Quaternion.Normalize(rotation);
+    }
+
+    private static void ValidateRotation(Quaternion rotation, string path)
+    {
+        float lengthSquared = rotation.LengthSquared();
+        if (!float.IsFinite(lengthSquared) || MathF.Abs(lengthSquared - 1f) > 1e-5f)
+            throw new InvalidDataException($"{path}: quaternion must be finite, nondegenerate and unit (|lengthSquared - 1| <= 1e-5).");
+    }
+
+    private static void ValidateRange(float value, float max, string path)
+    {
+        if (!float.IsFinite(value) || value < 0f || value > max)
+            throw new InvalidDataException($"{path}: must be finite and in [0,{max}], got {value}.");
+    }
+
+    private static void ValidateNonnegative(float value, string path)
+    {
+        if (!float.IsFinite(value) || value < 0f)
+            throw new InvalidDataException($"{path}: must be finite and >= 0, got {value}.");
+    }
+
     private static void ValidateEmitter(EmitterSpec emitter, string path)
     {
         if (emitter.MaxParticles <= 0)
@@ -491,9 +644,45 @@ internal static class LumenAssetRules
             throw new InvalidDataException($"{path}: flipbookTilesX/Y must be >= 1, got {emitter.FlipbookTilesX}x{emitter.FlipbookTilesY}.");
         }
 
-        if (!float.IsFinite(emitter.Duration) || emitter.Duration < 0f)
+        if (!float.IsFinite(emitter.Duration) || emitter.Duration <= 0f)
         {
-            throw new InvalidDataException($"{path}: duration must be finite and >= 0, got {emitter.Duration}.");
+            throw new InvalidDataException($"{path}: duration must be finite and > 0, got {emitter.Duration}.");
+        }
+
+        Vector3 position = emitter.ShapePosition;
+        if (!float.IsFinite(position.X) || !float.IsFinite(position.Y) || !float.IsFinite(position.Z))
+            throw new InvalidDataException($"{path}.shapePosition: components must be finite.");
+        Vector3 scale = emitter.ShapeScale;
+        if (!float.IsFinite(scale.X) || !float.IsFinite(scale.Y) || !float.IsFinite(scale.Z))
+            throw new InvalidDataException($"{path}.shapeScale: components must be finite (zero and negative scales are allowed).");
+        ValidateRotation(emitter.ShapeRotation, path + ".shapeRotation");
+        ValidateNonnegative(emitter.ConeLength, path + ".coneLength");
+        ValidateNonnegative(emitter.DonutRadius, path + ".donutRadius");
+        ValidateNonnegative(emitter.RandomPositionAmount, path + ".randomPositionAmount");
+        ValidateRange(emitter.RadiusThickness, 1f, path + ".radiusThickness");
+        ValidateRange(emitter.BoxThickness.X, 1f, path + ".boxThickness.x");
+        ValidateRange(emitter.BoxThickness.Y, 1f, path + ".boxThickness.y");
+        ValidateRange(emitter.BoxThickness.Z, 1f, path + ".boxThickness.z");
+        ValidateRange(emitter.ArcDegrees, 360f, path + ".arcDegrees");
+        ValidateRange(emitter.ArcSpread, 1f, path + ".arcSpread");
+        ValidateRange(emitter.RadiusSpread, 1f, path + ".radiusSpread");
+        ValidateRange(emitter.RandomDirectionAmount, 1f, path + ".randomDirectionAmount");
+        ValidateRange(emitter.SphericalDirectionAmount, 1f, path + ".sphericalDirectionAmount");
+
+        ValidateEnum(emitter.PreferredTier, path + ".preferredTier");
+        ValidateEnum(emitter.Shape, path + ".shape");
+        ValidateEnum(emitter.BlendMode, path + ".blendMode");
+        ValidateEnum(emitter.BillboardMode, path + ".billboardMode");
+
+        ValidateCurve(emitter.SizeOverLifetime, path + ".sizeOverLifetime", normalized: true);
+        ColorStop[] stops = emitter.ColorOverLifetime.Stops;
+        if (stops.Length == 0)
+            throw new InvalidDataException($"{path}.colorOverLifetime: at least one stop is required.");
+        for (int i = 0; i < stops.Length; i++)
+        {
+            ColorStop stop = stops[i];
+            ValidateTime(stop.Time, i > 0 ? stops[i - 1].Time : -1f, $"{path}.colorOverLifetime[{i}]", normalized: true, allowEqual: false);
+            ValidateStoredColor(stop.Rgba, $"{path}.colorOverLifetime[{i}].color");
         }
 
         if (!float.IsFinite(emitter.RateOverTime) || emitter.RateOverTime < 0f)
@@ -501,34 +690,45 @@ internal static class LumenAssetRules
             throw new InvalidDataException($"{path}: rateOverTime must be finite and >= 0, got {emitter.RateOverTime}.");
         }
 
+        ValidateStoredColor(emitter.StartColor, path + ".startColor");
+        ValidateStoredColor(emitter.MaterialTint, path + ".materialTint");
+        ValidateEnum(emitter.ColorSpace, path + ".colorSpace");
+
+        if (!float.IsFinite(emitter.HdrIntensity) || emitter.HdrIntensity < 0f)
+        {
+            throw new InvalidDataException($"{path}: hdrIntensity must be finite and >= 0, got {emitter.HdrIntensity}.");
+        }
+
         if (!float.IsFinite(emitter.ConeAngleDegrees) || emitter.ConeAngleDegrees < 0f || emitter.ConeAngleDegrees > 180f)
         {
             throw new InvalidDataException($"{path}: coneAngleDegrees must be in [0, 180], got {emitter.ConeAngleDegrees}.");
         }
 
-        foreach ((float time, int count) in emitter.Bursts)
+        for (int i = 0; i < emitter.Bursts.Length; i++)
         {
-            if (!float.IsFinite(time) || time < 0f)
-            {
-                throw new InvalidDataException($"{path}: burst time must be finite and >= 0, got {time}.");
-            }
-
-            if (count < 0)
-            {
-                throw new InvalidDataException($"{path}: burst count must be >= 0, got {count}.");
-            }
+            ParticleBurstSpec burst = emitter.Bursts[i];
+            string burstPath = $"{path}.bursts[{i}]";
+            ValidateNonnegative(burst.Time, burstPath + ".time");
+            if (burst.Time > emitter.Duration)
+                throw new InvalidDataException($"{burstPath}.time: must be <= duration ({emitter.Duration}), got {burst.Time}.");
+            if (burst.Count < 0)
+                throw new InvalidDataException($"{burstPath}.count: must be >= 0, got {burst.Count}.");
+            ValidateRange(burst.Probability, 1f, burstPath + ".probability");
         }
 
-        foreach (ForceFieldSpec field in emitter.ForceFields)
+        for (int i = 0; i < emitter.ForceFields.Length; i++)
         {
+            ForceFieldSpec field = emitter.ForceFields[i];
+            ValidateEnum(field.Kind, $"{path}.forceFields[{i}].kind");
+
             if (!float.IsFinite(field.Radius) || field.Radius < 0f)
             {
-                throw new InvalidDataException($"{path}: force field radius must be finite and >= 0, got {field.Radius}.");
+                throw new InvalidDataException($"{path}.forceFields[{i}].radius: must be finite and >= 0, got {field.Radius}.");
             }
 
             if (!float.IsFinite(field.Strength) || !float.IsFinite(field.Frequency))
             {
-                throw new InvalidDataException($"{path}: force field strength/frequency must be finite.");
+                throw new InvalidDataException($"{path}.forceFields[{i}].strength/frequency: must be finite.");
             }
         }
     }
@@ -593,7 +793,7 @@ public static class LumenJsonAssetLoader
             int index = 0;
             foreach (JsonElement nodeElement in nodesElement.EnumerateArray())
             {
-                nodes[index] = ParseNode(nodeElement, $"asset.nodes[{index}]");
+                nodes[index] = ParseNode(nodeElement, $"effect '{effectId}'.nodes[{index}]");
                 index++;
             }
 
@@ -671,20 +871,22 @@ public static class LumenJsonAssetLoader
     private static readonly string[] EmitterProperties =
     {
         "name", "maxParticles", "duration", "looping", "worldSpaceSimulation", "rateOverTime", "bursts",
-        "shape", "shapeExtents", "coneAngleDegrees", "startLifetime", "startLifetimeMin", "startLifetimeMax",
+        "shape", "shapeExtents", "shapePosition", "shapeRotation", "shapeScale", "coneAngleDegrees",
+        "coneLength", "donutRadius", "radiusThickness", "boxThickness", "arcDegrees", "arcSpread", "radiusSpread",
+        "randomDirectionAmount", "sphericalDirectionAmount", "randomPositionAmount", "startLifetime", "startLifetimeMin", "startLifetimeMax",
         "startSpeed", "startSpeedMin", "startSpeedMax", "startSize", "startSizeMin", "startSizeMax",
-        "startColorLinear", "sizeOverLifetime", "colorOverLifetime", "forceFields", "textureKey",
+        "startColor", "colorSpace", "materialTint", "sizeOverLifetime", "colorOverLifetime", "forceFields", "textureKey",
         "flipbookTilesX", "flipbookTilesY", "flipbookCycles", "blendMode", "billboardMode",
-        "velocityStretchFactor", "lengthScale", "softParticleFadeDistance", "hdrIntensity", "bloomWeight",
+        "velocityStretchFactor", "lengthScale", "softParticleFadeDistance", "hdrIntensity",
         "preferredTier", "killBelowFloor",
     };
 
     private static readonly string[] PointLightProperties =
     {
-        "glowRadius", "overlightRadius", "colorRgb", "colorLinear", "intensity", "intensityOverTime",
+        "glowRadius", "overlightRadius", "color", "intensity", "intensityOverTime",
     };
 
-    private static readonly string[] BurstProperties = { "time", "count" };
+    private static readonly string[] BurstProperties = { "time", "count", "probability" };
 
     private static readonly string[] ForceFieldProperties =
     {
@@ -702,7 +904,7 @@ public static class LumenJsonAssetLoader
 
     private static readonly string[] GradientProperties = { "stops" };
 
-    private static readonly string[] GradientStopProperties = { "time", "rgbaLinear", "color" };
+    private static readonly string[] GradientStopProperties = { "time", "color" };
 
     private static EffectNodeSpec ParseNode(JsonElement element, string path)
     {
@@ -757,14 +959,29 @@ public static class LumenJsonAssetLoader
             Bursts = ParseBursts(scope, path),
             Shape = scope.Enum("shape", LumenShapeKind.Point),
             ShapeExtents = scope.Vector3("shapeExtents", Vector3.One),
+            ShapePosition = scope.Vector3("shapePosition", Vector3.Zero),
+            ShapeRotation = scope.Rotation("shapeRotation", Quaternion.Identity),
+            ShapeScale = scope.Vector3("shapeScale", Vector3.One),
             ConeAngleDegrees = scope.Float("coneAngleDegrees", 25f),
+            ConeLength = scope.Float("coneLength", 5f),
+            DonutRadius = scope.Float("donutRadius", 0.2f),
+            RadiusThickness = scope.Float("radiusThickness", 1f),
+            BoxThickness = scope.Vector3("boxThickness", Vector3.Zero),
+            ArcDegrees = scope.Float("arcDegrees", 360f),
+            ArcSpread = scope.Float("arcSpread", 0f),
+            RadiusSpread = scope.Float("radiusSpread", 0f),
+            RandomDirectionAmount = scope.Float("randomDirectionAmount", 0f),
+            SphericalDirectionAmount = scope.Float("sphericalDirectionAmount", 0f),
+            RandomPositionAmount = scope.Float("randomPositionAmount", 0f),
             StartLifetimeMin = lifetime ?? scope.Float("startLifetimeMin", 1f),
             StartLifetimeMax = lifetime ?? scope.Float("startLifetimeMax", 1f),
             StartSpeedMin = speed ?? scope.Float("startSpeedMin", 0f),
             StartSpeedMax = speed ?? scope.Float("startSpeedMax", 0f),
             StartSizeMin = size ?? scope.Float("startSizeMin", 1f),
             StartSizeMax = size ?? scope.Float("startSizeMax", 1f),
-            StartColorLinear = scope.ColorRgba("startColorLinear", Vector4.One),
+            StartColor = scope.ColorRgba("startColor", Vector4.One),
+            ColorSpace = scope.Enum("colorSpace", LumenColorSpace.Stored),
+            MaterialTint = scope.ColorRgba("materialTint", Vector4.One),
             SizeOverLifetime = scope.TryGet("sizeOverLifetime", out JsonElement sizeElement) ? ParseCurve(sizeElement, path + ".sizeOverLifetime") : ScalarCurve.Constant(1f),
             ColorOverLifetime = scope.TryGet("colorOverLifetime", out JsonElement colorElement) ? ParseGradient(colorElement, path + ".colorOverLifetime") : ColorGradient.Constant(Vector4.One),
             ForceFields = ParseForceFields(scope, path),
@@ -778,7 +995,6 @@ public static class LumenJsonAssetLoader
             LengthScale = scope.Float("lengthScale", 1f),
             SoftParticleFadeDistance = scope.Float("softParticleFadeDistance", 0.5f),
             HdrIntensity = scope.Float("hdrIntensity", 1f),
-            BloomWeight = scope.Float("bloomWeight", 1f),
             PreferredTier = scope.Enum("preferredTier", LumenParticleTier.L2_GpuCompute),
             KillBelowFloor = scope.Bool("killBelowFloor", false),
         };
@@ -793,16 +1009,8 @@ public static class LumenJsonAssetLoader
 
         var scope = new JsonScope(element, path);
         scope.Check(PointLightProperties);
-        Vector3 rgb;
-        if (scope.Has("colorRgb"))
-        {
-            rgb = scope.Vector3("colorRgb", Vector3.One);
-        }
-        else
-        {
-            Vector4 linear = scope.ColorRgba("colorLinear", Vector4.One);
-            rgb = new Vector3(linear.X, linear.Y, linear.Z);
-        }
+        Vector4 color = scope.ColorRgba("color", Vector4.One);
+        Vector3 rgb = new(color.X, color.Y, color.Z);
 
         float intensity = scope.Float("intensity", 1f);
         ScalarCurve? overTime = null;
@@ -821,11 +1029,11 @@ public static class LumenJsonAssetLoader
     private static ScalarCurve Multiply(ScalarCurve curve, float factor) =>
         factor == 1f ? curve : new ScalarCurve(curve.Keys, curve.Multiplier * factor);
 
-    private static (float Time, int Count)[] ParseBursts(JsonScope scope, string path)
+    private static ParticleBurstSpec[] ParseBursts(JsonScope scope, string path)
     {
         if (!scope.TryGet("bursts", out JsonElement element) || element.ValueKind == JsonValueKind.Null)
         {
-            return Array.Empty<(float, int)>();
+            return Array.Empty<ParticleBurstSpec>();
         }
 
         if (element.ValueKind != JsonValueKind.Array)
@@ -833,7 +1041,7 @@ public static class LumenJsonAssetLoader
             throw new InvalidDataException($"{path}.bursts: must be an array, got {element.ValueKind}.");
         }
 
-        var bursts = new List<(float, int)>(element.GetArrayLength());
+        var bursts = new List<ParticleBurstSpec>(element.GetArrayLength());
         int index = 0;
         foreach (JsonElement burstElement in element.EnumerateArray())
         {
@@ -842,7 +1050,8 @@ public static class LumenJsonAssetLoader
             {
                 float time = NumberAt(burstElement, 0, burstPath);
                 int count = (int)NumberAt(burstElement, 1, burstPath);
-                bursts.Add((time, count));
+                float probability = burstElement.GetArrayLength() > 2 ? NumberAt(burstElement, 2, burstPath) : 1f;
+                bursts.Add(new ParticleBurstSpec(time, count, probability));
                 continue;
             }
 
@@ -854,7 +1063,7 @@ public static class LumenJsonAssetLoader
             var burst = new JsonScope(burstElement, burstPath);
             burst.Check(BurstProperties);
             float burstTime = burst.Float("time", 0f);
-            bursts.Add((burstTime, burst.Int("count", 1)));
+            bursts.Add(new ParticleBurstSpec(burstTime, burst.Int("count", 1), burst.Float("probability", 1f)));
         }
 
         return bursts.ToArray();
@@ -894,7 +1103,7 @@ public static class LumenJsonAssetLoader
                 field.Vector3("centerOrAxis", Vector3.Zero),
                 field.Vector3("parameters", Vector3.Zero),
                 field.Float("radius", 5f),
-                field.Float("strength", 0f),
+                field.OptionalFloat("strength") ?? throw new InvalidDataException($"{fieldPath}.strength: required."),
                 field.Float("frequency", 1f));
             index++;
         }
@@ -1073,11 +1282,6 @@ public static class LumenJsonAssetLoader
                 throw new InvalidDataException($"{keyPath}: expected [time, value] or {{ time, value }}.");
             }
 
-            if (index > 0 && key.Time < keys[index - 1].Time)
-            {
-                throw new InvalidDataException($"{path}: keys must be ordered by non-decreasing time; key {index} ({key.Time}) follows {keys[index - 1].Time}.");
-            }
-
             keys[index++] = key;
         }
 
@@ -1135,19 +1339,12 @@ public static class LumenJsonAssetLoader
             {
                 var scope = new JsonScope(stopElement, stopPath);
                 scope.Check(GradientStopProperties);
-                Vector4 rgba = scope.Has("rgbaLinear")
-                    ? scope.ColorRgba("rgbaLinear", Vector4.One)
-                    : scope.ColorRgba("color", Vector4.One);
+                Vector4 rgba = scope.ColorRgba("color", Vector4.One);
                 stop = new ColorStop(scope.Float("time", 0f), rgba);
             }
             else
             {
-                throw new InvalidDataException($"{stopPath}: expected [time, color] or {{ time, rgbaLinear }}.");
-            }
-
-            if (index > 0 && stop.Time < stops[index - 1].Time)
-            {
-                throw new InvalidDataException($"{path}: stops must be ordered by non-decreasing time; stop {index} ({stop.Time}) follows {stops[index - 1].Time}.");
+                throw new InvalidDataException($"{stopPath}: expected [time, color] or {{ time, color }}.");
             }
 
             stops[index++] = stop;
@@ -1245,6 +1442,16 @@ public static class LumenJsonAssetLoader
 
                 if (!known)
                 {
+                    if (name.Equals("bloomWeight", StringComparison.OrdinalIgnoreCase) || name.Equals("hdrMultiplier", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException($"{path}: '{name}' was removed.");
+                    string? renamed = name.ToLowerInvariant() switch
+                    {
+                        "startcolorlinear" => "startColor",
+                        "rgbalinear" or "colorlinear" or "colorrgb" => "color",
+                        _ => null,
+                    };
+                    if (renamed is not null)
+                        throw new InvalidDataException($"{path}: '{name}' renamed to {renamed}.");
                     throw new InvalidDataException($"{path}: unknown property '{name}' (known: {string.Join(", ", allowed)}).");
                 }
             }
@@ -1307,7 +1514,7 @@ public static class LumenJsonAssetLoader
                 : throw new InvalidDataException($"{path}.{name}: expected a string, got {value.ValueKind} '{value}'.");
         }
 
-        // Ensures: accepts an enum member name (case-insensitive) or its integer value.
+        // Parses a member name or representable integer; LumenAssetRules checks defined values once.
         public TEnum Enum<TEnum>(string name, TEnum fallback) where TEnum : struct, System.Enum
         {
             if (!TryGetProperty(element, name, out JsonElement value) || value.ValueKind == JsonValueKind.Null)
@@ -1315,13 +1522,13 @@ public static class LumenJsonAssetLoader
                 return fallback;
             }
 
-            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out int number))
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out _) &&
+                System.Enum.TryParse(value.GetRawText(), out TEnum fromNumber))
             {
-                var fromNumber = (TEnum)System.Enum.ToObject(typeof(TEnum), number);
-                return System.Enum.IsDefined(fromNumber) ? fromNumber : throw new InvalidDataException($"{path}.{name}: {number} is not a valid {typeof(TEnum).Name} value (known: {string.Join(", ", System.Enum.GetNames(typeof(TEnum)))}).");
+                return fromNumber;
             }
 
-            if (value.ValueKind == JsonValueKind.String && System.Enum.TryParse(value.GetString(), ignoreCase: true, out TEnum parsed) && System.Enum.IsDefined(parsed))
+            if (value.ValueKind == JsonValueKind.String && System.Enum.TryParse(value.GetString(), ignoreCase: true, out TEnum parsed))
             {
                 return parsed;
             }
@@ -1385,13 +1592,7 @@ public static class LumenJsonAssetLoader
                 JsonValueKind.Object => ObjectQuaternion(new JsonScope(value, valuePath)),
                 _ => throw new InvalidDataException($"{valuePath}: expected [x, y, z, w] or {{ x, y, z, w }}, got {value.ValueKind}."),
             };
-            float lengthSquared = result.LengthSquared();
-            if (!(lengthSquared > 1e-8f) || !float.IsFinite(lengthSquared))
-            {
-                throw new InvalidDataException($"{valuePath}: quaternion {result} is degenerate.");
-            }
-
-            return Quaternion.Normalize(result);
+            return LumenAssetRules.NormalizeRotation(result, valuePath);
         }
 
         private static Quaternion ObjectQuaternion(JsonScope scope)
@@ -1437,6 +1638,12 @@ public static class LumenJsonAssetLoader
     private static readonly string[] QuaternionComponents = { "x", "y", "z", "w" };
     private static readonly string[] ColorComponents = { "r", "g", "b", "a" };
 }
+
+internal readonly record struct LumenScanRoot(string PackageId, string DataDirectory);
+
+internal readonly record struct LumenAliasChange(string EffectId, string? OldSource, string? NewSource);
+
+internal readonly record struct LumenAssetReloadResult(int Loaded, int Failed, IReadOnlyList<LumenAliasChange> AliasChanges);
 
 /// <summary>
 /// Discovers native RimLumen assets across loaded mods (<c>DefDatabase&lt;LumenEffectDef&gt;</c> and <c>1.7/Data/RimLumen/**/*.lumen.json</c>).
@@ -1485,7 +1692,7 @@ public static class LumenModAssetScanner
                 continue;
             }
 
-            RegisterAliases(catalog, packageId, relativeId, asset);
+            RegisterAliases(catalog, packageId, relativeId, asset, $"{packageId}:{Path.GetFullPath(file)}");
             registered++;
         }
 
@@ -1496,17 +1703,26 @@ public static class LumenModAssetScanner
     public static int ScanRunningMods(InMemoryAssetCatalog catalog)
     {
         ArgumentNullException.ThrowIfNull(catalog);
-        int registered = 0;
-        foreach (ModContentPack mod in LoadedModManager.RunningMods)
+        var counts = ScanSources(catalog, RunningModRoots(), LoadedEffectDefs());
+        return counts.JsonLoaded + counts.DefsLoaded;
+    }
+
+    // Ensures: scans roots in order, then already-loaded Defs; JsonLoaded counts JSON files only.
+    internal static (int JsonLoaded, int DefsLoaded) ScanSources(InMemoryAssetCatalog catalog,
+        IReadOnlyList<LumenScanRoot> roots, IReadOnlyList<LumenEffectDef> loadedDefs,
+        Action<string, string, Exception>? onJsonError = null)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        int jsonLoaded = 0;
+        foreach (LumenScanRoot root in roots)
         {
-            string packageId = string.IsNullOrEmpty(mod.PackageIdPlayerFacing) ? mod.Name : mod.PackageIdPlayerFacing;
-            Action<string, Exception> report = (file, error) =>
-                Verse.Log.Error($"[RimLumen] Failed to load effect asset '{file}' from {packageId}: {error.Message}");
-            registered += ScanDirectory(catalog, packageId, Path.Combine(mod.RootDir, "1.7", "Data", "RimLumen"), report);
-            registered += ScanDirectory(catalog, packageId, Path.Combine(mod.RootDir, "Data", "RimLumen"), report);
+            string packageId = root.PackageId;
+            jsonLoaded += ScanDirectory(catalog, packageId, root.DataDirectory,
+                (file, error) => (onJsonError ?? DefaultJsonError)(packageId, file, error));
         }
 
-        foreach (LumenEffectDef def in DefDatabase<LumenEffectDef>.AllDefsListForReading)
+        int defsLoaded = 0;
+        foreach (LumenEffectDef def in loadedDefs)
         {
             if (def is null)
             {
@@ -1517,44 +1733,117 @@ public static class LumenModAssetScanner
             try
             {
                 EffectAsset asset = def.ToEffectAsset(packageId);
-                RegisterAliases(catalog, packageId, asset.EffectId, asset);
-                registered++;
+                RegisterAliases(catalog, packageId, asset.EffectId, asset, $"{packageId}:LumenEffectDef/{def.defName}");
+                defsLoaded++;
             }
             catch (InvalidDataException error)
             {
-                Verse.Log.Error($"[RimLumen] Failed to load effect def '{def.defName}' from {packageId}: {error.Message}");
+                DefaultDefError(packageId, def.defName, error);
             }
         }
 
-        return registered;
+        return (jsonLoaded, defsLoaded);
     }
+
+    // Ensures: explicit reload of the current JSON sources and already-loaded Defs; Loaded/Failed count JSON files.
+    internal static LumenAssetReloadResult ReloadRunningModAssets(InMemoryAssetCatalog catalog)
+    {
+        LumenAssetReloadResult result = ReloadEffectAssets(catalog, RunningModRoots(), LoadedEffectDefs());
+        foreach (LumenAliasChange change in result.AliasChanges)
+        {
+            Log.Warning($"[RimLumen] Bare effect id '{change.EffectId}' reload winner changed from " +
+                $"{change.OldSource ?? "none"} to {change.NewSource ?? "none"}.");
+        }
+
+        return result;
+    }
+
+    internal static LumenAssetReloadResult ReloadEffectAssets(InMemoryAssetCatalog catalog,
+        IReadOnlyList<LumenScanRoot> roots, IReadOnlyList<LumenEffectDef> loadedDefs)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        var rebuilt = new InMemoryAssetCatalog();
+        int failed = 0;
+        var counts = ScanSources(rebuilt, roots, loadedDefs,
+            onJsonError: (packageId, file, error) =>
+            {
+                failed++;
+                DefaultJsonError(packageId, file, error);
+            });
+        LumenScannedAsset[] fresh = rebuilt.GetScannedSnapshot();
+        var freshByKey = fresh.ToDictionary(entry => entry.EffectId, StringComparer.Ordinal);
+        LumenScannedAsset[] previous = catalog.GetScannedSnapshot();
+        var changes = new List<LumenAliasChange>();
+        foreach (LumenScannedAsset old in previous.OrderBy(entry => entry.EffectId, StringComparer.Ordinal))
+        {
+            if (old.EffectId.Contains(':')) continue;
+            string? newSource = freshByKey.TryGetValue(old.EffectId, out LumenScannedAsset next) ? next.Source : null;
+            if (!string.Equals(old.Source, newSource, StringComparison.Ordinal))
+            {
+                changes.Add(new LumenAliasChange(old.EffectId, old.Source, newSource));
+            }
+        }
+
+        foreach (LumenScannedAsset entry in freshByKey.Values.OrderBy(entry => entry.EffectId, StringComparer.Ordinal))
+        {
+            catalog.RegisterScanned(entry.Asset, entry.Source);
+        }
+
+        foreach (LumenScannedAsset old in previous)
+        {
+            if (!freshByKey.ContainsKey(old.EffectId)) catalog.Unregister(old.EffectId);
+        }
+
+        return new LumenAssetReloadResult(counts.JsonLoaded, failed, changes);
+    }
+
+    private static List<LumenScanRoot> RunningModRoots()
+    {
+        var roots = new List<LumenScanRoot>();
+        foreach (ModContentPack mod in LoadedModManager.RunningMods)
+        {
+            string packageId = string.IsNullOrEmpty(mod.PackageIdPlayerFacing) ? mod.Name : mod.PackageIdPlayerFacing;
+            roots.Add(new LumenScanRoot(packageId, Path.Combine(mod.RootDir, "1.7", "Data", "RimLumen")));
+            roots.Add(new LumenScanRoot(packageId, Path.Combine(mod.RootDir, "Data", "RimLumen")));
+        }
+
+        return roots;
+    }
+
+    private static IReadOnlyList<LumenEffectDef> LoadedEffectDefs() => DefDatabase<LumenEffectDef>.AllDefsListForReading;
+
+    private static void DefaultJsonError(string packageId, string file, Exception error) =>
+        Log.Error($"[RimLumen] Failed to load effect asset '{file}' from {packageId}: {error.Message}");
+
+    private static void DefaultDefError(string packageId, string defName, Exception error) =>
+        Log.Error($"[RimLumen] Failed to load effect def '{defName}' from {packageId}: {error.Message}");
 
     // Ensures: registers "<packageId>:<id>" plus the bare "<id>" short name for the asset's own id and for the
     //          file-relative id. Canonical (package-qualified) keys overwrite, so a mod rescan refreshes its own
     //          assets; bare short names (the asset's own id and the file-relative id) are first-writer-wins so a mod cannot
-    //          silently shadow another mod's id.
-    private static void RegisterAliases(InMemoryAssetCatalog catalog, string? packageId, string relativeId, EffectAsset asset)
+    //          silently shadow another mod's id. Every key records its source.
+    private static void RegisterAliases(InMemoryAssetCatalog catalog, string? packageId, string relativeId, EffectAsset asset, string source)
     {
         if (!catalog.TryResolveEffect(asset.EffectId, out _))
         {
-            catalog.Register(asset);
+            catalog.RegisterScanned(asset, source);
         }
 
         if (!string.IsNullOrEmpty(packageId))
         {
-            catalog.Register(Alias(asset, $"{packageId}:{asset.EffectId}"));
+            catalog.RegisterScanned(Alias(asset, $"{packageId}:{asset.EffectId}"), source);
         }
 
         if (!string.Equals(asset.EffectId, relativeId, StringComparison.Ordinal))
         {
             if (!catalog.TryResolveEffect(relativeId, out _))
             {
-                catalog.Register(Alias(asset, relativeId));
+                catalog.RegisterScanned(Alias(asset, relativeId), source);
             }
 
             if (!string.IsNullOrEmpty(packageId))
             {
-                catalog.Register(Alias(asset, $"{packageId}:{relativeId}"));
+                catalog.RegisterScanned(Alias(asset, $"{packageId}:{relativeId}"), source);
             }
         }
     }

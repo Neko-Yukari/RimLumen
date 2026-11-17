@@ -12,6 +12,9 @@ public readonly struct LumenPlayRequest
     }
 
     public required string EffectId { get; init; }
+    /// <summary>RimWorld Map.uniqueID (not the map list index). -1 resolves to the current map once at Play;
+    /// no current map throws InvalidOperationException. Other negative values throw ArgumentOutOfRangeException.
+    /// The resolved id owns particles and lights for the handle's entire lifetime, even after a map switch.</summary>
     public int MapIndex { get; init; } = -1;
     public Vector3 OriginWorld { get; init; }
     public Vector3? TargetWorld { get; init; }
@@ -34,12 +37,16 @@ public interface ILumenEffectHandle : IDisposable
     //          every node named name, without changing the current state. Unmatched names are a no-op.
     void Trigger(string name);
 
-    // Requires: main thread; stateName names a state the asset declares (otherwise ArgumentException).
-    // Ensures: enters stateName now (re-entering the current state restarts it). No-op after Stop(true) or once dead.
+    // Requires: main thread. For an asset-backed handle, an undeclared stateName throws ArgumentException,
+    //          including after Stop(true), while draining, or once dead. Inert handles have no asset state table and are no-ops.
+    // Ensures: a declared state is entered (or restarted) only while playing before Stop(true); otherwise no-op.
+    //          Stop(false) tears down immediately. An inert handle always does nothing.
     void GoTo(string stateName);
 
     // Requires: name is non-empty; value is finite.
     // Ensures: updates runtime scalar parameter for emitters/materials/lights bound to name.
+    //          "rate" must be finite and >= 0 (otherwise ArgumentOutOfRangeException); zero pauses
+    //          continuous emission only, never authored or explicit bursts.
     void SetParam(string name, float value);
 
     // Ensures: allowFadeOut == true plays the asset's StopState to its end when it declares one, then stops new

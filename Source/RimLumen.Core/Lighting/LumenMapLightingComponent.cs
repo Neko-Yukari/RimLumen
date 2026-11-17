@@ -41,22 +41,19 @@ public sealed class LumenMapLightingComponent : MapComponent, IDisposable
 }
 
 /// <summary>
-/// Map-id keyed registry of <see cref="MapGlowerDriver"/> instances. Only negative map indices
-/// resolve to the most recently registered map, because <see cref="Contracts.LumenPlayRequest.MapIndex"/>
-/// defaults to -1 for "whatever map is being played"; non-negative indices require an exact map key.
+/// Exact RimWorld Map.uniqueID lookup for <see cref="MapGlowerDriver"/> instances.
+/// Play resolves its implicit current-map request before accessing this registry; registration order
+/// never determines which map receives an effect's lights.
 /// </summary>
 public static class LumenMapLightingRegistry
 {
     private static readonly Dictionary<int, MapGlowerDriver> drivers = new();
-    private static readonly List<int> registrationOrder = new();
 
     // Requires: mapUniqueId is the Verse.Map.uniqueID (-1 is a valid key for maps that are not saved yet).
-    // Ensures: a later Register for the same key replaces the driver and makes it the most recent one.
+    // Ensures: a later Register for the same key replaces only that map's driver.
     public static void Register(int mapUniqueId, MapGlowerDriver driver)
     {
         drivers[mapUniqueId] = driver;
-        registrationOrder.Remove(mapUniqueId);
-        registrationOrder.Add(mapUniqueId);
     }
 
     // Ensures: removes the entry only when it still holds that exact driver instance; idempotent.
@@ -65,27 +62,13 @@ public static class LumenMapLightingRegistry
         if (drivers.TryGetValue(mapUniqueId, out var current) && ReferenceEquals(current, driver))
         {
             drivers.Remove(mapUniqueId);
-            registrationOrder.Remove(mapUniqueId);
         }
     }
 
-    // Ensures: mapIndex >= 0 resolves only that exact map key, so an effect bound to a unloaded map can
-    //          never migrate its lights onto another map; a negative mapIndex resolves the most recently
-    //          registered driver. False with driver == null when nothing matches.
+    // Ensures: resolves only the exact map key; an unloaded map never migrates its lights onto another
+    //          map. Even negative keys are exact lookups, never aliases for the current/last map.
     public static bool TryResolve(int mapIndex, out MapGlowerDriver? driver)
-    {
-        if (mapIndex >= 0)
-        {
-            return drivers.TryGetValue(mapIndex, out driver);
-        }
-        driver = null;
-        if (registrationOrder.Count == 0)
-        {
-            return false;
-        }
-        driver = drivers[registrationOrder[^1]];
-        return true;
-    }
+        => drivers.TryGetValue(mapIndex, out driver);
 
     // Ensures: number of registered maps.
     public static int Count => drivers.Count;

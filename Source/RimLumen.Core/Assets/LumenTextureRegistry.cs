@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using RimLumen.Core.Contracts;
 using Waylith.Rendering;
 
 namespace RimLumen.Core.Assets;
@@ -46,7 +47,12 @@ public static class LumenTextureRegistry
     // Ensures: resolves explicit registration first, then ContentFinder<UnityEngine.Texture2D>.Get(key, false)?.CoreTexture;
     //          ensures SampledReady + resident GPU resource; falls back to Texture2D.whiteTexture with hasTexture=false and one-shot warning.
     public static Texture ResolveForSamplingOnMainThread(string? key, out bool hasTexture)
+        => ResolveForSamplingOnMainThread(key, LumenColorSpace.Stored, out hasTexture, out _);
+
+    internal static Texture ResolveForSamplingOnMainThread(string? key, LumenColorSpace colorSpace,
+        out bool hasTexture, out bool textureSrgb)
     {
+        textureSrgb = false;
         if (string.IsNullOrEmpty(key))
         {
             hasTexture = false;
@@ -67,6 +73,7 @@ public static class LumenTextureRegistry
 
         if (tex is not null)
         {
+            textureSrgb = TextureIsSrgb(key, tex, colorSpace);
             Texture.EnsureSampledReady(tex);
             if (tex.GpuResource is null && !tex.EnsureResident())
             {
@@ -88,11 +95,23 @@ public static class LumenTextureRegistry
             }
 
             hasTexture = false;
+            textureSrgb = false;
             return White();
         }
 
         hasTexture = true;
         return tex;
+    }
+
+    // Main-thread metadata boundary. Stored does not consume this flag; Linear never guesses it.
+    // RimUnity MaterialColorSpace.cs:16 at 45ca90987f7d3721715b45c021cab986ee14c468 uses !Linear;
+    // D33 deliberately rejects missing metadata instead of adopting that upstream null default.
+    internal static bool TextureIsSrgb(string key, Texture texture, LumenColorSpace colorSpace)
+    {
+        if (texture is Texture2D { CpuData: { } data }) return !data.Linear;
+        if (colorSpace == LumenColorSpace.Linear)
+            throw new InvalidOperationException($"[RimLumen] Particle texture '{key}' colour metadata missing: Linear materials require Texture2D.CpuData.Linear.");
+        return false;
     }
 
     // Kept out of Register/TryGetRegistered so pure registry tests never enter the host Content system.

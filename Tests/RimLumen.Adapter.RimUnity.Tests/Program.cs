@@ -8,27 +8,49 @@ namespace RimLumen.Adapter.RimUnity.Tests;
 
 internal static class Program
 {
-    private static int Main()
+    private static int Main(string[] args)
     {
+        string? filter = null;
+        for (int i = 0; i < args.Length - 1; i++)
+            if (args[i] == "--filter") filter = args[i + 1];
         (string Name, Action Run)[] suites =
         [
             ("WotF all seven translation and native/hybrid play", IntegrationTests.WotfIntegration),
-            ("Tier matrix and L0 ownership", TranslationTests.TierMatrix),
+            ("WotF tier report", IntegrationTests.WotfTierReport),
+            ("Tier matrix and External ownership", TranslationTests.TierMatrix),
+            ("Phase3 active export fields", TranslationTests.ActiveExportFields),
+            ("Phase3 bounded imported bursts", TranslationTests.BoundedImportedBursts),
+            ("Phase3 deferred weighted export classification", TranslationTests.DeferredWeightedExports),
+            ("renderMode fallback ownership", TranslationTests.RenderModeFallback),
             ("Shape fidelity fallback reasons", TranslationTests.Shapes),
+            ("Shape axis import", TranslationTests.ShapeAxis),
+            ("Shape nonuniform scale import", TranslationTests.ShapeScale),
+            ("R1 duplicate curve import", TranslationTests.DuplicateCurve),
+            ("R1 mixed repeated scalar curve registration", TranslationTests.MixedRepeatedCurves),
+            ("R2 adjacent Fixed gradient import", TranslationTests.AdjacentFixedGradient),
+            ("R3 rejected hybrid ownership", IntegrationTests.RejectedHybrid),
             ("Canonical GravityDrag L1/L2 fields only", TranslationTests.Gravity),
+            ("Canonical Vortex radial L1/L2", TranslationTests.VortexRadial),
             ("Transitive subEmitter ownership", TranslationTests.SubEmitterClosure),
             ("Curves, gradients and HDR", TranslationTests.Values),
+            ("Scene colour Gamma import", TranslationTests.SceneColor),
+            ("PhaseA Linear material factors", TranslationTests.LinearMaterial),
+            ("PhaseA imported material domain", TranslationTests.MaterialDomain),
+            ("PhaseA WotF Probe external handoff", IntegrationTests.WotfProbeMaterial),
+            ("D20 per-particle lights ownership", TranslationTests.ParticleLights),
             ("Catalog required, gzip payloads, aliases, shared owner and traversal", FileTests.Catalog),
+            ("RimUnity same-root reload refreshes catalogs and translations", FileTests.Reload),
             ("RUTX DXT1/BC7 mips, gzip and malformed payloads", FileTests.Textures),
             ("Core assembly architectural independence", IntegrationTests.CoreIndependence),
         ];
-        int failed = 0;
+        int passed = 0, failed = 0;
         foreach (var suite in suites)
         {
-            try { suite.Run(); Console.WriteLine("[PASS] " + suite.Name); }
+            if (!string.IsNullOrEmpty(filter) && !suite.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
+            try { suite.Run(); passed++; Console.WriteLine("[PASS] " + suite.Name); }
             catch (Exception e) { failed++; Console.WriteLine("[FAIL] " + suite.Name + ": " + e); }
         }
-        Console.WriteLine($"SUMMARY passed={suites.Length - failed} failed={failed}");
+        Console.WriteLine($"SUMMARY passed={passed} failed={failed}");
         return failed == 0 ? 0 : 1;
     }
 }

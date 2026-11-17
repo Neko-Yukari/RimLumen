@@ -34,7 +34,7 @@ internal static class RimLumenDemoEffects
     // Seconds the launched firework stays visible (burst particles live at most 2.1 s past the apex).
     internal const float FireworkVisibleSeconds = 2.75f;
 
-    // Burst hue and the ember colour it cools to, per variant (linear RGB).
+    // Burst hue and the ember colour it cools to, per variant (vanilla scene's stored RGB encoding).
     private static readonly Vector4[] FireworkHues =
     {
         new(1.00f, 0.62f, 0.16f, 1f),
@@ -107,7 +107,7 @@ internal static class RimLumenDemoEffects
                         StartLifetimeMax = 0.65f,
                         StartSizeMin = 0.10f,
                         StartSizeMax = 0.20f,
-                        StartColorLinear = new Vector4(1.0f, 0.90f, 0.65f, 1f),
+                        StartColor = new Vector4(1.0f, 0.90f, 0.65f, 1f),
                         HdrIntensity = 4.0f,
                         SoftParticleFadeDistance = 0.4f,
                         BillboardMode = LumenBillboardMode.StretchedVelocity,
@@ -148,7 +148,7 @@ internal static class RimLumenDemoEffects
                         Looping = false,
                         WorldSpaceSimulation = true,
                         RateOverTime = 0f,
-                        Bursts = new[] { (LaunchSeconds, 1800) },
+                        Bursts = new[] { new ParticleBurstSpec(LaunchSeconds, 1800) },
                         Shape = LumenShapeKind.Sphere,
                         ShapeExtents = new Vector3(0.18f, 0.18f, 0.18f),
                         StartSpeedMin = 6.0f,
@@ -157,7 +157,7 @@ internal static class RimLumenDemoEffects
                         StartLifetimeMax = 2.1f,
                         StartSizeMin = 0.09f,
                         StartSizeMax = 0.22f,
-                        StartColorLinear = Vector4.One,
+                        StartColor = Vector4.One,
                         HdrIntensity = 8.0f,
                         SoftParticleFadeDistance = 0.6f,
                         BillboardMode = LumenBillboardMode.StretchedVelocity,
@@ -200,7 +200,7 @@ internal static class RimLumenDemoEffects
                         Looping = false,
                         WorldSpaceSimulation = true,
                         RateOverTime = 0f,
-                        Bursts = new[] { (LaunchSeconds + 0.01f, 360) },
+                        Bursts = new[] { new ParticleBurstSpec(LaunchSeconds + 0.01f, 360) },
                         Shape = LumenShapeKind.Sphere,
                         ShapeExtents = new Vector3(0.30f, 0.30f, 0.30f),
                         StartSpeedMin = 0.6f,
@@ -209,7 +209,7 @@ internal static class RimLumenDemoEffects
                         StartLifetimeMax = 1.00f,
                         StartSizeMin = 0.14f,
                         StartSizeMax = 0.32f,
-                        StartColorLinear = Vector4.One,
+                        StartColor = Vector4.One,
                         HdrIntensity = 12.0f,
                         SoftParticleFadeDistance = 0.5f,
                         SizeOverLifetime = new ScalarCurve(new[]
@@ -285,7 +285,7 @@ internal static class RimLumenDemoEffects
                         StartLifetimeMax = 1.55f,
                         StartSizeMin = 0.07f,
                         StartSizeMax = 0.17f,
-                        StartColorLinear = new Vector4(0.72f, 0.92f, 1f, 1f),
+                        StartColor = new Vector4(0.72f, 0.92f, 1f, 1f),
                         HdrIntensity = 2.6f,
                         SoftParticleFadeDistance = 0.9f,
                         SizeOverLifetime = new ScalarCurve(new[]
@@ -334,7 +334,7 @@ internal static class RimLumenDemoEffects
                         StartLifetimeMax = 1.6f,
                         StartSizeMin = 0.35f,
                         StartSizeMax = 0.75f,
-                        StartColorLinear = new Vector4(0.60f, 0.85f, 1f, 1f),
+                        StartColor = new Vector4(0.60f, 0.85f, 1f, 1f),
                         HdrIntensity = 1.2f,
                         SoftParticleFadeDistance = 0.7f,
                         BlendMode = LumenBlendMode.AlphaBlend,

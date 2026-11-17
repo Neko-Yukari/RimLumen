@@ -7,6 +7,9 @@ using System.Runtime.Loader;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using RimLumen.Core.ParticlesGpu;
+using RimLumen.Core.Assets;
+using RimLumen.Core.Contracts;
+using Waylith.Assets;
 using Waylith.Graphics.Meshes;
 using Waylith.Rendering;
 
@@ -16,11 +19,214 @@ namespace RimLumen.Core.Tests.ParticlesGpu;
 public static class ParticleShaderTests
 {
     [LumenFact]
+    public static void PhaseATextureMetadataDistinguishesEncodingAndRejectsUnknownLinearSampling()
+    {
+        using var stored = new Texture2D(1, 1, LoadedTextureFormat.Rgba32, linear: false, mipCount: 1, createUninitialized: true);
+        using var linear = new Texture2D(1, 1, LoadedTextureFormat.Rgba32, linear: true, mipCount: 1, createUninitialized: true);
+        Require(LumenTextureRegistry.TextureIsSrgb("stored", stored, LumenColorSpace.Linear)
+            && !LumenTextureRegistry.TextureIsSrgb("linear", linear, LumenColorSpace.Linear),
+            "Loaded CpuData.Linear must be the actual texture-decode flag.");
+        using var unbacked = Texture2D.CreateUnbacked(1, 1);
+        using var volume = new Texture3D(1, 1, 1);
+        Require(!LumenTextureRegistry.TextureIsSrgb("unbacked", unbacked, LumenColorSpace.Stored)
+            && !LumenTextureRegistry.TextureIsSrgb("volume", volume, LumenColorSpace.Stored),
+            "Stored sampling does not require or guess colour metadata.");
+        RequireMissingMetadata("unbacked", unbacked);
+        RequireMissingMetadata("volume", volume);
+    }
+
+    private static void RequireMissingMetadata(string key, Texture texture)
+    {
+        try { LumenTextureRegistry.TextureIsSrgb(key, texture, LumenColorSpace.Linear); }
+        catch (InvalidOperationException error)
+        {
+            Require(error.Message.Contains(key, StringComparison.Ordinal)
+                && error.Message.Contains("colour metadata missing", StringComparison.Ordinal),
+                "Metadata rejection must name the texture key and missing colour metadata.");
+            return;
+        }
+        throw new InvalidOperationException("Linear sampling must reject textures without colour metadata: " + key);
+    }
+
+    [LumenFact]
+    public static void PhaseASharedCompositionIsWiredBeforeCoverageAndPremultiplication()
+    {
+        string l1 = Read("L1ParticleQuad.frag.glsl"), l2 = Read("ParticleBillboard.frag.glsl");
+        Require(l1.Contains("lumenParticleStoredColor(color, lumen._LumenMaterialTint, texel", StringComparison.Ordinal)
+            && l2.Contains("lumenParticleStoredColor(vColor, material._LumenMaterialTint, texel", StringComparison.Ordinal),
+            "Both real fragment entry points must call the shared straight stored composition with raw vertex and separate tint.");
+        string helper = Read("ParticleColor.glsl");
+        Require(helper.Contains("vertex.rgb * lumenDecodeStored(tint.rgb)", StringComparison.Ordinal)
+            && helper.Contains("textureSrgb ? lumenDecodeStored(texel.rgb) : texel.rgb", StringComparison.Ordinal)
+            && helper.Contains("vertex.a * tint.a * texel.a", StringComparison.Ordinal)
+            && !helper.Contains("clamp(", StringComparison.Ordinal),
+            "Linear materials decode only tint/sRGB texels, preserve alpha multiplication and extend HDR without clamping.");
+        Require(helper.Contains("pow((storedRgb + 0.055) / 1.055, vec3(2.4))", StringComparison.Ordinal)
+            && helper.Contains("storedRgb / 12.92", StringComparison.Ordinal)
+            && helper.Contains("lessThanEqual(storedRgb, vec3(0.04045))", StringComparison.Ordinal)
+            && helper.Contains("1.055 * pow(linearRgb, vec3(1.0 / 2.4)) - 0.055", StringComparison.Ordinal)
+            && helper.Contains("linearRgb * 12.92", StringComparison.Ordinal)
+            && helper.Contains("lessThanEqual(linearRgb, vec3(0.0031308))", StringComparison.Ordinal),
+            "Shared shader must use the pinned extended piecewise sRGB equations, not a gamma approximation.");
+        Require(l1.IndexOf("lumenParticleStoredColor(", StringComparison.Ordinal) < l1.IndexOf("c.a *=", StringComparison.Ordinal)
+            && l1.IndexOf("c.a *=", StringComparison.Ordinal) < l1.IndexOf("c.rgb *= c.a", StringComparison.Ordinal)
+            && l2.IndexOf("lumenParticleStoredColor(", StringComparison.Ordinal) < l2.IndexOf("color.a *=", StringComparison.Ordinal)
+            && l2.IndexOf("color.a *=", StringComparison.Ordinal) < l2.IndexOf("color.rgb *= color.a", StringComparison.Ordinal),
+            "Straight composition must precede soft coverage and output premultiplication in both real entry points.");
+        string root = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Source", "RimLumen.Core"));
+        string cpu = File.ReadAllText(Path.Combine(root, "Rendering", "L1ParticleBatchRenderer.cs"));
+        string gpu = File.ReadAllText(Path.Combine(root, "ParticlesGpu", "ParticleGpuDrawResources.cs"));
+        string enqueue = File.ReadAllText(Path.Combine(root, "ParticlesGpu", "LumenGpuParticleEngine.Gpu.cs"));
+        Require(cpu.Contains("DrawProperty.Vector(TintPropertyId, batch.MaterialTint)", StringComparison.Ordinal)
+            && cpu.Contains("batch.TextureSrgb ? 1f : 0f", StringComparison.Ordinal)
+            && gpu.Contains("DrawProperty.Vector(TintPropertyId, emitter.MaterialTint)", StringComparison.Ordinal)
+            && gpu.Contains("textureSrgb[i] ? 1f : 0f", StringComparison.Ordinal)
+            && enqueue.Contains("LumenTextureRegistry.TextureIsSrgb(key, texture, emitter.ColorSpace)", StringComparison.Ordinal)
+            && enqueue.Contains("gpu.TextureSrgb[i] = texture is not null && textureSrgb", StringComparison.Ordinal)
+            && enqueue.Contains("frame.Gpu.TextureSrgb", StringComparison.Ordinal),
+            "Main-thread texture flags and captured tint must reach per-draw arena vectors, not cached material mutation.");
+    }
+
+    [LumenFact]
+    public static void PhaseBConvertsStraightParticleColorAndEncodesAccumulation()
+    {
+        string l1 = Read("L1ParticleQuad.frag.glsl"), l2 = Read("ParticleBillboard.frag.glsl");
+        int l1Convert = l1.IndexOf("c = lumenColorForBlendSpace(c, lumen._LumenColor.z > 0.5)", StringComparison.Ordinal);
+        int l2Convert = l2.IndexOf("color = lumenColorForBlendSpace(color, material._LumenColor.z > 0.5)", StringComparison.Ordinal);
+        Require(l1Convert >= 0 && l1Convert < l1.IndexOf("c.rgb *= c.a", StringComparison.Ordinal)
+            && l2Convert >= 0 && l2Convert < l2.IndexOf("color.rgb *= color.a", StringComparison.Ordinal),
+            "Both shaders must decode straight stored colour before premultiplication.");
+        string encode = ShaderSourceLoader.ReadShaderSource(Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "PostFx", "RimLumenEncodeStored.frag.glsl")));
+        Require(encode.Contains("vec4(lumenEncodeStored(color.rgb), color.a)", StringComparison.Ordinal),
+            "The accumulated linear layer must be encoded with alpha preserved.");
+        string root = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Source", "RimLumen.Core"));
+        string pipeline = File.ReadAllText(Path.Combine(root, "Rendering", "RimLumenPipeline.cs"));
+        string chain = File.ReadAllText(Path.Combine(root, "Rendering", "RimLumenMapChain.cs"));
+        string gpu = File.ReadAllText(Path.Combine(root, "ParticlesGpu", "ParticleGpuDrawResources.cs"));
+        Require(pipeline.Contains("colorBlendSpace = RimLumenRenderHost.CurrentFrameColorBlendSpace", StringComparison.Ordinal)
+            && pipeline.Contains("ColorBlendSpace = colorBlendSpace", StringComparison.Ordinal)
+            && pipeline.Contains("earlyWork, colorBlendSpace)", StringComparison.Ordinal)
+            && chain.Contains("ColorBlendSpace = payload.ColorBlendSpace", StringComparison.Ordinal)
+            && gpu.Contains("snapshot.Context.ColorBlendSpace == LumenColorBlendSpace.Linear", StringComparison.Ordinal),
+            "Capture, draw context, and GPU properties must carry the same frame latch.");
+    }
+
+    [LumenFact]
+    public static void P2A4aFlipbookStartsAtTopRow()
+    {
+        string vertex = Read("ParticleBillboard.vert.glsl");
+        Require(vertex.Contains("1.0 - float(frame / columns + 1u) / float(rows)", StringComparison.Ordinal),
+            "Frame zero must start at v=1-1/rows, not the bottom row.");
+    }
+
+    [LumenFact]
+    public static void WorldSizeScaleIsBakedOrAppliedOncePerSpace()
+    {
+        string compute = Read("ParticleSim.comp.glsl");
+        string vertex = Read("ParticleBillboard.vert.glsl");
+        Require(compute.Contains("emitter.SizeCone.w > 0.5 ? emitter.Appearance.w : 1.0", StringComparison.Ordinal),
+            "World-space size scale must bake cbrt(|det|) into the start size at birth.");
+        Require(vertex.Contains("if (emitter.SizeCone.w < 0.5) size *= emitter.Appearance.w;", StringComparison.Ordinal),
+            "Local-space size scale must multiply at draw, never both.");
+    }
+
+    [LumenFact]
+    public static void P2A4bProceduralCoverageUsesSquaredDisc()
+    {
+        string disc = Read("ParticleDisc.glsl");
+        string l1 = File.ReadAllText(Path.Combine(ShaderDirectory(), "L1ParticleQuad.frag.glsl"));
+        string l2 = File.ReadAllText(Path.Combine(ShaderDirectory(), "ParticleBillboard.frag.glsl"));
+        Require(disc.Contains("max(0.0, 1.0 - dot(radial, radial))", StringComparison.Ordinal)
+            && disc.Contains("return coverage * coverage;", StringComparison.Ordinal)
+            && l1.Contains("#include \"ParticleDisc.glsl\"", StringComparison.Ordinal)
+            && l2.Contains("#include \"ParticleDisc.glsl\"", StringComparison.Ordinal)
+            && l1.Contains("lumenParticleDiscCoverage(radialUv)", StringComparison.Ordinal)
+            && l2.Contains("lumenParticleDiscCoverage(vRadialUv)", StringComparison.Ordinal),
+            "At squared radius 0.5 coverage must be (1-0.5)^2=0.25, matching L2.");
+    }
+
+    [LumenFact]
+    public static void P2A4cProceduralDiscIgnoresAtlasUvs()
+    {
+        string vertex = Read("L1ParticleQuad.vert.glsl"), fragment = Read("L1ParticleQuad.frag.glsl");
+        Require(fragment.Contains("lumenParticleDiscCoverage(radialUv)", StringComparison.Ordinal)
+            && vertex.Contains("radialUv = inRadialUv;", StringComparison.Ordinal)
+            && !vertex.Contains("gl_VertexIndex", StringComparison.Ordinal),
+            "Procedural coordinates must come from the quad corner, not the animated atlas tile.");
+        Require(Read("ParticleBillboard.frag.glsl").Contains("lumenParticleDiscCoverage(vRadialUv)", StringComparison.Ordinal),
+            "L2 must also feed its independent quad coordinates, never flipbook UVs, into the shared disc.");
+        Require(!ShaderMetadataParser.ValidateStageInterface(vertex, fragment, "L1.vert", "L1.frag"),
+            "Quad-local coordinates must cross the vertex/fragment interface.");
+    }
+
+    [LumenFact]
+    public static void ParityForceTwinPinsGpuAccelerationAndAnalyticCurl()
+    {
+        string shader = Read("ParticleSim.comp.glsl");
+        string twin = File.ReadAllText(Path.Combine(ShaderDirectory(), "..", "..", "..", "Source", "RimLumen.Core", "Scene", "ParticleForceMath.cs"));
+        Require(shader.Contains("total += axisOrCenter * strength", StringComparison.Ordinal)
+            && shader.Contains("drag += max(0.0, parameters.x)", StringComparison.Ordinal)
+            && shader.Contains("cross(axis, radialDirection) * strength - radialDirection * parameters.x", StringComparison.Ordinal)
+            && shader.Contains("+ axis * parameters.y) * weight", StringComparison.Ordinal)
+            && shader.Contains("radius > 0.0 ? max(0.0, 1.0 - distanceToCenter / radius) : 1.0", StringComparison.Ordinal),
+            "GPU force equations differ from the CPU twin's canonical gravity/vortex/attractor equations.");
+        Require(shader.Contains("vec3 relative = position - center", StringComparison.Ordinal)
+            && shader.Contains("emitter.World * vec4(axisOrCenter, 1.0)", StringComparison.Ordinal),
+            "World-space fields must follow the current node origin/centre.");
+        Require(shader.Contains("vec3 q = (position - parameters) * frequency", StringComparison.Ordinal)
+            && twin.Contains("(position - field.Parameters) * field.Frequency", StringComparison.Ordinal)
+            && shader.Contains("vec3(dz.y - dy.z, dx.z - dz.x, dy.x - dx.y)", StringComparison.Ordinal)
+            && twin.Contains("new(dz.Y - dy.Z, dx.Z - dz.X, dy.X - dx.Y)", StringComparison.Ordinal),
+            "CPU/GPU must use the same curl orientation, offset and frequency chain rule.");
+        string[] sharedNoiseWords = { "0x8da6b343u", "0xd8163841u", "0xcb1ab31fu", "0x9e3779b9u", "0x85ebca6bu", "0xc2b2ae35u", "0x68bc21ebu", "0x02e5be93u", "0x967a889bu" };
+        Require(sharedNoiseWords.All(word => shader.Contains(word, StringComparison.Ordinal) && twin.Contains(word, StringComparison.Ordinal)),
+            "Noise hash, lattice or potential channels drifted between CPU and GPU.");
+    }
+
+    [LumenFact]
+    public static void ParityShapeAndStretchPinGpuCanonicalEquations()
+    {
+        string sim = Read("ParticleSim.comp.glsl"), draw = Read("ParticleBillboard.vert.glsl");
+        Require(sim.Contains("vec3 direction = vec3(0.0, 1.0, 0.0)", StringComparison.Ordinal)
+            && sim.Contains("position = radial * radius * extents", StringComparison.Ordinal)
+            && sim.Contains("velocity = (emitter.World * vec4(velocity, 0.0)).xyz", StringComparison.Ordinal)
+            && sim.Contains("rotateShape(emitter.ShapeRotation, position * emitter.ShapeScale.xyz) + emitter.ShapePosition.xyz", StringComparison.Ordinal)
+            && sim.Contains("direction = rotateShape(emitter.ShapeRotation, direction)", StringComparison.Ordinal),
+            "Canonical emission direction, elliptic disc or scaled velocity changed.");
+        Require(draw.Contains("height = size * emitter.Appearance.y + length(velocity) * emitter.Appearance.x", StringComparison.Ordinal)
+            && draw.Contains("right = vec3(1.0, 0.0, 0.0)", StringComparison.Ordinal)
+            && draw.Contains("up = vec3(0.0, 0.0, 1.0)", StringComparison.Ordinal),
+            "Canonical stretch units or horizontal axes changed.");
+    }
+
+    [LumenFact]
+    public static void EmitterBufferAllocationDerivesStrideFromUploadedStruct()
+    {
+        string shader = Read("ParticleTypes.glsl");
+        Match body = Regex.Match(shader, @"struct\s+GpuEmitterParams\s*\{(?<body>[^}]+)\}");
+        // This protocol contains only mat4/vec4, whose std140/std430 alignments are both 16 bytes.
+        int shaderStride = Regex.Matches(body.Groups["body"].Value, @"\b(vec4|mat4)\s+\w+\s*;")
+            .Cast<Match>().Sum(member => member.Groups[1].Value == "mat4" ? 64 : 16);
+        CheckStruct<GpuEmitterParams>(shader, shaderStride);
+        int structStride = Marshal.SizeOf<GpuEmitterParams>();
+        int uploadedBytes = MemoryMarshal.AsBytes(new GpuEmitterParams[3].AsSpan()).Length;
+        long one = ParticleGpuFrame.EmitterBufferBytes(1), three = ParticleGpuFrame.EmitterBufferBytes(3);
+        Console.WriteLine($"Production emitter allocation: capacity1={one}, capacity3={three}; uploaded struct={structStride}, std140/std430={shaderStride}, upload3={uploadedBytes} bytes.");
+        Require(one == structStride && one == shaderStride && three == uploadedBytes && three == (long)shaderStride * 3,
+            "Production emitter allocation must match the actual uploaded struct bytes and shader row layout for each capacity.");
+        string path = Path.Combine(ShaderDirectory(), "..", "..", "..", "Source", "RimLumen.Core", "ParticlesGpu", "ParticleGpuDrawResources.cs");
+        string source = Regex.Replace(File.ReadAllText(path), @"//[^\r\n]*|/\*[\s\S]*?\*/", "");
+        Require(Regex.IsMatch(source, @"Emitters\s*=\s*GpuComputeBuffer\.Create\([^;]+EmitterBufferBytes\(EmitterCapacity\)\s*\)\s*;")
+            && Regex.IsMatch(source, @"Emitters\.Upload<GpuEmitterParams>\(parameters\.AsSpan\(0,\s*emitters\.Length\)\)"),
+            "The constructor must allocate using the exercised production byte calculation for the typed emitter upload.");
+    }
+
+    [LumenFact]
     public static void ShaderStorageMembersMatchFixedCpuByteLayout()
     {
         string source = Read("ParticleTypes.glsl");
         CheckStruct<GpuParticle>(source, 64);
-        CheckStruct<GpuEmitterParams>(source, 208);
+        CheckStruct<GpuEmitterParams>(source, 320);
         CheckStruct<GpuForceField>(source, 48);
         CheckStruct<GpuCurveSample>(source, 32);
         Require(Marshal.SizeOf<GpuSimPushConstants>() == 16, "Compute push constants must be 16 bytes.");
@@ -119,12 +325,14 @@ public static class ParticleShaderTests
         string fragment = Read("L1ParticleQuad.frag.glsl");
         MaterialLayout layout = ShaderMetadataParser.ExtractMaterialLayout(fragment, "L1ParticleQuad.frag");
         Require(!layout.HasErrors, "Waylith rejected the L1 material metadata.");
-        Require(layout.UniformSize == 48, $"L1 material UBO must be 48 bytes; got {layout.UniformSize}.");
+        Require(layout.UniformSize == 80, $"L1 material UBO must be 80 bytes; got {layout.UniformSize}.");
         Require(layout.UniformSlots.Select(x => (x.Offset, x.PropertyName)).SequenceEqual(new[]
         {
-            (0, "_LumenDraw"), (16, "_LumenDepth"), (32, "_LumenProjection")
+            (0, "_LumenDraw"), (16, "_LumenDepth"), (32, "_LumenProjection"),
+            (48, "_LumenMaterialTint"), (64, "_LumenColor")
         }), "L1 material UBO offsets differ from the runtime packing.");
-        CheckOverrideSlots(layout, ("_LumenDraw", 0), ("_LumenDepth", 16), ("_LumenProjection", 32));
+        CheckOverrideSlots(layout, ("_LumenDraw", 0), ("_LumenDepth", 16), ("_LumenProjection", 32),
+            ("_LumenMaterialTint", 48), ("_LumenColor", 64));
         Require(layout.TextureSlots.Select(x => (x.Binding, x.PropertyName)).SequenceEqual(new[]
         {
             (1, "_LumenParticleTexture"), (2, "_LumenSceneDepth")
@@ -138,8 +346,9 @@ public static class ParticleShaderTests
         {
             (0, VertexAttributeSemantic.Position, true),
             (1, VertexAttributeSemantic.TexCoord0, true),
-            (2, VertexAttributeSemantic.Color, true)
-        }), "L1 vertex input must require Position/TexCoord0/Color at locations 0..2.");
+            (2, VertexAttributeSemantic.Color, true),
+            (3, VertexAttributeSemantic.TexCoord1, true)
+        }), "L1 vertex input must require Position/TexCoord0/Color/TexCoord1 at locations 0..3.");
     }
 
     [LumenFact]
@@ -185,9 +394,9 @@ public static class ParticleShaderTests
         byte[] fragment = Compile("ParticleBillboard.frag.glsl", RuntimeShaderStage.Fragment);
         var computeInstructions = Instructions(compute);
         var vertexInstructions = Instructions(vertex);
-        foreach (uint stride in new uint[] { 64, 208, 48, 4 })
+        foreach (uint stride in new uint[] { 64, 320, 48, 4 })
             Require(HasArrayStride(computeInstructions, stride), $"Compute SPIR-V missing {stride}-byte storage array stride.");
-        foreach (uint stride in new uint[] { 64, 208, 32 })
+        foreach (uint stride in new uint[] { 64, 320, 32 })
             Require(HasArrayStride(vertexInstructions, stride), $"Vertex SPIR-V missing {stride}-byte storage array stride.");
         Require(computeInstructions.Any(x => x[0] == 16 && x.Length >= 6 && x[2] == 17 && x[3] == 64 && x[4] == 1 && x[5] == 1),
             "SPIR-V workgroup must be LocalSize 64,1,1.");
@@ -196,23 +405,26 @@ public static class ParticleShaderTests
         CompileFile("Particles/L1ParticleQuad.vert.glsl", RuntimeShaderStage.Vertex);
         CompileFile("Particles/L1ParticleQuad.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenDepthCopy.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("PostFx/RimLumenEncodeStored.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomPrefilter.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomDown.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenBloomUp.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("PostFx/RimLumenComposite.frag.glsl", RuntimeShaderStage.Fragment);
-        Console.WriteLine("[SPIR-V] compute strides=64,208,48,4; vertex strides=64,208,32; LocalSize=64,1,1");
+        Console.WriteLine("[SPIR-V] compute strides=64,320,48,4; vertex strides=64,320,32; LocalSize=64,1,1");
     }
 
     private static void CheckUniforms(MaterialLayout layout)
     {
-        Require(layout.UniformSize == 96, "Material UBO must be 96 bytes.");
+        Require(layout.UniformSize == 128, "Material UBO must be 128 bytes.");
         Require(layout.UniformSlots.Select(x => (x.Offset, x.PropertyName)).SequenceEqual(new[]
         {
             (0, "_LumenDraw"), (16, "_LumenCameraRight"), (32, "_LumenCameraUp"),
-            (48, "_LumenProjection"), (64, "_LumenDepthUv"), (80, "_LumenVertical")
+            (48, "_LumenProjection"), (64, "_LumenDepthUv"), (80, "_LumenVertical"),
+            (96, "_LumenMaterialTint"), (112, "_LumenColor")
         }), "Material UBO offsets differ from runtime packing.");
         CheckOverrideSlots(layout, ("_LumenDraw", 0), ("_LumenCameraRight", 16), ("_LumenCameraUp", 32),
-            ("_LumenProjection", 48), ("_LumenDepthUv", 64), ("_LumenVertical", 80));
+            ("_LumenProjection", 48), ("_LumenDepthUv", 64), ("_LumenVertical", 80),
+            ("_LumenMaterialTint", 96), ("_LumenColor", 112));
     }
 
     // Per-draw vectors travel through DrawPropertyArena and only reach a uniform when the id the renderer uses

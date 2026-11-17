@@ -39,7 +39,11 @@ public static class RimLumenApiSuite
                 RimLumenApi.TryGetEffect(asset.EffectId, out EffectAsset? resolved) && ReferenceEquals(asset, resolved),
                 "The registered instance resolves through the facade");
 
-            ILumenEffectHandle handle = RimLumenApi.Play(asset.EffectId, null, new Vector3(1f, 0f, 2f), 2f, 90f);
+            ILumenEffectHandle handle = RimLumenApi.Play(new LumenPlayRequest
+            {
+                EffectId = asset.EffectId, MapIndex = 111, OriginWorld = new Vector3(1f, 0f, 2f),
+                Scale = 2f, RotationDegrees = 90f,
+            });
             try
             {
                 var typed = (EffectInstanceHandle)handle;
@@ -64,7 +68,7 @@ public static class RimLumenApiSuite
             LumenCapabilities capabilities = RimLumenApi.Capabilities;
             NativeTestData.Check(capabilities.MaxGpuParticlesPerFrame >= 0, "Capabilities are readable before install");
 
-            ILumenEffectHandle inert = RimLumenApi.Play("api.missing", null, Vector3.Zero);
+            ILumenEffectHandle inert = RimLumenApi.Play(new LumenPlayRequest { EffectId = "api.missing", MapIndex = 111 });
             NativeTestData.Check(!inert.IsAlive, "An unknown effect returns an inert handle");
             inert.Dispose();
         }
@@ -74,6 +78,44 @@ public static class RimLumenApiSuite
         }
 
         NativeTestData.Check(!RimLumenApi.TryGetEffect(asset.EffectId, out _), "Unregister removes the effect");
+    }
+
+    [LumenFact]
+    public static void D30DensityRejectsNaNWithoutReplacingValidSetting()
+        => RejectNonfiniteDensity(float.NaN);
+
+    [LumenFact]
+    public static void D30DensityRejectsPositiveInfinityWithoutReplacingValidSetting()
+        => RejectNonfiniteDensity(float.PositiveInfinity);
+
+    [LumenFact]
+    public static void D30DensityRejectsNegativeInfinityWithoutReplacingValidSetting()
+        => RejectNonfiniteDensity(float.NegativeInfinity);
+
+    private static void RejectNonfiniteDensity(float input)
+    {
+        float original = RimLumenRenderHost.ParticleDensityScale;
+        try
+        {
+            RimLumenRenderHost.ParticleDensityScale = 0.6f;
+            bool rejected = false;
+            try
+            {
+                RimLumenRenderHost.ParticleDensityScale = input;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                rejected = true;
+            }
+            float stored = RimLumenRenderHost.ParticleDensityScale;
+            Console.WriteLine($"D30 input={input.ToString(System.Globalization.CultureInfo.InvariantCulture)}; ArgumentOutOfRangeException={rejected}; prior=0.6; stored={stored}.");
+            NativeTestData.Check(rejected && stored == 0.6f,
+                $"Nonfinite density {input} must throw ArgumentOutOfRangeException and preserve 0.6; rejected={rejected}, stored={stored}.");
+        }
+        finally
+        {
+            RimLumenRenderHost.ParticleDensityScale = original;
+        }
     }
 
     [LumenFact]

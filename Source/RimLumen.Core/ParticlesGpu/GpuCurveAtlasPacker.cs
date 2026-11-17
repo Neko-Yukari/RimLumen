@@ -4,38 +4,16 @@ using RimLumen.Core.Contracts;
 
 namespace RimLumen.Core.ParticlesGpu;
 
-public static class GpuCurveAtlasPacker
+internal static class GpuCurveAtlasPacker
 {
     public const int SamplesPerRow = 64;
 
-    // Requires: destination has at least 64 samples; keys/stops use normalized time.
+    // Requires: destination has at least 64 samples; curves passed LumenAssetRules validation.
     // Ensures: writes one row retaining HDR color values and Hermite scalar tangents.
     public static void Pack(ScalarCurve size, ColorGradient color, System.Span<GpuCurveSample> destination)
     {
         if (destination.Length < SamplesPerRow)
             throw new ArgumentException("A curve row requires 64 samples.", nameof(destination));
-        if (size.Keys.Length == 0 || !float.IsFinite(size.Multiplier))
-            throw new ArgumentException("A scalar curve requires keys and a finite multiplier.", nameof(size));
-        if (color.Stops.Length == 0)
-            throw new ArgumentException("A gradient requires color stops.", nameof(color));
-
-        float previous = -1f;
-        foreach (var key in size.Keys)
-        {
-            if (!ValidTime(key.Time, previous) || !float.IsFinite(key.Value) ||
-                !float.IsFinite(key.InTangent) || !float.IsFinite(key.OutTangent))
-                throw new ArgumentException("Curve keys must be finite and strictly ordered in [0,1].", nameof(size));
-            previous = key.Time;
-        }
-        previous = -1f;
-        foreach (var stop in color.Stops)
-        {
-            var rgba = stop.RgbaLinear;
-            if (!ValidTime(stop.Time, previous) || !float.IsFinite(rgba.X) ||
-                !float.IsFinite(rgba.Y) || !float.IsFinite(rgba.Z) || !float.IsFinite(rgba.W))
-                throw new ArgumentException("Gradient stops must be finite and strictly ordered in [0,1].", nameof(color));
-            previous = stop.Time;
-        }
 
         for (int i = 0; i < SamplesPerRow; i++)
         {
@@ -51,30 +29,33 @@ public static class GpuCurveAtlasPacker
         }
     }
 
-    private static bool ValidTime(float time, float previous)
-        => float.IsFinite(time) && time >= 0f && time <= 1f && time > previous;
-
+    // Mirrors pinned RimUnity AnimationCurve.cs:23,30-35 (45ca90987f7d3721715b45c021cab986ee14c468).
     private static double Evaluate(CurveKey[] keys, double time)
     {
+        if (keys[0].Time >= keys[^1].Time) return keys[^1].Value;
         if (time <= keys[0].Time) return keys[0].Value;
-        for (int i = 1; i < keys.Length; i++)
+        if (time >= keys[^1].Time) return keys[^1].Value;
+        int lo = 0, hi = keys.Length - 1;
+        while (hi - lo > 1)
         {
-            if (time > keys[i].Time) continue;
-            var a = keys[i - 1];
-            var b = keys[i];
-            double width = (double)b.Time - a.Time;
-            double t = (time - a.Time) / width;
-            double t2 = t * t;
-            double t3 = t2 * t;
-            return (2 * t3 - 3 * t2 + 1) * a.Value + (t3 - 2 * t2 + t) * width * a.OutTangent +
-                   (-2 * t3 + 3 * t2) * b.Value + (t3 - t2) * width * b.InTangent;
+            int mid = (lo + hi) / 2;
+            if (keys[mid].Time <= time) lo = mid;
+            else hi = mid;
         }
-        return keys[^1].Value;
+
+        var a = keys[lo];
+        var b = keys[hi];
+        double width = (double)b.Time - a.Time;
+        double t = (time - a.Time) / width;
+        double t2 = t * t;
+        double t3 = t2 * t;
+        return (2 * t3 - 3 * t2 + 1) * a.Value + (t3 - 2 * t2 + t) * width * a.OutTangent +
+               (-2 * t3 + 3 * t2) * b.Value + (t3 - t2) * width * b.InTangent;
     }
 
     private static Vector4 Evaluate(ColorStop[] stops, double time)
     {
-        if (time <= stops[0].Time) return stops[0].RgbaLinear;
+        if (time <= stops[0].Time) return stops[0].Rgba;
         for (int i = 1; i < stops.Length; i++)
         {
             if (time > stops[i].Time) continue;
@@ -82,11 +63,11 @@ public static class GpuCurveAtlasPacker
             var b = stops[i];
             double t = (time - a.Time) / ((double)b.Time - a.Time);
             return new Vector4(
-                (float)((1 - t) * a.RgbaLinear.X + t * b.RgbaLinear.X),
-                (float)((1 - t) * a.RgbaLinear.Y + t * b.RgbaLinear.Y),
-                (float)((1 - t) * a.RgbaLinear.Z + t * b.RgbaLinear.Z),
-                (float)((1 - t) * a.RgbaLinear.W + t * b.RgbaLinear.W));
+                (float)((1 - t) * a.Rgba.X + t * b.Rgba.X),
+                (float)((1 - t) * a.Rgba.Y + t * b.Rgba.Y),
+                (float)((1 - t) * a.Rgba.Z + t * b.Rgba.Z),
+                (float)((1 - t) * a.Rgba.W + t * b.Rgba.W));
         }
-        return stops[^1].RgbaLinear;
+        return stops[^1].Rgba;
     }
 }

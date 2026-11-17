@@ -6,7 +6,6 @@ using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Scene;
-using UColor = UnityEngine.Color;
 using UVector3 = UnityEngine.Vector3;
 
 namespace RimLumen.Core.Tests.SceneAndLighting;
@@ -37,6 +36,38 @@ public static class NativePipelineSuite
         NativeTestData.Close(1f, CurveEvaluator.Evaluate(emitter.SizeOverLifetime, 0.37f), "Default size curve");
         NativeTestData.Close(1f, GradientEvaluator.Evaluate(emitter.ColorOverLifetime, 0.37f).X, "Default colour gradient");
         NativeTestData.Check(asset.TimelineEvents.Length == 0, "No timeline events by default");
+    }
+
+    [LumenFact]
+    public static void F8ExplicitFiniteForceStrengthMatchesXmlIncludingZeroAndNegative()
+    {
+        const string json = """{ "nodes": [{ "name": "root", "emitter": { "forceFields": [ { "kind": "GravityDrag", "centerOrAxis": [2,0,0], "strength": 1 }, { "kind": "GravityDrag", "centerOrAxis": [2,0,0], "strength": 0 }, { "kind": "GravityDrag", "centerOrAxis": [2,0,0], "strength": 2.5 }, { "kind": "GravityDrag", "centerOrAxis": [2,0,0], "strength": -2 } ] } }] }""";
+        EffectAsset parsed = LumenJsonAssetLoader.Parse(json, "strength-json");
+        EffectAsset xml = new LumenEffectDef
+        {
+            defName = "strength-xml",
+            nodes = new List<LumenNodeXml> { new()
+            {
+                name = "root", emitter = new LumenEmitterXml
+                {
+                    forceFields = new List<LumenForceFieldXml>
+                    {
+                        new() { kind = ForceFieldKind.GravityDrag, centerOrAxis = new UVector3(2, 0, 0), strength = 1f },
+                        new() { kind = ForceFieldKind.GravityDrag, centerOrAxis = new UVector3(2, 0, 0), strength = 0f },
+                        new() { kind = ForceFieldKind.GravityDrag, centerOrAxis = new UVector3(2, 0, 0), strength = 2.5f },
+                        new() { kind = ForceFieldKind.GravityDrag, centerOrAxis = new UVector3(2, 0, 0), strength = -2f },
+                    },
+                },
+            } },
+        }.ToEffectAsset();
+        EmitterSpec jsonEmitter = parsed.Nodes[0].Emitter!;
+        EmitterSpec xmlEmitter = xml.Nodes[0].Emitter!;
+        NativeTestData.Check(jsonEmitter.ForceFields.AsSpan().SequenceEqual(xmlEmitter.ForceFields),
+            "JSON and XML force field structures must agree for explicit zero, positive and negative finite strength");
+        NativeTestData.Close(3f, ParticleForceMath.Acceleration(jsonEmitter, Matrix4x4.Identity, Vector3.Zero, out _).X,
+            "all authored fields contribute their intended force");
+        NativeTestData.Close(3f, ParticleForceMath.Acceleration(xmlEmitter, Matrix4x4.Identity, Vector3.Zero, out _).X,
+            "XML fields contribute the same force");
     }
 
     [LumenFact]
@@ -93,7 +124,7 @@ public static class NativePipelineSuite
         NativeTestData.Close(2.5f, emitter.StartLifetimeMax, "startLifetime shorthand max");
         NativeTestData.Close(4f, emitter.StartSpeedMax, "startSpeed shorthand");
         NativeTestData.Close(0.5f, emitter.StartSizeMin, "startSize shorthand");
-        NativeTestData.Check(emitter.StartColorLinear == new Vector4(1f, 0.5f, 0.25f, 0.75f), "startColorLinear RGBA");
+        NativeTestData.Check(emitter.StartColor == new Vector4(1f, 0.5f, 0.25f, 0.75f), "startColor RGBA");
         NativeTestData.Close(0.75f, CurveEvaluator.Evaluate(emitter.SizeOverLifetime, 0.5f), "sizeOverLifetime keys");
         NativeTestData.Close(0.5f, GradientEvaluator.Evaluate(emitter.ColorOverLifetime, 0.5f).Y, "colorOverLifetime stops");
         NativeTestData.Check(emitter.ForceFields.Length == 1, "One force field");
@@ -111,14 +142,13 @@ public static class NativePipelineSuite
         NativeTestData.Close(2f, emitter.LengthScale, "lengthScale");
         NativeTestData.Close(0.25f, emitter.SoftParticleFadeDistance, "softParticleFadeDistance");
         NativeTestData.Close(3f, emitter.HdrIntensity, "hdrIntensity");
-        NativeTestData.Close(0.5f, emitter.BloomWeight, "bloomWeight");
         NativeTestData.Check(emitter.PreferredTier == LumenParticleTier.L1_NativeCpu, "preferredTier");
         NativeTestData.Check(emitter.KillBelowFloor, "killBelowFloor");
 
         PointLightSpec light = node.PointLight ?? throw new InvalidOperationException("Point light missing");
         NativeTestData.Close(6f, light.GlowRadius, "glowRadius");
         NativeTestData.Close(1.5f, light.OverlightRadius, "overlightRadius");
-        NativeTestData.Check(light.ColorRgb == new Vector3(1f, 0.5f, 0.25f), "colorRgb");
+        NativeTestData.Check(light.ColorRgb == new Vector3(1f, 0.5f, 0.25f), "color");
         NativeTestData.Check(light.IntensityOverTime is not null, "Intensity rides on the curve multiplier");
         NativeTestData.Close(2f, CurveEvaluator.Evaluate(light.IntensityOverTime!, 0.1f), "intensity");
 
@@ -315,9 +345,8 @@ public static class NativePipelineSuite
                         startSpeedMax = 3f,
                         startSizeMin = 0.5f,
                         startSizeMax = 1f,
-                        startColorLinear = new UColor(1f, 0.5f, 0.25f, 1f),
+                        startColor = "(1,0.5,0.25,1)",
                         hdrIntensity = 2f,
-                        bloomWeight = 0.5f,
                         shape = LumenShapeKind.Cone,
                         shapeExtents = new UVector3(1f, 1f, 1f),
                         coneAngleDegrees = 30f,
@@ -335,8 +364,8 @@ public static class NativePipelineSuite
                         sizeOverLifetime = new List<LumenCurveKeyXml> { new() { time = 0f, value = 1f }, new() { time = 1f, value = 0.5f } },
                         colorOverLifetime = new List<LumenGradientStopXml>
                         {
-                            new() { time = 0f, rgbaLinear = new UColor(1f, 1f, 1f, 1f) },
-                            new() { time = 1f, rgbaLinear = new UColor(0f, 0f, 0f, 0f) },
+                            new() { time = 0f, color = "(1,1,1,1)" },
+                            new() { time = 1f, color = "(0,0,0,0)" },
                         },
                         forceFields = new List<LumenForceFieldXml>
                         {
@@ -345,7 +374,7 @@ public static class NativePipelineSuite
                     },
                     pointLight = new LumenPointLightXml
                     {
-                        colorLinear = new UColor(1f, 0.5f, 0.25f, 1f),
+                        color = "(1,0.5,0.25,1)",
                         radiusCells = 6f,
                         overlightRadius = 1.5f,
                         intensity = 2f,
@@ -372,7 +401,7 @@ public static class NativePipelineSuite
         NativeTestData.Close(6f, emitter.RateOverTime, "rateOverTime");
         NativeTestData.Check(emitter.Bursts.Length == 1 && emitter.Bursts[0].Count == 2, "bursts");
         NativeTestData.Check(emitter.Shape == LumenShapeKind.Cone && emitter.ConeAngleDegrees == 30f, "shape/cone angle");
-        NativeTestData.Check(emitter.StartColorLinear == new Vector4(1f, 0.5f, 0.25f, 1f), "startColorLinear");
+        NativeTestData.Check(emitter.StartColor == new Vector4(1f, 0.5f, 0.25f, 1f), "startColor");
         NativeTestData.Close(0.75f, CurveEvaluator.Evaluate(emitter.SizeOverLifetime, 0.5f), "sizeOverLifetime");
         NativeTestData.Close(0.5f, GradientEvaluator.Evaluate(emitter.ColorOverLifetime, 0.5f).X, "colorOverLifetime");
         NativeTestData.Check(emitter.ForceFields.Length == 1 && emitter.ForceFields[0].Kind == ForceFieldKind.Vortex, "force field");
@@ -420,11 +449,11 @@ public static class NativePipelineSuite
         };
 
         var frozenService = NativeTestData.Service(asset);
-        using var frozen = frozenService.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var frozen = frozenService.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         NativeTestData.Step(frozenService, 0.5f, 0.5f);
         int frozenCount = frozenService.Simulator.LiveParticleCount;
         NativeTestData.Check(frozenCount == 2, $"Half a second at rate 4 spawns two particles, got {frozenCount}");
-        float frozenZ = frozenService.Simulator.LiveParticles[0].Position.Z;
+        float frozenY = frozenService.Simulator.LiveParticles[0].Position.Y;
         float frozenAge = frozenService.Simulator.LiveParticles[0].Age;
         float frozenPlayback = ((EffectInstanceHandle)frozen).PlaybackTime;
 
@@ -434,23 +463,23 @@ public static class NativePipelineSuite
         }
 
         NativeTestData.Check(frozenService.Simulator.LiveParticleCount == frozenCount, "No spawns while paused");
-        NativeTestData.Check(frozenService.Simulator.LiveParticles[0].Position.Z == frozenZ, "Scaled-time particle did not move");
+        NativeTestData.Check(frozenService.Simulator.LiveParticles[0].Position.Y == frozenY, "Scaled-time particle did not move");
         NativeTestData.Check(frozenService.Simulator.LiveParticles[0].Age == frozenAge, "Scaled-time particle did not age");
         NativeTestData.Check(((EffectInstanceHandle)frozen).PlaybackTime == frozenPlayback, "Playback time frozen");
         NativeTestData.Check(frozen.IsAlive, "Handle stays alive while paused");
         NativeTestData.Check(frozenService.Simulator.Vertices.Length == frozenCount * 4, "Paused particles still emit vertices");
 
         var realTimeService = NativeTestData.Service(asset);
-        using var realTime = realTimeService.Play(new LumenPlayRequest { EffectId = asset.EffectId, RealTime = true });
+        using var realTime = realTimeService.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, RealTime = true });
         NativeTestData.Step(realTimeService, 0.5f, 0.5f);
         NativeTestData.Check(realTimeService.Simulator.LiveParticleCount == frozenCount, "Same spawn at the same start");
-        float startZ = realTimeService.Simulator.LiveParticles[0].Position.Z;
+        float startY = realTimeService.Simulator.LiveParticles[0].Position.Y;
         for (int frame = 0; frame < 6; frame++)
         {
             NativeTestData.Step(realTimeService, 0f, 1f / 60f);
         }
 
-        NativeTestData.Close(startZ + 0.1f, realTimeService.Simulator.LiveParticles[0].Position.Z, "Real-time particle moved on unscaled time");
+        NativeTestData.Close(startY + 0.1f, realTimeService.Simulator.LiveParticles[0].Position.Y, "Real-time particle moved on unscaled time");
         NativeTestData.Close(frozenPlayback + 0.1f, ((EffectInstanceHandle)realTime).PlaybackTime, "Real-time playback advanced");
         NativeTestData.Check(realTimeService.Simulator.LiveParticleCount == frozenCount, "0.1s at rate 4 adds no particle");
     }
@@ -471,18 +500,18 @@ public static class NativePipelineSuite
                         Emitter = new EmitterSpec
                         {
                             Name = "streak", PreferredTier = LumenParticleTier.L1_NativeCpu, MaxParticles = 4,
-                            Bursts = new[] { (0f, 1) }, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+                            Bursts = new[] { new ParticleBurstSpec(0f, 1) }, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
                             StartSpeedMin = 1f, StartSpeedMax = 1f,
                         },
                     },
                 },
             };
             var service = NativeTestData.Service(asset);
-            using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, RealTime = realTime });
+            using var handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, RealTime = realTime });
             NativeTestData.Step(service, deltaTime, unscaledDeltaTime);
             NativeTestData.Step(service, deltaTime, unscaledDeltaTime);
             NativeTestData.Check(service.Simulator.LiveParticleCount == 1, "Burst spawned exactly one particle");
-            return service.Simulator.LiveParticles[0].Position.Z;
+            return service.Simulator.LiveParticles[0].Position.Y;
         }
 
         float normal = ScaledDistance(realTime: false, deltaTime: 0.1f, unscaledDeltaTime: 0f);
@@ -501,17 +530,17 @@ public static class NativePipelineSuite
         {
             Name = "alpha", MaxParticles = 32, TextureKey = "tex/a", BlendMode = LumenBlendMode.Additive,
             StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-        }, Matrix4x4.Identity, emitting: false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
         int beta = simulator.AcquireEmitter(new EmitterSpec
         {
             Name = "beta", MaxParticles = 32, TextureKey = "tex/b", BlendMode = LumenBlendMode.AlphaBlend,
             StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-        }, Matrix4x4.Identity, emitting: false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
         int gamma = simulator.AcquireEmitter(new EmitterSpec
         {
             Name = "gamma", MaxParticles = 32, TextureKey = "tex/a", BlendMode = LumenBlendMode.Additive,
             StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-        }, Matrix4x4.Identity, emitting: false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
         simulator.EmitBurst(alpha, 2);
         simulator.EmitBurst(beta, 3);
         simulator.EmitBurst(gamma, 1);
@@ -565,6 +594,30 @@ public static class NativePipelineSuite
     }
 
     [LumenFact]
+    public static void PhaseAMaterialChangesSplitBatchesWithoutChangingVertexFactors()
+    {
+        var simulator = new CpuParticleSimulator();
+        var stored = new EmitterSpec { Name = "stored", MaxParticles = 4, StartColor = new Vector4(0.4f),
+            MaterialTint = new Vector4(0.5f), ColorOverLifetime = ColorGradient.Constant(new Vector4(0.5f)), HdrIntensity = 2f };
+        var tinted = new EmitterSpec { Name = "tinted", MaxParticles = 4, MaterialTint = new Vector4(0.25f) };
+        var linear = new EmitterSpec { Name = "linear", MaxParticles = 4, MaterialTint = new Vector4(0.5f), ColorSpace = LumenColorSpace.Linear };
+        simulator.EmitBurst(simulator.AcquireEmitter(stored, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false), 1);
+        simulator.EmitBurst(simulator.AcquireEmitter(tinted, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false), 1);
+        simulator.EmitBurst(simulator.AcquireEmitter(linear, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false), 1);
+        simulator.EmitBurst(simulator.AcquireEmitter(stored, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false), 1);
+        NativeTestData.Step(simulator, 0f, 0f);
+        NativeTestData.Check(simulator.SubBatches.Count == 3,
+            $"Tint and colour space must split shared-texture draws; expected 3 groups, got {simulator.SubBatches.Count}");
+        NativeTestData.Check(simulator.SubBatches[0].IndexCount == 12, "Equal material metadata must still coalesce.");
+        NativeTestData.Check(simulator.SubBatches[0].MaterialTint == stored.MaterialTint
+            && simulator.SubBatches[1].MaterialTint == tinted.MaterialTint
+            && simulator.SubBatches[2].ColorSpace == LumenColorSpace.Linear,
+            "The grouped draw ranges must carry each emitter's separate tint and calculation mode.");
+        NativeTestData.Check(simulator.Vertices[0].Color == new Vector4(0.4f, 0.4f, 0.4f, 0.2f),
+            "Vertex factors include intensity but must not include or decode material tint.");
+    }
+
+    [LumenFact]
     public static void SubBatchesSplitOnSoftParticleFadeDistance()
     {
         var simulator = new CpuParticleSimulator();
@@ -572,12 +625,12 @@ public static class NativePipelineSuite
         {
             Name = "sharp", MaxParticles = 8, TextureKey = "tex/fade", SoftParticleFadeDistance = 0f,
             StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-        }, Matrix4x4.Identity, emitting: false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
         int soft = simulator.AcquireEmitter(new EmitterSpec
         {
             Name = "soft", MaxParticles = 8, TextureKey = "tex/fade", SoftParticleFadeDistance = 0.4f,
             StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-        }, Matrix4x4.Identity, emitting: false);
+        }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
         simulator.EmitBurst(sharp, 1);
         simulator.EmitBurst(soft, 1);
         NativeTestData.Step(simulator, 0f, 0f);
@@ -598,7 +651,7 @@ public static class NativePipelineSuite
             int burst = simulator.AcquireEmitter(new EmitterSpec
             {
                 Name = "burst", MaxParticles = 64, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-            }, Matrix4x4.Identity, emitting: false);
+            }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
             simulator.EmitBurst(burst, 10);
             NativeTestData.Step(simulator, 0f, 0f);
             NativeTestData.Check(simulator.LiveParticleCount == 5, $"Half density turns a 10 burst into 5, got {simulator.LiveParticleCount}");
@@ -606,17 +659,17 @@ public static class NativePipelineSuite
             int single = simulator.AcquireEmitter(new EmitterSpec
             {
                 Name = "single", MaxParticles = 8, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-            }, Matrix4x4.Identity, emitting: false);
+            }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
             simulator.EmitBurst(single, 1);
             NativeTestData.Step(simulator, 0f, 0f);
-            NativeTestData.Check(simulator.GetLiveParticleCount(single) == 1, "A single-particle burst never disappears");
+            NativeTestData.Check(simulator.GetLiveParticleCount(single) == 1, "A fresh count1 burst at half density admits ceil(.5)=1");
 
             var rateSimulator = new CpuParticleSimulator();
             rateSimulator.AcquireEmitter(new EmitterSpec
             {
                 Name = "rate", MaxParticles = 32, RateOverTime = 4f, Looping = true, Duration = 1f,
                 StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-            }, Matrix4x4.Identity);
+            }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u);
             NativeTestData.Step(rateSimulator, 1f, 1f);
             NativeTestData.Check(rateSimulator.LiveParticleCount == 2, $"Half density halves a 4/s rate, got {rateSimulator.LiveParticleCount}");
         }
@@ -650,9 +703,8 @@ public static class NativePipelineSuite
         NativeTestData.Close(json.StartSpeedMax, xml.StartSpeedMax, "startSpeedMax default");
         NativeTestData.Close(json.StartSizeMin, xml.StartSizeMin, "startSizeMin default");
         NativeTestData.Close(json.StartSizeMax, xml.StartSizeMax, "startSizeMax default");
-        NativeTestData.Check(xml.StartColorLinear == json.StartColorLinear, "startColorLinear default");
+        NativeTestData.Check(xml.StartColor == json.StartColor, "startColor default");
         NativeTestData.Close(json.HdrIntensity, xml.HdrIntensity, "hdrIntensity default");
-        NativeTestData.Close(json.BloomWeight, xml.BloomWeight, "bloomWeight default");
         NativeTestData.Check(xml.Shape == json.Shape, "shape default");
         NativeTestData.Close(json.ShapeExtents.X, xml.ShapeExtents.X, "shapeExtents default");
         NativeTestData.Close(json.ConeAngleDegrees, xml.ConeAngleDegrees, "coneAngleDegrees default");
@@ -703,7 +755,7 @@ public static class NativePipelineSuite
             "startLifetime": 2.5,
             "startSpeed": 4,
             "startSize": 0.5,
-            "startColorLinear": [1, 0.5, 0.25, 0.75],
+            "startColor": [1, 0.5, 0.25, 0.75],
             "sizeOverLifetime": [[0, 1], [1, 0.5]],
             "colorOverLifetime": [[0, [1, 1, 1, 1]], [1, [0, 0, 0, 0]]],
             "forceFields": [ { "kind": "Vortex", "centerOrAxis": [0, 1, 0], "radius": 3, "strength": 2, "frequency": 0.5 } ],
@@ -717,11 +769,10 @@ public static class NativePipelineSuite
             "lengthScale": 2,
             "softParticleFadeDistance": 0.25,
             "hdrIntensity": 3,
-            "bloomWeight": 0.5,
             "preferredTier": "L1_NativeCpu",
             "killBelowFloor": true
           },
-          "pointLight": { "glowRadius": 6, "overlightRadius": 1.5, "colorRgb": [1, 0.5, 0.25], "intensity": 2 }
+          "pointLight": { "glowRadius": 6, "overlightRadius": 1.5, "color": [1, 0.5, 0.25], "intensity": 2 }
         },
         { "name": "child", "parentIndex": 0, "localPosition": [0, 1, 0] }
       ],

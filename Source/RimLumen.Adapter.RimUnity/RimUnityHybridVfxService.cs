@@ -22,8 +22,9 @@ public sealed class RimUnityHybridVfxService : ILumenVfxService
     public ILumenEffectHandle Play(in LumenPlayRequest request)
     {
         if (!provider.TryInspectTranslation(request.EffectId, out var report) || report is null ||
-            !report.Nodes.Any(node => node.Tier == LumenParticleTier.L0_ExternalCpu)) return inner.Play(request);
+            !report.Nodes.Any(node => node.Tier == LumenParticleTier.External)) return inner.Play(request);
         ILumenEffectHandle native = inner.Play(request);
+        if (!LumenHostRegistry.TryResolveAsset(request.EffectId, out _)) return native;
         try
         {
             return new CompositeHandle(native, externalPlayer.Play(request, report));

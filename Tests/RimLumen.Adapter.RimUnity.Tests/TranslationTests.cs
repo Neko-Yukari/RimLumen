@@ -34,51 +34,243 @@ internal static class TranslationTests
             AssertFallback(module, Data(("enabled", Number(1))), module);
         var mesh = new ComponentData { id = "renderer", type = "RimUnity.ParticleSystemRenderer", members = [Member("renderMode", Number(4))] };
         var meshResult = classifier.Classify(small, mesh);
-        Check.Equal(LumenParticleTier.L0_ExternalCpu, meshResult.Tier, "mesh tier");
+        Check.Equal(LumenParticleTier.External, meshResult.Tier, "mesh tier");
         Check.Reasons(["renderMode.Mesh"], meshResult.Reasons, "mesh reasons");
         AssertFallback("velocityOverLifetime", Data(("enabled", Number(1)), ("x", Constant(2))), "velocityOverLifetime.linear");
         AssertFallback("rotationOverLifetime", Data(("enabled", Number(1))), "rotationOverLifetime");
         AssertFallback("forceOverLifetime", Data(("enabled", Number(1)), ("y", Curve(0, 1))), "forceOverLifetime.curve");
-        AssertFallback("lights", Data(("enabled", Number(1)), ("ratio", Number(0.5f))), "lights.ratio");
+        AssertFallback("lights", Data(("enabled", Number(1)), ("ratio", Number(0.5f))), "lights.perParticle");
         var probabilistic = Particles();
         probabilistic.members.RemoveAll(m => m.name == "emission");
         probabilistic.members.Add(Member("emission", Data(("enabled", Number(1)), ("bursts", Array(Data(("probability", Number(0.5f)), ("count", Constant(3))))))));
-        Check.Reasons(["emission.bursts.probability"], classifier.Classify(probabilistic, null).Reasons, "probability reason");
+        Check.Reasons([], classifier.Classify(probabilistic, null).Reasons, "probability supported");
+        var burstAsset = new RimUnityPrefabTranslator().Translate("probability", Prefab(probabilistic), _ => null, _ => null, out _);
+        Check.Equal(.5f, burstAsset.Nodes[0].Emitter!.Bursts.Single().Probability, "probability preserved");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(burstAsset);
+        var burstValue = probabilistic.members.Single(m => m.name == "emission").value.fields.Single(m => m.name == "bursts").value.items.Single();
+        burstValue.fields.Add(Member("cycleCount", Number(0)));
+        burstValue.fields.Add(Member("repeatInterval", Number(2)));
+        var repeating = new RimUnityPrefabTranslator().Translate("repeating", Prefab(probabilistic), _ => null, _ => null, out _);
+        Check.Equal(3, repeating.Nodes[0].Emitter!.Bursts.Length, "zero cycles repeats below duration");
+        burstValue.fields.Single(m => m.name == "probability").value = Number(1.1f);
+        Check.Reasons(["emission.bursts.probability.domain"], classifier.Classify(probabilistic, null).Reasons, "invalid probability external");
+        burstValue.fields.Single(m => m.name == "probability").value = Number(.5f);
+        burstValue.fields.Single(m => m.name == "count").value = Data(("mode", Number(3)), ("constantMin", Number(1)), ("constantMax", Number(3)));
+        Check.Reasons(["emission.bursts.count.variable"], classifier.Classify(probabilistic, null).Reasons, "random burst count external");
         var combined = Particles();
         foreach (string module in new[] { "trails", "subEmitters", "collision", "trigger" }) combined.members.Add(Member(module, Data(("enabled", Number(1)))));
         Check.Reasons(["trails", "subEmitters", "collision", "trigger", "renderMode.Mesh"], classifier.Classify(combined, mesh).Reasons, "all blockers retained");
         Console.WriteLine("MATRIX small32=L1 highCurlVortex=L2 peak200=L2; structural=5; conservative=6; all-blockers=5 reasons");
     }
 
+    internal static void ActiveExportFields()
+    {
+        ValueData dual = Data(("mode", Number(2)), ("curveMultiplier", Number(1)),
+            ("curveMin", Data(("keys", Array(Key(0, 0, 0), Key(1, 0, 0))))),
+            ("curveMax", Data(("keys", Array(Key(0, 1, 0), Key(1, 1, 0))))));
+        (string Field, ValueData Value, string[] Reasons)[] cases =
+        [
+            ("startSizeX", dual, []), ("startSizeY", dual, []), ("startSizeZ", dual, []),
+            ("startRotationX", dual, []), ("startRotationY", dual, []), ("startRotationZ", dual, []),
+            ("startRotation", Constant(0), []),
+            ("startSize3D", Number(1), ["main.startSize3D"]),
+            ("startRotation3D", Number(1), ["main.startRotation3D"]),
+            ("startRotation", Constant(.25f), ["main.startRotation"])
+        ];
+        foreach (var test in cases)
+        {
+            var particles = Particles();
+            particles.members.Single(m => m.name == "main").value.fields.Add(Member(test.Field, test.Value));
+            var asset = new RimUnityPrefabTranslator().Translate("active." + test.Field, Prefab(particles), _ => null, _ => null, out var report);
+            Check.Reasons(test.Reasons, report.Nodes.Single().Reasons, "active field reasons");
+            Check.Equal(test.Reasons.Length == 0, asset.Nodes[0].Emitter is not null, "active field native ownership");
+        }
+        var disabled = Particles();
+        disabled.members.Single(m => m.name == "emission").value = Data(("enabled", Number(0)), ("rateOverTime", dual));
+        var inactiveAsset = new RimUnityPrefabTranslator().Translate("inactive.emission", Prefab(disabled), _ => null, _ => null, out var inactiveReport);
+        Check.Reasons([], inactiveReport.Nodes.Single().Reasons, "disabled emission ignores serialized dual curve");
+        Check.Near(0, inactiveAsset.Nodes[0].Emitter!.RateOverTime, "disabled emission rate");
+        disabled.members.Single(m => m.name == "emission").value.fields.Single(m => m.name == "enabled").value = Number(1);
+        new RimUnityPrefabTranslator().Translate("active.emission", Prefab(disabled), _ => null, _ => null, out var activeReport);
+        Check.Reasons(["emission.rateOverTime.dualCurve"], activeReport.Nodes.Single().Reasons, "enabled emission retains dual reason");
+    }
+
+    internal static void DeferredWeightedExports()
+    {
+        ValueData key = Key(0, 1, 0);
+        key.fields.Add(Member("weightedMode", Number(1)));
+        ValueData dual = Data(("mode", Number(2)), ("curveMultiplier", Number(1)),
+            ("curveMin", Data(("keys", Array(key)))), ("curveMax", Data(("keys", Array(key)))));
+        foreach (float probability in new[] { 0f, .5f })
+        {
+            ValueData burst = Burst(0, 0, 1);
+            burst.fields.Single(m => m.name == "count").value = dual;
+            burst.fields.Add(Member("probability", Number(probability)));
+            var asset = TranslateBursts(1, [burst], out var report);
+            Check.Reasons(["emission.bursts.count.dualCurve"], report.Nodes.Single().Reasons, "weighted deferred count classified before conversion");
+            Check.True(asset.Nodes[0].Emitter is null, "weighted count remains external without native evaluation");
+        }
+        foreach (string field in new[] { "startLifetime", "startSpeed", "startSize", "startRotation", "gravityModifier" })
+        {
+            var particles = Particles();
+            var main = particles.members.Single(m => m.name == "main").value;
+            main.fields.RemoveAll(m => m.name == field);
+            main.fields.Add(Member(field, dual));
+            var asset = new RimUnityPrefabTranslator().Translate("deferred." + field, Prefab(particles), _ => null, _ => null, out var report);
+            Check.Reasons(["main." + field + ".dualCurve"], report.Nodes.Single().Reasons, "selected weighted dual curve never evaluated natively");
+            Check.True(asset.Nodes[0].Emitter is null, "selected weighted curve external");
+        }
+        foreach (string module in new[] { "velocityOverLifetime", "forceOverLifetime", "noise" })
+        {
+            string field = module == "noise" ? "strength" : "x";
+            var particles = Particles();
+            particles.members.Add(Member(module, Data(("enabled", Number(1)), (field, dual))));
+            var asset = new RimUnityPrefabTranslator().Translate("deferred." + module, Prefab(particles), _ => null, _ => null, out var report);
+            Check.True(report.Nodes.Single().Reasons.Contains(module + "." + field + ".dualCurve"), "selected module dual reason retained");
+            Check.True(asset.Nodes[0].Emitter is null, "selected module external without weighted evaluation");
+        }
+        foreach (string field in new[] { "rateOverTime", "rateOverDistance" })
+        {
+            foreach (bool enabled in new[] { false, true })
+            {
+                var particles = Particles();
+                particles.members.Single(m => m.name == "emission").value = Data(("enabled", Number(enabled ? 1 : 0)), (field, dual));
+                var asset = new RimUnityPrefabTranslator().Translate("deferred." + field, Prefab(particles), _ => null, _ => null, out var report);
+                Check.Reasons(enabled ? ["emission." + field + ".dualCurve"] : [], report.Nodes.Single().Reasons, "distance/time active selection");
+                Check.Equal(!enabled, asset.Nodes[0].Emitter is not null, "distance/time external ownership");
+            }
+        }
+    }
+
+    internal static void BoundedImportedBursts()
+    {
+        (float Duration, float Time, float Interval, int Cycles, float[] Times)[] schedules =
+        [
+            (1, 0, .25f, 0, [0, .25f, .5f, .75f]),
+            (1, 0, .3f, 0, [0, .3f, .6f, .9f]),
+            (1, .1f, .3f, 4, [.1f, .4f, .7f]),
+            (1, 1, 0, 1, []),
+            (1, 0, -2, 1, [0]),
+            (1, 0, 0, 1, [0])
+        ];
+        foreach (var test in schedules)
+        {
+            EffectAsset asset = TranslateBursts(test.Duration, [Burst(test.Time, test.Interval, test.Cycles)], out var report);
+            Check.Reasons([], report.Nodes.Single().Reasons, "bounded schedule native");
+            Check.Equal(test.Times.Length, asset.Nodes[0].Emitter!.Bursts.Length, "strict endpoint count");
+            for (int i = 0; i < test.Times.Length; i++)
+                Check.Near(test.Times[i], asset.Nodes[0].Emitter!.Bursts[i].Time, "source occurrence phase");
+            RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        }
+        var loopAsset = TranslateBursts(1, [Burst(0, .3f, 0)], out _);
+        var sim = new RimLumen.Core.Scene.CpuParticleSimulator();
+        sim.AcquireEmitter(loopAsset.Nodes[0].Emitter!, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u);
+        CaptureBurstFrame(sim, .95f);
+        Check.Equal(4, sim.LiveParticleCount, "first nondividing loop");
+        CaptureBurstFrame(sim, .1f);
+        Check.Equal(5, sim.LiveParticleCount, "next loop restarts at zero phase");
+        CaptureBurstFrame(sim, .9f);
+        Check.Equal(8, sim.LiveParticleCount, "second nondividing loop");
+        var accepted = TranslateBursts(4096, [Burst(0, 1, 2048), Burst(2048, 1, 2048)], out _);
+        Check.Equal(4096, accepted.Nodes[0].Emitter!.Bursts.Length, "4096 total occurrences accepted");
+        var over = TranslateBursts(4097, [Burst(0, 1, 2048), Burst(2048, 1, 2049)], out var overReport);
+        Check.Reasons(["emission.bursts.occurrenceLimit"], overReport.Nodes.Single().Reasons, "4097 summed across definitions external");
+        Check.True(over.Nodes[0].Emitter is null, "overlimit never truncates into native ownership");
+        var zeroCycleOver = TranslateBursts(4097, [Burst(0, 1, 0)], out var zeroCycleReport);
+        Check.Reasons(["emission.bursts.occurrenceLimit"], zeroCycleReport.Nodes.Single().Reasons, "zero cycles use same total bound");
+        Check.True(zeroCycleOver.Nodes[0].Emitter is null, "zero-cycle overlimit external");
+        foreach (var burst in new[] { Burst(0, 0, 0), Burst(0, float.PositiveInfinity, 1), Burst(0, float.NaN, 1), Burst(float.NaN, 1, 1), Burst(-1, 1, 1), Burst(2, 1, 1) })
+        {
+            var invalid = TranslateBursts(1, [burst], out var report);
+            Check.Reasons(["emission.bursts.schedule.domain"], report.Nodes.Single().Reasons, "invalid schedule reason");
+            Check.True(invalid.Nodes[0].Emitter is null, "invalid schedule external");
+        }
+    }
+
+    private static ValueData Burst(float time, float interval, int cycles) => Data(("time", Number(time)),
+        ("repeatInterval", Number(interval)), ("cycleCount", Number(cycles)), ("count", Constant(1)));
+
+    private static EffectAsset TranslateBursts(float duration, ValueData[] bursts, out RimUnityTranslationReport report)
+    {
+        var particles = Particles(lifetime: 20f);
+        particles.members.Single(m => m.name == "main").value.fields.Single(m => m.name == "duration").value = Number(duration);
+        particles.members.Single(m => m.name == "emission").value = Data(("enabled", Number(1)), ("rateOverTime", Constant(0)), ("bursts", Array(bursts)));
+        return new RimUnityPrefabTranslator().Translate("burst.schedule", Prefab(particles), _ => null, _ => null, out report);
+    }
+
+    private static void CaptureBurstFrame(RimLumen.Core.Scene.CpuParticleSimulator sim, float dt) => sim.CaptureMainThread(new LumenCaptureContext
+    {
+        FrameIndex = 0, DeltaTime = dt, ViewportWidth = 64, ViewportHeight = 64,
+        ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
+    });
+
+    internal static void RenderModeFallback()
+    {
+        var vertical = Prefab(Particles());
+        vertical.nodes[0].components.Add(new ComponentData { id = "vertical", type = "RimUnity.ParticleSystemRenderer", members = [Member("renderMode", Number(3))] });
+        var asset = new RimUnityPrefabTranslator().Translate("vertical", vertical, _ => null, _ => null, out _);
+        Check.Equal(LumenBillboardMode.Vertical, asset.Nodes[0].Emitter!.BillboardMode, "vertical mode");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        vertical.nodes[0].components[1].members.Add(Member("alignment", Number(2)));
+        var precedence = new RimUnityPrefabTranslator().Translate("vertical.local", vertical, _ => null, _ => null, out _);
+        Check.Equal(LumenBillboardMode.Vertical, precedence.Nodes[0].Emitter!.BillboardMode, "vertical takes precedence over local");
+        vertical.nodes[0].components[1].members.Single(m => m.name == "renderMode").value = Number(0);
+        var local = new RimUnityPrefabTranslator().Translate("local", vertical, _ => null, _ => null, out _);
+        Check.Equal(LumenBillboardMode.Local, local.Nodes[0].Emitter!.BillboardMode, "local alignment on billboard");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(local);
+        AssertRenderModeFallback(-1, "renderMode.-1");
+        AssertRenderModeFallback(9, "renderMode.9");
+    }
+
+    private static void AssertRenderModeFallback(int mode, string reason)
+    {
+        var particles = Particles();
+        var prefab = Prefab(particles);
+        prefab.nodes[0].components.Add(new ComponentData
+        {
+            id = "renderer", type = "RimUnity.ParticleSystemRenderer", members = [Member("renderMode", Number(mode))]
+        });
+        var asset = new RimUnityPrefabTranslator().Translate("mode", prefab, _ => null, _ => null, out var report);
+        Check.Equal(LumenParticleTier.External, report.Nodes.Single().Tier, "unsupported render mode tier");
+        Check.Reasons([reason], report.Nodes.Single().Reasons, "render mode reason");
+        Check.True(asset.Nodes[0].Emitter is null && asset.Nodes[0].PointLight is null, "unsupported render mode leaves particles and lights external");
+    }
+
     internal static void Shapes()
     {
         (int Max, ValueData Shape, string[] Reasons)[] cases =
         [
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(4)), ("radius", Number(1)), ("angle", Number(0))), ["shape.coneRadius"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(4)), ("radius", Number(0)), ("angle", Number(25))), ["shape.coneDistribution"]),
-            (256, Data(("enabled", Number(0))), ["shape.directionAxis"]),
-            (256, Data(("enabled", Number(1)), ("shapeType", Number(5))), ["shape.directionAxis"]),
-            (256, Data(("enabled", Number(1)), ("shapeType", Number(4)), ("radius", Number(0)), ("angle", Number(0))), ["shape.directionAxis"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(10))), ["shape.circlePlane"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(2))), ["shape.hemisphere"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("position", Vector(1, 0, 0))), ["shape.localTransform"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("rotation", Vector(90, 0, 0))), ["shape.localTransform"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("scale", Vector(2, 1, 1))), ["shape.localTransform"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("radiusThickness", Number(.5f))), ["shape.radiusThickness"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("arc", Number(180))), ["shape.arc"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("randomDirectionAmount", Number(.5f))), ["shape.direction"]),
-            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("randomPositionAmount", Number(.5f))), ["shape.randomPosition"]),
+            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("radiusThickness", Number(1.1f))), ["shape.radiusThickness.domain"]),
+            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("arcMode", Number(1))), ["shape.arcMode"]),
+            (32, Data(("enabled", Number(1)), ("shapeType", Number(12)), ("radiusMode", Number(1))), ["shape.radiusMode"]),
+            (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("randomPositionAmount", Number(-.5f))), ["shape.randomPositionAmount.domain"]),
             (32, Data(("enabled", Number(1)), ("shapeType", Number(0)), ("alignToDirection", Number(1))), ["shape.alignToDirection"]),
         ];
         foreach (var test in cases)
         {
             var particles = Particles(test.Max);
             particles.members.Single(m => m.name == "shape").value = test.Shape;
-            particles.members.Add(Member("lights", Data(("enabled", Number(1)), ("ratio", Number(1)))));
-            var asset = new RimUnityPrefabTranslator().Translate("shape", Prefab(particles), _ => null, _ => null, out var report);
-            Check.Equal(LumenParticleTier.L0_ExternalCpu, report.Nodes.Single().Tier, "unrepresentable shape");
+                var asset = new RimUnityPrefabTranslator().Translate("shape", Prefab(particles), _ => null, _ => null, out var report);
+            Check.Equal(LumenParticleTier.External, report.Nodes.Single().Tier, "unrepresentable shape");
             Check.Reasons(test.Reasons, report.Nodes.Single().Reasons, "exact shape reason");
             Check.True(asset.Nodes[0].Emitter is null && asset.Nodes[0].PointLight is null, "shape fallback external ownership");
+        }
+        (int Kind, LumenShapeKind Expected)[] supported =
+        [
+            (0, LumenShapeKind.Sphere), (1, LumenShapeKind.SphereShell), (2, LumenShapeKind.Hemisphere),
+            (3, LumenShapeKind.HemisphereShell), (4, LumenShapeKind.Cone), (5, LumenShapeKind.Box),
+            (7, LumenShapeKind.ConeShell), (8, LumenShapeKind.ConeVolume), (9, LumenShapeKind.ConeVolumeShell),
+            (10, LumenShapeKind.CircleXZ), (11, LumenShapeKind.CircleEdgeXZ), (12, LumenShapeKind.SingleSidedEdge),
+            (15, LumenShapeKind.BoxShell), (16, LumenShapeKind.BoxEdge), (17, LumenShapeKind.Donut), (18, LumenShapeKind.Rectangle)
+        ];
+        foreach (var test in supported)
+        {
+            var source = Particles();
+            source.members.Single(m => m.name == "shape").value = Data(("enabled", Number(1)), ("shapeType", Number(test.Kind)), ("arc", Number(90)));
+            var translated = new RimUnityPrefabTranslator().Translate("shape." + test.Kind, Prefab(source), _ => null, _ => null, out _);
+            Check.Equal(test.Expected, translated.Nodes[0].Emitter!.Shape, "shape kind");
+            Check.Near(90, translated.Nodes[0].Emitter!.ArcDegrees, "static arc");
+            RimLumen.Core.Api.RimLumenApi.RegisterEffect(translated);
         }
         // A zero-angle, zero-radius cone is representable on CPU; arbitrary box extents are retained.
         var cone = Particles();
@@ -87,8 +279,129 @@ internal static class TranslationTests
         var box = Particles();
         box.members.Single(m => m.name == "shape").value = Data(("enabled", Number(1)), ("shapeType", Number(5)), ("scale", Vector(2, 4, 6)));
         var boxAsset = new RimUnityPrefabTranslator().Translate("box", Prefab(box), _ => null, _ => null, out _);
-        Check.Equal(new Vector3(1, 2, 3), boxAsset.Nodes[0].Emitter!.ShapeExtents, "CPU box half extents");
-        Console.WriteLine($"SHAPES exact L0 cases={cases.Length}; representable CPU cone/box retained");
+        var boxEmitter = boxAsset.Nodes[0].Emitter!;
+        Vector3 corner = Vector3.Transform(boxEmitter.ShapeExtents * boxEmitter.ShapeScale, boxEmitter.ShapeRotation);
+        Check.True(Vector3.Distance(new Vector3(1, 2, 3), Vector3.Abs(corner)) < 1e-6f, "box half extents after shape transform");
+        Console.WriteLine($"SHAPES exact External cases={cases.Length}; representable CPU cone/box retained");
+    }
+
+    internal static void ShapeAxis()
+    {
+        AssertShapeDirection(new Vector3(0, 0, 0), Vector3.UnitZ);
+        AssertShapeDirection(new Vector3(90, 0, 0), -Vector3.UnitY);
+        var particles = Particles();
+        particles.members.Single(m => m.name == "shape").value = Data(("enabled", Number(1)), ("shapeType", Number(10)), ("arc", Number(90)));
+        var asset = new RimUnityPrefabTranslator().Translate("arc90", Prefab(particles), _ => null, _ => null, out _);
+        var emitter = asset.Nodes[0].Emitter!;
+        Check.True(Vector3.Distance(Vector3.UnitY, Vector3.Transform(-Vector3.UnitZ, emitter.ShapeRotation)) < 1e-6f,
+            "native 90 degree arc endpoint maps to source +Y");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        var sim = new RimLumen.Core.Scene.CpuParticleSimulator();
+        int id = sim.AcquireEmitter(emitter, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
+        sim.EmitBurst(id, 32);
+        sim.CaptureMainThread(new LumenCaptureContext
+        {
+            FrameIndex = 0, DeltaTime = 0, ViewportWidth = 1920, ViewportHeight = 1080,
+            ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
+        });
+        var live = sim.LiveParticles.ToArray();
+        Check.True(live.Length == 32, "circle burst admitted");
+        Check.True(live.All(p => p.Position.X >= -1e-5f && p.Position.Y >= -1e-5f && MathF.Abs(p.Position.Z) < 1e-5f),
+            "90 degree source arc occupies +X/+Y quadrant");
+        Check.True(live.Any(p => p.Position.Y > .01f), "source arc reaches +Y");
+    }
+
+    private static void AssertShapeDirection(Vector3 rotation, Vector3 unityDirection)
+    {
+        var particles = Particles(256);
+        particles.members.Single(m => m.name == "shape").value = Data(("enabled", Number(1)), ("shapeType", Number(4)),
+            ("radius", Number(0)), ("angle", Number(0)), ("rotation", Vector(rotation.X, rotation.Y, rotation.Z)));
+        var prefab = Prefab(particles);
+        prefab.nodes[0].rotation = [0, .70710677f, 0, .70710677f];
+        var asset = new RimUnityPrefabTranslator().Translate("axis", prefab, _ => null, _ => null, out var report);
+        Check.Equal(LumenParticleTier.L2_GpuCompute, report.Nodes[0].Tier, "cone no axis/localTransform fallback");
+        var node = asset.Nodes[0];
+        var emitter = node.Emitter!;
+        Vector3 worldDirection = Vector3.Transform(Vector3.Transform(Vector3.UnitY, emitter.ShapeRotation), node.LocalRotation);
+        Vector3 expected = Vector3.Transform(unityDirection, new Quaternion(0, .70710677f, 0, .70710677f));
+        Check.True(Vector3.Distance(expected, worldDirection) < 1e-6f, $"Core +Y maps to Unity R*+Z in world: expected={expected}, actual={worldDirection}");
+        Check.Equal(new Quaternion(0, .70710677f, 0, .70710677f), node.LocalRotation, "original node rotation retained");
+    }
+
+    internal static void ShapeScale()
+    {
+        var particles = Particles();
+        particles.members.Single(m => m.name == "shape").value = Data(("enabled", Number(1)), ("shapeType", Number(5)),
+            ("scale", Vector(2, 4, 6)), ("position", Vector(1, 2, 3)), ("rotation", Vector(0, 90, 0)));
+        var asset = new RimUnityPrefabTranslator().Translate("scale", Prefab(particles), _ => null, _ => null, out _);
+        var emitter = asset.Nodes[0].Emitter!;
+        // Core cube sample (.5,.25,-.75) corresponds to Unity (.5,.75,.25) after the basis rotation.
+        Vector3 position = Vector3.Transform(new Vector3(.5f, .25f, -.75f) * emitter.ShapeExtents * emitter.ShapeScale,
+            emitter.ShapeRotation) + emitter.ShapePosition;
+        Check.True(Vector3.Distance(new Vector3(1.75f, 3.5f, 2.5f), position) < 1e-6f, $"nonuniform shape scale applied once with matching axes: actual={position}");
+        Check.Equal(new Vector3(.5f), emitter.ShapeExtents, "box base half extents");
+        Check.Equal(new Vector3(2, 6, 4), emitter.ShapeScale, "basis permutes shape scale axes");
+    }
+
+    internal static void DuplicateCurve()
+    {
+        var particles = Particles();
+        particles.members.Add(Member("sizeOverLifetime", Data(("enabled", Number(1)), ("size", Data(("mode", Number(1)),
+            ("curveMultiplier", Number(2)), ("curve", Data(("keys", Array(Key(.5f, 1, 4), Key(.5f, 3, -2))))))))));
+        var asset = new RimUnityPrefabTranslator().Translate("duplicate.curve", Prefab(particles), _ => null, _ => null, out _);
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        Check.Near(6, CurveEvaluator.Evaluate(asset.Nodes[0].Emitter!.SizeOverLifetime, 0), "all-equal times retain last value and multiplier before time");
+        Check.Near(6, CurveEvaluator.Evaluate(asset.Nodes[0].Emitter!.SizeOverLifetime, 1), "all-equal times retain last value and multiplier after time");
+    }
+
+    internal static void MixedRepeatedCurves()
+    {
+        AssertMixedRepeatedCurve("two", [new(0, 1, 2, 2), new(.5f, 2, 2, 4), new(.5f, 4, -2, -2), new(1, 5, 2, 2)]);
+        AssertMixedRepeatedCurve("three", [new(0, 1, 2, 2), new(.5f, 2, 2, 4), new(.5f, 3, -1, 3), new(.5f, 4, -2, -2), new(1, 5, 2, 2)]);
+    }
+
+    private static void AssertMixedRepeatedCurve(string name, global::RimUnity.Keyframe[] sourceKeys)
+    {
+        var source = new global::RimUnity.AnimationCurve(sourceKeys);
+        var particles = Particles();
+        ValueData keys = Array(sourceKeys.Select(key => Data(
+            ("time", Number(key.time)), ("value", Number(key.value)), ("inTangent", Number(key.inTangent)),
+            ("outTangent", Number(key.outTangent)))).ToArray());
+        particles.members.Add(Member("sizeOverLifetime", Data(("enabled", Number(1)), ("size", Data(("mode", Number(1)),
+            ("curveMultiplier", Number(2)), ("curve", Data(("keys", keys))))))));
+        var asset = new RimUnityPrefabTranslator().Translate("mixed.curve." + name, Prefab(particles), _ => null, _ => null, out var report);
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        ScalarCurve translated = asset.Nodes[0].Emitter!.SizeOverLifetime;
+        Check.Equal(LumenParticleTier.L1_NativeCpu, report.Nodes.Single().Tier, "mixed repeat retains native tier");
+        Check.Equal(sourceKeys.Length, translated.Keys.Length, "mixed repeat keeps every source key");
+        var sorted = source.keys;
+        for (int i = 0; i < sorted.Length; i++)
+        {
+            Check.Equal(sorted[i].time, translated.Keys[i].Time, "source time preserved");
+            Check.Equal(sorted[i].value, translated.Keys[i].Value, "source value preserved");
+            Check.Equal(sorted[i].inTangent, translated.Keys[i].InTangent, "source in tangent preserved");
+            Check.Equal(sorted[i].outTangent, translated.Keys[i].OutTangent, "source out tangent preserved");
+        }
+        foreach (float time in new[] { 0, .25f, MathF.BitDecrement(.5f), .5f, MathF.BitIncrement(.5f), .75f, 1 })
+            Check.Near(2 * source.Evaluate(time), CurveEvaluator.Evaluate(translated, time), "mixed repeat source evaluation " + time);
+        Console.WriteLine($"MIXED {name}: sourceKeys={sourceKeys.Length} translatedKeys={translated.Keys.Length} RegisterEffect=success exactMidpoint={CurveEvaluator.Evaluate(translated, .5f)}");
+    }
+
+    internal static void AdjacentFixedGradient()
+    {
+        float next = MathF.BitIncrement(.5f);
+        var particles = Particles();
+        particles.members.Add(Member("colorOverLifetime", Data(("enabled", Number(1)), ("color", Data(("mode", Number(1)),
+            ("gradient", Data(("mode", Number(1)),
+                ("colorKeys", Array(Data(("time", Number(0)), ("color", Vector(1, 0, 0, 1))), Data(("time", Number(.5f)), ("color", Vector(0, 1, 0, 1))))),
+                ("alphaKeys", Array(Data(("time", Number(0)), ("alpha", Number(.25f))), Data(("time", Number(next)), ("alpha", Number(.75f))))))))))));
+        var asset = new RimUnityPrefabTranslator().Translate("adjacent.gradient", Prefab(particles), _ => null, _ => null, out _);
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        ColorGradient gradient = asset.Nodes[0].Emitter!.ColorOverLifetime;
+        Check.Equal(new Vector4(1, 0, 0, .25f), GradientEvaluator.Evaluate(gradient, 0), "Fixed initial value");
+        Check.Equal(new Vector4(0, 1, 0, .25f), GradientEvaluator.Evaluate(gradient, .5f), "RGB source key retains current alpha");
+        Check.Equal(new Vector4(0, 1, 0, .75f), GradientEvaluator.Evaluate(gradient, next), "adjacent alpha key retains current RGB");
+        Check.Equal(new Vector4(0, 1, 0, .75f), GradientEvaluator.Evaluate(gradient, 1), "Fixed endpoint value");
     }
 
     internal static void Gravity()
@@ -115,9 +428,20 @@ internal static class TranslationTests
             first = force;
 
             var sim = new RimLumen.Core.Scene.CpuParticleSimulator();
-            int emitterId = sim.AcquireEmitter(asset.Nodes.Single().Emitter!, Matrix4x4.Identity, emitting: false);
+            int emitterId = sim.AcquireEmitter(asset.Nodes.Single().Emitter!, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, emitting: false);
             sim.EmitBurst(emitterId, 1);
             float dt = 0.5f;
+            // D7: a particle born in this capture starts at age 0 and does not advance that frame.
+            sim.CaptureMainThread(new LumenCaptureContext
+            {
+                FrameIndex = 0,
+                DeltaTime = 0f,
+                ViewportWidth = 1920,
+                ViewportHeight = 1080,
+                ViewMatrix = Matrix4x4.Identity,
+                ProjectionMatrix = Matrix4x4.Identity,
+                LumenRenderPassId = 0,
+            });
             sim.CaptureMainThread(new LumenCaptureContext
             {
                 FrameIndex = 1,
@@ -134,13 +458,34 @@ internal static class TranslationTests
         Console.WriteLine("GRAVITY fields L1==L2 accel=(4,-19.62,-2) drag=(0.25,0,0) radius=0 strength=1; CPU physics verified on L1 + L2->CPU fallback");
     }
 
+    internal static void VortexRadial()
+    {
+        ForceFieldSpec cpu = TranslateVortex(32);
+        ForceFieldSpec gpu = TranslateVortex(256);
+        Check.Near(-3f, cpu.Parameters.X, "L1 radial outward acceleration is not divided by orbital strength");
+        Check.Equal(cpu, gpu, "L1/L2 vortex fields");
+        Check.Equal(Vector3.UnitY, cpu.CenterOrAxis, "vortex axis");
+        Check.Near(4f, cpu.Strength, "orbital acceleration");
+        Check.Near(0f, cpu.Radius, "no radial falloff");
+        Check.Near(0f, cpu.Parameters.Y, "no axial lift");
+        Console.WriteLine($"VORTEX L1==L2 radial={cpu.Parameters.X} orbital={cpu.Strength} radius={cpu.Radius} lift={cpu.Parameters.Y}");
+    }
+
+    private static ForceFieldSpec TranslateVortex(int max)
+    {
+        var particles = Particles(max);
+        particles.members.Single(m => m.name == "shape").value = Data(("enabled", Number(1)), ("shapeType", Number(0)));
+        particles.members.Add(Member("velocityOverLifetime", Data(("enabled", Number(1)), ("orbitalY", Constant(4)), ("radial", Constant(3)))));
+        var asset = new RimUnityPrefabTranslator().Translate("vortex", Prefab(particles), _ => null, _ => null, out _);
+        return asset.Nodes.Single().Emitter!.ForceFields.Single();
+    }
+
     private static void AssertFallback(string module, ValueData value, string reason)
     {
         var particles = Particles();
         particles.members.Add(Member(module, value));
-        if (module != "lights") particles.members.Add(Member("lights", Data(("enabled", Number(1)), ("ratio", Number(1)))));
         var asset = new RimUnityPrefabTranslator().Translate(module, Prefab(particles), _ => null, _ => null, out var report);
-        Check.Equal(LumenParticleTier.L0_ExternalCpu, report.Nodes.Single().Tier, reason);
+        Check.Equal(LumenParticleTier.External, report.Nodes.Single().Tier, reason);
         Check.Reasons([reason], report.Nodes.Single().Reasons, reason);
         Check.True(asset.Nodes[0].Emitter is null && asset.Nodes[0].PointLight is null, reason + " must leave particles AND lights to external");
     }
@@ -152,7 +497,6 @@ internal static class TranslationTests
         var c = Particles(); c.id = "c.ps";
         a.members.Add(Member("subEmitters", SubEmitter("b.ps")));
         b.members.Add(Member("subEmitters", SubEmitter("c.ps")));
-        c.members.Add(Member("lights", Data(("enabled", Number(1)), ("ratio", Number(1)))));
         var prefab = new PrefabData { nodes = [Node("c", c, "a"), Node("b", b, "a"), Node("a", a)] };
         var asset = new RimUnityPrefabTranslator().Translate("closure", prefab, _ => null, _ => null, out var report);
         Check.Equal(3, report.Nodes.Count, "closure report count");
@@ -161,7 +505,7 @@ internal static class TranslationTests
         Check.Reasons(["subEmitters.dependency"], report.Nodes.Single(n => n.NodeId == "c").Reasons, "transitive target");
         foreach (var node in report.Nodes)
         {
-            Check.Equal(LumenParticleTier.L0_ExternalCpu, node.Tier, "closure tier");
+            Check.Equal(LumenParticleTier.External, node.Tier, "closure tier");
             Check.True(asset.Nodes[node.NodeIndex].Emitter is null && asset.Nodes[node.NodeIndex].PointLight is null, "closure duplicate native ownership");
         }
         Check.Equal(-1, asset.Nodes[0].ParentIndex, "topological root");
@@ -169,7 +513,6 @@ internal static class TranslationTests
 
         var siblingSource = Particles(); siblingSource.id = "s1.ps";
         var siblingTarget = Particles(); siblingTarget.id = "s2.ps";
-        siblingTarget.members.Add(Member("lights", Data(("enabled", Number(1)), ("ratio", Number(1)))));
         siblingSource.members.Add(Member("subEmitters", SubEmitter("s2.ps")));
         var siblings = new PrefabData
         {
@@ -192,17 +535,129 @@ internal static class TranslationTests
     private static ValueData Curve(float start, float end) => Data(("mode", Number(1)), ("curveMultiplier", Number(2)),
         ("curve", Data(("keys", Array(Key(1, end, end - start), Key(0, start, end - start))))));
 
+    internal static void LinearMaterial()
+    {
+        AssertLinearFactors(1f, ".323865139 (white texture)");
+        AssertLinearFactors(.5f, ".094312444 (sRGB texture .5)");
+    }
+
+    private static void AssertLinearFactors(float lifetime, string sourceFormulaReference)
+    {
+        var asset = TranslateMaterial("Linear", new Vector4(.5f, .5f, .5f, .75f), new Vector4(.4f, .4f, .4f, .8f),
+            new Vector4(lifetime, lifetime, lifetime, 1), out var report);
+        Check.Equal(LumenParticleTier.L1_NativeCpu, report.Nodes.Single().Tier, "supported Linear material stays native");
+        Check.Reasons([], report.Nodes.Single().Reasons, "no temporary Linear fallback");
+        var emitter = asset.Nodes[0].Emitter!;
+        Check.Equal(LumenColorSpace.Linear, emitter.ColorSpace, "native Linear calculation selected");
+        Check.Equal(new Vector4(.5f, .5f, .5f, .75f), emitter.MaterialTint, "material tint stays separate from vertex");
+        Check.Near(.4f, emitter.StartColor.X * emitter.HdrIntensity, "stored start RGB is not decoded or tint-folded");
+        Check.Near(.8f, emitter.StartColor.W, "stored start alpha not tint-folded");
+        Check.Near(lifetime, GradientEvaluator.Evaluate(emitter.ColorOverLifetime, .5f).X, "lifetime RGB remains a vertex factor");
+        Check.Equal("test-texture", emitter.TextureKey, "texture identity reaches native sampling metadata resolution");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        Console.WriteLine($"LINEAR translated start=.4 lifetime={lifetime} tint=.5; pinned formula reference={sourceFormulaReference}; shader output not executed");
+    }
+
+    internal static void MaterialDomain()
+    {
+        AssertMaterialDomain(new Vector4(-.1f, 1, 1, 1));
+        AssertMaterialDomain(new Vector4(float.NaN, 1, 1, 1));
+        AssertMaterialDomain(new Vector4(1, float.PositiveInfinity, 1, 1));
+        AssertMaterialDomain(new Vector4(1, 1, 1, -.1f));
+        AssertMaterialDomain(new Vector4(2, 1.7f, .8f, 2));
+        AssertMaterialDomain(new Vector4(1, 1, 1, float.NaN));
+        var valid = TranslateMaterial("Linear", new Vector4(2, 1.7f, .8f, 1), Vector4.One, Vector4.One, out var report);
+        Check.Equal(LumenParticleTier.L1_NativeCpu, report.Nodes.Single().Tier, "finite HDR tint is native");
+        Check.Equal(new Vector4(2, 1.7f, .8f, 1), valid.Nodes[0].Emitter!.MaterialTint, "HDR tint is not clamped");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(valid);
+    }
+
+    private static void AssertMaterialDomain(Vector4 tint)
+    {
+        var asset = TranslateMaterial("Gamma", tint, Vector4.One, Vector4.One, out var report);
+        Check.Equal(LumenParticleTier.External, report.Nodes.Single().Tier, "invalid material tint stays external");
+        Check.Reasons(["material[test-material]._Color.domain"], report.Nodes.Single().Reasons, "reason names material identity and source field");
+        Check.True(asset.Nodes[0].Emitter is null && asset.Nodes[0].PointLight is null, "invalid tint does not create native particles or light");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+    }
+
+    private static EffectAsset TranslateMaterial(string colorSpace, Vector4 tint, Vector4 start, Vector4 lifetime, out RimUnityTranslationReport report)
+    {
+        var particles = Particles();
+        particles.members.Single(m => m.name == "main").value.fields.Add(Member("startColor", Vector(start.X, start.Y, start.Z, start.W)));
+        particles.members.Add(Member("colorOverLifetime", Data(("enabled", Number(1)), ("color", Vector(lifetime.X, lifetime.Y, lifetime.Z, lifetime.W)))));
+        var prefab = Prefab(particles);
+        prefab.nodes[0].components.Add(new ComponentData { id = "renderer", type = "RimUnity.ParticleSystemRenderer",
+            members = [Member("sharedMaterial", new ValueData { kind = "asset", text = "test-material" })] });
+        var material = new ResourceData { type = "Material", colorSpace = colorSpace, members = [
+            Member("_Color", Vector(tint.X, tint.Y, tint.Z, tint.W)),
+            Member("_MainTex", new ValueData { kind = "asset", text = "test-texture" })] };
+        return new RimUnityPrefabTranslator().Translate("material." + colorSpace, prefab, _ => material, _ => null, out report);
+    }
+
+    internal static void ParticleLights()
+    {
+        AssertFallback("lights", Data(("enabled", Number(1)), ("ratio", Number(1))), "lights.perParticle");
+        AssertFallback("lights", Data(("enabled", Number(1)), ("ratio", Number(.5f))), "lights.perParticle");
+        var particles = Particles();
+        particles.members.Add(Member("lights", Data(("enabled", Number(0)), ("ratio", Number(1)))));
+        var asset = new RimUnityPrefabTranslator().Translate("disabled.lights", Prefab(particles), _ => null, _ => null, out var report);
+        Check.Equal(LumenParticleTier.L1_NativeCpu, report.Nodes.Single().Tier, "disabled lights don't force external");
+        Check.True(asset.Nodes[0].Emitter is not null && asset.Nodes[0].PointLight is null, "disabled lights create no native light");
+    }
+
+    internal static void SceneColor()
+    {
+        EmitterSpec gamma = TranslateColor("Gamma");
+        Check.Near(.4f, gamma.StartColor.X * gamma.HdrIntensity, "Gamma stored start before tint");
+        Check.Near(.8f, gamma.StartColor.W, "Gamma stored alpha before tint");
+        Check.Equal(new Vector4(.5f, .5f, .5f, .75f), gamma.MaterialTint, "Gamma material tint remains separate");
+        Check.Near(.5f, GradientEvaluator.Evaluate(gamma.ColorOverLifetime, .5f).X, "Gamma stored lifetime midpoint");
+        Check.Equal(LumenColorSpace.Stored, gamma.ColorSpace, "Gamma stays Stored");
+        AssertStoredFactorIdentity("Gamma");
+        AssertStoredFactorIdentity("existing-other");
+    }
+
+    private static void AssertStoredFactorIdentity(string colorSpace)
+    {
+        Vector4 start = new(2, .4f, 1, .8f), lifetime = new(4, 2, .5f, .5f), tint = new(.5f, 1.5f, 2, .75f);
+        var asset = TranslateMaterial(colorSpace, tint, start, lifetime, out _);
+        var emitter = asset.Nodes[0].Emitter!;
+        Check.Equal(tint, emitter.MaterialTint, "Stored tint retained independently");
+        Check.Equal(LumenColorSpace.Stored, emitter.ColorSpace, "non-Linear stays Stored");
+        Vector4 vertex = emitter.StartColor * GradientEvaluator.Evaluate(emitter.ColorOverLifetime, .5f);
+        vertex = new Vector4(vertex.X * emitter.HdrIntensity, vertex.Y * emitter.HdrIntensity, vertex.Z * emitter.HdrIntensity, vertex.W);
+        Vector4 split = vertex * emitter.MaterialTint;
+        Vector4 oldFolded = (start * tint) * lifetime;
+        Check.True(Vector4.Distance(oldFolded, split) < 1e-6f, $"Stored split equals old folded: old={oldFolded}; split={split}");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+        Console.WriteLine($"STORED {colorSpace}: oldFolded={oldFolded} split={split} HDR={emitter.HdrIntensity}");
+    }
+
+    private static EmitterSpec TranslateColor(string colorSpace)
+    {
+        var particles = Particles();
+        particles.members.Single(m => m.name == "main").value.fields.Add(Member("startColor", Vector(.4f, .4f, .4f, .8f)));
+        particles.members.Add(Member("colorOverLifetime", Data(("enabled", Number(1)), ("color", Data(("mode", Number(1)), ("gradient", Data(
+            ("colorKeys", Array(Data(("time", Number(0)), ("color", Vector(.446f, .446f, .446f, 1))), Data(("time", Number(1)), ("color", Vector(.554f, .554f, .554f, 1))))),
+            ("alphaKeys", Array(Data(("time", Number(0)), ("alpha", Number(1))))))))))));
+        var prefab = Prefab(particles);
+        prefab.nodes[0].components.Add(new ComponentData
+        {
+            id = "renderer", type = "RimUnity.ParticleSystemRenderer", members = [Member("sharedMaterial", new ValueData { kind = "asset", text = "material" })]
+        });
+        var material = new ResourceData { type = "Material", colorSpace = colorSpace, members = [Member("_Color", Vector(.5f, .5f, .5f, .75f))] };
+        var asset = new RimUnityPrefabTranslator().Translate("color", prefab, _ => material, _ => null, out _);
+        return asset.Nodes.Single().Emitter!;
+    }
+
     internal static void Values()
     {
-        Vector4 linear = RimUnityValueConversion.ToLinearColor(new Vector4(0.5f, 0.04045f, 2, 0.25f));
-        Check.Near(0.21404114f, linear.X, "sRGB .5");
-        Check.Near(0.003130805f, linear.Y, "sRGB threshold");
-        Check.Near(4.95384575f, linear.Z, "unclamped HDR sRGB 2");
-        Check.Near(0.25f, linear.W, "alpha unchanged");
-        var normalized = RimUnityValueConversion.ExtractHdrIntensity(linear, out float hdr);
-        Check.Near(4.95384575f, hdr, "HDR intensity");
+        Vector4 stored = new(0.5f, 0.04045f, 2, 0.25f);
+        var normalized = RimUnityValueConversion.ExtractHdrIntensity(stored, out float hdr);
+        Check.Near(2f, hdr, "HDR intensity");
         Check.Near(1, normalized.Z, "HDR normalized blue");
-        Check.Near(0.21404114f, normalized.X * hdr, "HDR reconstruction");
+        Check.Near(0.5f, normalized.X * hdr, "HDR reconstruction");
         Check.Near(0.25f, normalized.W, "HDR alpha unchanged");
         var curve = RimUnityValueConversion.ToScalarCurve(Curve(1, 3));
         float[] expected = [2, 3, 4, 5, 6];
@@ -218,9 +673,9 @@ internal static class TranslationTests
             ("alphaKeys", Array(Data(("time", Number(0)), ("alpha", Number(.2f))), Data(("time", Number(.5f)), ("alpha", Number(.6f))), Data(("time", Number(1)), ("alpha", Number(1))))))));
         var colors = RimUnityValueConversion.ToColorGradient(gradient);
         Vector4 middle = GradientEvaluator.Evaluate(colors, .5f);
-        Check.Near(2.47692288f, middle.X, "HDR gradient half");
-        Check.Near(.5f, middle.Y, "green half"); Check.Near(.10702057f, middle.Z, "blue half"); Check.Near(.6f, middle.W, "independent alpha keys");
-        Check.Near(1.23846144f, GradientEvaluator.Evaluate(colors, .25f).X, "HDR gradient quarter");
-        Check.Near(4.95384575f, GradientEvaluator.Evaluate(colors, 1).X, "HDR end unclamped");
+        Check.Near(1f, middle.X, "HDR gradient half");
+        Check.Near(.5f, middle.Y, "green half"); Check.Near(.25f, middle.Z, "blue half"); Check.Near(.6f, middle.W, "independent alpha keys");
+        Check.Near(.5f, GradientEvaluator.Evaluate(colors, .25f).X, "HDR gradient quarter");
+        Check.Near(2f, GradientEvaluator.Evaluate(colors, 1).X, "HDR end unclamped");
     }
 }

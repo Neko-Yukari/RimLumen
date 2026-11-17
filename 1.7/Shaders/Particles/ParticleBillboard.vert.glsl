@@ -37,7 +37,8 @@ void main()
     float size = particle.SizeSeedEmitterFlags.x * mix(a.Size.x, b.Size.x, blend);
     vColor = particle.StartColor * mix(a.Color, b.Color, blend);
     vColor.rgb *= emitter.Appearance.z * emitter.State.w;
-    // Appearance.w (BloomWeight) is reserved until the HDR pass exposes a separate bloom channel.
+    // Appearance.w = cbrt(abs(det(World3x3))); world-space size is baked at birth, local-space at draw.
+    if (emitter.SizeCone.w < 0.5) size *= emitter.Appearance.w;
 
     vec3 center = particle.PositionAndAge.xyz;
     vec3 velocity = particle.VelocityAndLifetime.xyz;
@@ -89,6 +90,34 @@ void main()
         }
         height = size * emitter.Appearance.y + length(velocity) * emitter.Appearance.x;
     }
+    else if (mode == 4u && verticalMode < 0.5)
+    {
+        vec3 rawRight = vec3(right.x, right.y * yScale, right.z);
+        vec3 rawUp = vec3(up.x, up.y * yScale, up.z);
+        vec3 forward = cross(rawRight, rawUp);
+        vec3 horizontal = cross(vec3(0.0, 1.0, 0.0), forward);
+        float horizontalLength = length(horizontal);
+        right = horizontalLength > 1e-6 ? horizontal / horizontalLength : normalize(rawRight);
+        up = vec3(0.0, 1.0, 0.0);
+    }
+    else if (mode == 5u)
+    {
+        vec4 q = emitter.WorldRotation;
+        vec3 x = vec3(1.0, 0.0, 0.0);
+        vec3 y = vec3(0.0, 1.0, 0.0);
+        right = x + 2.0 * cross(q.xyz, cross(q.xyz, x) + q.w * x);
+        up = y + 2.0 * cross(q.xyz, cross(q.xyz, y) + q.w * y);
+        if (verticalMode > 1.5)
+        {
+            right = vec3(right.x, 0.0, right.z + right.y);
+            up = vec3(up.x, 0.0, up.z + up.y);
+        }
+        else if (verticalMode > 0.5)
+        {
+            right.y /= yScale;
+            up.y /= yScale;
+        }
+    }
     vec3 worldPosition = center + right * (quadCorner.x * size) + up * (quadCorner.y * height);
     gl_Position = camera.ViewProj * vec4(worldPosition, 1.0);
 
@@ -96,5 +125,8 @@ void main()
     uint rows = uint(emitter.Flipbook.y);
     uint frameCount = columns * rows;
     uint frame = min(uint(fract(normalizedAge * emitter.Flipbook.z) * float(frameCount)), frameCount - 1u);
-    vUv = (quadUv + vec2(float(frame % columns), float(frame / columns))) / vec2(float(columns), float(rows));
+    // Vanilla MeshMakerPlanes.NewPlaneMesh has uv (0,1) at +Z (v=1 is image top);
+    // RimUnity ParticleSystemRenderer.cs TextureSheet uses 1f - (row+1)/numTilesY.
+    vec2 tileOrigin = vec2(float(frame % columns) / float(columns), 1.0 - float(frame / columns + 1u) / float(rows));
+    vUv = tileOrigin + quadUv / vec2(float(columns), float(rows));
 }

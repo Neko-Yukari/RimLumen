@@ -35,7 +35,7 @@ public static class EffectInstanceHandleSuite
         var service = VfxTestData.Service(asset);
         using var engine = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
         service.GpuEngineProvider = () => engine;
-        GlowAssert.Throws<NotSupportedException>(() => service.Play(new LumenPlayRequest { EffectId = asset.EffectId }));
+        GlowAssert.Throws<NotSupportedException>(() => service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId }));
         GlowAssert.Equal(0, service.Simulator.ActiveEmitterCount);
         GlowAssert.Equal(0, service.LiveHandleCount);
     }
@@ -50,7 +50,7 @@ public static class EffectInstanceHandleSuite
             TimelineEvents = new[] { new TimelineEventSpec(0.5f, "first", 0), new TimelineEventSpec(1.5f, "second", 0) },
         };
         var service = VfxTestData.Service(asset);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         handle.SetParam("rate", 0f);
         VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal(0.25f, handle.PlaybackTime);
@@ -78,7 +78,7 @@ public static class EffectInstanceHandleSuite
             TimelineEvents = new[] { new TimelineEventSpec(0.5f, "pulse", 0) },
         };
         var service = VfxTestData.Service(asset);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         handle.SetParam("rate", 0f);
         VfxTestData.Step(service, 0.5f);
         GlowAssert.Equal(4, service.Simulator.LiveParticleCount);
@@ -105,7 +105,7 @@ public static class EffectInstanceHandleSuite
                 {
                     Name = "idle", Emitter = new EmitterSpec
                     {
-                        Name = "paused", RateOverTime = 4f, Bursts = new[] { (10f, 3) },
+                        Name = "paused", Duration = 10f, RateOverTime = 4f, Bursts = new[] { new ParticleBurstSpec(10f, 3) },
                         StartLifetimeMin = 20f, StartLifetimeMax = 20f,
                     },
                 },
@@ -119,12 +119,14 @@ public static class EffectInstanceHandleSuite
             },
         };
         var service = VfxTestData.Service(asset);
-        GlowAssert.Throws<ArgumentException>(() => service.Play(new LumenPlayRequest { EffectId = asset.EffectId, InitialState = "missing" }));
+        GlowAssert.Throws<ArgumentException>(() => service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, InitialState = "missing" }));
         GlowAssert.Equal(0, service.LiveHandleCount);
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId, InitialState = "aura" });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, InitialState = "aura" });
         VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
         handle.Trigger("flash");
+        GlowAssert.Equal(1, service.Simulator.LiveParticleCount); // D7 queues the pulse; this call does not simulate.
+        VfxTestData.Step(service, 0f);
         GlowAssert.Equal(4, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal(5, service.Simulator.LiveParticleCount);
@@ -161,7 +163,7 @@ public static class EffectInstanceHandleSuite
         service.GlowerDriverProvider = _ => driver;
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest
         {
-            EffectId = asset.EffectId, OriginWorld = new Vector3(10f, 2f, 20f), Scale = 2f,
+            MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new Vector3(10f, 2f, 20f), Scale = 2f,
         });
         VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
@@ -189,6 +191,20 @@ public static class EffectInstanceHandleSuite
     }
 
     [LumenFact]
+    public static void PhaseAIntensityRejectsInvalidWithoutMutation()
+    {
+        var asset = new EffectAsset { EffectId = "intensity", Nodes = new[] { new EffectNodeSpec { Name = "root" } } };
+        var service = VfxTestData.Service(asset);
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
+        handle.SetParam("intensity", 2f);
+        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", -1f));
+        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.NaN));
+        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.PositiveInfinity));
+        GlowAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetParam("intensity", float.NegativeInfinity));
+        VfxAssert.Check(handle.TryGetParam("intensity", out float intensity) && intensity == 2f, "Invalid intensity must not mutate state");
+    }
+
+    [LumenFact]
     public static void FollowOverridesOriginAndFacingThenFreezesOnDetach()
     {
         var asset = new EffectAsset
@@ -206,7 +222,7 @@ public static class EffectInstanceHandleSuite
         bool Follow(out Vector3 world, out float degrees) { world = position; degrees = facing; return attached; }
         using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest
         {
-            EffectId = asset.EffectId, OriginWorld = new Vector3(-20f), RotationDegrees = 180f,
+            MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new Vector3(-20f), RotationDegrees = 180f,
             TargetWorld = new Vector3(-20f, -20f, 10f), Follow = Follow,
         });
         GlowAssert.Equal(position, handle.RootWorld.Translation);
@@ -226,7 +242,7 @@ public static class EffectInstanceHandleSuite
         GlowAssert.Equal(frozenChild, handle.NodeWorldMatrices[1]);
         using var targeted = (EffectInstanceHandle)service.Play(new LumenPlayRequest
         {
-            EffectId = asset.EffectId, OriginWorld = new Vector3(10f, 0f, 20f), TargetWorld = new Vector3(20f, 0f, 20f),
+            MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new Vector3(10f, 0f, 20f), TargetWorld = new Vector3(20f, 0f, 20f),
             RotationDegrees = 180f,
         });
         VfxAssert.Close(Vector3.UnitX, Vector3.TransformNormal(Vector3.UnitZ, targeted.RootWorld));
@@ -321,7 +337,7 @@ public static class EffectInstanceHandleSuite
     }
 
     [LumenFact]
-    public static void DefaultMapIndexKeepsBoundDriverWhenSecondMapRegistersAndStopsWhenBoundDriverDisposes()
+    public static void ExplicitMapKeepsBoundDriverWhenSecondMapRegistersAndStopsWhenBoundDriverDisposes()
     {
         var asset = LitAsset("b3.sticky-default-map");
         var service = VfxTestData.Service(asset);
@@ -336,7 +352,7 @@ public static class EffectInstanceHandleSuite
         {
             using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest
             {
-                EffectId = asset.EffectId,
+                MapIndex = 111, EffectId = asset.EffectId,
             });
             VfxTestData.Step(service, 0.25f);
             GlowAssert.Equal(1, sinkA.Registrations.Count);
@@ -375,7 +391,7 @@ public static class EffectInstanceHandleSuite
         var sink = new RecordingGlowGridSink();
         using var driver = new MapGlowerDriver(sink);
         service.GlowerDriverProvider = _ => driver;
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         VfxTestData.Step(service, 0.25f);
         GlowAssert.Equal(1, service.Simulator.LiveParticleCount);
         GlowAssert.Equal(new ColorInt(255, 255, 255, 255), sink.Registrations[^1].Color);
@@ -409,8 +425,8 @@ public static class EffectInstanceHandleSuite
         var sink = new RecordingGlowGridSink();
         using var driver = new MapGlowerDriver(sink);
         service.GlowerDriverProvider = _ => driver;
-        using var first = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
-        using var second = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var first = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
+        using var second = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         int finished = 0;
         first.Finished += () => finished++;
         second.Finished += () => finished++;
@@ -455,7 +471,7 @@ public static class EffectInstanceHandleSuite
         var service = VfxTestData.Service(asset);
         var engine = new SpyGpuEngine();
         service.GpuEngineProvider = () => engine;
-        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { EffectId = asset.EffectId });
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         GlowAssert.Equal(false, engine.Updates[^1].Emitting);
         handle.Trigger("flash");
         GlowAssert.Equal((0, 4), engine.Bursts[^1]);

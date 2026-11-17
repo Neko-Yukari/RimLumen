@@ -35,17 +35,11 @@ public static class RimUnityValueConversion
         return new Vector4(v[0], v[1], v[2], v.Length == 4 ? v[3] : fallback.W);
     }
 
-    /// <summary>Converts RGB from sRGB without clamping HDR; alpha is always linear.</summary>
-    public static Vector4 ToLinearColor(Vector4 color, bool gamma = true) => gamma
-        ? new Vector4(Linear(color.X), Linear(color.Y), Linear(color.Z), color.W) : color;
-
-    private static float Linear(float value) => value <= 0.04045f ? value / 12.92f : MathF.Pow((value + 0.055f) / 1.055f, 2.4f);
-
     /// <summary>RGB * intensity reconstructs the input exactly; alpha is not scaled.</summary>
-    public static Vector4 ExtractHdrIntensity(Vector4 linearColor, out float intensity)
+    public static Vector4 ExtractHdrIntensity(Vector4 color, out float intensity)
     {
-        intensity = MathF.Max(1f, MathF.Max(linearColor.X, MathF.Max(linearColor.Y, linearColor.Z)));
-        return new Vector4(linearColor.X / intensity, linearColor.Y / intensity, linearColor.Z / intensity, linearColor.W);
+        intensity = MathF.Max(1f, MathF.Max(color.X, MathF.Max(color.Y, color.Z)));
+        return new Vector4(color.X / intensity, color.Y / intensity, color.Z / intensity, color.W);
     }
 
     /// <summary>Two-constant/two-curve values select the upper branch, matching Evaluate(time, 1).</summary>
@@ -76,6 +70,10 @@ public static class RimUnityValueConversion
                 Number(Field(key, "inTangent")), Number(Field(key, "outTangent")));
         }
         Array.Sort(keys, (a, b) => a.Time.CompareTo(b.Time));
+        // RimUnity 45ca90987f7d3721715b45c021cab986ee14c468, Source/RimUnity/Animation/AnimationCurve.cs:13,23:
+        // an all-equal-time curve is constant at the last value after the same sort, regardless of tangents.
+        if (keys.Length > 1 && keys[0].Time == keys[^1].Time)
+            return new[] { new CurveKey(keys[^1].Time, keys[^1].Value) };
         return keys;
     }
 
@@ -130,18 +128,18 @@ public static class RimUnityValueConversion
         return (min, max);
     }
 
-    /// <summary>Combines independently keyed RGB/alpha tracks in linear space; two gradients use the upper branch.</summary>
-    public static ColorGradient ToColorGradient(ValueData? value, bool gamma = true)
+    /// <summary>Combines independently keyed RGB/alpha in stored encoding; two gradients use the upper branch.</summary>
+    public static ColorGradient ToColorGradient(ValueData? value)
     {
         if (value is null) return ColorGradient.Constant(Vector4.One);
-        if (value.kind == "vector") return ColorGradient.Constant(ToLinearColor(Vector(value, Vector4.One), gamma));
+        if (value.kind == "vector") return ColorGradient.Constant(Vector(value, Vector4.One));
         int mode = Integer(Field(value, "mode"));
         if (mode is 0 or 2)
-            return ColorGradient.Constant(ToLinearColor(Vector(Field(value, "color") ?? Field(value, "colorMax"), Vector4.Zero), gamma));
+            return ColorGradient.Constant(Vector(Field(value, "color") ?? Field(value, "colorMax"), Vector4.Zero));
         if (mode is not (1 or 3 or 4)) throw new InvalidDataException("Unknown MinMaxGradient mode: " + mode);
         ValueData? gradient = Field(value, "gradient") ?? Field(value, "gradientMax");
         var colors = (Field(gradient, "colorKeys")?.items ?? new List<ValueData>())
-            .Select(key => new ColorStop(Number(Field(key, "time")), ToLinearColor(Vector(Field(key, "color"), Vector4.One), gamma)))
+            .Select(key => new ColorStop(Number(Field(key, "time")), Vector(Field(key, "color"), Vector4.One)))
             .OrderBy(key => key.Time).ToArray();
         var alphas = (Field(gradient, "alphaKeys")?.items ?? new List<ValueData>())
             .Select(key => (Time: Number(Field(key, "time")), Alpha: Number(Field(key, "alpha"), 1f)))
@@ -151,8 +149,9 @@ public static class RimUnityValueConversion
         var stops = new List<ColorStop>();
         foreach (float time in times)
         {
-            if (fixedMode && stops.Count > 0)
-                stops.Add(new ColorStop(MathF.BitDecrement(time), EvaluateGradient(colors, alphas, MathF.BitDecrement(time), true)));
+            float before = MathF.BitDecrement(time);
+            if (fixedMode && stops.Count > 0 && before > stops[^1].Time)
+                stops.Add(new ColorStop(before, EvaluateGradient(colors, alphas, before, true)));
             stops.Add(new ColorStop(time, EvaluateGradient(colors, alphas, time, fixedMode)));
         }
         return new ColorGradient(stops.ToArray());
@@ -160,11 +159,11 @@ public static class RimUnityValueConversion
 
     private static Vector4 EvaluateGradient(ColorStop[] colors, (float Time, float Alpha)[] alphas, float time, bool fixedMode)
     {
-        Vector4 color = colors.Length == 0 ? Vector4.One : colors[0].RgbaLinear;
+        Vector4 color = colors.Length == 0 ? Vector4.One : colors[0].Rgba;
         for (int i = 1; i < colors.Length; i++)
         {
-            if (time >= colors[i].Time) { color = colors[i].RgbaLinear; continue; }
-            if (!fixedMode) color = Vector4.Lerp(colors[i - 1].RgbaLinear, colors[i].RgbaLinear,
+            if (time >= colors[i].Time) { color = colors[i].Rgba; continue; }
+            if (!fixedMode) color = Vector4.Lerp(colors[i - 1].Rgba, colors[i].Rgba,
                 Fraction(time, colors[i - 1].Time, colors[i].Time));
             break;
         }
