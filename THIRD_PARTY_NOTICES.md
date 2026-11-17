@@ -2,7 +2,7 @@
 
 ## RimUnity
 
-RimLumen adapts particle, mathematical and shader formulas from the original RimUnity source code:
+RimLumen adapts particle, ribbon (TrailRenderer and LineRenderer), mathematical and shader formulas from the original RimUnity source code:
 
 - Repository: https://github.com/chezhou9413/RimUnity
 - Source revision: `45ca90987f7d3721715b45c021cab986ee14c468` (`v0.1.24`)

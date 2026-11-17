@@ -19,7 +19,7 @@ internal static class IntegrationTests
     private static readonly (string Path, int Nodes, int Report, int Native, int External, int L1, int L2)[] Expected =
     [
         ("Effects/FireTornado", 1, 1, 1, 0, 1, 0),
-        ("Effects/Lightning", 10, 6, 1, 5, 0, 1),
+        ("Effects/Lightning", 10, 12, 1, 11, 0, 1),
         ("Effects/Linger", 4, 4, 1, 3, 0, 1),
         ("Effects/Orbit", 3, 3, 1, 2, 0, 1),
         ("Effects/Probe", 1, 1, 0, 1, 0, 0),
@@ -37,15 +37,14 @@ internal static class IntegrationTests
         foreach (var entry in Expected)
         {
             var asset = translator.Translate(entry.Path, catalog, catalog.Find(entry.Path)!, out var report);
-            for (int i = 0; i < asset.Nodes.Length; i++)
+            foreach (var classification in report.Nodes)
             {
-                var classification = report.Nodes.SingleOrDefault(node => node.NodeIndex == i);
+                var node = asset.Nodes[classification.NodeIndex];
                 Console.WriteLine("TIER " + JsonSerializer.Serialize(new
                 {
-                    Effect = entry.Path, Index = i, Name = asset.Nodes[i].Name,
-                    NodeId = classification?.NodeId ?? string.Empty,
-                    Tier = classification?.Tier.ToString() ?? "N/A", Reasons = classification?.Reasons ?? System.Array.Empty<string>(),
-                    CreatedNative = asset.Nodes[i].Emitter is not null
+                    Effect = entry.Path, Index = classification.NodeIndex, node.Name, classification.NodeId, classification.Component,
+                    Tier = classification.Tier.ToString(), classification.Reasons,
+                    CreatedNative = classification.Component == RimUnityPrefabTranslator.ParticleComponent ? node.Emitter is not null : node.Ribbon is not null
                 }));
             }
         }
@@ -71,7 +70,7 @@ internal static class IntegrationTests
             Check.Equal(expected.Nodes, report!.Prefab.nodes.Count, id + " prefab nodes");
             Check.Equal(expected.Report, report.Nodes.Count, id + " report count");
             Check.True(report.Nodes.Select(n => n.NodeIndex).SequenceEqual(report.Nodes.Select(n => n.NodeIndex).Order()), id + " report order");
-            Check.Equal(report.Nodes.Count, report.Nodes.Select(n => n.NodeIndex).Distinct().Count(), id + " unique report indexes");
+            Check.Equal(report.Nodes.Count, report.Nodes.Select(n => (n.NodeIndex, n.Component)).Distinct().Count(), id + " unique report components");
             Check.Equal(expected.Native, asset.Nodes.Count(n => n.Emitter is not null), id + " native emitters");
             Check.Equal(expected.External, report.Nodes.Count(n => n.Tier == LumenParticleTier.External), id + " External");
             Check.Equal(expected.L1, report.Nodes.Count(n => n.Tier == LumenParticleTier.L1_NativeCpu), id + " L1");
@@ -87,9 +86,12 @@ internal static class IntegrationTests
             foreach (var node in report.Nodes)
             {
                 if (node.Tier != LumenParticleTier.External) continue;
-                Check.True(asset.Nodes[node.NodeIndex].Emitter is null && asset.Nodes[node.NodeIndex].PointLight is null,
-                    id + " External owns both particles and lights: " + node.NodeId);
+                if (node.Component == RimUnityPrefabTranslator.ParticleComponent)
+                    Check.True(asset.Nodes[node.NodeIndex].Emitter is null && asset.Nodes[node.NodeIndex].PointLight is null,
+                        id + " External owns both particles and lights: " + node.NodeId);
+                else Check.True(asset.Nodes[node.NodeIndex].Ribbon is null, id + " External ribbon has no native ribbon: " + node.NodeId);
             }
+            Check.True(asset.Nodes.All(n => n.Ribbon is null), id + " installed WotF lines are polylines, none native");
             foreach (var node in asset.Nodes.Where(n => n.Emitter is not null))
             {
                 var e = node.Emitter!;
@@ -112,6 +114,11 @@ internal static class IntegrationTests
         Check.True(!provider.TryResolveEffect("Effects/DoesNotExist", out var miss) && miss is null, "miss");
         Check.True(provider.TryInspectTranslation("Effects/FireTornado", out var fire), "FireTornado report");
         Check.Reasons([], fire!.Nodes.Single().Reasons, "FireTornado cone radius/distribution now supported");
+        Check.True(provider.TryInspectTranslation("Effects/Lightning", out var lightningReport), "Lightning report");
+        var lines = lightningReport!.Nodes.Where(n => n.Component == RimUnityPrefabTranslator.LineComponent).ToArray();
+        Check.Equal(6, lines.Length, "Lightning LineRenderers reported");
+        foreach (var line in lines)
+            Check.Reasons(["line.positions.count"], line.Reasons, "Lightning 9/4-point polylines stay External: " + line.NodeId);
 
         Console.WriteLine("AUTO_TEXTURES expected=" + JsonSerializer.Serialize(expectedTextureKeys.Order()) +
             " actual=" + JsonSerializer.Serialize(provider.Textures.ResolvedTextureKeys.Order()));
@@ -158,7 +165,7 @@ internal static class IntegrationTests
         int lightningFinished = 0;
         lightning.Finished += () => lightningFinished++;
         Check.Equal(1, spy.Plays, "Lightning delegates External to external");
-        Check.Equal(5, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.External), "external report External count");
+        Check.Equal(11, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.External), "external report External count (5 systems, 6 lines)");
         var lightningInstance = recording.Last as EffectInstanceHandle ?? throw new InvalidOperationException("Lightning inner handle is not native.");
         Check.Equal(1, lightningInstance.CpuEmitterCount, "Lightning native root uses offline CPU fallback, external children are not duplicated");
         Check.Equal(0, lightningInstance.GpuEmitterCount, "no L2 engine offline");
@@ -226,7 +233,7 @@ internal static class IntegrationTests
             Check.True(!mixed.IsAlive && !spy.LastHandle!.IsAlive, remaining.Item1 + " stopped");
             Check.Equal(0, LumenSceneBootstrap.Simulator.LiveParticleCount, remaining.Item1 + " stop releases native particles");
         }
-        Console.WriteLine("HYBRID six WotF effects played here; Probe external handoff checked separately; Lightning native=1/External=5, Orbit native=1/External=2, FireTornado native=1/External=0; supported in-memory 25-frame native simulation retained");
+        Console.WriteLine("HYBRID six WotF effects played here; Probe external handoff checked separately; Lightning native=1/External=5 systems+6 lines, Orbit native=1/External=2, FireTornado native=1/External=0; supported in-memory 25-frame native simulation retained");
 
         var inert = LumenHostRegistry.VfxService.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "Effects/DoesNotExist" });
         Check.True(!inert.IsAlive, "missing effect stays inert");
