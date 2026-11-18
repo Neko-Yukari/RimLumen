@@ -107,6 +107,10 @@ public interface ILumenFrameContributor
     // Ensures: returns false when idle so the HDR pipeline can short-circuit with zero draws/clears.
     bool HasActiveWork { get; }
 
+    /// <summary>Read on the main thread after capture. Return true if RecordHdrDraws needs an HDR pass for
+    /// this frame. Routed mesh draws are counted separately; lifecycle or compute work alone does not request HDR.</summary>
+    bool RequiresDirectHdrPass => false;
+
     // Requires: called on main thread during frame capture.
     // Ensures: snapshots per-frame draw/simulation inputs without mutating engine pass state.
     void CaptureMainThread(in LumenCaptureContext context);

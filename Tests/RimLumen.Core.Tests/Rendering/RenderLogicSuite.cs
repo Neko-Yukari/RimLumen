@@ -175,13 +175,15 @@ public static class RenderLogicSuite
         Equal(true, HdrFrameGate.ShouldRenderHdr(0, true));
         var simulator = new RimLumen.Core.Scene.CpuParticleSimulator();
         var service = new RimLumen.Core.Scene.LumenVfxService(new RimLumen.Core.Scene.CpuParticleSimulator());
-        var directHdr = new DirectHdrContributor();
+        var captureOnly = new TestFrameContributor(requiresDirectHdrPass: false);
+        Require(!HdrFrameGate.ShouldRenderHdr(0, RimLumenPipeline.HasDirectHdrContributor([captureOnly]), false, 0),
+            "Active lifecycle work without draws (such as an External ribbon) does not request an HDR pass.");
         Require(!RimLumenPipeline.HasDirectHdrContributor([simulator]), "L1 particles append mesh draws, not direct HDR draws.");
         Require(!RimLumenPipeline.HasDirectHdrContributor([service]), "VFX service draws go through its appenders.");
         using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
         Require(!RimLumenPipeline.HasDirectHdrContributor([gpu]),
             "L2 particles append mesh draws, not direct HDR draws.");
-        Require(RimLumenPipeline.HasDirectHdrContributor([directHdr]),
+        Require(RimLumenPipeline.HasDirectHdrContributor([new TestFrameContributor(requiresDirectHdrPass: true)]),
             "A contributor that records its own HDR draws needs the pass.");
     }
 
@@ -253,11 +255,11 @@ public static class RenderLogicSuite
             "Light-pool accumulation must blend One + One with depth test and no depth write.");
     }
 
-    // Minimal third-party contributor: not a built-in appender or simulator, so it owns its HDR draws.
-    private sealed class DirectHdrContributor : ILumenFrameContributor
+    private sealed class TestFrameContributor(bool requiresDirectHdrPass) : ILumenFrameContributor
     {
-        public string Name => "test-direct-hdr";
+        public string Name => "test-contributor";
         public bool HasActiveWork => true;
+        public bool RequiresDirectHdrPass => requiresDirectHdrPass;
         public void CaptureMainThread(in LumenCaptureContext context) { }
         public void EnqueuePreCompute(in LumenComputeContext context) { }
         public void RecordBufferBarriers(in LumenBarrierContext context) { }

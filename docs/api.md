@@ -522,7 +522,9 @@ RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled
 
 按有效 `FinalDrawItem.RenderQueue` 分为四组，分别在地图 Pass 内的边界执行：`q < 3152` → 3152、`[3152, 3169)` → 3169、`[3169, 3178)` → 3178、`[3178, int.MaxValue)` → 地图末尾 `int.MaxValue`。各组不合并；边界在同队列的原版场景抓取之前执行。
 
-3152 组执行一次完整的原生 HDR、早组发光、Bloom 和光影包 DAG / 合成，仍由现有原生绘制、贡献者和 `runOnEmptyFrames` 条件触发，不能仅因早组发光为空而跳过。它位于原版 3152 Distortion 抓取之前；包的 `glow` 只含 `q < 3152` 拷贝，`scene` 和 `depth` 是该边界的独立同帧快照，不是后续边界的快照。最终合成写回地图颜色，不采样正在写入的颜色图像。`pack.json` 的 `"backbuffer"` 名称与 PostEffectPass 合成 ABI 不变，名称表示最终合成输出，而不是交换链插槽。
+3152 组在有 HDR 绘制、早组发光拷贝或扭曲绘制，或光影包启用 `runOnEmptyFrames` 时运行一次完整渲染链。直接通过 `RecordHdrDraws` 绘制的贡献者（包括已有实现），必须在该帧捕获后让 `ILumenFrameContributor.RequiresDirectHdrPass` 返回 `true`。默认值为 `false`：路由的绘制按实际数量计入，仅有生命周期更新或计算不会开启 HDR Pass。
+
+该组位于原版 3152 Distortion 抓取之前；包的 `glow` 只含 `q < 3152` 拷贝，`scene` 和 `depth` 是该边界的独立同帧快照，不是后续边界的快照。最终合成写回地图颜色，不采样正在写入的颜色图像。`pack.json` 的 `"backbuffer"` 名称与 PostEffectPass 合成 ABI 不变，名称表示最终合成输出，而不是交换链插槽。
 
 后续组只重画各自的加法发光拷贝，执行宿主 Bloom 预过滤、降采样、升采样，再将 Bloom 的 RGB 加到场景并保留目标 Alpha，不做色调映射。原始核心已经在场景中，不会再次加入；原生 HDR 粒子、调色、雾、自定义 DAG 和历史缓冲也不会重跑。后续组使用同一帧捕获的当前包 `BloomParams`（强度、阈值、knee、scatter）及请求的 mip 级数；组为空或 mip 级数为 0 时，不添加该组边界或 Pass。
 
