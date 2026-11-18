@@ -318,6 +318,23 @@ public static class RenderLogicSuite
     }
 
     [LumenFact]
+    public static void SunShadowInsideALightPoolRemovesSunlightOnly()
+    {
+        var shadow = new Vector4(0.5f, 0.5f, 0.5f, 0.7f);
+        Equal(shadow, VisualPointLight.ShadowOverPool(shadow, Vector3.Zero));
+
+        // Scene 0.4 under a pool L = (1, 0, 0.5): the composite makes it 0.4 * (1 + L) = (0.8, 0.4, 0.6); vanilla's
+        // shadow then multiplies by c = 0.5 to (0.4, 0.2, 0.3), the lifted shadow by (c + L) / (1 + L) to 0.4 * (c + L).
+        Vector3 pool = VisualPointLight.CompressHighlights(new Vector3(1f, 0f, 0.5f));
+        Vector3 lit = new Vector3(0.4f) * (Vector3.One + pool);
+        Vector4 factor = VisualPointLight.ShadowOverPool(shadow, pool);
+        Vector3 shaded = lit * new Vector3(factor.X, factor.Y, factor.Z);
+        Require(Vector3.Distance(shaded, new Vector3(0.6f, 0.2f, 0.4f)) < 1e-6f,
+            $"A sun shadow over a pool must keep the pool's light: expected (0.6, 0.2, 0.4), vanilla (0.4, 0.2, 0.3); got {shaded}.");
+        Equal(0.7f, factor.W);
+    }
+
+    [LumenFact]
     public static void LightPoolAccumulationAddsLinearlyAtLightOverlay()
     {
         ShaderProgramDefinition definition = LightPoolRenderer.CreateDefinition();

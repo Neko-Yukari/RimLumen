@@ -21,6 +21,7 @@ internal sealed class RimLumenPipeline : IDisposable
     internal readonly HdrTargets Targets;
     // Mirrors the current submission slot's R32_SFLOAT depth snapshot so particle materials can sample it.
     internal readonly BorrowedRenderTexture DepthProxy = new();
+    internal readonly LightPoolShadows PoolShadows = new();
     internal ShaderPackRuntime ShaderPack { get; private set; }
     internal bool HasShaderPackRuntime => !disposed && ShaderPack is not null;
     internal bool IsDisposed => disposed;
@@ -64,6 +65,7 @@ internal sealed class RimLumenPipeline : IDisposable
         // DepthProxy pointed at a slot of those targets; drop the pointer now instead of leaving a freed
         // GpuTextureAllocation reachable until the next HDR record rebinds it.
         DepthProxy.Clear();
+        PoolShadows.LightSum.Clear();
         ShaderPackRuntime? old = ShaderPack;
         ShaderPack = nextRuntime;
         old?.Dispose();
@@ -427,6 +429,7 @@ internal sealed class RimLumenPipeline : IDisposable
         Release("LightPool", LightPool.Dispose);
         Release("MapLightField", () => MapLightFieldCollector.DisposeGpu(App));
         Release("DepthProxy", DepthProxy.Dispose);
+        Release("LightPoolShadows", PoolShadows.LightSum.Dispose);
         // Destroy framebuffers/textures before the render passes and their pipelines.
         Release("HdrTargets", Targets.Dispose);
         Release("ShaderPackRuntime", () => ShaderPack.Dispose());

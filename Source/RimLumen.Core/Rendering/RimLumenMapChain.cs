@@ -74,6 +74,8 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
             lightComposite.SetInput(0, slot.LightSum);
             lightComposite.RecordInline(in composite, composite.RenderPass, composite.SampleCount);
             EndPass(in composite, ref renderPassOpen);
+            // Only now do this frame's lifted sun shadows (3170/3175) see the pools; until here they read no pool.
+            owner.PoolShadows.LightSum.Bind(slot.LightSum);
         }
         catch (Exception ex) { owner.TripRenderFailSafe(ex); }
         finally { CloseOpenScopes(in ctx); }
@@ -219,6 +221,7 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
     {
         owner.Targets.Dispose();
         owner.DepthProxy.Clear();
+        owner.PoolShadows.LightSum.Clear();
         renderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         glowRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         lightRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);

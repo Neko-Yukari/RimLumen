@@ -55,7 +55,11 @@ internal sealed class LightPoolRenderer : IDisposable
             staged.Clear();
             return;
         }
-        material ??= new Material(CreateShader(), "RimLumen.LightPool");
+        if (material is null)
+        {
+            ShaderProgramDefinition definition = CreateDefinition();
+            material = new Material(CreateShader("RimLumen.LightPool", definition, definition.ToPipelineState()), "RimLumen.LightPool");
+        }
         UploadWalls(material, ParticleCollisionFields.Capture(Find.CurrentMap));
         float altitude = AltitudeLayer.LightingOverlay.AltitudeFor();
         for (int i = 0; i < staged.Count; i++)
@@ -115,26 +119,29 @@ internal sealed class LightPoolRenderer : IDisposable
         renderQueue = new RenderQueueValue(RenderQueue)
     };
 
+    // Requires: definition names the vertex and fragment files. Also builds LightPoolShadows' lifted sun-shadow shaders.
     // Ensures: throws InvalidOperationException when Waylith rejects the material, vertex-input or stage-interface
     //          metadata instead of handing a broken shader to the pipeline cache.
-    private static Shader CreateShader()
+    internal static Shader CreateShader(string key, ShaderProgramDefinition definition, PipelineState pipelineState)
     {
-        string vertexSource = ShaderSourceLoader.ReadShaderSource(VertexFile);
-        string fragmentSource = ShaderSourceLoader.ReadShaderSource(AccumulateFile);
-        MaterialLayout materialLayout = ShaderMetadataParser.ExtractMaterialLayout(fragmentSource, "RimLumenLightPoolAccumulate.frag.glsl");
-        ShaderVertexInputLayout vertexInput = ShaderSourceLoader.CreateVertexInputLayout(VertexFile);
+        string vertexFile = definition.vertexShaderFileName;
+        string fragmentFile = definition.fragmentShaderFileName;
+        string fragmentName = System.IO.Path.GetFileName(fragmentFile);
+        string vertexSource = ShaderSourceLoader.ReadShaderSource(vertexFile);
+        string fragmentSource = ShaderSourceLoader.ReadShaderSource(fragmentFile);
+        MaterialLayout materialLayout = ShaderMetadataParser.ExtractMaterialLayout(fragmentSource, fragmentName);
+        ShaderVertexInputLayout vertexInput = ShaderSourceLoader.CreateVertexInputLayout(vertexFile);
         List<string> stageErrors = ShaderMetadataParser.ValidateStageInterface(vertexSource, fragmentSource,
-            VertexFile, "RimLumenLightPoolAccumulate.frag.glsl");
+            vertexFile, fragmentName);
         if (materialLayout.HasErrors || vertexInput.HasErrors || stageErrors.Count > 0)
         {
             throw new InvalidOperationException(
-                $"[RimLumen] Light pool shader metadata rejected by Waylith: {VertexFile} + {AccumulateFile} " +
+                $"[RimLumen] Shader metadata rejected by Waylith: {vertexFile} + {fragmentFile} " +
                 $"(material errors: {materialLayout.HasErrors}, vertex input errors: {vertexInput.HasErrors}, " +
                 $"stage interface: {string.Join(" ", stageErrors)}).");
         }
-        ShaderProgramDefinition definition = CreateDefinition();
-        return new Shader("RimLumen.LightPool", VertexFile, definition, keywords: null, materialLayout,
-            definition.ToPipelineState(), iconShaderKey: null, vertexInputLayout: vertexInput);
+        return new Shader(key, vertexFile, definition, keywords: null, materialLayout,
+            pipelineState, iconShaderKey: null, vertexInputLayout: vertexInput);
     }
 
     // Requires: render thread and GPU idle (RimLumenPipeline.Dispose after Quiesce).

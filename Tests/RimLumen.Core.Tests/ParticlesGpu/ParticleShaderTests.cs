@@ -442,8 +442,49 @@ public static class ParticleShaderTests
         Require(composite.Contains("if (peak <= 1.0) return color;", StringComparison.Ordinal)
             && composite.Contains("if (any(isnan(sum))) sum = vec3(0.0);", StringComparison.Ordinal)
             && composite.Contains("sum = clamp(sum, vec3(0.0), vec3(1024.0));", StringComparison.Ordinal)
-            && composite.Contains("vec4(compressHighlights(sum), 0.0)", StringComparison.Ordinal),
+            && composite.Contains("return compressHighlights(sum);", StringComparison.Ordinal)
+            && composite.Contains("vec4(lumenLightPoolTerm(lightSum, ivec2(gl_FragCoord.xy)), 0.0)", StringComparison.Ordinal),
             "Light-pool composite must apply the linear sum once, identity up to 1 and compressed above.");
+    }
+
+    [LumenFact]
+    public static void LiftedSunShadowsKeepVanillaMaterialLayoutAndVaryings()
+    {
+        string buildProperties = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Directory.Build.props"));
+        string gameRoot = Environment.GetEnvironmentVariable("GameRoot")
+            ?? XDocument.Load(buildProperties).Descendants("GameRoot").Single().Value;
+        string vanillaShaders = Path.Combine(gameRoot, "Data", "Core", "Shaders", "Map");
+        MaterialLayout Layout(string path) =>
+            ShaderMetadataParser.ExtractMaterialLayout(ShaderSourceLoader.ReadShaderSource(path), Path.GetFileName(path));
+        string Lifted(string file) => Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "RimLumen", file));
+
+        MaterialLayout shadow = Layout(Path.Combine(vanillaShaders, "SunShadow.frag.glsl"));
+        MaterialLayout fade = Layout(Path.Combine(vanillaShaders, "SunShadowFade.frag.glsl"));
+        MaterialLayout liftedShadow = Layout(Lifted("RimLumenSunShadow.frag.glsl"));
+        MaterialLayout liftedFade = Layout(Lifted("RimLumenSunShadowFade.frag.glsl"));
+        Require(!liftedShadow.HasErrors && !liftedFade.HasErrors, "Waylith rejected the lifted sun-shadow material metadata.");
+        Require(LightPoolShadows.LiftedLayoutMatches(liftedShadow, shadow) && LightPoolShadows.LiftedLayoutMatches(liftedFade, fade),
+            "Lifted sun shadows must keep vanilla's uniform block byte for byte and add only _LumenLightSum.");
+        Require(!LightPoolShadows.LiftedLayoutMatches(liftedShadow, fade),
+            "The layout check must reject a lifted shader whose uniform block differs from vanilla's.");
+        Require(liftedShadow.TextureSlots[0].Default == MaterialTextureDefault.Black &&
+                liftedFade.TextureSlots[0].Default == MaterialTextureDefault.Black,
+            "A cleared light-sum slot must resolve to black, or an unbound shadow would differ from vanilla.");
+
+        string Varyings(string vertex, string lifted) => string.Join(" ", ShaderMetadataParser.ValidateStageInterface(
+            File.ReadAllText(Path.Combine(vanillaShaders, vertex)), ShaderSourceLoader.ReadShaderSource(Lifted(lifted)), vertex, lifted));
+        string shadowErrors = Varyings("SunShadow.vert.glsl", "RimLumenSunShadow.frag.glsl");
+        string fadeErrors = Varyings("SunShadowFade.vert.glsl", "RimLumenSunShadowFade.frag.glsl");
+        Require(shadowErrors.Length == 0 && fadeErrors.Length == 0,
+            $"Waylith reports mismatched vanilla-vertex/lifted-fragment varyings: '{shadowErrors}' '{fadeErrors}'.");
+    }
+
+    [LumenFact]
+    public static void LiftedSunShadowWaylithMembersBindAtInstall()
+    {
+        // The install-time binding in RimLumenMapHooks.Arm fails loudly when Waylith renames these members; this is
+        // the offline copy of that check against the shipped Waylith.
+        LightPoolShadows.BindEngineMembers();
     }
 
     [LumenFact]
@@ -506,6 +547,8 @@ public static class ParticleShaderTests
         CompileFile("PostFx/RimLumenComposite.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("RimLumen/RimLumenLightPool.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("RimLumen/RimLumenLightPoolAccumulate.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("RimLumen/RimLumenSunShadow.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("RimLumen/RimLumenSunShadowFade.frag.glsl", RuntimeShaderStage.Fragment);
         Console.WriteLine("[SPIR-V] compute strides=64,480,48,4,16,32; vertex strides=64,480,32; LocalSize=64,1,1");
     }
 
