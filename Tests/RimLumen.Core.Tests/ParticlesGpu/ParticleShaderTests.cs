@@ -10,6 +10,7 @@ using RimLumen.Core.ParticlesGpu;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Lighting;
+using RimLumen.Core.Scene;
 using Waylith.Assets;
 using Waylith.Graphics.Meshes;
 using Waylith.Rendering;
@@ -226,9 +227,15 @@ public static class ParticleShaderTests
         string draw = Read("ParticleBillboard.vert.glsl"), sim = Read("ParticleSim.comp.glsl");
         bool absoluteProjection = draw.Contains("projectTopDownPitch(center - vec3(anchor.x, LUMEN_GROUND_Y, anchor.y), groundUp)", StringComparison.Ordinal)
             && draw.Contains("center.y /= yScale;", StringComparison.Ordinal);
-        bool zeroFloor = sim.Contains("const float LUMEN_GROUND_Y = 0.0;", StringComparison.Ordinal)
-            && sim.Contains("if (worldY < LUMEN_GROUND_Y && worldVelY < 0.0)", StringComparison.Ordinal);
-        Require(absoluteProjection && zeroFloor, $"L2 fixed-ground formulas: absolute projection={absoluteProjection}, descending below zero={zeroFloor}.");
+        bool descendingBelowGround = sim.Contains("if (worldY < LUMEN_GROUND_Y && worldVelY < 0.0)", StringComparison.Ordinal);
+        Require(absoluteProjection && descendingBelowGround,
+            $"L2 fixed-ground formulas: absolute projection={absoluteProjection}, descending below ground={descendingBelowGround}.");
+
+        Match ground = Regex.Match(sim, @"\bconst\s+float\s+LUMEN_GROUND_Y\s*=\s*(?<y>[-.\d]+)\s*;");
+        Require(ground.Success, "L2 ground-plane include must define LUMEN_GROUND_Y.");
+        float shaderGroundY = float.Parse(ground.Groups["y"].Value, System.Globalization.CultureInfo.InvariantCulture);
+        Require(shaderGroundY == SpacePlaneTransform.GroundY,
+            $"L1/L2 ground-plane constants differ: CPU={SpacePlaneTransform.GroundY}, GPU={shaderGroundY}.");
     }
 
     [LumenFact]

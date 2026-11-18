@@ -187,7 +187,7 @@ public static class RibbonBackendSuite
         backend.UpdateInstance(id, Frame(new Vector3(3f, 1f, 0f), origin: new Vector3(3f, 0f, 0f)));
         Build(backend, TopDown);
         Vector3[] centres = Centres(backend);
-        float drawnY = MathF.Max(0f, Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead));
+        float drawnY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
         // Straight-down 2D: each cell of world height draws cos(60) = 0.5 cells towards screen-up (+Z).
         Vector(new Vector3(3f, drawnY, 0.5f), centres[0]);
         Vector(new Vector3(3f, drawnY, 1.5f), centres[1]);

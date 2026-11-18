@@ -13,7 +13,7 @@ namespace RimLumen.Core.Distortion;
 // Node feature backend for EffectNodeSpec.Distortion. During capture every visible instance on the current map becomes
 // one quad enqueued on RimLumenRenderHost.DistortionPassId, the route a third-party layer-14 draw takes, so
 // DistortionPass sums both into the `distortion` input. The quad spans 2R x 2R around the node's ground position (the
-// Vertical3D display projection shared with particles, anchored at the play origin's XZ on the ground); LumenDistortion.frag.glsl turns the
+// Vertical3D display projection shared with particles, anchored at the play origin's XZ on the ground; LumenDistortion.frag.glsl turns the
 // quad's DistortionFrame into a pixel offset through the quad's own screen derivatives, so any camera gets the
 // projected footprint.
 public sealed class LumenDistortionBackend : ILumenNodeFeatureBackend, ILumenFrameContributor
