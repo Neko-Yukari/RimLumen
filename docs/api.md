@@ -178,7 +178,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 
   密度为 `0.25` 时，连续四次 `count = 1` 的预算为 `1, 0, 0, 0`；连续八次总计为 `2`。连续两次 `count = 7` 的预算为 `2, 2`。密度为 `0.1` 时，`q = 6553`，十次 `count = 1` 累计 `65530`，总请求为 `1`；密度为 `0.2` 时，五次 `count = 1` 的总请求为 `1`。累计请求预算按有效密度计算，为 `ceil(sum(count * q) / 65536)`。预算不是实际存活粒子数或 GPU 粒子计数：容量或空闲槽位不足时，丢弃的请求不会补发。`rateOverTime` 须有限且非负，没有额外速率上限。容量准入前使用宽数值累计有限的连续发射预算 `rate × dt` 和全部跨过的、通过概率判定并按密度缩放的脉冲；超过 Int32 范围属于普通容量丢弃，不因预算范围抛异常。即使没有空闲槽位，仍对全部计划发生次数抽取概率，并对通过的次数更新密度余量。
 
-  脉冲在 CPU 侧入队时只计算一次，GPU Capture 不再缩放。`Play`、显式 `Restart` 和 `GoTo` 状态重新进入会将 `a` 重置为 `0`；循环回绕不会重置。例如，密度为 `0.25` 时，每个循环一次 `count = 1`，八个循环的总请求为 `2`。连续发射率使用独立的 `double` 小数余量，向下取整并保留余数；运行时 `rate` 倍率不缩放脉冲。
+  普通发射器的脉冲在 CPU 侧入队时计算；GPU 子发射器目标将事件与显式脉冲的密度余量保存在 GPU，显式请求保留入队时的密度。`Play`、显式 `Restart` 和 `GoTo` 状态重新进入会将 `a` 重置为 `0`；循环回绕不会重置。例如，密度为 `0.25` 时，每个循环一次 `count = 1`，八个循环的总请求为 `2`。连续发射率使用独立的 `double` 小数余量，向下取整并保留余数；运行时 `rate` 倍率不缩放脉冲。
 
 ### 4. 状态机（`states`）
 
@@ -383,7 +383,7 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 
 `Vertical` 在 `GroundXZ` 使用 `normalize(cross(worldUp, rawCameraForward))`；正顶视时采用定义好的相机右轴极限、上轴取 +Y，有限但边缘朝向相机而不可见。2D 中站立面片应使用 `Vertical3D`；它直接使用已补偿的相机右 / 上轴，不再做逆 Y 或归一化。`Local` 使用完整世界四元数轴做真实几何投影，`Vertical3D` 显示映射只应用一次；边缘视角允许塌缩，不转向相机。空间平面只有 `GroundXZ=0` 和 `Vertical3D=3`。
 
-### 2. 四种力场（`ForceFieldSpec` / `ForceFieldKind`）
+### 2. 力场（`ForceFieldSpec` / `ForceFieldKind`）
 
 | 类型（`Kind`） | `CenterOrAxis` | `Parameters` | `Radius` | `Strength` | `Frequency` | 效果说明 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -391,8 +391,41 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 | `Vortex` (`1`) | 旋转轴方向（默认 `(0, 1, 0)`） | `x` = 向轴心拉力（负值为推离）；`y` = 沿轴上升力 | 有效半径（`<= 0` 表示全图不衰减） | 切向旋转力度 | 不用 | 围绕原点轴线做线性衰减的旋涡旋转 |
 | `CurlTurbulence` (`2`) | 不用 | 空间采样偏移量 | 不用 | 湍流扰动振幅 | 噪声空间频率 | 无散度 3D 旋度噪声，制造流体摆动与丝状漂浮 |
 | `PointAttractor` (`3`) | 吸引中心位置 | 不用 | 有效半径（`<= 0` 表示全图不衰减） | 吸引力强度（负值排斥） | 不用 | 指向（或背离）目标点做线性距离衰减 |
+| `RingWave` (`4`) | 球壳中心 | `x` 扩张速度，`y` 半厚度，均有限且 > 0 | 终止半径，> 0 | 向外加速度，负值向内 | 不用 | 随节点时间扩张的球壳 |
 
 > 注意：`WorldSpaceSimulation == true` 时，力场在世界坐标空间计算（例如顶视角往下掉用 `(0, 0, -1)`）；为 `false` 时在发射器局部空间计算。
+
+---
+
+### 3. 环境力、碰撞与子发射器
+
+以下字段属于 `emitter`，JSON 与 XML 使用小驼峰名称。标志可写 JSON 字符串 `"Explosion, Cursor"` 或 XML `<environmentChannels>Explosion, Cursor</environmentChannels>`；向量分别写 `[x,y,z]` 或 `(x,y,z)`，曲线分别写 `[[time,value], ...]` 或含 `time` / `value` 的 `<li>`。`environmentChannels` 是标志：`None`、`Explosion`、`Cursor`，默认 `Explosion, Cursor`；`environmentForceScale` 为有限非负数，默认 1。爆炸只产生视觉加速度，默认开启、倍率为 1；半径为 R 的爆炸波速度为 `2R` 格/秒，半厚度为 `R/8`，峰值加速度为 `24R × 倍率`，中心降低 `R/4`，持续 0.5 游戏秒，每图最多保留八个波。光标默认关闭，可排斥或吸引；默认半径 5 格、加速度 4 格/秒²，按水平距离线性衰减。世界力求和并乘以倍率后，局部模拟转换回局部空间。局部变换不可逆（例如零缩放）时，不参与世界环境力和墙碰撞。
+
+`RingWave` 半径为速度乘以节点重启后的秒数；权重为 `max(0, 1 - abs(distance - waveRadius) / halfThickness)`，超过终止半径后为零。循环回绕不重置节点计时。
+
+`collision` 默认为 `mode: None`、`bounce: 1`、`dampen: 0`、`lifetimeLoss: 0`、`killUnderRoof: false`。`mode` 可为 `None`、`Bounce`、`Kill`；三个数值均有限且在 `[0,1]`。碰撞反射为 `v' = (v - (1+bounce)*dot(v,n)*n)*(1-dampen)`：阻尼同时减少法向与切向速度。每次碰撞扣除总寿命的 `lifetimeLoss`；`killUnderRoof` 独立于 mode。阻挡格使用不可通行判定，视觉碰撞体覆盖格内世界高度 `Y=[0,2]`，粒子按点扫掠，每步最多一次墙接触；上方可飞过。Kill 产生 Collision 再产生 Death，屋顶过期只产生 Death。
+
+`subEmitters` 默认为空。每项的 `trigger` 为 `Death` 或 `Collision`，`targetNodeIndex` 指向另一个带 emitter 的节点，目标的 `rateOverTime` 必须为 0、不能有 `bursts`，且 `preferredTier` 相同；关系图不得有环。`count` 必填且非负，`probability` 默认 1、范围 `[0,1]`，每事件抽一次；`inherit` 默认 `None`，可组合 `Color`、`Size`。子粒子在事件位置出生，继承值乘以自身出生值；容量不足的请求不补发。
+
+### 4. 扭曲节点
+
+节点的 `distortion` 投影到地面。`kind` 必填，可为 `RingWave`、`Ripple`、`HeatHaze`；`radius` 和 `strength` 必填，有限且大于 0，单位为格。`thickness` 是半宽，`speed` 是格/秒，`frequency` 是每格频率，`duration` 为秒，均默认 0；`strengthOverTime` 是节点重启后秒数上的 Hermite 曲线，端点保持，默认倍率 1，关键帧和倍率有限非负。
+
+| 类型 | thickness | speed | frequency | duration |
+| --- | --- | --- | --- | --- |
+| `RingWave` | > 0 | > 0 | 0 | > 0 |
+| `Ripple` | > 0 | > 0 | > 0 | >= 0 |
+| `HeatHaze` | 0 | 0 | > 0 | >= 0 |
+
+未使用字段必须为 0；`duration = 0` 表示节点活动期间持续。屏幕写入与合成见第六章第 5 节。
+
+### 5. Ribbon 节点
+
+节点可同时包含 `emitter` 和 `ribbon`。`mode` 必填：`Trail` 跟随节点，`Beam` 连接端点。Trail 要求 `lifetime`、`minVertexDistance` 有限且大于 0，`maxPoints > 1`；距离达到阈值时记录点，超容量丢弃最旧点，尾部按寿命截断插值。重启清点；淡出停止后点逐渐过期，立即停止则移除。
+
+Beam 要求 `endLocal`（节点局部坐标）或 `endAtTarget` 恰选一项、`segments >= 1`，`noiseAmplitude` 和 `noiseFrequency` 有限非负；频率为 0 时形状在本次重启内固定。`endAtTarget` 缺少播放目标时抛 `ArgumentException`。Beam 仅在节点活动时绘制。另一模式的字段必须保持 0、null 或 false。
+
+共同字段：`width` 默认 1 且有限大于 0；`widthOverLength` 默认 1，其关键帧和倍率有限非负；`colorOverLength` 默认白色，遵循粒子渐变的颜色契约。归一化长度 0 为头、1 为尾。`hdrIntensity` 默认 1 且有限非负，`textureKey` 默认 null，`blendMode` 默认 `Additive`，`textureMode` 为 `Stretch`（默认）或 `Tile`（每格重复一次），`alignment` 为 `View`（默认）或 `Ground`。`softParticleFadeDistance` 默认 0.5，有限非负。Ribbon 在播放地图的 HDR 层绘制；`Vertical3D` 使用粒子相同的显示投影。
 
 ---
 
@@ -500,6 +533,12 @@ if (premultipliedBlend) layerColor.rgb *= layerColor.a;
 
 Linear 模式先对直通材质 RGB 解码，再进行 alpha / 硬件混合。原生 HDR 层和 group 0 宿主 Bloom 保持线性辐射（宿主 Bloom prefilter 先解码 Stored 的 glow 拷贝）；合成时在线性光下叠到解码后的场景上，只编码一次：`E(compress(D(scene) × (1 - a) + hdr + bloom))`，其中 `compress` 在峰值不超过 1 时为恒等。`hdr` 与 `bloom` 均为零的像素保持场景不变。AlphaBlend 与 Premultiplied 遵循同一规则，alpha 始终表示覆盖度。例如 `c=0.5, a=0.5` 叠在 `0.5` 灰场景上，两种模式都得 `0.5`；叠在黑色上，Legacy 得 `0.25`，Linear 约为 `0.36078`；这是公式示例，并非实测像素。光影包的 `hdr` 和 `bloom` 跟随 `ubo.ColorBlendSpace`，`glow` 和 `scene` 仍为 Stored，晚组 1～3 不变。自定义光影包在 Linear 模式下须自行完成同样的解码、混合、编码；不再额外分配图像。
 
+### 5. 屏幕扭曲与第三方写入
+
+`RimLumenRenderHost.DistortionPassId` 的绘制在 3152 组累加到 `R16G16SFloat` 的 `distortion` 输入。第三方可在 layer 14 绘制，或提交带该 pass ID 的动态 `MeshDrawCommand`；不支持持久绘制源。RG 是场景采样偏移，单位为帧缓冲像素，+x 向右、+y 向下；要让场景从中心向外移动，写入反向偏移。混合为 `One, One`，无深度附件，每帧清零。没有扭曲绘制时不分配目标或录制扭曲 pass，使用全零占位。
+
+玩家设置“Distortion also refracts RimLumen effects”默认开启。自定义合成可在 UBO 声明之后包含 `PostFx/RimLumenDistortion.glslinc`：`lumenRefractedUv(distortionImage, uv)` 返回场景采样 UV，`lumenLayerUv(uv, sceneUv)` 根据设置选择效果层采样 UV。后者要求使用 `PostFx/RimLumenPackUniforms.glslinc` 的 224 字节 UBO。零偏移或非有限偏移保持原 UV。
+
 ## 七、贴图注册与兼容注意事项
 
 ### 1. 自定义粒子贴图（`LumenTextureRegistry`）
@@ -568,6 +607,8 @@ RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled
 导入脉冲的计划时间须严格小于系统 `Duration`。`cycleCount=0` 时，每个系统循环都从同一本地相位重新重复，即使间隔不能整除时长。一个发射器所有脉冲定义展开后的发生次数合计最多 4096；超限时整个发射器转 External 并给出原因，不截断。间隔非有限时转 External；重复时，间隔 `<=0` 也转 External。单次脉冲允许有限的非正间隔，但不使用该间隔。无效计划原因是 `emission.bursts.schedule.domain`，总次数超限原因是 `emission.bursts.occurrenceLimit`。曲线分流只检查启用的模块及有效轴；禁用 emission 中保存的曲线不参与判定。启用 `main.startSize3D`、`main.startRotation3D` 或非零 `startRotation` 时转 External，原因分别为 `main.startSize3D`、`main.startRotation3D`、`main.startRotation`；启用的 `rateOverDistance` 双曲线原因是 `emission.rateOverDistance.dualCurve`。未启用的 3D 轴字段不触发拒绝，初始旋转和 3D 尺寸的原生支持仍延期。
 
 适配器将材质 `_Color` 单独映射到 `materialTint`；Linear 材质在没有其他不支持原因时走原生路径。导入的材质颜色超出上述范围时转外部播放，原因包含材质标识和字段：`material[<asset-id>]._Color.domain`；不截断或折入顶点颜色。
+
+受支持的 `TrailRenderer` / `LineRenderer` 转成原生 Ribbon；不支持的选项保留 External 并报告具体原因。转换后的 Ribbon 保持活动直到效果停止；External 的线条停止时立即结束，轨迹可随淡出停止记录并自然消散。适配器通过资产提供者注册 Ribbon 贴图。此生命周期只适用于 RimUnity 导入，不改变原生 Ribbon 的状态机。转换时轨迹容量为 `max(2, ceil(time × 240))`；渐变乘以材质 `_Color`，`hdrIntensity` 为 1。无法转换的情况包括圆角或端帽、TransformZ 对齐、光照数据、不支持的贴图模式或缩放、加权或循环宽度曲线、感知渐变、无效材质、Linear 材质、暂停发射或自动销毁的轨迹、世界空间或闭合线、非两点线、非零起点以及同节点多个 Ribbon。诊断原因按 `trail.` / `line.` 前缀报告，包括 `numCornerVertices`、`numCapVertices`、`alignment.TransformZ`、`generateLightingData`、`textureMode.N`、`textureScale`、`widthMultiplier.domain`、`widthCurve.empty` / `weighted` / `domain` / `wrapMode`、`colorGradient.perceptualBlend`、`sharedMaterials.count`；轨迹还有 `trail.time.domain`、`trail.minVertexDistance.domain`、`trail.emitting`、`trail.autodestruct`，线条还有 `line.useWorldSpace`、`line.loop`、`line.positions.count`、`line.positions.start`，重复组件为 `ribbon.multipleOnNode`。
 
 上层调用 `RimLumenApi.Play` 时无需感知背后走哪一路，同一个 `ILumenEffectHandle` 会同时接管两端生命周期。
 
@@ -738,7 +779,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 
 #### 静态 DAG 校验规则（`ShaderPackGraphValidator`）
 
-1. **保留源名**：`hdr`、`glow`、`bloom`、`scene`、`depth`、`mapLightField`、`backbuffer` 为保留源名，不可作为自定义 `targets[].name`，也不能用 `prev:` 作为自定义目标前缀。
+1. **保留源名**：`hdr`、`glow`、`bloom`、`scene`、`depth`、`mapLightField`、`distortion`、`backbuffer` 为保留源名，不可作为自定义 `targets[].name`，也不能用 `prev:` 作为自定义目标前缀。
 2. **末尾唯一 `backbuffer`**：若 `passes` 非空，仅最后一个 Pass 必须输出到 `"backbuffer"`；其余所有离屏 Pass 必须输出到已声明的 `targets[].name`，且必须使用 `"blend": "Opaque"` 与非空 `shader`。
 3. **禁止采样 `backbuffer`**：任何 Pass 的 `inputs[].source` 均不能填 `"backbuffer"`。
 4. **无前向引用与无同帧自读**：采样普通 `target` 时，必须有排在当前 Pass 之前的 Pass 已向其写入；禁止在同一 Pass 中既写 `X` 又直接以 `X` 作为输入。
@@ -775,6 +816,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 | `scene` | 场景主色彩格式 / `Linear` | — | 3152 边界处地图、角色与建筑主场景的独立同帧颜色拷贝。 |
 | `depth` | `R32SFloat` / `Point` | `depth1x1`（`R32SFloat`，远平面 `0.0`） | 由 3152 边界同帧场景深度拷贝得到、供常规采样的颜色快照。 |
 | `mapLightField` | `R8G8B8A8UNorm` / `Linear` | `black1x1`（全 0） | 尺寸为 `mapSizeX x mapSizeZ` 的全图屋顶/人工光/存在使用室外温度的房间/迷雾场。 |
+| `distortion` | `R16G16SFloat` / `Linear` | `black1x1`（全 0） | 屏幕尺寸，RG 为场景采样偏移，单位为帧缓冲像素。 |
 
 `hdr`、`glow` 与 `scene` 的 RGB 使用同一种编码，可以直接相加，不需要做 gamma / 线性转换：场景目标是 `B8G8R8A8UNorm`，原版直接按存储值混合，RimLumen 的 HDR 目标用同样的着色器输出与混合方式，只是不截断。`1.0` 等于原版的满亮度，大于 `1.0` 的部分就是原版会截掉的额外亮度。
 
@@ -786,6 +828,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
   - `binding = 2`：`scene`
   - `binding = 3`：`depth`
   - `binding = 4`：`mapLightField`
+  - `binding = 6`：`distortion`
 - **自定义 `bloomPrefilterShader`**：
   - `binding = 0`：`hdr`、`binding = 1`：`glow`、`binding = 2`：`scene`、`binding = 3`：`depth`、`binding = 4`：`mapLightField`。
 - **自定义 `bloomDownShader`**：
@@ -809,7 +852,7 @@ layout(location = 0) out vec4 outColor;
 
 同一光影包内可使用相对路径 `#include "Common.glslinc"` 复用公共函数与 UBO 声明。
 
-#### Uniform Buffer（`set = 0, binding = 5`，208 字节 `std140`）
+#### Uniform Buffer（`set = 0, binding = 5`，224 字节 `std140`）
 
 ```glsl
 layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
@@ -830,11 +873,12 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float ColorBlendSpace;  // 124: 0 Legacy（hdr/bloom 为 stored 值），1 Linear（线性辐射）
     vec4 BloomParams;       // 128: intensity, threshold, knee, scatter
     vec4 PackParams[4];     // 144: 4 行，每行 16 字节，共 64 字节
+    vec4 LayerFlags;        // 208: x 为效果层折射开关，yzw 保留为 0
 } ubo;
 ```
 
 - **参数映射**：`options[].target` 的 `packParamN`（`N = 0..15`）对应 `ubo.PackParams[N / 4][N % 4]`；已有着色器需将旧向量成员改为 `PackParams` 数组。
-- **当前 ABI**：旧 `EnvParams` 位掩码已移除；外部包须同步上述 208 字节布局。`HasHdrDraws`（含早组 glow 拷贝）、`HasSceneDepth`、`HasMapLightField`、`IsPaused` 均为独立的 0/1 float。`DepthValid=1` 表示该边界的真实深度快照，`0` 表示远平面占位，不表示每个像素都有几何体。
+- **当前 ABI**：布局共 224 字节；只声明前 208 字节的包仍有效，但其效果层不折射。`HasHdrDraws`（含早组 glow 拷贝）、`HasSceneDepth`、`HasMapLightField`、`IsPaused` 均为独立的 0/1 float。`DepthValid=1` 表示该边界的真实深度快照，`0` 表示远平面占位，不表示每个像素都有几何体。
 - `GameSeconds` 为游戏 ticks / 60，暂停停止；`RealSeconds` 为宿主经过的真实秒数。对应 Delta 字段是本帧步长。Cinematic 的 Adapt 与 StreakExtract 读取 `hdr + glow`，合成核心仍只读取 `hdr`；Adapt 使用游戏秒时间常数 0.2 秒，权重 `1-exp(-GameDeltaSeconds/0.2)`。
 
 #### Push Constant（16 字节 `vec4`）
@@ -1017,3 +1061,33 @@ void main()
     outColor = vec4(base * (1.0 - hdr.a) + mappedHdr, 1.0);
 }
 ```
+
+## 十、框架与适配器扩展 SPI
+
+本章面向实现资产适配器或自定义后端的开发者；内容模组使用 `.lumen.json`、XML 或 `RimLumenApi` 无需实现这些接口。前九章为内容、播放与 ShaderPack 接口。本章类型位于 `RimLumen.Core.Contracts`。
+
+### 1. 注册与资产解析
+
+`LumenHostRegistry` 注册服务、贡献者、GPU 引擎、节点后端和资产提供者。`RegisterContributor` 和 `RegisterAssetProvider` 对同一实例重复注册无效果；贡献者有 `UnregisterContributor`，快照供管线使用。`RegisterGpuParticleEngine` 同时注册贡献者；`RegisterVfxService` 和 GPU 引擎注册会替换对应属性；替换 GPU 引擎不会自动注销原贡献者，调用方应自行注销。节点后端每种 feature 只能有一个不同实例，冲突抛 `InvalidOperationException`；注销只影响后续播放，已有句柄继续持有后端。
+
+`ILumenAssetProvider.TryResolveEffect` 按 ID 提供 `EffectAsset`。提供者按注册逆序查询，命中资产在解析时校验；无效资产被拒绝并记录错误，不继续尝试其他提供者。已解析资产及其嵌套数组视为不可变；热重载返回新实例。Core 的 `InMemoryAssetCatalog` 与 `RimUnityAssetProvider` 是实现；Core 的播放路径在主线程解析提供者。
+
+`ILumenVfxService` 公开 `Capabilities` 和主线程 `Play`：找到资产返回活动句柄，未找到返回无效的已结束句柄。Core 的 `LumenVfxService` 在资产被拒绝或粒子池耗尽时也返回已结束句柄，并记录相应错误或警告。它提供原生播放；适配器的 `RimUnityHybridVfxService` 包装它并处理外部部分。`LumenSceneBootstrap.EnsureInitialized()` 幂等注册 Core 目录、服务及贡献者，服务先于模拟器。
+
+### 2. 帧贡献者与四个上下文
+
+`ILumenFrameContributor` 按帧依序调用：主线程 `CaptureMainThread(LumenCaptureContext)` 捕获不可变输入，主线程 `EnqueuePreCompute(LumenComputeContext)` 提交计算，再由渲染线程 `RecordBufferBarriers(LumenBarrierContext)` 在 HDR pass 前记录屏障，最后在 HDR pass 内调用 `RecordHdrDraws(LumenHdrDrawContext)`。空闲的 `HasActiveWork` 允许跳过工作；`RequiresDirectHdrPass` 在捕获后由主线程读取，默认 false，需要直接绘制时返回 true；路由网格绘制单独计数。
+
+以 `FrameIndex` 关联捕获和录制，录制可能滞后或帧被丢弃；`SubmissionFrameIndex` 只是循环资源槽。上下文不是 GPU 二进制布局。渲染线程借用的帧、纹理只在回调内有效，不可保留或释放，也不可读取游戏主线程 API。捕获上下文提供地图 ID、时间、相机矩阵和视口；计算上下文提供帧与时钟；屏障上下文提供帧命令缓冲；绘制上下文提供 HDR 目标、可空深度和相机数据。Core 服务、CPU 模拟器、GPU 引擎及扭曲和 Ribbon 后端均注册贡献者；适配器的外部播放器也使用贡献者。管线回调异常会触发渲染熔断并记录错误。
+
+### 3. GPU 粒子与节点后端
+
+`ILumenGpuParticleEngine` 继承帧贡献者，`RegisterGpuParticleEngine` 注册。实例方法在主线程：`CreateInstance` 后以节点索引数组调用 `BindNodeInstances`，再随帧 `UpdateInstance`；`RestartInstance` 重置计划，`EmitBurst` 提交额外粒子，`DestroyInstance` 支持立即释放或等待消散，`IsInstanceAlive` 查询回收状态。ID 属于后端；容量为共享粒子槽数。Core 的 `LumenGpuParticleEngine` 是实现。
+
+`ILumenNodeFeatureBackend` 管理 `LumenNodeFeatureFrame`：其中包含节点世界变换、目标、地图 ID、强度、活动状态、帧时间和播放原点。所有实例调用在主线程。`CreateInstance` 在播放时创建非活动实例；进入状态或 Trigger 调用 `RestartInstance`，每帧 `UpdateInstance`，退出状态立即更新为 inactive。淡出停止调用 `DestroyInstance(id, false)` 并等待 `IsInstanceAlive` 为 false；立即停止或释放使用 true。缺少所需后端时播放抛 `InvalidOperationException`。Core 提供扭曲和 Ribbon 后端；兼作帧贡献者的后端先初始化场景，再注册贡献者，确保节点更新先于捕获。
+
+`LumenNodeFeature` 是封闭枚举，只有 `Distortion` 和 `Ribbon`；当前不能通过它添加新的节点种类。
+
+### 4. 适配器示例
+
+`Source/RimLumen.Adapter.RimUnity` 在目标模组存在时扫描包根目录，创建并注册 `RimUnityAssetProvider`，再注册包装原生服务的 `RimUnityHybridVfxService`。提供者按需转换 prefab，并通过贴图桥注册粒子和 Ribbon 纹理；再次 `RegisterPackageRoot` 会清空目录及转换缓存。无法原生转换的组件由外部播放器处理。此分工可作为第三方资产适配器的参考。

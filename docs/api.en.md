@@ -178,7 +178,7 @@ Callers using `RimUnityAssetProvider` can call `RegisterPackageRoot` again, even
 
   At density `0.25`, four consecutive bursts with `count = 1` yield budgets `1, 0, 0, 0`; eight such bursts total `2`. Two consecutive bursts with `count = 7` yield `2, 2`. At density `0.1`, `q = 6553`, so ten `count = 1` bursts accumulate `65530` and request `1`; at density `0.2`, five such bursts request `1`. The cumulative request budget uses the effective density: `ceil(sum(count * q) / 65536)`. A scheduled budget is not the actual live-particle count or GPU particle count: requests dropped for insufficient capacity or free slots are not replayed. `rateOverTime` must be finite and nonnegative, with no additional rate cap. Before capacity admission, finite continuous `rate × dt` budgets and all crossed bursts accepted by probability and scaled by density are accumulated in wide numeric types; exceeding Int32 is ordinary capacity dropping, not a budget-range exception. Even when no slots are free, every planned occurrence gets its probability draw and every accepted occurrence updates density carry.
 
-  Bursts are scaled once when queued on the CPU; GPU Capture does not scale them again. `Play`, explicit `Restart`, and `GoTo` state re-entry reset `a` to `0`; loop wrap does not. For example, at density `0.25`, one `count = 1` burst per loop requests `2` particles over eight loops. Continuous rate emission uses a separate `double` fractional carry, floors the accumulated count and retains the remainder. The runtime `rate` multiplier does not scale bursts.
+  Ordinary emitter bursts are scaled when queued on the CPU; GPU sub-emitter targets keep a shared density carry for events and explicit bursts on the GPU, and explicit requests retain their enqueue-time density. `Play`, explicit `Restart`, and `GoTo` state re-entry reset `a` to `0`; loop wrap does not. For example, at density `0.25`, one `count = 1` burst per loop requests `2` particles over eight loops. Continuous rate emission uses a separate `double` fractional carry, floors the accumulated count and retains the remainder. The runtime `rate` multiplier does not scale bursts.
 
 ### 4. State Machine (`states`)
 
@@ -383,7 +383,7 @@ After sampling, apply shape-local TRS, then mix random direction, spherical dire
 
 `Vertical` in `GroundXZ` uses `normalize(cross(worldUp, rawCameraForward))`; at exact overhead, the defined camera-right limit with +Y up gives a finite but edge-on invisible quad. Use `Vertical3D` for standing sprites in 2D; it reuses the already compensated camera right / up without a second inverse Y or normalization. `Local` projects the full world-quaternion axes geometrically, applying the `Vertical3D` display mapping once; edge-on collapse is retained without camera-facing fallback. The only space planes are `GroundXZ=0` and `Vertical3D=3`.
 
-### 2. Four Force Fields (`ForceFieldSpec` / `ForceFieldKind`)
+### 2. Force Fields (`ForceFieldSpec` / `ForceFieldKind`)
 
 | Kind | `CenterOrAxis` | `Parameters` | `Radius` | `Strength` | `Frequency` | Effect Description |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -391,8 +391,41 @@ After sampling, apply shape-local TRS, then mix random direction, spherical dire
 | `Vortex` (`1`) | Rotation axis (default `(0, 1, 0)`) | `x` = inward pull toward axis (negative pushes outward); `y` = lift force along axis | Effective radius (`<= 0` means map-wide without falloff) | Tangential spin strength | Unused | Swirls particles around the origin axis with linear distance falloff |
 | `CurlTurbulence` (`2`) | Unused | Spatial sampling offset | Unused | Turbulence amplitude | Spatial noise frequency | Divergence-free 3D curl noise for fluid sway and wispy drift |
 | `PointAttractor` (`3`) | Attractor center position | Unused | Effective radius (`<= 0` means map-wide without falloff) | Attraction strength (negative repels) | Unused | Pulls toward (or pushes away from) target point with linear distance falloff |
+| `RingWave` (`4`) | Shell center | `x` expansion speed, `y` half-thickness, both finite and > 0 | End radius, > 0 | Outward acceleration; negative pulls inward | Unused | Spherical shell expanding with node time |
 
 > Note: When `WorldSpaceSimulation == true`, force fields evaluate in world space (for example `(0, 0, -1)` for falling down in top-down view); when `false`, they evaluate in emitter local space.
+
+---
+
+### 3. Environment Forces, Collision, and Sub-emitters
+
+These fields belong to `emitter`; JSON and XML use lower camel case. Flags can use the JSON string `"Explosion, Cursor"` or XML `<environmentChannels>Explosion, Cursor</environmentChannels>`; vectors use `[x,y,z]` or `(x,y,z)`, and curves use `[[time,value], ...]` or XML `<li>` entries containing `time` and `value`. `environmentChannels` is a flag set: `None`, `Explosion`, `Cursor`, default `Explosion, Cursor`; `environmentForceScale` is finite and nonnegative, default 1. Explosions add visual acceleration only, enabled by default with multiplier 1. For radius R the shell travels at `2R` cells/s, has half-thickness `R/8`, peak acceleration `24R × multiplier`, center lowered by `R/4`, and lasts 0.5 game seconds; each map retains at most eight pulses. The cursor defaults to off and can repel or attract; its default radius is 5 cells and acceleration 4 cells/s², with linear horizontal falloff. World forces are summed and scaled, then transformed back for local simulation. A local emitter with a noninvertible transform (such as zero scale) skips world environment forces and wall collision.
+
+`RingWave` radius is speed times seconds since node restart; weight is `max(0, 1 - abs(distance - waveRadius) / halfThickness)`, and zero beyond the end radius. Loop wraps do not reset node time.
+
+`collision` defaults to `mode: None`, `bounce: 1`, `dampen: 0`, `lifetimeLoss: 0`, `killUnderRoof: false`. Mode is `None`, `Bounce`, or `Kill`; the three numeric values are finite `[0,1]`. Bounce uses `v' = (v - (1+bounce)*dot(v,n)*n)*(1-dampen)`: damping reduces both normal and tangential velocity. Each hit removes `lifetimeLoss` of total lifetime; `killUnderRoof` is independent of mode. Blocking cells use the impassable predicate; their visual collision volume spans world `Y=[0,2]`. Particles sweep as points with at most one wall contact per step and can pass above walls. Kill emits Collision then Death; roof expiry emits Death only.
+
+`subEmitters` defaults to empty. Each entry requires `trigger` (`Death` or `Collision`), and `targetNodeIndex` pointing to another node with an emitter whose `rateOverTime` is 0, has no `bursts`, and has the same `preferredTier`; the graph must be acyclic. `count` is required and nonnegative; `probability` defaults to 1 in `[0,1]`, drawn once per event; `inherit` defaults to `None` and may combine `Color` and `Size`. Children spawn at the event position; inherited values multiply their own birth values. Capacity drops are final.
+
+### 4. Distortion Nodes
+
+A node's `distortion` projects onto the ground. Required `kind` is `RingWave`, `Ripple`, or `HeatHaze`; required `radius` and `strength` are finite positive cells. `thickness` is half-width, `speed` is cells/s, `frequency` is per cell, and `duration` is seconds, all default 0. `strengthOverTime` is an endpoint-held Hermite curve in seconds since node restart, default multiplier 1, with finite nonnegative keys and multiplier.
+
+| Kind | thickness | speed | frequency | duration |
+| --- | --- | --- | --- | --- |
+| `RingWave` | > 0 | > 0 | 0 | > 0 |
+| `Ripple` | > 0 | > 0 | > 0 | >= 0 |
+| `HeatHaze` | 0 | 0 | > 0 | >= 0 |
+
+Unused fields must be 0; `duration = 0` means while the node is active. See section 6.5 for screen writes and compositing.
+
+### 5. Ribbon Nodes
+
+A node may contain both `emitter` and `ribbon`. Required `mode` is `Trail`, following the node, or `Beam`, connecting an endpoint. Trail requires finite positive `lifetime` and `minVertexDistance` and `maxPoints > 1`. It records points after the distance threshold, drops the oldest at capacity, and interpolates its lifetime cutoff. Restart clears points; fade-out lets points expire and immediate stop removes them.
+
+Beam requires exactly one of `endLocal` (node-local coordinates) or `endAtTarget`, `segments >= 1`, and finite nonnegative `noiseAmplitude` and `noiseFrequency`; frequency 0 keeps the shape until restart. `endAtTarget` without a play target throws `ArgumentException`. A beam draws only while active. Fields for the other mode must remain 0, null, or false.
+
+Common fields: `width` defaults to 1 and is finite positive; `widthOverLength` defaults to 1, with finite nonnegative keys and multiplier; `colorOverLength` defaults to white and follows the particle gradient colour contract. Normalized length is 0 at the head and 1 at the tail. `hdrIntensity` defaults to 1 and is finite nonnegative, `textureKey` defaults to null, `blendMode` to `Additive`, `textureMode` is `Stretch` (default) or `Tile` (one repeat per cell), and `alignment` is `View` (default) or `Ground`. `softParticleFadeDistance` defaults to 0.5, finite nonnegative. Ribbons draw in the HDR layer on their play map; `Vertical3D` uses the same display projection as particles.
 
 ---
 
@@ -500,6 +533,12 @@ if (premultipliedBlend) layerColor.rgb *= layerColor.a;
 
 Linear mode decodes straight material RGB before alpha / hardware blending. The native HDR layer and group 0 host bloom stay in linear radiance (the host bloom prefilter decodes the stored glow copies first); the composite blends them over the decoded scene in linear light and encodes once: `E(compress(D(scene) × (1 - a) + hdr + bloom))`, where `compress` is identity up to a peak of 1. Pixels with zero `hdr` and `bloom` leave the scene untouched. AlphaBlend and Premultiplied follow the same rule, and alpha remains coverage. Example: `c=0.5, a=0.5` over a `0.5` grey scene gives `0.5` in both modes; over black, Legacy gives `0.25` and Linear approximately `0.36078`. These are formula results, not measured pixels. Pack `hdr` and `bloom` follow `ubo.ColorBlendSpace`; `glow` and `scene` remain Stored, and late groups 1–3 are unchanged. Packs that composite in Linear mode must do the same decode-blend-encode themselves; no extra image is allocated.
 
+### 5. Screen Distortion and Third-Party Writes
+
+Draws on `RimLumenRenderHost.DistortionPassId` accumulate into the `R16G16SFloat` `distortion` input in group 0 at 3152. Third parties can draw on layer 14 or submit a dynamic `MeshDrawCommand` with that pass ID; persistent draw sources are unsupported. RG is the scene sample offset in framebuffer pixels, +x right and +y down; write the opposite offset to push the scene outward from a center. Blending is `One, One`, without a depth attachment; the target is cleared each frame. With no distortion draws, no target or distortion pass is allocated and a zero placeholder is used.
+
+The player setting “Distortion also refracts RimLumen effects” defaults to on. Custom composites can include `PostFx/RimLumenDistortion.glslinc` after declaring the UBO: `lumenRefractedUv(distortionImage, uv)` returns the scene sample UV, and `lumenLayerUv(uv, sceneUv)` selects the effect-layer UV according to the setting. The latter requires the 224-byte UBO from `PostFx/RimLumenPackUniforms.glslinc`. Zero or nonfinite offsets retain the original UV.
+
 ## 7. Texture Registry and Compatibility Notes
 
 ### 1. Custom Particle Textures (`LumenTextureRegistry`)
@@ -568,6 +607,8 @@ When `Chezhou.RimUnity` is active, `RimLumen.Adapter.RimUnity` reads its exporte
 Imported burst schedule times must be strictly less than the system `Duration`. With `cycleCount=0`, repetition restarts from the same local phase in every system loop, even when the interval does not divide the duration. The total expanded occurrences across all burst definitions in one emitter are limited to 4096; above that, the whole emitter routes to External with a reason, never truncation. A nonfinite interval routes to External; a repeated burst with interval `<=0` also routes to External. A one-shot burst permits a finite nonpositive interval but does not use it. The reasons are `emission.bursts.schedule.domain` for an invalid schedule and `emission.bursts.occurrenceLimit` for exceeding the total limit. Deferred curve classification inspects only active modules and axes; stored curves in disabled emission are ignored. Active `main.startSize3D`, active `main.startRotation3D`, or nonzero `startRotation` route to External with reasons `main.startSize3D`, `main.startRotation3D`, and `main.startRotation`, respectively. Active dual-curve `rateOverDistance` uses reason `emission.rateOverDistance.dualCurve`; inactive 3D-axis fields do not cause rejection. Native initial rotation and 3D size remain deferred.
 
 The adapter maps material `_Color` separately to `materialTint` and routes Linear materials natively when no other unsupported reason applies. Imported material colours outside the domain above route to External with a material identity and field reason, `material[<asset-id>]._Color.domain`, without clamping or folding into vertex colour.
+
+Supported `TrailRenderer` / `LineRenderer` components translate to native ribbons; unsupported options remain External with a specific reason. Translated ribbons stay active until the effect stops. External lines end on stop; trails can stop recording and age out during fade-out. The adapter registers ribbon textures through its asset provider. This lifetime applies to RimUnity imports, not native ribbon state machines. Translated trail capacity is `max(2, ceil(time × 240))`; its gradient is multiplied by material `_Color`, with `hdrIntensity` 1. Unsupported cases include rounded corners or caps, TransformZ alignment, lighting data, unsupported texture mode or scale, weighted or looping width curves, perceptual gradients, invalid or Linear materials, paused or autodestructing trails, world-space or closed lines, lines with other than two points or a nonzero start, and multiple ribbons on one node. Diagnostics use the `trail.` / `line.` prefix, including `numCornerVertices`, `numCapVertices`, `alignment.TransformZ`, `generateLightingData`, `textureMode.N`, `textureScale`, `widthMultiplier.domain`, `widthCurve.empty` / `weighted` / `domain` / `wrapMode`, `colorGradient.perceptualBlend`, and `sharedMaterials.count`. Trail-specific reasons include `trail.time.domain`, `trail.minVertexDistance.domain`, `trail.emitting`, and `trail.autodestruct`; line-specific reasons include `line.useWorldSpace`, `line.loop`, `line.positions.count`, and `line.positions.start`; duplicate components use `ribbon.multipleOnNode`.
 
 Callers using `RimLumenApi.Play` do not need to care which backend handles each node; a single `ILumenEffectHandle` controls both sides together.
 
@@ -738,7 +779,7 @@ When switching packs, `ShaderPackCatalog.ApplyOptionsToRuntime` resets the four 
 
 #### Static DAG Validation (`ShaderPackGraphValidator`)
 
-1. **Reserved names**: `hdr`, `glow`, `bloom`, `scene`, `depth`, `mapLightField`, and `backbuffer` are reserved source names and cannot be used as `targets[].name`; target names also cannot begin with `prev:`.
+1. **Reserved names**: `hdr`, `glow`, `bloom`, `scene`, `depth`, `mapLightField`, `distortion`, and `backbuffer` are reserved source names and cannot be used as `targets[].name`; target names also cannot begin with `prev:`.
 2. **Single trailing `backbuffer`**: When `passes` is non-empty, only the final pass may—and must—output to `"backbuffer"`. All earlier offscreen passes must target a declared `targets[].name`, use `"blend": "Opaque"`, and specify a non-empty `shader`.
 3. **No `backbuffer` sampling**: No pass may list `"backbuffer"` in `inputs[].source`.
 4. **No forward references or same-pass self-reads**: Sampling a regular target requires an earlier pass in the array to have written it; a pass cannot read its own `output` directly in the same pass.
@@ -775,6 +816,7 @@ If your pack needs custom Bloom scattering on empty frames (e.g., from `scene`, 
 | `scene` | Main scene format / `Linear` | — | Separate same-frame copy of main scene colour (map, pawns, buildings, vanilla lighting) at the 3152 boundary. |
 | `depth` | `R32SFloat` / `Point` | `depth1x1` (`R32SFloat`, far plane `0.0`) | Colour snapshot copied from same-frame scene depth at the 3152 boundary for regular shader sampling. |
 | `mapLightField` | `R8G8B8A8UNorm` / `Linear` | `black1x1` (zero) | Map-sized (`mapSizeX x mapSizeZ`) roof, artificial-light, has-outdoor-temperature-Room, and fog-of-war texture. |
+| `distortion` | `R16G16SFloat` / `Linear` | `black1x1` (zero) | Screen-sized RG scene-sample offset in framebuffer pixels. |
 
 The RGB of `hdr`, `glow` and `scene` share one encoding, so they add directly with no gamma or linear conversion: the scene target is `B8G8R8A8UNorm` and vanilla blends the stored values directly, while RimLumen's HDR targets use the same shader outputs and blend modes without clipping. `1.0` is vanilla full brightness; anything above `1.0` is the extra brightness vanilla clips.
 
@@ -786,6 +828,7 @@ The RGB of `hdr`, `glow` and `scene` share one encoding, so they add directly wi
   - `binding = 2`: `scene`
   - `binding = 3`: `depth`
   - `binding = 4`: `mapLightField`
+  - `binding = 6`: `distortion`
 - **Custom `bloomPrefilterShader`**:
   - `binding = 0`: `hdr`, `binding = 1`: `glow`, `binding = 2`: `scene`, `binding = 3`: `depth`, `binding = 4`: `mapLightField`.
 - **Custom `bloomDownShader`**:
@@ -809,7 +852,7 @@ layout(location = 0) out vec4 outColor;
 
 Relative `#include "Common.glslinc"` files inside the same pack directory are supported.
 
-#### Uniform Buffer (`set = 0, binding = 5`, 208-byte `std140`)
+#### Uniform Buffer (`set = 0, binding = 5`, 224-byte `std140`)
 
 ```glsl
 layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
@@ -830,11 +873,12 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float ColorBlendSpace;  // 124: 0 Legacy (hdr/bloom in stored units), 1 Linear (linear radiance)
     vec4 BloomParams;       // 128: intensity, threshold, knee, scatter
     vec4 PackParams[4];     // 144: 4 rows, 16-byte stride, 64 bytes total
+    vec4 LayerFlags;        // 208: x = refract effects, yzw reserved 0
 } ubo;
 ```
 
 - **Parameter mapping**: `options[].target` value `packParamN` (`N = 0..15`) maps to `ubo.PackParams[N / 4][N % 4]`; existing shaders must replace the old vector members with the `PackParams` array.
-- **Current ABI**: the old `EnvParams` bitmask is removed; external packs must adopt this 208-byte layout. `HasHdrDraws` (including early-group glow copies), `HasSceneDepth`, `HasMapLightField`, and `IsPaused` are separate 0/1 floats. `DepthValid=1` means a real depth snapshot at the boundary; 0 means the far-plane placeholder, not a per-pixel geometry test.
+- **Current ABI**: the layout is 224 bytes; packs declaring only the first 208 bytes remain valid but do not refract their own layer. `HasHdrDraws` (including early-group glow copies), `HasSceneDepth`, `HasMapLightField`, and `IsPaused` are separate 0/1 floats. `DepthValid=1` means a real depth snapshot at the boundary; 0 means the far-plane placeholder, not a per-pixel geometry test.
 - `GameSeconds` is game ticks / 60 and stops on pause; `RealSeconds` is host elapsed real seconds. Their Delta fields hold this frame's step. Cinematic Adapt and StreakExtract read `hdr + glow`; the composite core remains `hdr` only. Adapt uses a 0.2-game-second time constant: `1-exp(-GameDeltaSeconds/0.2)`.
 
 #### Push Constant (16-byte `vec4`)
@@ -1017,3 +1061,33 @@ void main()
     outColor = vec4(base * (1.0 - hdr.a) + mappedHdr, 1.0);
 }
 ```
+
+## 10. Framework and Adapter Extension SPI
+
+This chapter is for asset adapters and custom backend authors. Content mods using `.lumen.json`, XML, or `RimLumenApi` do not need these interfaces. Chapters 1–9 cover content, playback, and ShaderPacks. These types are in `RimLumen.Core.Contracts`.
+
+### 1. Registration and Asset Resolution
+
+`LumenHostRegistry` registers services, contributors, GPU engines, node backends, and asset providers. `RegisterContributor` and `RegisterAssetProvider` ignore repeat registration of the same instance; contributors have `UnregisterContributor`, and the pipeline uses snapshots. `RegisterGpuParticleEngine` also registers the contributor; VFX service and GPU engine registration replace their respective properties; replacing the GPU engine does not unregister the old contributor, so the caller must unregister it. Only one distinct backend per feature is permitted; conflicts throw `InvalidOperationException`. Unregistering affects future plays; existing handles retain their backend.
+
+`ILumenAssetProvider.TryResolveEffect` supplies an `EffectAsset` by ID. Providers are queried in reverse registration order; a found asset is validated on resolution. An invalid asset is rejected and logged without trying another provider. Treat resolved assets and nested arrays as immutable; hot reload returns a new instance. Core's `InMemoryAssetCatalog` and `RimUnityAssetProvider` implement it; Core resolves providers on the main-thread playback path.
+
+`ILumenVfxService` exposes `Capabilities` and main-thread `Play`: a resolved asset produces an active handle, a missing one an inert dead handle. Core's `LumenVfxService` also returns a dead handle for rejected assets or an exhausted particle pool, logging the relevant error or warning. It provides native playback; the adapter's `RimUnityHybridVfxService` wraps it and handles external parts. `LumenSceneBootstrap.EnsureInitialized()` idempotently registers the Core catalog, service and contributors, service before simulator.
+
+### 2. Frame Contributors and Four Contexts
+
+`ILumenFrameContributor` runs in order: main-thread `CaptureMainThread(LumenCaptureContext)` freezes inputs, main-thread `EnqueuePreCompute(LumenComputeContext)` enqueues compute, render-thread `RecordBufferBarriers(LumenBarrierContext)` records barriers before the HDR pass, and `RecordHdrDraws(LumenHdrDrawContext)` runs inside it. An idle `HasActiveWork` permits work to be skipped. `RequiresDirectHdrPass` is read on the main thread after capture, defaults to false, and must be true for direct draws; routed mesh draws are counted separately.
+
+Pair capture and recording by `FrameIndex`: recording may lag or a frame may be dropped. `SubmissionFrameIndex` is only the rotating resource slot. Contexts are not binary GPU layouts. Frames and textures borrowed by render-thread callbacks must not be retained or disposed, and game main-thread APIs must not be accessed there. Capture carries map ID, clocks, camera matrices and viewport; compute carries frame and clocks; barriers carry the frame command buffer; draw carries the HDR target, nullable depth and camera data. Core service, CPU simulator, GPU engine, distortion and ribbon backends register contributors; the adapter's external player also uses one. Pipeline callback exceptions trip the render fail-safe and are logged.
+
+### 3. GPU Particles and Node Backends
+
+`ILumenGpuParticleEngine` extends the frame contributor and is registered by `RegisterGpuParticleEngine`. Instance operations run on the main thread: after `CreateInstance`, call `BindNodeInstances` with node-indexed IDs, then `UpdateInstance` each frame. `RestartInstance` resets the schedule, `EmitBurst` queues extra particles, `DestroyInstance` supports immediate removal or drain, and `IsInstanceAlive` reports reclamation. IDs belong to the backend; capacity is the shared particle slot count. Core implements `LumenGpuParticleEngine`.
+
+`ILumenNodeFeatureBackend` manages `LumenNodeFeatureFrame`: node world transform, target, map ID, intensity, active state, frame delta and play origin. All instance calls run on the main thread. `CreateInstance` creates an inactive instance at Play; state entry or Trigger calls `RestartInstance`, each frame calls `UpdateInstance`, and state exit immediately updates it inactive. Fade-out stop calls `DestroyInstance(id, false)` and waits for `IsInstanceAlive` to become false; immediate stop or disposal uses true. Playing without a required backend throws `InvalidOperationException`. Core supplies distortion and ribbon backends; a backend that is also a contributor initializes the scene before registering the contributor, so node updates precede capture.
+
+`LumenNodeFeature` is a closed enum containing only `Distortion` and `Ribbon`; it cannot currently add new node kinds.
+
+### 4. Adapter Example
+
+`Source/RimLumen.Adapter.RimUnity` scans package roots when its target mod is present, creates and registers `RimUnityAssetProvider`, then registers `RimUnityHybridVfxService` wrapping the native service. The provider translates prefabs on demand and registers particle and ribbon textures through its texture bridge. Calling `RegisterPackageRoot` again clears catalog and translation caches. Components that cannot be translated natively use the external player. This separation provides a reference for third-party asset adapters.
