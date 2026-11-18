@@ -14,13 +14,14 @@ public static class DemoBuildingRegistry
 {
     internal const string FireworkDefName = "RimLumen_FireworkLauncher";
     internal const string FountainDefName = "RimLumen_ParticleFountain";
+    internal const string DistortionPylonDefName = "RimLumen_DistortionPylon";
     internal const string StreetLampVisualDefName = "RimLumen_StreetLamp_Visual";
     internal const string StreetLampLogicDefName = "RimLumen_StreetLamp_Logic";
     internal const string StreetLampBothDefName = "RimLumen_StreetLamp_Both";
 
     private static readonly string[] DemoDefNames =
     {
-        FireworkDefName, FountainDefName, StreetLampVisualDefName, StreetLampLogicDefName, StreetLampBothDefName,
+        FireworkDefName, FountainDefName, DistortionPylonDefName, StreetLampVisualDefName, StreetLampLogicDefName, StreetLampBothDefName,
     };
 
     // One cached Designator_Build per def: the menu mutates the same list vanilla populated, so the

@@ -71,6 +71,39 @@
     </comps>
   </ThingDef>
 
+  <ThingDef ParentName="BuildingBase">
+    <defName>RimLumen_DistortionPylon</defName>
+    <label>distortion pylon</label>
+    <description>一个零成本的演示装置：塔顶上方升起一团热浪，扭曲后方的地面、墙壁和光池；每 2.5 秒向外推出一圈冲击波。一颗火花绕塔旋转，拖出一条原生拖尾，并由一道跳动的电弧连向塔尖。动画严格跟随游戏时间，暂停时定格。
+
+A zero-cost demo device: a heat haze above the pylon bends the ground, walls and light pools behind it, and every 2.5 s a shockwave ring rolls outward. A spark orbits the pylon, drawing a native trail ribbon, tied to the tip by a flickering arc. Everything follows the game clock, so it freezes while paused.</description>
+    <thingClass>Building</thingClass>
+    <rotatable>false</rotatable>
+    <tickerType>Normal</tickerType>
+    <designationCategory>Joy</designationCategory>
+    <canGenerateDefaultDesignator>false</canGenerateDefaultDesignator>
+    <passability>PassThroughOnly</passability>
+    <pathCost>30</pathCost>
+    <fillPercent>0.20</fillPercent>
+    <graphicData>
+      <texPath>RimLumen/Buildings/DistortionPylon</texPath>
+      <graphicClass>Graphic_Single</graphicClass>
+    </graphicData>
+    <statBases>
+      <MaxHitPoints>120</MaxHitPoints>
+      <WorkToBuild>1</WorkToBuild>
+      <Flammability>0</Flammability>
+    </statBases>
+    <building>
+      <isEdifice>true</isEdifice>
+    </building>
+    <comps>
+      <li Class="RimLumen.Core.Demo.CompProperties_RimLumenDemoEmitter">
+        <kind>DistortionPylon</kind>
+      </li>
+    </comps>
+  </ThingDef>
+
   <!--
     Three lighting-comparison street lamps, radius 5 each. The visual pool comes from the RimLumen street lamp
     effect (CompRimLumenDemoEmitter kind StreetLamp); the gameplay light comes from CompRimLumenLogicalLight,
