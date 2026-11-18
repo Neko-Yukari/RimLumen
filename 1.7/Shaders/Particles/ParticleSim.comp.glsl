@@ -430,6 +430,8 @@ void main()
         return;
     }
     uint budget = emitter.Events.z > 0.5 ? burstStates[emitter.StateSlot].Budget : min(uint(emitter.Slots.z), capacity);
+    // An explicit request can spend its entire budget on density debt in phase 4.
+    if (budget == 0u && (phase == 2u || phase == 3u)) return;
     if (phase == 2u)
     {
         uint blocks = (capacity + 63u) / 64u;

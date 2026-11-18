@@ -12,10 +12,8 @@ internal static class ParticleEnvironment
 {
     private readonly record struct Pulse(int MapId, Vector3 Center, float Radius, int StartTick);
     private static readonly List<Pulse> Pulses = new();
-    private static readonly List<ParticleEnvironmentSource> Sources = new();
+    private static readonly Dictionary<int, MapEnvironmentSources> SourcesByMap = new();
     private static ulong? capturedFrame;
-    private static Vector3 cursor;
-    private static int cursorMap = -1;
     internal const int MaxPulsesPerMap = 8;
     internal static bool ExplosionsEnabled = true;
     internal static float ExplosionForceScale = 1f;
@@ -27,7 +25,7 @@ internal static class ParticleEnvironment
     {
         if (!ExplosionsEnabled || radius <= 0f) return;
         int tick = Find.TickManager.TicksGame;
-        Pulses.RemoveAll(p => tick - p.StartTick > 30);
+        RemoveExpiredPulses(tick);
         int count = 0, oldest = -1;
         for (int i = 0; i < Pulses.Count; i++)
             if (Pulses[i].MapId == mapId) { if (oldest < 0) oldest = i; count++; }
@@ -35,39 +33,74 @@ internal static class ParticleEnvironment
         Pulses.Add(new(mapId, center, radius, tick));
     }
 
+    private static void RemoveExpiredPulses(int tick)
+    {
+        for (int i = Pulses.Count - 1; i >= 0; i--)
+            if (tick - Pulses[i].StartTick > 30) Pulses.RemoveAt(i);
+    }
+
     internal static void BeginFrame(ulong frameIndex, int currentMapId)
     {
         if (capturedFrame == frameIndex) return;
-        capturedFrame = frameIndex;
-        if (Pulses.Count != 0)
+        Vector3? cursor = null;
+        if (CursorMode != ParticleCursorMode.Off && currentMapId >= 0)
         {
-            int tick = Find.TickManager.TicksGame;
-            Pulses.RemoveAll(p => tick - p.StartTick > 30);
+            UnityEngine.Vector3 mouse = UI.MouseMapPosition();
+            cursor = new(mouse.x, 0f, mouse.z);
         }
-        cursorMap = -1;
-        if (CursorMode == ParticleCursorMode.Off || currentMapId < 0) return;
-        UnityEngine.Vector3 mouse = UI.MouseMapPosition();
-        cursor = new(mouse.x, 0f, mouse.z);
-        cursorMap = currentMapId;
+        CaptureSources(frameIndex, currentMapId, cursor, Pulses.Count != 0 ? Find.TickManager.TicksGame : 0);
     }
 
-    // Consumed immediately during capture; the span is reused by the next emitter, never retained by a frame.
-    internal static ReadOnlySpan<ParticleEnvironmentSource> ForMap(int mapId)
+    // Host input boundary: freeze the sampled cursor and game tick before either simulator visits its emitters.
+    internal static void CaptureSources(ulong frameIndex, int currentMapId, Vector3? cursor, int tick)
     {
-        Sources.Clear();
-        if (ExplosionsEnabled && Pulses.Count != 0)
-        {
-            int tick = Find.TickManager.TicksGame;
+        capturedFrame = frameIndex;
+        foreach (MapEnvironmentSources sources in SourcesByMap.Values) sources.Clear();
+        RemoveExpiredPulses(tick);
+        if (ExplosionsEnabled)
             foreach (Pulse pulse in Pulses)
-                if (pulse.MapId == mapId)
-                    Sources.Add(ParticleEnvironmentMath.Explosion(pulse.Center, pulse.Radius,
-                        (tick - pulse.StartTick) / 60f, ExplosionForceScale));
-        }
-        if (mapId >= 0 && cursorMap == mapId)
-            Sources.Add(new(LumenEnvironmentChannel.Cursor, cursor, CursorRadius,
+                Sources(pulse.MapId).Add(ParticleEnvironmentMath.Explosion(pulse.Center, pulse.Radius,
+                    (tick - pulse.StartTick) / 60f, ExplosionForceScale));
+        if (cursor is Vector3 position)
+            Sources(currentMapId).Add(new(LumenEnvironmentChannel.Cursor, position, CursorRadius,
                 CursorMode == ParticleCursorMode.Attract ? -CursorStrength : CursorStrength, 0f, 0f));
-        return System.Runtime.InteropServices.CollectionsMarshal.AsSpan(Sources);
     }
 
-    internal static void ForgetMap(int mapId) => Pulses.RemoveAll(p => p.MapId == mapId);
+    // Main-thread views are stable for all L1/L2 captures of this frame, not for render-thread recording.
+    internal static ReadOnlyMemory<ParticleEnvironmentSource> ForMap(int mapId, LumenEnvironmentChannel channels) =>
+        SourcesByMap.TryGetValue(mapId, out var sources) ? sources.Select(channels) : default;
+
+    private static MapEnvironmentSources Sources(int mapId)
+    {
+        if (!SourcesByMap.TryGetValue(mapId, out var sources)) SourcesByMap.Add(mapId, sources = new());
+        return sources;
+    }
+
+    internal static void ForgetMap(int mapId)
+    {
+        Pulses.RemoveAll(p => p.MapId == mapId);
+        SourcesByMap.Remove(mapId);
+    }
+}
+
+// BeginFrame appends all explosions, then at most one cursor. Each channel mask selects a contiguous slice.
+internal sealed class MapEnvironmentSources
+{
+    private readonly ParticleEnvironmentSource[] items = new ParticleEnvironmentSource[ParticleEnvironment.MaxPulsesPerMap + 1];
+    private int explosions, count;
+
+    internal void Clear() => explosions = count = 0;
+
+    internal void Add(ParticleEnvironmentSource source)
+    {
+        items[count++] = source;
+        if (source.Channel == LumenEnvironmentChannel.Explosion) explosions++;
+    }
+
+    internal ReadOnlyMemory<ParticleEnvironmentSource> Select(LumenEnvironmentChannel channels)
+    {
+        int start = (channels & LumenEnvironmentChannel.Explosion) != 0 ? 0 : explosions;
+        int end = (channels & LumenEnvironmentChannel.Cursor) != 0 ? count : explosions;
+        return items.AsMemory(start, end - start);
+    }
 }

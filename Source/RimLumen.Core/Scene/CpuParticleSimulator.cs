@@ -39,9 +39,11 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         public bool WorldInteraction;
         public float NodeTime;
         public ParticleMapGrid? CollisionGrid;
-        public ParticleEnvironmentSource[] Environment = Array.Empty<ParticleEnvironmentSource>();
+        public ReadOnlyMemory<ParticleEnvironmentSource> Environment;
         public int[] Targets = Array.Empty<int>();
         public readonly HashSet<int> Sources = new();
+        public float? FrameDelta;
+        public bool CanReclaim => State == EmissionState.Draining && LiveCount == 0 && PendingBurst == 0 && Sources.Count == 0;
     }
 
     private readonly int seed;
@@ -189,7 +191,10 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         emitter.Scheduler.Restart();
         emitter.NodeTime = 0f;
         emitter.State = EmissionState.Emitting;
+        emitter.FrameDelta = null;
     }
+
+    internal void SetEmitterFrameDelta(int emitterId, float frameDelta) => emitters[emitterId].FrameDelta = frameDelta;
 
     internal bool IsEmitterAlive(int emitterId) => emitters.ContainsKey(emitterId);
 
@@ -227,7 +232,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 if (particles[i].EmitterId == emitterId) RemoveParticle(i);
             BuildBatch();
         }
-        if (immediate || (emitter.LiveCount == 0 && emitter.PendingBurst == 0 && emitter.Sources.Count == 0)) RemoveEmitter(emitterId);
+        if (immediate || emitter.CanReclaim) RemoveEmitter(emitterId, emitter);
     }
 
     // Requires: main thread; context.DeltaTime >= 0.
@@ -256,11 +261,16 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             Emitter emitter = emitters[id];
             emitter.WorldInteraction = emitter.Spec.WorldSpaceSimulation || Matrix4x4.Invert(emitter.Transform.World, out emitter.InverseWorld);
             emitter.CollisionGrid = emitter.WorldInteraction ? ParticleCollisionFields.Capture(emitter.MapIndex, emitter.Spec.Collision) : null;
-            ReadOnlySpan<ParticleEnvironmentSource> environment = ParticleEnvironment.ForMap(emitter.MapIndex);
-            if (emitter.Environment.Length != environment.Length) Array.Resize(ref emitter.Environment, environment.Length);
-            environment.CopyTo(emitter.Environment);
-            if (emitter.State != EmissionState.Dormant)
-                emitter.NodeTime += emitter.RealTime && unscaledDt > 0f ? unscaledDt : dt;
+            emitter.Environment = emitter.WorldInteraction ? ParticleEnvironment.ForMap(emitter.MapIndex, emitter.Spec.EnvironmentChannels) : default;
+            float scheduleDt = emitter.FrameDelta ?? (emitter.RealTime && unscaledDt > 0f ? unscaledDt : dt);
+            emitter.FrameDelta = null;
+            if (emitter.State != EmissionState.Dormant) emitter.NodeTime += scheduleDt;
+            if (scheduleDt > 0f && emitter.State is EmissionState.Emitting or EmissionState.Paused)
+            {
+                double scheduled = emitter.Scheduler.Advance(scheduleDt, emitter.State == EmissionState.Emitting, density, emitter.RateMultiplier);
+                emitter.PendingBurst = (int)Math.Min(emitter.Spec.MaxParticles, emitter.PendingBurst + scheduled);
+                if (!emitter.Spec.Looping && emitter.Scheduler.Finished) emitter.State = EmissionState.Paused;
+            }
         }
         for (int i = 0; i < particleCount; i++)
         {
@@ -300,16 +310,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         foreach (int id in emitterIds)
         {
             var emitter = emitters[id];
-            var spec = emitter.Spec;
-            double requested = emitter.PendingBurst;
+            Spawn(id, emitter, emitter.PendingBurst);
             emitter.PendingBurst = 0;
-            float emitterDt = emitter.RealTime && unscaledDt > 0f ? unscaledDt : dt;
-            if (emitterDt > 0f && emitter.State is EmissionState.Emitting or EmissionState.Paused)
-            {
-                requested += emitter.Scheduler.Advance(emitterDt, emitter.State == EmissionState.Emitting, density, emitter.RateMultiplier);
-                if (!spec.Looping && emitter.Scheduler.Finished) emitter.State = EmissionState.Paused;
-            }
-            Spawn(id, emitter, (int)Math.Min(requested, spec.MaxParticles - emitter.LiveCount));
         }
         foreach (ParticleSubEvent ev in subEvents)
         {
@@ -325,18 +327,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 if (target.WorldInteraction) Spawn(targetId, target, count, ev, sub.Inherit);
             }
         }
-        bool removed;
-        do
-        {
-            removed = false;
-            for (int i = emitterIds.Count - 1; i >= 0; i--)
-            {
-                int id = emitterIds[i];
-                if (emitters[id].State != EmissionState.Draining || emitters[id].LiveCount != 0 || emitters[id].Sources.Count != 0) continue;
-                RemoveEmitter(id);
-                removed = true;
-            }
-        } while (removed);
+        // Dictionary permits removal during enumeration, including targets reclaimed by the same cascade.
+        foreach (var (id, emitter) in emitters)
+            if (emitter.CanReclaim) RemoveEmitter(id, emitter);
         view = context.ViewMatrix;
         BuildBatch();
     }
@@ -357,11 +350,11 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         particles[index] = particles[--particleCount];
     }
 
-    private void RemoveEmitter(int id)
+    private void RemoveEmitter(int id, Emitter emitter)
     {
-        Emitter emitter = emitters[id];
         foreach (int target in emitter.Targets)
-            if (emitters.TryGetValue(target, out Emitter? child)) child.Sources.Remove(id);
+            if (emitters.TryGetValue(target, out Emitter? child) && child.Sources.Remove(id) && child.CanReclaim)
+                RemoveEmitter(target, child);
         reservedCapacity -= emitter.Spec.MaxParticles;
         emitters.Remove(id);
         emitterIds.Remove(id);
@@ -436,8 +429,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     private static void ApplyForces(ref CpuParticle particle, Emitter emitter, float dt)
     {
         Vector3 force = ParticleForceMath.Acceleration(emitter.Spec, emitter.Transform.World, particle.Position, out float drag, emitter.NodeTime);
-        if (emitter.WorldInteraction)
-            force += ParticleEnvironmentMath.Acceleration(emitter.Environment, emitter.Spec, emitter.Transform.World,
+        if (!emitter.Environment.IsEmpty)
+            force += ParticleEnvironmentMath.Acceleration(emitter.Environment.Span, emitter.Spec, emitter.Transform.World,
                 emitter.InverseWorld, particle.Position);
         particle.Velocity = (particle.Velocity + force * dt) * MathF.Exp(-drag * dt);
     }

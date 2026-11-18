@@ -206,7 +206,7 @@ An effect is made of named states, and exactly one state plays at a time. A stat
 
 Emission pause is distinct from game pause: after an emitter's first activation, its emission schedule clock advances while emission is disabled for both looping and non-looping emitters. Planned bursts crossed during that interval are skipped without catch-up, while live particles continue simulating. A never-activated node remains at emission time 0. Explicit Restart resets the clock, density carry, and probability RNG while retaining already accepted pending bursts. Global game pause still uses `dt=0`; `SetParam("rate", 0)` pauses continuous emission only and does not affect authored bursts.
 
-States switch on frame boundaries: on the frame a switch happens, emitters simulate the whole frame under the new state. A frame that crosses several states walks through each of them and their events in order.
+A frame that crosses several states processes each state and its events in order. If a node restarts during the frame, the built-in L1 and L2 simulators advance its emission schedule only from the last restart to the end of the frame. Their existing particles still move and age for the full frame. Distortion and ribbon nodes also use the time since the last restart within the frame.
 
 **`timelineEvents[]` and states**:
 

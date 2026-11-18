@@ -133,15 +133,6 @@ internal sealed class RimLumenPipeline : IDisposable
         realDeltaSeconds = unscaledDt;
         view = CameraViewFactory.GetView(camera);
         depthParams = new Vector4(camera.nearClipPlane, camera.farClipPlane, camera.orthographic ? 1f : 0f, 1f);
-        activeContributorBuffer.Clear();
-        foreach (ILumenFrameContributor contributor in LumenHostRegistry.GetSharedContributorsSnapshot())
-            if (contributor.HasActiveWork) activeContributorBuffer.Add(contributor);
-        bool changed = activeContributorBuffer.Count != activeContributors.Length;
-        for (int i = 0; !changed && i < activeContributors.Length; i++)
-            changed = !ReferenceEquals(activeContributorBuffer[i], activeContributors[i]);
-        // Captured frames may still be on the render thread; publish replacements, never mutate their arrays.
-        if (changed) activeContributors = activeContributorBuffer.ToArray();
-        contributors = activeContributors;
         var extent = App.RenderContext!.Extent;
         int currentMapIndex = Find.CurrentMap?.uniqueID ?? -1;
         mapIndex = currentMapIndex;
@@ -155,8 +146,12 @@ internal sealed class RimLumenPipeline : IDisposable
             LumenRenderPassId = RimLumenRenderHost.LumenRenderPassId
         };
         var compute = new LumenComputeContext { FrameIndex = captureIndex, DeltaTime = simDt, UnscaledDeltaTime = unscaledDt };
-        foreach (ILumenFrameContributor contributor in contributors)
+        activeContributorBuffer.Clear();
+        foreach (ILumenFrameContributor contributor in LumenHostRegistry.GetSharedContributorsSnapshot())
         {
+            // The service can activate a later contributor in this very capture.
+            if (!contributor.HasActiveWork) continue;
+            activeContributorBuffer.Add(contributor);
             contributor.CaptureMainThread(in capture);
             contributor.EnqueuePreCompute(in compute);
             if (ReferenceEquals(contributor, LumenSceneBootstrap.Simulator))
@@ -169,6 +164,12 @@ internal sealed class RimLumenPipeline : IDisposable
             if (ReferenceEquals(contributor, LumenSceneBootstrap.Service))
                 LightPool.Stage(captureIndex, LumenSceneBootstrap.Service.Lights);
         }
+        bool changed = activeContributorBuffer.Count != activeContributors.Length;
+        for (int i = 0; !changed && i < activeContributors.Length; i++)
+            changed = !ReferenceEquals(activeContributorBuffer[i], activeContributors[i]);
+        // Captured frames may still be on the render thread; publish replacements, never mutate their arrays.
+        if (changed) activeContributors = activeContributorBuffer.ToArray();
+        contributors = activeContributors;
     }
 
     internal PipelineFrame? Capture(in FrameTiming timing)

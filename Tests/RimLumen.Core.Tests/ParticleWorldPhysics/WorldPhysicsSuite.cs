@@ -54,6 +54,51 @@ public static class WorldPhysicsSuite
     }
 
     [LumenFact]
+    public static void EnvironmentSnapshotIsSharedByEmittersAndBothCapturesUntilNextFrame()
+    {
+        const int map = 711;
+        var spec = new EmitterSpec { Name = "cursor", MaxParticles = 1, EnvironmentChannels = LumenEnvironmentChannel.Cursor };
+        var cpu = new CpuParticleSimulator();
+        using var gpu = new LumenGpuParticleEngine(3);
+        int first = cpu.AcquireEmitter(spec, Transform, 1, mapIndex: map);
+        int second = cpu.AcquireEmitter(spec, Transform, 2, mapIndex: map);
+        gpu.CreateInstance(spec, Transform, map, false, 1);
+        gpu.CreateInstance(spec, Transform, map, false, 2);
+        gpu.CreateInstance(spec, Transform, map + 1, false, 3);
+        cpu.EmitBurst(first, 1);
+        cpu.EmitBurst(second, 1);
+        cpu.CaptureMainThread(Frame(0f, 710));
+        float radius = ParticleEnvironment.CursorRadius, strength = ParticleEnvironment.CursorStrength;
+        try
+        {
+            // Host-input boundary: no game or mouse. The cursor is two cells to the left of both particles.
+            ParticleEnvironment.CursorRadius = 4;
+            ParticleEnvironment.CursorStrength = 8;
+            var frame = Frame(0.25f, 711);
+            ParticleEnvironment.CaptureSources(frame.FrameIndex, map, new Vector3(-2, 0, 0), 0);
+            var shared = ParticleEnvironment.ForMap(map, spec.EnvironmentChannels);
+            Check(!shared.IsEmpty && shared.Equals(ParticleEnvironment.ForMap(map, spec.EnvironmentChannels)),
+                "Two emitters on the same map must borrow the same source storage.");
+            cpu.CaptureMainThread(frame);
+            Close(Vector3.UnitX, cpu.LiveParticles[0].Velocity);
+            Close(Vector3.UnitX, cpu.LiveParticles[1].Velocity);
+            ParticleEnvironment.CursorStrength = 80; // A live setting change must not leak into the second capture.
+            gpu.CaptureMainThread(frame);
+            var captured = gpu.CapturedFrame!;
+            Check(captured.Fields.Length == 2 && captured.Fields.All(f => f.StrengthAndFrequency.X == 8f)
+                && captured.Emitters[2].Parameters.Tables.Z == 0f, "L2 must see the same frozen cursor, only on its map.");
+            gpu.CaptureMainThread(Frame(0.25f, 712)); // No cursor on the new frame.
+            Check(gpu.CapturedFrame!.Fields.Length == 0, "The next frame must replace the old map snapshot.");
+        }
+        finally
+        {
+            ParticleEnvironment.ForgetMap(map);
+            ParticleEnvironment.CursorRadius = radius;
+            ParticleEnvironment.CursorStrength = strength;
+        }
+    }
+
+    [LumenFact]
     public static void ExplosionShellHasRadiusDerivedUpwardForceAndExpires()
     {
         ParticleEnvironmentSource pulse = ParticleEnvironmentMath.Explosion(Vector3.Zero, 4f, 0.25f, 1f);
@@ -96,6 +141,67 @@ public static class WorldPhysicsSuite
         age = 0;
         Check(!ParticleCollisionMath.Respond(spec, hit, ref position, ref velocity, ref age, 10), "Roof death never emits Collision.");
         Near(10, age);
+    }
+
+    [LumenFact]
+    public static void LifecycleDrainBeforeFirstEmissionIgnoresNodeOrder()
+    {
+        static (bool Alive, int Particles, int Emitters, bool CpuWork) Drain(bool childFirst)
+        {
+            var source = new EffectNodeSpec { Name = "source", Emitter = Parent(new(LumenSubEmitterTrigger.Death, childFirst ? 0 : 1, 1)) };
+            var child = new EffectNodeSpec { Name = "child", Emitter = new EmitterSpec
+                { Name = "child", PreferredTier = LumenParticleTier.L1_NativeCpu, RateOverTime = 0 } };
+            var asset = new EffectAsset { EffectId = $"drain.before-birth.{childFirst}", Nodes = childFirst ? [child, source] : [source, child] };
+            var service = VfxTestData.Service(asset);
+            using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7 });
+            Check(handle.IsAlive, "Both node orders must be valid.");
+            handle.Stop(true);
+            service.CaptureMainThread(Frame(1f / 60)); // No CPU capture: the contributor has no work.
+            var cpu = service.Simulator;
+            return (handle.IsAlive, cpu.LiveParticleCount, cpu.ActiveEmitterCount, cpu.HasActiveWork);
+        }
+        var sourceFirst = Drain(false);
+        var childFirst = Drain(true);
+        Check(sourceFirst == (false, 0, 0, false) && childFirst == sourceFirst,
+            $"Expected (alive, particles, emitters, cpuWork) = (False, 0, 0, False); source-first={sourceFirst}, target-first={childFirst}.");
+    }
+
+    [LumenFact]
+    public static void LifecycleThreeNodeDeathChainDrainsInEitherOrderOnBothTiers()
+    {
+        static int Drain(bool reversed)
+        {
+            static EffectNodeSpec Node(string name, int target) => new() { Name = name, Emitter = new EmitterSpec {
+                Name = name, MaxParticles = 1, StartLifetimeMin = 0.25f, StartLifetimeMax = 0.25f,
+                Bursts = name == "A" ? [new(0, 1)] : [], SubEmitters = target < 0 ? [] : [new(LumenSubEmitterTrigger.Death, target, 1)] } };
+            var asset = new EffectAsset { EffectId = $"drain.chain.{reversed}", Nodes = reversed
+                ? [Node("C", -1), Node("B", 0), Node("A", 1)] : [Node("A", 1), Node("B", 2), Node("C", -1)] };
+            var service = VfxTestData.Service(asset);
+            var request = new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7 };
+            using var l1 = service.Play(request);
+            using var gpu = new LumenGpuParticleEngine(3);
+            service.GpuEngineProvider = () => gpu;
+            using var l2 = service.Play(request);
+            Check(l1.IsAlive && l2.IsAlive && service.Simulator.ActiveEmitterCount == 3 && gpu.HasActiveWork, "Both chains must bind.");
+            l1.Stop(true);
+            l2.Stop(true);
+            Check(!l1.IsAlive && service.Simulator.ActiveEmitterCount == 0 && !service.Simulator.HasActiveWork,
+                "All three empty L1 emitters must be reclaimed without a simulation capture.");
+            int steps = 0;
+            while (gpu.HasActiveWork && steps < 5)
+            {
+                var frame = Frame(0.25f, (ulong)++steps);
+                service.CaptureMainThread(frame);
+                gpu.CaptureMainThread(frame);
+                Check(gpu.CapturedFrame!.Emitters.All(e => e.Parameters.Slots.Z == 0f), "Stopping before capture admits no births.");
+            }
+            service.CaptureMainThread(Frame(0f, 6));
+            Check(!gpu.HasActiveWork && !l2.IsAlive, "Each L2 source gets a final integration and its child a final lifetime; the chain must end.");
+            return steps;
+        }
+        int forward = Drain(false), reverse = Drain(true);
+        Console.WriteLine($"[DRAIN] A→B→C, forward/reverse: L1=0/0 remaining; L2={forward}/{reverse} captures to idle.");
+        Check(forward == reverse, "L2 drain completion must not depend on the node array order.");
     }
 
     [LumenFact]

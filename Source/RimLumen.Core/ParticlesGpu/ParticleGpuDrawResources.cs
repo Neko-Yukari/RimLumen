@@ -293,7 +293,7 @@ internal sealed class ParticleGpuFrame : IDisposable
         Fields = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Fields", (long)FieldCapacity * 48);
         Curves = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Curves", (long)EmitterCapacity * 64 * 32);
         MapCells = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.CollisionCells", (long)CellCapacity * 4);
-        Events = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.SubEvents", (long)EventCapacity * 48, deviceLocal: true);
+        Events = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.SubEvents", (long)EventCapacity * Marshal.SizeOf<GpuSubEvent>(), deviceLocal: true);
         SubLinks = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.SubLinks", (long)LinkCapacity * 32);
         ExplicitBursts = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.ExplicitBursts", (long)BurstCapacity * 16);
         SimulationEmitters = new ParticleEmitterFrame[EmitterCapacity];
