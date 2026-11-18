@@ -13,12 +13,13 @@ layout(location = 0) out vec4 outColor;
 
 void main()
 {
-    vec4 hdr = texture(hdrImage, uv);
-    hdr.rgb = sanitizeHdr(hdr.rgb);
-    vec3 bloom = texture(bloomImage, uv).rgb * ubo.BloomParams.x;
-    vec3 streak = texture(streakImage, uv).rgb;
-    bool linearBlend = ubo.ColorBlendSpace > 0.5;
+    // The layer, its bloom and streaks are refracted with the scene so they follow their bent source.
     vec2 sceneUv = lumenRefractedUv(distortionImage, uv);
+    vec4 hdr = texture(hdrImage, sceneUv);
+    hdr.rgb = sanitizeHdr(hdr.rgb);
+    vec3 bloom = texture(bloomImage, sceneUv).rgb * ubo.BloomParams.x;
+    vec3 streak = texture(streakImage, sceneUv).rgb;
+    bool linearBlend = ubo.ColorBlendSpace > 0.5;
     // Linear: empty, undistorted pixels leave the scene bit-exact.
     if (linearBlend && hdr == vec4(0.0) && bloom == vec3(0.0) && streak == vec3(0.0) && sceneUv == uv)
     {

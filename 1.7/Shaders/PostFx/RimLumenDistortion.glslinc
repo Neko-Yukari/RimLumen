@@ -1,6 +1,9 @@
 // Scene UV seen through the `distortion` input: its texel is the summed sample offset of this frame's distortion-pass
 // draws in framebuffer pixels (+x right, +y down). Zero or non-finite offsets return uv itself, so undistorted pixels
 // keep the bit-exact scene paths.
+// Composites sample every screen-aligned input they put over the scene (hdr, bloom, a pack's own layers such as
+// streaks) at this same UV, so the effects bend with the scene behind them. A composite that samples only `scene` here
+// still works; its layer simply stays unrefracted.
 // Requires: the ShaderPackUniforms block `ubo` declared before this include.
 vec2 lumenRefractedUv(sampler2D distortionImage, vec2 uv)
 {

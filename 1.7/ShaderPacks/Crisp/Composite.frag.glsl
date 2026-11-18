@@ -37,11 +37,12 @@ vec3 sanitizeHdr(vec3 c)
 
 void main()
 {
-    vec4 hdr = texture(hdrImage, uv);
-    hdr.rgb = sanitizeHdr(hdr.rgb);
-    vec3 bloom = texture(bloomImage, uv).rgb * ubo.BloomParams.x;
-    bool linearBlend = ubo.ColorBlendSpace > 0.5;
+    // The layer and its bloom are refracted with the scene.
     vec2 sceneUv = lumenRefractedUv(distortionImage, uv);
+    vec4 hdr = texture(hdrImage, sceneUv);
+    hdr.rgb = sanitizeHdr(hdr.rgb);
+    vec3 bloom = texture(bloomImage, sceneUv).rgb * ubo.BloomParams.x;
+    bool linearBlend = ubo.ColorBlendSpace > 0.5;
     // Linear: empty, undistorted pixels leave the scene bit-exact.
     if (linearBlend && hdr == vec4(0.0) && bloom == vec3(0.0) && sceneUv == uv)
     {

@@ -39,11 +39,13 @@ vec3 sanitizeHdr(vec3 c)
 
 void main()
 {
-    // Atmospheric always writes the graded scene opaquely; the refracted scene is what gets graded.
-    vec4 scene = texture(sceneImage, lumenRefractedUv(distortionImage, uv));
-    vec4 hdr = texture(hdrImage, uv);
+    // Atmospheric always writes the graded scene opaquely; the refracted scene is what gets graded, under the
+    // refracted layer and bloom. The fog field is a low-frequency grade and stays at uv.
+    vec2 sceneUv = lumenRefractedUv(distortionImage, uv);
+    vec4 scene = texture(sceneImage, sceneUv);
+    vec4 hdr = texture(hdrImage, sceneUv);
     hdr.rgb = sanitizeHdr(hdr.rgb);
-    vec3 bloom = texture(bloomImage, uv).rgb;
+    vec3 bloom = texture(bloomImage, sceneUv).rgb;
     vec4 fogData = texture(fogBlurImage, uv);
 
     float mist = clamp(fogData.r, 0.0, 0.85);
