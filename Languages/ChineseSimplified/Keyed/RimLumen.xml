@@ -15,6 +15,8 @@
   <RimLumen_ColorBlendLegacy>经典</RimLumen_ColorBlendLegacy>
   <RimLumen_ColorBlendLinear>线性</RimLumen_ColorBlendLinear>
   <RimLumen_ColorBlendSpaceTooltip>经典方式保持原有画面。线性方式下，半透明粒子和粒子柔和的边缘会更亮，不透明粒子相互叠加的地方会更暗。</RimLumen_ColorBlendSpaceTooltip>
+  <RimLumen_DistortionRefractsEffects>扭曲也折射 RimLumen 特效</RimLumen_DistortionRefractsEffects>
+  <RimLumen_DistortionRefractsEffectsTooltip>开启时，热浪、冲击波等屏幕扭曲会让后方的 RimLumen 粒子、拖尾和泛光一起弯曲。关闭时只弯曲原版画面和光池。</RimLumen_DistortionRefractsEffectsTooltip>
   <RimLumen_EnableDemoBuildings>启用娱乐演示建筑：烟花发射器、粒子喷泉与光照对照路灯</RimLumen_EnableDemoBuildings>
   <RimLumen_EnableDemoBuildingsTooltip>开启后，「娱乐」建造菜单会多出五座零成本演示建筑：烟花发射器、粒子喷泉，以及三盏光照对照路灯（仅视觉光、仅逻辑光、视觉光加逻辑光）。</RimLumen_EnableDemoBuildingsTooltip>
   <RimLumen_ShaderPacks>光影包与后处理</RimLumen_ShaderPacks>

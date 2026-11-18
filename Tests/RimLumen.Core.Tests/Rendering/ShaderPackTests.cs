@@ -22,8 +22,8 @@ public static class ShaderPackTests
     [LumenFact]
     public static void ShaderPackUniformsMatchesStd140Layout()
     {
-        Require(Marshal.SizeOf<ShaderPackUniforms>() == 208,
-            $"Expected 208 bytes, got {Marshal.SizeOf<ShaderPackUniforms>()}.");
+        Require(Marshal.SizeOf<ShaderPackUniforms>() == 224,
+            $"Expected 224 bytes, got {Marshal.SizeOf<ShaderPackUniforms>()}.");
         Equal(0, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.InvViewProjection)).ToInt32());
         Equal(64, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.ScreenAndMapSize)).ToInt32());
         Equal(80, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.GameSeconds)).ToInt32());
@@ -43,8 +43,8 @@ public static class ShaderPackTests
         Equal(160, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam1)).ToInt32());
         Equal(176, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam2)).ToInt32());
         Equal(192, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.PackParam3)).ToInt32());
+        Equal(208, Marshal.OffsetOf<ShaderPackUniforms>(nameof(ShaderPackUniforms.LayerFlags)).ToInt32());
         Equal(16, Marshal.SizeOf<Vector4>());
-        Equal(64, Marshal.SizeOf<ShaderPackUniforms>() - 144);
         WithSlangLoaded(() =>
         {
             CheckCompiledPackParams("Atmospheric/FogPass.frag.glsl");
@@ -72,13 +72,13 @@ public static class ShaderPackTests
             instructions.Add(instruction);
             offset += count;
         }
-        // Follow set=0/binding=5 through OpVariable/OpTypePointer to its actual compiled block and last member.
+        // Follow set=0/binding=5 through OpVariable/OpTypePointer to its actual compiled block and its last two members.
         uint uniform = instructions.Single(x => x[0] == 71 && x[2] == 33 && x[3] == 5 &&
             instructions.Any(set => set[0] == 71 && set[1] == x[1] && set[2] == 34 && set[3] == 0))[1];
         uint pointer = instructions.Single(x => x[0] == 59 && x[2] == uniform)[1];
         uint block = instructions.Single(x => x[0] == 32 && x[1] == pointer)[3];
         uint[] members = instructions.Single(x => x[0] == 30 && x[1] == block);
-        Equal(18, members.Length); // result id + 16 members + opcode
+        Equal(19, members.Length); // result id + 17 members + opcode
         // Slang lowers a GLSL array member to a one-member struct; the array itself starts at wrapper offset 0.
         uint wrapper = members[17];
         uint[] wrapperType = instructions.Single(x => x[0] == 30 && x[1] == wrapper);
@@ -96,8 +96,13 @@ public static class ShaderPackTests
         Equal(16u, stride);
         Equal(4u, length);
         Equal(64u, stride * length);
-        Equal(208u, baseOffset + stride * length);
-        Console.WriteLine($"[PACK ABI] {relativePath}: base={baseOffset}, stride={stride}, count={length}, bytes={stride * length}, UBO={baseOffset + stride * length}");
+        uint layerFlagsOffset = instructions.Single(x => x[0] == 72 && x[1] == block && x[2] == 16 && x[3] == 35)[4];
+        Equal(baseOffset + stride * length, layerFlagsOffset);
+        uint[] layerFlags = instructions.Single(x => x[0] == 23 && x[1] == members[18]);
+        Equal(4u, layerFlags[3]);
+        Equal(32u, instructions.Single(x => x[0] == 22 && x[1] == layerFlags[2])[2]);
+        Equal(208u, layerFlagsOffset);
+        Console.WriteLine($"[PACK ABI] {relativePath}: base={baseOffset}, stride={stride}, count={length}, bytes={stride * length}, LayerFlags={layerFlagsOffset}, UBO={layerFlagsOffset + 16u}");
     }
 
     [LumenFact]
@@ -116,7 +121,7 @@ public static class ShaderPackTests
         Equal(new Vector4(7.25f, 7.75f, 8.25f, 8.75f), p.PackParam3);
         ShaderPackUniformBlockSnapshot snapshot = p.CaptureSnapshot();
         ShaderPackUniforms uniforms = ShaderPackUniforms.Build(Matrix4x4.Identity, 1, 1, 1, 1,
-            0f, 0f, 0f, 0f, 0f, 0f, false, false, false, false, false, in snapshot);
+            0f, 0f, 0f, 0f, 0f, 0f, false, false, false, false, false, false, in snapshot);
         ReadOnlySpan<float> indexed = MemoryMarshal.Cast<byte, float>(
             MemoryMarshal.AsBytes(new[] { uniforms }.AsSpan()).Slice(144, 64));
         Require(indexed.SequenceEqual(new float[]
@@ -414,7 +419,7 @@ public static class ShaderPackTests
 
         ShaderPackUniforms u = ShaderPackUniforms.Build(
             in vp, 1920, 1080, 250, 200, 12.5f, 20f, 0.05f, 0.016f, 0.75f, 24f,
-            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: false, isPaused: false, linearBlendSpace: false, in snapshot);
+            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: false, isPaused: false, linearBlendSpace: false, refractLayer: true, in snapshot);
 
         Equal(1f / 1920f, u.ScreenAndMapSize.X);
         Equal(1f / 1080f, u.ScreenAndMapSize.Y);
@@ -435,16 +440,18 @@ public static class ShaderPackTests
         // Named float flags are independently available to shader consumers.
         ShaderPackUniforms all = ShaderPackUniforms.Build(
             in vp, 800, 600, 1, 1, 0f, 0f, 0f, 0f, 1f, 24f,
-            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: true, linearBlendSpace: true, in snapshot);
+            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: true, linearBlendSpace: true, refractLayer: true, in snapshot);
         Equal(1f, all.HasSceneDepth);
         Equal(1f, all.HasMapLightField);
         Equal(1f, all.IsPaused);
         Equal(1f, all.ColorBlendSpace);
+        Equal(new Vector4(1f, 0f, 0f, 0f), all.LayerFlags);
         ShaderPackUniforms none = ShaderPackUniforms.Build(
             in vp, 0, 0, 0, 0, 0f, 0f, 0f, 0f, 1f, 24f,
-            hasHdrDraws: false, hasSceneDepth: false, hasMapLightField: false, isPaused: false, linearBlendSpace: false, in snapshot);
+            hasHdrDraws: false, hasSceneDepth: false, hasMapLightField: false, isPaused: false, linearBlendSpace: false, refractLayer: false, in snapshot);
         Equal(0f, none.DepthValid);
         Equal(0f, none.ColorBlendSpace);
+        Equal(Vector4.Zero, none.LayerFlags);
         Equal(0f, none.ScreenAndMapSize.X);
     }
 
@@ -494,7 +501,7 @@ public static class ShaderPackTests
         runtime.BloomIntensity = 0.3f;
         runtime.SetPackParam(0, 0.375f);
         ShaderPackUniforms uniforms = ShaderPackUniforms.Build(viewProjection, 1920, 1080, 250, 250, 7.5f, 10f, 0.05f, 0.016f, 0.8f, 24f,
-            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: false, linearBlendSpace: false, runtime.CaptureSnapshot());
+            hasHdrDraws: true, hasSceneDepth: true, hasMapLightField: true, isPaused: false, linearBlendSpace: false, refractLayer: true, runtime.CaptureSnapshot());
 
         Equal(1f / 1920f, uniforms.ScreenAndMapSize.X);
         Equal(250f, uniforms.ScreenAndMapSize.Z);

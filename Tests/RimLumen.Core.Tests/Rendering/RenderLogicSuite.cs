@@ -13,27 +13,35 @@ namespace RimLumen.Core.Tests.Rendering;
 public static class RenderLogicSuite
 {
     [LumenFact]
-    public static void BlendSpaceRequestIsLatchedAndRejectsUndefinedValues()
+    public static void FrameSettingsAreLatchedAndBlendSpaceRejectsUndefinedValues()
     {
         LumenColorBlendSpace original = RimLumenRenderHost.ColorBlendSpace;
         LumenColorBlendSpace originalFrame = RimLumenRenderHost.CurrentFrameColorBlendSpace;
+        bool originalRefract = RimLumenRenderHost.DistortionRefractsEffects;
+        bool originalFrameRefract = RimLumenRenderHost.CurrentFrameDistortionRefractsEffects;
         try
         {
             RimLumenRenderHost.ColorBlendSpace = LumenColorBlendSpace.Legacy;
-            RimLumenRenderHost.LatchColorBlendSpace();
+            RimLumenRenderHost.DistortionRefractsEffects = true;
+            RimLumenRenderHost.LatchFrameSettings();
             RimLumenRenderHost.ColorBlendSpace = LumenColorBlendSpace.Linear;
+            RimLumenRenderHost.DistortionRefractsEffects = false;
             Equal(LumenColorBlendSpace.Legacy, RimLumenRenderHost.CurrentFrameColorBlendSpace);
+            Equal(true, RimLumenRenderHost.CurrentFrameDistortionRefractsEffects);
             ThrowsOutOfRange(() => RimLumenRenderHost.ColorBlendSpace = (LumenColorBlendSpace)255);
             Equal(LumenColorBlendSpace.Linear, RimLumenRenderHost.ColorBlendSpace);
             Equal(LumenColorBlendSpace.Legacy, RimLumenRenderHost.CurrentFrameColorBlendSpace);
-            RimLumenRenderHost.LatchColorBlendSpace();
+            RimLumenRenderHost.LatchFrameSettings();
             Equal(LumenColorBlendSpace.Linear, RimLumenRenderHost.CurrentFrameColorBlendSpace);
+            Equal(false, RimLumenRenderHost.CurrentFrameDistortionRefractsEffects);
         }
         finally
         {
             RimLumenRenderHost.ColorBlendSpace = originalFrame;
-            RimLumenRenderHost.LatchColorBlendSpace();
+            RimLumenRenderHost.DistortionRefractsEffects = originalFrameRefract;
+            RimLumenRenderHost.LatchFrameSettings();
             RimLumenRenderHost.ColorBlendSpace = original;
+            RimLumenRenderHost.DistortionRefractsEffects = originalRefract;
         }
     }
 
