@@ -14,9 +14,9 @@ namespace RimLumen.Core.ScreenDim;
 // Node feature backend for EffectNodeSpec.ScreenDim. Each capture combines every visible instance on the current map
 // into one coverage and, when it is above 0, enqueues one full-screen quad on RimLumenRenderHost.LumenRenderPassId. The
 // quad writes only HDR alpha (colour Zero/One, alpha One/OneMinusSrcAlpha), so the composite scene * (1 - hdr.a) +
-// hdr.rgb darkens the scene while every HDR draw keeps its colour. That alpha blend commutes with the particle and
-// ribbon blends (alpha Zero/One or One/OneMinusSrcAlpha), so the result equals drawing the dim first even though GPU
-// particles record before the routed draws; queue 0 puts it before every other routed draw.
+// hdr.rgb darkens the scene while every HDR draw keeps its colour. CPU, GPU (AppendHdrDraws) and ribbon draws share the
+// pass's mesh list, which Waylith sorts by render queue, so queue 0 draws the dim before all of them; its alpha blend
+// also commutes with theirs (alpha Zero/One or One/OneMinusSrcAlpha) up to RGBA16F rounding.
 public sealed class LumenScreenDimBackend : ILumenNodeFeatureBackend, ILumenFrameContributor
 {
     private const string VertexFile = "ScreenDim/LumenScreenDim.vert.glsl";
@@ -87,8 +87,10 @@ public sealed class LumenScreenDimBackend : ILumenNodeFeatureBackend, ILumenFram
     internal float Coverage(int mapIndex)
     {
         float uncovered = 1f;
-        foreach (Instance instance in instances.Values)
+        // Enumerates the dictionary itself: the first Values access would allocate its collection.
+        foreach (KeyValuePair<int, Instance> entry in instances)
         {
+            Instance instance = entry.Value;
             ScreenDimSpec spec = instance.Spec;
             if (instance.Frame.MapIndex != mapIndex || !instance.Clock.IsVisible(spec.Duration)) continue;
             float curve = spec.StrengthOverTime is { } strength ? CurveEvaluator.Evaluate(strength, instance.Clock.Time) : 1f;
