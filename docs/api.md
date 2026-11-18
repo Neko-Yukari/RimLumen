@@ -30,14 +30,16 @@
 
 | 枚举值 | 数值 | 旋转行为 | 常见用途 |
 | --- | --- | --- | --- |
-| `GroundXZ` | `0` | 原样使用节点自身的 `LocalRotation`，不加额外俯仰旋转；显示不做相机适配 | 贴地法阵、地面光环、水平扩散波、任意 3D 朝向子发射器（如 RimUnity 导入资产） |
+| `GroundXZ` | `0` | 原样使用节点自身的 `LocalRotation`，不加额外俯仰旋转 | 贴地法阵、地面光环、水平扩散波、任意 3D 朝向子发射器（如 RimUnity 导入资产） |
 | `Vertical3D` | `3` | 节点矩阵与 `GroundXZ` 相同，模拟保持真 3D。只有显示随相机变化：离地 `h` 格，在原版正俯视 2D 相机下向屏幕上方偏移 `0.5 × h` 格；在 3D 相机下按完整世界高度显示，IsoRim 的 Y 轴压缩会被抵消。 | 烟花、喷泉、上升弹体的拖尾 |
 
 例如，播放原点在离地 `2` 格处时，原点本身在 2D 中比地面高 `1` 格。若 XZ 不变，原点再升 `4` 格，拖尾就向屏幕上方延伸 `2` 格。`GroundXZ` 不使用这套投影。空间平面取值 `1`、`2` 均无效。
 
 原版 2D 使用俯角 60° 的正交投影：沿屏幕上方的地面分量乘以 `sin 60° ≈ 0.866`，高度分量乘以 `cos 60° = 0.5`，沿屏幕右方的分量不变。球投影为正圆，水平圆环投影为纵向压缩的椭圆。投影方向随相机旋转。`StretchedVelocity` 的速度和 `Local` 的轴使用同一线性映射；绘制层为 `MoteOverhead`。
 
-地面锚点取播放原点的 XZ，同一特效的所有节点共用。本地空间粒子取当前原点的 XZ，世界空间粒子取出生时的 XZ，发射器移动不会带走已留下的拖尾。L2 以 `1/32` 格精度记录出生锚点，范围为 `±1024` 格。
+在原版正俯视 2D 相机下，所有节点都绘制在 `MoteOverhead` 层。`GroundXZ` 粒子、Ribbon 和扭曲保留世界 XZ，以 `MoteOverhead` 高度绘制，因此地形不会遮住它们。每个 `Vertical3D` 节点以自身地面 XZ（`Y = 0`）为锚点；节点周围的形状经过 60° 正交俯视投影，节点自身落在所在格。
+
+本地空间粒子使用节点当前的地面 XZ；世界空间粒子使用出生时节点的地面 XZ。由子发射器事件产生的世界空间粒子以事件点的 XZ 为锚点。每个 Ribbon 采样点以自身 XZ 为锚点，因此光束两端都落在各自的格上。L2 以 `1/32` 格精度记录出生锚点，范围为 `±1024` 格。在 IsoRim 等倾斜相机下，`GroundXZ` 保留真实世界几何，`Vertical3D` 抵消世界高度的压缩。
 
 ### 地面接触过期（`EmitterSpec.KillBelowFloor` / `killBelowFloor`）
 
@@ -90,6 +92,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
       "name": "core",
       "parentIndex": -1,
       "spacePlane": "GroundXZ",
+      "depthMask": "None",
       "localPosition": [0, 0.5, 0],
       "localYawDegrees": 0,
       "localScale": 1,
@@ -159,6 +162,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 
 - **根节点**：`nodes` 必须非空；`defaultDuration` 必须有限且 `>= 0`。
 - **节点层级（`EffectNodeSpec`）**：`parentIndex` 必须为 `-1`（挂在根节点下）或严格小于当前节点索引 `[0, i)`，以此从结构上禁止循环父子引用。若不写 `localRotation`（JSON 支持四元数或 `[x,y,z,w]`），可用 `localYawDegrees` 绕世界 `+Y` 旋转。
+- **节点深度遮罩（`EffectNodeSpec.DepthMask`）**：JSON 使用 `"depthMask"`，XML 使用 `<depthMask>`，默认值为 `None`。`NorthBehindReference` 仅在原版正俯视 2D 相机下生效：节点粒子和 Ribbon 中世界 Z 大于参考 Z（北侧）的部分，在 `Projectile` 层进行遮挡测试，该层紧邻 `Pawn` 层下方，因此参考位置上的施法者和其他 Pawn 层物体会遮住这些部分。参考 Z 上及其南侧的部分照常绘制在 `MoteOverhead` 层，覆盖施法者。此遮罩未经验证便假定 Pawn 会写入场景深度。只有带发射器或 Ribbon 的 `GroundXZ` 节点可以使用；资产校验会拒绝 `Vertical3D` 节点和仅有扭曲的节点。IsoRim 等倾斜相机会忽略遮罩，使用真实几何和深度进行遮挡。参考值见下文 `LumenPlayRequest.DepthReferenceZ`。
 - **标量曲线（`sizeOverLifetime` / `intensityOverTime`）**：可写为单数值（常量）、数组 `[[time, value], ...]`，或对象 `{ "keys": [...], "multiplier": 1 }`。关键帧也可写为 `[time, value, inTangent, outTangent]`。时间必须有限且非递减；粒子曲线的时间是归一化寿命 `[0,1]`，点光曲线的时间是从节点激活起算的秒数，且不小于 0。
 
   值和切线必须有限；切线是每单位曲线时间的变化率。不同时间之间采用三次 Hermite 插值，结果再乘以 `multiplier`。
@@ -357,6 +361,7 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 - **`LumenParticleTier`**：`External`（外部兼容播放器）/ `L1_NativeCpu`（原生 CPU 模拟，适合少粒子或需频繁代码交互）/ `L2_GpuCompute`（Vulkan Compute 模拟，默认，适合大数量与力场粒子）。
 - **`LumenShapeKind`**：`Point`（0）、`Sphere`（1）、`CircleXZ`（2）、`Cone`（3）、`Box`（4）、`SphereShell`（5）、`Hemisphere`（6）、`HemisphereShell`（7）、`CircleEdgeXZ`（8）、`ConeShell`（9）、`ConeVolume`（10）、`ConeVolumeShell`（11）、`SingleSidedEdge`（12）、`BoxShell`（13）、`BoxEdge`（14）、`Donut`（15）、`Rectangle`（16）。
 - **`LumenBlendMode`**：`Additive`（0，推荐发光与火焰）/ `AlphaBlend`（1，烟雾与水雾）/ `Premultiplied`（2）。
+- **`LumenDepthMask`**：`None`（`0`，默认）/ `NorthBehindReference`（`1`，原版正俯视 2D 相机下在 `Projectile` 层测试参考线北侧的遮挡）。
 - **`LumenBillboardMode`**：`Camera`（0，面向相机）/ `Horizontal`（1，水平贴地面片）/ `StretchedVelocity`（2，按速度方向拉伸，配合 `VelocityStretchFactor` 与 `LengthScale`）/ `Mesh`（3，延期）/ `Vertical`（4）/ `Local`（5）。
 
 ### 形状与概率脉冲
@@ -494,6 +499,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 });
 ```
 
+- `LumenPlayRequest.DepthReferenceZ` 以世界格为单位提供遮罩参考 Z。`Play` 将其记录为相对 `OriginWorld` 的 Z 偏移，因此参考线随 `Follow` 移动。节点声明了 `depthMask` 而请求没有参考值时，`Play` 抛出 `ArgumentException`。
 - 如果 `EffectId` 不存在，`Play` 返回 `IsAlive == false` 的空句柄，句柄方法无效果；每个服务实例对同一 ID 只记录一次 `Log.Warning`。资产存在但被校验拒绝时也返回空句柄，沿用注册表的校验错误，不追加“未知 ID”警告。
 
 ### 3. 句柄控制（`ILumenEffectHandle`）
@@ -1084,7 +1090,7 @@ void main()
 
 `ILumenGpuParticleEngine` 继承帧贡献者，`RegisterGpuParticleEngine` 注册。实例方法在主线程：`CreateInstance` 后以节点索引数组调用 `BindNodeInstances`，再随帧 `UpdateInstance`；`RestartInstance` 重置计划，`EmitBurst` 提交额外粒子，`DestroyInstance` 支持立即释放或等待消散，`IsInstanceAlive` 查询回收状态。ID 属于后端；容量为共享粒子槽数。Core 的 `LumenGpuParticleEngine` 是实现。
 
-`ILumenNodeFeatureBackend` 管理 `LumenNodeFeatureFrame`：其中包含节点世界变换、目标、地图 ID、强度、活动状态、帧时间和播放原点。所有实例调用在主线程。`CreateInstance` 在播放时创建非活动实例；进入状态或 Trigger 调用 `RestartInstance`，每帧 `UpdateInstance`，退出状态立即更新为 inactive。淡出停止调用 `DestroyInstance(id, false)` 并等待 `IsInstanceAlive` 为 false；立即停止或释放使用 true。缺少所需后端时播放抛 `InvalidOperationException`。Core 提供扭曲和 Ribbon 后端；兼作帧贡献者的后端先初始化场景，再注册贡献者，确保节点更新先于捕获。
+`ILumenNodeFeatureBackend` 管理 `LumenNodeFeatureFrame`：其中包含节点世界变换、目标、地图 ID、强度、活动状态、帧时间和 `DepthReferenceZ`。节点声明 `depthMask` 时，`DepthReferenceZ` 是当前帧遮罩参考线的世界 Z（`LumenPlayRequest.DepthReferenceZ` 随 `Follow` 移动后的值）；否则为 null。该帧没有播放原点字段，后端从 `Transform` 读取节点位置。所有实例调用在主线程。`CreateInstance` 在播放时创建非活动实例；进入状态或 Trigger 调用 `RestartInstance`，每帧 `UpdateInstance`，退出状态立即更新为 inactive。淡出停止调用 `DestroyInstance(id, false)` 并等待 `IsInstanceAlive` 为 false；立即停止或释放使用 true。缺少所需后端时播放抛 `InvalidOperationException`。Core 提供扭曲和 Ribbon 后端；兼作帧贡献者的后端先初始化场景，再注册贡献者，确保节点更新先于捕获。
 
 `LumenNodeFeature` 是封闭枚举，只有 `Distortion` 和 `Ribbon`；当前不能通过它添加新的节点种类。
 

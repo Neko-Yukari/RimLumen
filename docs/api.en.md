@@ -30,14 +30,16 @@ The ground is the fixed world plane `Y = 0`. The play origin (`LumenPlayRequest.
 
 | Enum Value | Numeric Value | Rotation Behavior | Typical Usage |
 | --- | --- | --- | --- |
-| `GroundXZ` | `0` | Uses the node's own `LocalRotation` verbatim with no extra pitch rotation; no camera adaptation at render time | Ground sigils, ground halos, horizontal shockwaves, arbitrary 3D-oriented child emitters (such as RimUnity-imported assets) |
+| `GroundXZ` | `0` | Uses the node's own `LocalRotation` verbatim with no extra pitch rotation | Ground sigils, ground halos, horizontal shockwaves, arbitrary 3D-oriented child emitters (such as RimUnity-imported assets) |
 | `Vertical3D` | `3` | Same node matrix as `GroundXZ`; simulation is true 3D. Only rendering adapts to the camera: a height of `h` cells appears `0.5 × h` cells up the screen in vanilla straight-down 2D. In 3D the camera projects the full world height, with IsoRim's Y squash cancelled. | Fireworks, fountains, trails behind rising projectiles |
 
 For example, a play origin at `Y = 2` appears one cell above its ground position in 2D. If it rises another four cells without moving sideways, its trail extends two cells up the screen. `GroundXZ` does not use this projection. Space-plane values `1` and `2` are invalid.
 
 Vanilla 2D uses a 60° orthographic pitch: the ground component along screen-up is scaled by `sin 60° ≈ 0.866`, height contributes `cos 60° = 0.5` along screen-up, and the screen-right component is unchanged. A sphere projects to a circle and a horizontal ring to a foreshortened ellipse. The projection follows camera yaw. `StretchedVelocity` velocity and `Local` axes use the same linear map; the draw layer is `MoteOverhead`.
 
-All nodes share the play origin's XZ ground anchor. Local-space particles use the current anchor; world-space particles keep their birth anchor, so a moving emitter leaves its trail behind. L2 records the birth anchor at `1/32` cell precision within `±1024` cells.
+Under the vanilla straight-down 2D camera, every node draws on the `MoteOverhead` layer. `GroundXZ` particles, ribbons and distortion retain their world XZ and draw at `MoteOverhead` height, so terrain never hides them. Each `Vertical3D` node anchors at its own ground XZ (`Y = 0`); its surrounding shape draws through the 60° orthographic pitch, and the node lands on its own cell.
+
+Local-space particles use the node's current ground XZ; world-space particles use the node's ground XZ at birth. A world-space particle born from a sub-emitter event uses the event point's XZ. Each ribbon sample anchors at its own XZ, so both ends of a beam land on their cells. L2 records the birth anchor at `1/32` cell precision within `±1024` cells. Under tilted cameras such as IsoRim, `GroundXZ` keeps true world geometry and `Vertical3D` un-squashes world height.
 
 ### Ground-Contact Expiration (`EmitterSpec.KillBelowFloor` / `killBelowFloor`)
 
@@ -90,6 +92,7 @@ Callers using `RimUnityAssetProvider` can call `RegisterPackageRoot` again, even
       "name": "core",
       "parentIndex": -1,
       "spacePlane": "GroundXZ",
+      "depthMask": "None",
       "localPosition": [0, 0.5, 0],
       "localYawDegrees": 0,
       "localScale": 1,
@@ -159,6 +162,7 @@ Callers using `RimUnityAssetProvider` can call `RegisterPackageRoot` again, even
 
 - **Root**: `nodes` must be non-empty; `defaultDuration` must be finite and `>= 0`.
 - **Node hierarchy (`EffectNodeSpec`)**: `parentIndex` must be `-1` (attached to root) or strictly less than the current node index `[0, i)`, structurally preventing parent-child cycles. If `localRotation` (`[x, y, z, w]` or `{ x, y, z, w }`) is omitted, `localYawDegrees` rotates around world `+Y`.
+- **Node depth mask (`EffectNodeSpec.DepthMask`)**: JSON uses `"depthMask"` and XML uses `<depthMask>`; the default is `None`. `NorthBehindReference` applies only under the vanilla straight-down 2D camera: parts of the node's particles and ribbons with world Z greater than the reference Z (north) are occlusion-tested at the `Projectile` layer, just below `Pawn`, so the caster at the reference and every other pawn-level thing hide them. Parts at or south of the reference draw on `MoteOverhead` as usual, over the caster. It assumes, without verification, that pawns write scene depth. Only `GroundXZ` nodes with an emitter or ribbon may use it; validation rejects `Vertical3D` and distortion-only nodes. Tilted cameras such as IsoRim ignore the mask and use real geometry and depth for occlusion. See `LumenPlayRequest.DepthReferenceZ` below.
 - **Scalar curves (`sizeOverLifetime` / `intensityOverTime`)**: Use a single number (constant), an array `[[time, value], ...]`, or an object `{ "keys": [...], "multiplier": 1 }`. Keyframes may include tangents as `[time, value, inTangent, outTangent]`. Times must be finite and non-decreasing: particle-curve time is normalized lifetime `[0,1]`, while point-light curve time is seconds since node activation and must be nonnegative.
 
   Values and tangents must be finite; tangents are slopes per unit of curve time. Distinct times use cubic Hermite interpolation, followed by multiplication by `multiplier`.
@@ -357,6 +361,7 @@ Legacy XML keys are rejected too: `<startColorLinear>` is renamed to `<startColo
 - **`LumenParticleTier`**: `External` (external bridge player) / `L1_NativeCpu` (native CPU simulation, suited for low counts or frequent script interaction) / `L2_GpuCompute` (Vulkan Compute simulation, default, suited for high particle counts and force fields).
 - **`LumenShapeKind`**: `Point` (0), `Sphere` (1), `CircleXZ` (2), `Cone` (3), `Box` (4), `SphereShell` (5), `Hemisphere` (6), `HemisphereShell` (7), `CircleEdgeXZ` (8), `ConeShell` (9), `ConeVolume` (10), `ConeVolumeShell` (11), `SingleSidedEdge` (12), `BoxShell` (13), `BoxEdge` (14), `Donut` (15), `Rectangle` (16).
 - **`LumenBlendMode`**: `Additive` (`0`, recommended for glow and fire) / `AlphaBlend` (`1`, smoke and mist) / `Premultiplied` (`2`).
+- **`LumenDepthMask`**: `None` (`0`, default) / `NorthBehindReference` (`1`, north of the reference is occlusion-tested at the `Projectile` layer under the vanilla straight-down 2D camera).
 - **`LumenBillboardMode`**: `Camera` (`0`, camera-facing) / `Horizontal` (`1`, flat ground-aligned quad) / `StretchedVelocity` (`2`, stretched along velocity using `VelocityStretchFactor` and `LengthScale`) / `Mesh` (`3`, deferred) / `Vertical` (`4`) / `Local` (`5`).
 
 ### Shapes and probabilistic bursts
@@ -494,6 +499,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 });
 ```
 
+- `LumenPlayRequest.DepthReferenceZ` supplies the mask reference as world Z in cells. Play records it as a Z offset from `OriginWorld`, so it moves with `Follow`. If a node declares `depthMask` and the request has no reference, `Play` throws `ArgumentException`.
 - If `EffectId` does not exist, `Play` returns an inert handle with `IsAlive == false` whose methods are no-ops, and logs `Log.Warning` once per ID per service instance. An asset rejected by validation also returns an inert handle; it retains the registry's validation error without adding an "unknown ID" warning.
 
 ### 3. Handle Controls (`ILumenEffectHandle`)
@@ -1084,7 +1090,7 @@ Pair capture and recording by `FrameIndex`: recording may lag or a frame may be 
 
 `ILumenGpuParticleEngine` extends the frame contributor and is registered by `RegisterGpuParticleEngine`. Instance operations run on the main thread: after `CreateInstance`, call `BindNodeInstances` with node-indexed IDs, then `UpdateInstance` each frame. `RestartInstance` resets the schedule, `EmitBurst` queues extra particles, `DestroyInstance` supports immediate removal or drain, and `IsInstanceAlive` reports reclamation. IDs belong to the backend; capacity is the shared particle slot count. Core implements `LumenGpuParticleEngine`.
 
-`ILumenNodeFeatureBackend` manages `LumenNodeFeatureFrame`: node world transform, target, map ID, intensity, active state, frame delta and play origin. All instance calls run on the main thread. `CreateInstance` creates an inactive instance at Play; state entry or Trigger calls `RestartInstance`, each frame calls `UpdateInstance`, and state exit immediately updates it inactive. Fade-out stop calls `DestroyInstance(id, false)` and waits for `IsInstanceAlive` to become false; immediate stop or disposal uses true. Playing without a required backend throws `InvalidOperationException`. Core supplies distortion and ribbon backends; a backend that is also a contributor initializes the scene before registering the contributor, so node updates precede capture.
+`ILumenNodeFeatureBackend` manages `LumenNodeFeatureFrame`: node world transform, target, map ID, intensity, active state, frame delta and `DepthReferenceZ`. `DepthReferenceZ` is this frame's world Z of the mask reference (`LumenPlayRequest.DepthReferenceZ` moved with `Follow`) when the node declares `depthMask`, and null otherwise. There is no play-origin field; backends read the node position from `Transform`. All instance calls run on the main thread. `CreateInstance` creates an inactive instance at Play; state entry or Trigger calls `RestartInstance`, each frame calls `UpdateInstance`, and state exit immediately updates it inactive. Fade-out stop calls `DestroyInstance(id, false)` and waits for `IsInstanceAlive` to become false; immediate stop or disposal uses true. Playing without a required backend throws `InvalidOperationException`. Core supplies distortion and ribbon backends; a backend that is also a contributor initializes the scene before registering the contributor, so node updates precede capture.
 
 `LumenNodeFeature` is a closed enum containing only `Distortion` and `Ribbon`; it cannot currently add new node kinds.
 
