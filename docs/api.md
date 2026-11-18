@@ -1112,7 +1112,7 @@ void main()
 
 ### 3. GPU 粒子与节点后端
 
-`ILumenGpuParticleEngine` 继承帧贡献者，`RegisterGpuParticleEngine` 注册。实例方法在主线程：`CreateInstance` 后以节点索引数组调用 `BindNodeInstances`，再随帧 `UpdateInstance`；`RestartInstance` 重置计划，`EmitBurst` 提交额外粒子，`DestroyInstance` 支持立即释放或等待消散，`IsInstanceAlive` 查询回收状态。ID 属于后端；容量为共享粒子槽数。Core 的 `LumenGpuParticleEngine` 是实现。
+`ILumenGpuParticleEngine` 继承帧贡献者，`RegisterGpuParticleEngine` 注册。实例方法在主线程：`CreateInstance` 后以节点索引数组调用 `BindNodeInstances`，再随帧 `UpdateInstance`；`RestartInstance` 重置计划，`EmitBurst` 提交额外粒子，`DestroyInstance` 支持立即释放或等待消散，`IsInstanceAlive` 查询回收状态。`SetInstanceDisplayState(id, isVertical3D, depthReferenceZ)` 在创建时调用，节点声明 `depthMask` 时每帧调用，传入该实例是否按 `Vertical3D` 投影及本帧遮罩参考 Z（无遮罩为 null）；`SetInstanceFrameDelta(id, frameDelta)` 在状态于帧内切换、节点中途重启时调用，下一次捕获只按这段剩余时间推进发射计划一次。ID 属于后端；容量为共享粒子槽数。Core 的 `LumenGpuParticleEngine` 是实现。
 
 `ILumenNodeFeatureBackend` 管理 `LumenNodeFeatureFrame`：其中包含节点世界变换、目标、地图 ID、强度、活动状态、帧时间和 `DepthReferenceZ`。节点声明 `depthMask` 时，`DepthReferenceZ` 是当前帧遮罩参考线的世界 Z（`LumenPlayRequest.DepthReferenceZ` 随 `Follow` 移动后的值）；否则为 null。该帧没有播放原点字段，后端从 `Transform` 读取节点位置。所有实例调用在主线程。`CreateInstance` 在播放时创建非活动实例；进入状态或 Trigger 调用 `RestartInstance`，每帧 `UpdateInstance`，退出状态立即更新为 inactive。淡出停止调用 `DestroyInstance(id, false)` 并等待 `IsInstanceAlive` 为 false；立即停止或释放使用 true。缺少所需后端时播放抛 `InvalidOperationException`。Core 提供扭曲、Ribbon 和全屏压暗后端；兼作帧贡献者的后端先初始化场景，再注册贡献者，确保节点更新先于捕获。
 

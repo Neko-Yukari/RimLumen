@@ -302,7 +302,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                     {
                         engine!.UpdateInstance(gpuIds[i], NodeTransform(i), emitting, intensity, parameters["rate"]);
                         if (asset.Nodes[i].DepthMask != LumenDepthMask.None) PushDisplayState(i);
-                        if (nodeFrameDelta[i] != deltaTime) (engine as LumenGpuParticleEngine)?.SetInstanceFrameDelta(gpuIds[i], nodeFrameDelta[i]);
+                        if (nodeFrameDelta[i] != deltaTime) engine.SetInstanceFrameDelta(gpuIds[i], nodeFrameDelta[i]);
                     }
                 }
                 for (int f = 0; f < FeatureCount; f++)
@@ -475,7 +475,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         bool isVertical3D = asset.Nodes[index].SpacePlane == LumenSpacePlane.Vertical3D;
         float? depthReferenceZ = DepthReferenceZ(index);
         if (cpuIds[index] >= 0) owner.Simulator.SetEmitterDisplayState(cpuIds[index], isVertical3D, depthReferenceZ);
-        if (gpuIds[index] >= 0) (engine as LumenGpuParticleEngine)?.SetInstanceDisplayState(gpuIds[index], isVertical3D, depthReferenceZ);
+        if (gpuIds[index] >= 0) engine!.SetInstanceDisplayState(gpuIds[index], isVertical3D, depthReferenceZ);
     }
 
     private float? DepthReferenceZ(int index) => asset.Nodes[index].DepthMask == LumenDepthMask.None

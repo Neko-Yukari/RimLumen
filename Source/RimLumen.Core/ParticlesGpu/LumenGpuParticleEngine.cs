@@ -119,7 +119,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
     // Requires: main thread. Unknown ids are ignored.
     // Ensures: the draw derives the 2D ground anchor from the uploaded World (lumenNodeGroundXZ); world-space particles
     //          record it at birth. Capture uploads the depth mask in ShapePosition.w (on) and ShapeScale.w (reference Z).
-    internal void SetInstanceDisplayState(int instanceId, bool isVertical3D, float? depthReferenceZ)
+    public void SetInstanceDisplayState(int instanceId, bool isVertical3D, float? depthReferenceZ)
     {
         if (!instances.TryGetValue(instanceId, out Instance? instance)) return;
         instance.IsVertical3D = isVertical3D;
@@ -169,7 +169,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         instance.FrameDelta = null;
     }
 
-    internal void SetInstanceFrameDelta(int instanceId, float frameDelta) => instances[instanceId].FrameDelta = frameDelta;
+    public void SetInstanceFrameDelta(int instanceId, float frameDelta) => instances[instanceId].FrameDelta = frameDelta;
 
     public bool IsInstanceAlive(int instanceId) => !disposed && instances.ContainsKey(instanceId);
 
