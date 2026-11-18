@@ -99,7 +99,7 @@ internal sealed class OcclusionBuilder
 
     // Ensures: B (wall-core depth: chamfer distance in texels to the nearest non-solid texel, saturated at WallCoreDepth + 1; 0 for
     //          non-solid and door texels) is recomputed for the texels of box grown by WallCoreDepth texels, and the
-    //          coarse texels of box grown by 1 cell are recomputed from the main texels. Coarse A (sun mask) is kept.
+    //          coarse texels of box grown by 1 cell are recomputed from the main texels.
     internal void RecomputeDerived(CellBox box)
     {
         int minX = Math.Max(0, box.MinX * OcclusionLayout.TexelsPerCell - OcclusionLayout.WallCoreDepth);
@@ -154,18 +154,6 @@ internal sealed class OcclusionBuilder
                             coarse[c + 2] = OcclusionLayout.CoarseDoor;
                     }
             }
-    }
-
-    // R2 sun mask (design 3.9): coarse A = 255 where vanilla's stencil bit 4 keeps sun shadows off the cell, else 0.
-    // Requires: masked.Length == box cell count, row-major from (box.MinX, box.MinZ).
-    // Ensures: only coarse A of box changes.
-    internal void SetSunMask(CellBox box, ReadOnlySpan<bool> masked)
-    {
-        int boxWidth = box.MaxX - box.MinX + 1;
-        for (int z = box.MinZ; z <= box.MaxZ; z++)
-            for (int x = box.MinX; x <= box.MaxX; x++)
-                coarse[(z * width + x) * OcclusionLayout.Channels + 3] =
-                    masked[(z - box.MinZ) * boxWidth + x - box.MinX] ? byte.MaxValue : (byte)0;
     }
 
     // Ensures: a new snapshot holding copies of the current arrays; later edits do not reach it.

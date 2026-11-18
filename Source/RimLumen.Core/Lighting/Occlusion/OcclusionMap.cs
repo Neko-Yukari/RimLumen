@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 
 namespace RimLumen.Core.Lighting.Occlusion;
 
@@ -28,6 +29,20 @@ internal static class OcclusionLayout
     internal const float MaxSunHeight = 2f;
 }
 
+// Design 1.8 split of one 2 x 2 gather, shared by the point-light and sun paths (lumenTexelSplit in
+// RimLumenOcclusion.glsl). Texels in order 00, 10, 01, 11; occupied is 1 or 0 per texel; (fx, fz) the bilinear fraction.
+// Coverage = bilerp(occupied), Inside = bilerp(occupied ? value : 0), Outside = bilerp(occupied ? 0 : value).
+internal readonly record struct TexelSplit(float Coverage, float Inside, float Outside)
+{
+    internal static TexelSplit Of(Vector4 values, Vector4 occupied, float fx, float fz)
+    {
+        Vector4 inside = values * occupied;
+        return new(Bilerp(occupied, fx, fz), Bilerp(inside, fx, fz), Bilerp(values - inside, fx, fz));
+    }
+
+    private static float Bilerp(Vector4 v, float fx, float fz) => (v.X * (1 - fx) + v.Y * fx) * (1 - fz) + (v.Z * (1 - fx) + v.W * fx) * fz;
+}
+
 // Inclusive cell rectangle; the offline tests cannot load Verse.CellRect.
 internal readonly record struct CellBox(int MinX, int MinZ, int MaxX, int MaxZ)
 {
@@ -47,8 +62,7 @@ internal sealed record AlphaMask(int Width, int Height, byte[] Alpha);
 // Texels: RGBA8, (Width * 4) x (Height * 4), row-major from world (0, 0); texel (tx, tz) covers world
 //         [tx / 4, (tx + 1) / 4) x [tz / 4, (tz + 1) / 4). Coarse: RGBA8, Width x Height, R and G = max over the cell's
 //         3 x 3 neighbourhood of the main R and G, B = CoarseDoor when any cell of that 3 x 3 neighbourhood holds door
-//         texels (so a fine step whose 2 x 2 gather can reach a door texel knows to read A and DoorStates), A reserved
-//         (R2 sun mask).
+//         texels (so a fine step whose 2 x 2 gather can reach a door texel knows to read A and DoorStates), A unused (0).
 internal sealed record OcclusionMap(int Width, int Height, byte[] Texels, byte[] Coarse)
 {
     internal int TexelWidth => Width * OcclusionLayout.TexelsPerCell;

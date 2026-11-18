@@ -155,25 +155,18 @@ internal static class LightTransport
     {
         Vector2 uv = p * 4f - new Vector2(0.5f);
         int x = (int)MathF.Floor(uv.X), z = (int)MathF.Floor(uv.Y);
-        float fx = uv.X - x, fz = uv.Y - z;
-        float s00 = 0f, s10 = 0f, s01 = 0f, s11 = 0f;
-        float o00 = 0f, o10 = 0f, o01 = 0f, o11 = 0f;
-        Read(frame, x, z, doors, out s00, out o00);
-        Read(frame, x + 1, z, doors, out s10, out o10);
-        Read(frame, x, z + 1, doors, out s01, out o01);
-        Read(frame, x + 1, z + 1, doors, out s11, out o11);
-        solid = (s00 * (1 - fx) + s10 * fx) * (1 - fz) + (s01 * (1 - fx) + s11 * fx) * fz;
-        cover = (o00 * (1 - fx) + o10 * fx) * (1 - fz) + (o01 * (1 - fx) + o11 * fx) * fz;
+        var opacity = new Vector4(Read(frame, x, z, doors), Read(frame, x + 1, z, doors), Read(frame, x, z + 1, doors), Read(frame, x + 1, z + 1, doors));
+        var solids = new Vector4(opacity.X == 1f ? 1f : 0f, opacity.Y == 1f ? 1f : 0f, opacity.Z == 1f ? 1f : 0f, opacity.W == 1f ? 1f : 0f);
+        TexelSplit split = TexelSplit.Of(opacity, solids, uv.X - x, uv.Y - z);
+        solid = split.Coverage;
+        cover = split.Outside;
     }
 
-    private static void Read(in OcclusionFrame frame, int x, int z, bool doors, out float solid, out float cover)
+    private static float Read(in OcclusionFrame frame, int x, int z, bool doors)
     {
-        solid = cover = 0f;
-        if (x < 0 || z < 0 || x >= frame.Map.TexelWidth || z >= frame.Map.TexelHeight) return;
+        if (x < 0 || z < 0 || x >= frame.Map.TexelWidth || z >= frame.Map.TexelHeight) return 0f;
         int i = (z * frame.Map.TexelWidth + x) * 4;
         byte value = frame.Map.Texels[i];
-        float opacity = doors ? Opacity(frame, x, z, value, frame.Map.Texels[i + 3]) : value / 255f;
-        if (opacity == 1f) solid = 1f;
-        else cover = opacity;
+        return doors ? Opacity(frame, x, z, value, frame.Map.Texels[i + 3]) : value / 255f;
     }
 }
