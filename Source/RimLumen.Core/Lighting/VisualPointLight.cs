@@ -1,13 +1,33 @@
 using System;
 using System.Numerics;
-using RimLumen.Core.Scene;
+using RimLumen.Core.Lighting.Occlusion;
 
 namespace RimLumen.Core.Lighting;
 
+// Effect pools come from RimLumen point lights; Vanilla pools are GlowGrid.lights read under takeover (design 3.5).
+internal enum VisualPointLightKind : byte
+{
+    Effect,
+    Vanilla,
+}
+
 // One frame's light pool: centre (X, Z) is the node's world position projected to the ground, Radius is
 // PointLightSpec.GlowRadius in cells (> 0), Light is ColorRgb * effective intensity (every component >= 0, max > 0).
-internal readonly record struct VisualPointLight(float X, float Z, float Radius, Vector3 Light)
+// Vanilla pools: centre is the glower's cell centre, Radius its glowRadius, Light glowColor.rgb / 255 (design 3.5).
+internal readonly record struct VisualPointLight(float X, float Z, float Radius, Vector3 Light, VisualPointLightKind Kind)
 {
+    // Vanilla glow attenuation (design 2; Verse.Glow.ComputeGlowGridsJob.cs:171-189) on straight-line distance:
+    // d' = 1 + distance; lerp(1 - d'/R, 1/d'^2, 0.4) while d' <= R, else 0. Requires: distance >= 0, radius > 0.
+    internal static float VanillaFalloff(float distance, float radius)
+    {
+        float d = 1f + distance;
+        if (d > radius) return 0f;
+        return 1f - d / radius + (1f / (d * d) - (1f - d / radius)) * 0.4f;
+    }
+
+    // Per-light hue-preserving projection of a vanilla pool (ProjectToColor32Fast): rgb / max(1, max component).
+    internal static Vector3 ProjectVanilla(Vector3 light) => light / MathF.Max(1f, MathF.Max(light.X, MathF.Max(light.Y, light.Z)));
+
     // Radial falloff w = (1 - (d/R)^2)^2 matching RimLumenLightPool.frag.glsl: 1 at d = 0, strictly
     // decreasing on [0, R], and 0 for d >= R or R <= 0 without per-cell quantization.
     internal static float Falloff(float distance, float radius)
@@ -19,17 +39,20 @@ internal readonly record struct VisualPointLight(float X, float Z, float Radius,
         return q * q;
     }
 
-    internal Vector3 EvaluateAt(float worldX, float worldZ, ParticleMapGrid walls)
+    // Ensures: Effect: Light * Falloff * visibility. Vanilla: ProjectVanilla(Light * VanillaFalloff) * visibility.
+    internal Vector3 EvaluateAt(float worldX, float worldZ, OcclusionFrame walls)
     {
         float dx = worldX - X;
         float dz = worldZ - Z;
-        return Light * Falloff(MathF.Sqrt(dx * dx + dz * dz), Radius) * LightOcclusion.Visibility(walls, X, Z, worldX, worldZ);
+        float distance = MathF.Sqrt(dx * dx + dz * dz);
+        Vector3 light = Kind == VisualPointLightKind.Effect ? Light * Falloff(distance, Radius) : ProjectVanilla(Light * VanillaFalloff(distance, Radius));
+        return light * LightTransport.Visibility(walls, new Vector2(X, Z), new Vector2(worldX, worldZ));
     }
 
     // The scene multiplier term at one ground point: overlapping pools add linearly (RimLumenLightPoolAccumulate),
     // then RimLumenLightPool.frag.glsl compresses the sum once, so the scene becomes scene * (1 + result).
     internal static Vector3 AccumulateAndCompress(ReadOnlySpan<VisualPointLight> lights, float worldX, float worldZ,
-        ParticleMapGrid walls)
+        OcclusionFrame walls)
     {
         Vector3 sum = Vector3.Zero;
         foreach (VisualPointLight light in lights) sum += light.EvaluateAt(worldX, worldZ, walls);

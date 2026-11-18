@@ -165,7 +165,7 @@ public static class EffectInstanceHandleSuite
         VfxTestData.Step(service, 0.25f, currentMapIndex: 111);
         VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
         VfxAssert.Equal(Vector4.One, service.Simulator.Vertices[0].Color);
-        VfxAssert.Equal(new VisualPointLight(10f, 20f, 4f, new Vector3(0.5f, 0.25f, 0.125f)), service.Lights[0]);
+        VfxAssert.Equal(new VisualPointLight(10f, 20f, 4f, new Vector3(0.5f, 0.25f, 0.125f), VisualPointLightKind.Effect), service.Lights[0]);
         handle.SetParam("intensity", 2f);
         handle.SetParam("rate", 2f);
         handle.SetParam("scale", 3f);
@@ -180,7 +180,7 @@ public static class EffectInstanceHandleSuite
         VfxAssert.Equal(Vector4.One, service.Simulator.Vertices[0].Color);
         VfxAssert.Equal(2f, service.Simulator.Vertices[0].HdrGain);
         // Unclamped: the light pool radius is not scaled with the effect, and intensity 2 doubles the colour.
-        VfxAssert.Equal(new VisualPointLight(10f, 20f, 4f, new Vector3(1f, 0.5f, 0.25f)), service.Lights[0]);
+        VfxAssert.Equal(new VisualPointLight(10f, 20f, 4f, new Vector3(1f, 0.5f, 0.25f), VisualPointLightKind.Effect), service.Lights[0]);
         VfxAssert.Equal(new Vector3(10f, 2f, 20f), handle.RootWorld.Translation);
         VfxAssert.Equal(new Vector3(6f, 0f, 0f), Vector3.TransformNormal(Vector3.UnitX, handle.RootWorld));
         handle.Dispose();

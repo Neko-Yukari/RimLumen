@@ -2,6 +2,8 @@
 <LanguageData>
   <RimLumen_EnhanceAdditiveGlow>Enhance vanilla and mod additive glow</RimLumen_EnhanceAdditiveGlow>
   <RimLumen_EnhanceAdditiveGlowTooltip>Gives fire, explosions and energy shields HDR bloom automatically.\nTurning it off returns to zero-pixel-difference framework mode when no fullscreen shader pack is enabled (the image matches an installation without RimLumen pixel for pixel).</RimLumen_EnhanceAdditiveGlowTooltip>
+  <RimLumen_LightingTakeover>Replace map lighting and sun shadows</RimLumen_LightingTakeover>
+  <RimLumen_LightingTakeoverTip>Changes how the map is lit without changing gameplay light levels. Automatically turns off in IsoRim’s 3D view. Incompatible with RimIris.</RimLumen_LightingTakeoverTip>
   <RimLumen_ParticleDensity>Global particle density: {0}%</RimLumen_ParticleDensity>
   <RimLumen_ExplosionForces>Explosions push particles (visual only)</RimLumen_ExplosionForces>
   <RimLumen_ExplosionForceScale>Explosion particle force: {0}×</RimLumen_ExplosionForceScale>

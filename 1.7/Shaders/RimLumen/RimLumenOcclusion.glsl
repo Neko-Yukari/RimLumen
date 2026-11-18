@@ -1,0 +1,232 @@
+// Main texture rows follow world z; the four gathered components are (01, 11, 10, 00).
+layout(set = 2, binding = 1) uniform sampler2D _LumenOcclusion; // @default = black
+layout(set = 2, binding = 2) uniform sampler2D _LumenOcclusionCoarse; // @default = black
+layout(set = 2, binding = 3) uniform sampler2D _LumenDoorOpen; // @default = black
+
+bool lumenInside(ivec2 p, ivec2 size) { return all(greaterThanEqual(p, ivec2(0))) && all(lessThan(p, size)); }
+
+float lumenDoorOpacityWithState(ivec2 p, float value, int flags, vec4 door)
+{
+    bool axisZ = (flags & 2) != 0;
+    float local = (float((axisZ ? p.y : p.x) % 4) + 0.5) * 0.25;
+    float index = round(door.g * 255.0);
+    float width = round(door.b * 255.0);
+    float u = (index + local) / width - 0.5;
+    return abs(u) < door.r * 0.5 ? 0.0 : value;
+}
+
+float lumenDoorOpacity(ivec2 p, float value, int flags)
+{
+    if ((flags & 1) == 0) return value;
+    return lumenDoorOpacityWithState(p, value, flags, texelFetch(_LumenDoorOpen, p / 4, 0));
+}
+
+bool lumenSolidTexel(ivec2 p, out int depth)
+{
+    depth = 0;
+    if (!lumenInside(p, textureSize(_LumenOcclusion, 0))) return false;
+    vec4 v = texelFetch(_LumenOcclusion, p, 0);
+    int flags = int(round(v.a * 255.0));
+    depth = int(round(v.b * 255.0));
+    return lumenDoorOpacity(p, v.r, flags) == 1.0;
+}
+
+bool lumenSolid(vec2 p, out int depth) { return lumenSolidTexel(ivec2(floor(p * 4.0)), depth); }
+
+float lumenSolidRunLength(vec2 start, vec2 direction, float limit)
+{
+    int depth;
+    if (!lumenSolid(start, depth)) return 0.0;
+    float distance = 0.0;
+    vec2 texel = start * 4.0;
+    ivec2 cell = ivec2(floor(texel));
+    if (direction.x < 0.0 && texel.x == float(cell.x)) cell.x--;
+    if (direction.y < 0.0 && texel.y == float(cell.y)) cell.y--;
+    while (distance < limit)
+    {
+        if (!lumenSolidTexel(cell, depth)) break;
+        float tx = direction.x > 0.0 ? ((float(cell.x) + 1.0) * 0.25 - start.x) / direction.x : direction.x < 0.0 ? (float(cell.x) * 0.25 - start.x) / direction.x : 1e30;
+        float tz = direction.y > 0.0 ? ((float(cell.y) + 1.0) * 0.25 - start.y) / direction.y : direction.y < 0.0 ? (float(cell.y) * 0.25 - start.y) / direction.y : 1e30;
+        distance = min(limit, min(tx, tz));
+        if (tx <= distance) cell.x += direction.x > 0.0 ? 1 : -1;
+        if (tz <= distance) cell.y += direction.y > 0.0 ? 1 : -1;
+    }
+    return distance;
+}
+
+void lumenSample(vec2 p, bool doors, out float solid, out float cover)
+{
+    ivec2 size = textureSize(_LumenOcclusion, 0);
+    vec2 uv = p * 4.0 - 0.5;
+    ivec2 base = ivec2(floor(uv));
+    vec2 f = fract(uv);
+    vec2 gatherUv = p * 4.0 / vec2(size);
+    vec4 values = textureGather(_LumenOcclusion, gatherUv, 0).wzxy;
+    ivec2 points[4] = ivec2[4](base, base + ivec2(1, 0), base + ivec2(0, 1), base + ivec2(1, 1));
+    vec4 flags = doors ? textureGather(_LumenOcclusion, gatherUv, 3).wzxy : vec4(0.0);
+    vec4 solids = vec4(0.0), covers = vec4(0.0);
+    ivec2 doorCells[4];
+    vec4 doorValues[4];
+    int doorCount = 0;
+    for (int i = 0; i < 4; i++)
+    {
+        if (!lumenInside(points[i], size)) continue;
+        float opacity = values[i];
+        int flag = int(round(flags[i] * 255.0));
+        if (doors && (flag & 1) != 0)
+        {
+            ivec2 cell = points[i] / 4;
+            int found = -1;
+            for (int j = 0; j < doorCount; j++) if (doorCells[j] == cell) { found = j; break; }
+            if (found < 0)
+            {
+                found = doorCount++;
+                doorCells[found] = cell;
+                doorValues[found] = texelFetch(_LumenDoorOpen, cell, 0);
+            }
+            opacity = lumenDoorOpacityWithState(points[i], opacity, flag, doorValues[found]);
+        }
+        if (opacity == 1.0) solids[i] = 1.0; else covers[i] = opacity;
+    }
+    solid = mix(mix(solids.x, solids.y, f.x), mix(solids.z, solids.w, f.x), f.y);
+    cover = mix(mix(covers.x, covers.y, f.x), mix(covers.z, covers.w, f.x), f.y);
+}
+
+float lightVisibility(vec2 light, vec2 target)
+{
+    vec2 delta = light - target;
+    float len = length(delta);
+    if (len == 0.0) return 1.0;
+    vec2 direction = delta / len;
+    float lightRun = lumenSolidRunLength(light, -direction, len);
+    int initialDepth;
+    bool skipTarget = lumenSolid(target, initialDepth);
+    if (skipTarget && initialDepth > 3) return 0.0;
+    bool exitBand = false;
+    float solidVisibility = 1.0, pendingSolid = 1.0, coverVisibility = 1.0, distance = 0.0;
+    ivec2 mapSize = textureSize(_LumenOcclusionCoarse, 0);
+    ivec2 cell = ivec2(floor(target));
+    if (direction.x < 0.0 && target.x == float(cell.x)) cell.x--;
+    if (direction.y < 0.0 && target.y == float(cell.y)) cell.y--;
+    while (distance < len)
+    {
+        float nextX = direction.x > 0.0 ? (float(cell.x + 1) - target.x) / direction.x : direction.x < 0.0 ? (float(cell.x) - target.x) / direction.x : 1e30;
+        float nextZ = direction.y > 0.0 ? (float(cell.y + 1) - target.y) / direction.y : direction.y < 0.0 ? (float(cell.y) - target.y) / direction.y : 1e30;
+        float end = min(len, min(nextX, nextZ));
+        bool inside = lumenInside(cell, mapSize);
+        vec4 coarse = inside ? texelFetch(_LumenOcclusionCoarse, cell, 0) : vec4(0.0);
+        if (!inside || coarse.r == 0.0)
+        {
+            skipTarget = false;
+            exitBand = false;
+            solidVisibility = min(solidVisibility, pendingSolid);
+            pendingSolid = 1.0;
+            distance = end;
+            if (nextX <= end) cell.x += direction.x > 0.0 ? 1 : -1;
+            if (nextZ <= end) cell.y += direction.y > 0.0 ? 1 : -1;
+            continue;
+        }
+        bool doors = coarse.b != 0.0;
+        int steps = int(ceil((end - distance) * 4.0));
+        float ds = (end - distance) / float(steps);
+        for (int step = 0; step < steps; step++)
+        {
+            float at = distance + (float(step) + 0.5) * ds;
+            vec2 p = target + direction * at;
+            int depth = 0;
+            bool isSolid = (skipTarget || exitBand || lightRun > 0.0) && lumenSolid(p, depth);
+            if (skipTarget)
+            {
+                if (isSolid)
+                {
+                    if (depth > 3) return 0.0;
+                    continue;
+                }
+                skipTarget = false;
+                exitBand = true;
+            }
+            if (exitBand && isSolid) return 0.0;
+            if (at >= len - lightRun)
+            {
+                pendingSolid = 1.0;
+                continue;
+            }
+            float s, o;
+            lumenSample(p, doors, s, o);
+            if (exitBand)
+            {
+                if (s == 0.0) exitBand = false;
+            }
+            else if (lightRun > 0.0 && !isSolid && s > 0.0)
+            {
+                pendingSolid = min(pendingSolid, 1.0 - s);
+            }
+            else
+            {
+                solidVisibility = min(solidVisibility, min(pendingSolid, 1.0 - s));
+                pendingSolid = 1.0;
+            }
+            coverVisibility *= pow(1.0 - o, ds);
+            if (solidVisibility * coverVisibility < 1.0 / 255.0) return 0.0;
+        }
+        distance = end;
+        if (nextX <= end) cell.x += direction.x > 0.0 ? 1 : -1;
+        if (nextZ <= end) cell.y += direction.y > 0.0 ? 1 : -1;
+    }
+    return min(solidVisibility, lightRun > 0.0 ? 1.0 : pendingSolid) * coverVisibility;
+}
+
+// Sun path (SunTransport.Shadow): bilinear G height at q against height t, faded by 1 - t / h on FlagSunFade texels.
+float lumenSunShadow(vec2 q, float t)
+{
+    ivec2 size = textureSize(_LumenOcclusion, 0);
+    vec2 uv = q * 4.0 - 0.5;
+    ivec2 base = ivec2(floor(uv));
+    vec2 f = fract(uv);
+    vec4 heights = textureGather(_LumenOcclusion, q * 4.0 / vec2(size), 1).wzxy;
+    ivec2 points[4] = ivec2[4](base, base + ivec2(1, 0), base + ivec2(0, 1), base + ivec2(1, 1));
+    for (int i = 0; i < 4; i++) if (!lumenInside(points[i], size)) heights[i] = 0.0;
+    float h = mix(mix(heights.x, heights.y, f.x), mix(heights.z, heights.w, f.x), f.y) * 2.0;
+    float s = clamp((h - t) / 0.125, 0.0, 1.0);
+    ivec2 nearest = ivec2(floor(q * 4.0));
+    if (s > 0.0 && lumenInside(nearest, size) && (int(round(texelFetch(_LumenOcclusion, nearest, 0).a * 255.0)) & 128) != 0)
+        s *= 1.0 - t / h;
+    return s;
+}
+
+// SunTransport.Visibility: castXZ is vanilla _CastVect.xz (|castXZ| > 0). 1 outside the map and on sun-masked cells.
+float lumenSunVisibility(vec2 p, vec2 castXZ)
+{
+    ivec2 mapSize = textureSize(_LumenOcclusionCoarse, 0);
+    ivec2 cell = ivec2(floor(p));
+    if (!lumenInside(cell, mapSize)) return 1.0;
+    vec4 here = texelFetch(_LumenOcclusionCoarse, cell, 0);
+    if (here.a != 0.0) return 1.0;
+    float len = length(castXZ);
+    vec2 direction = -castXZ / len;
+    float reach = len * 2.0;
+    float shadow = here.g != 0.0 ? lumenSunShadow(p, 0.0) : 0.0;
+    float distance = 0.0;
+    if (direction.x < 0.0 && p.x == float(cell.x)) cell.x--;
+    if (direction.y < 0.0 && p.y == float(cell.y)) cell.y--;
+    while (distance < reach && shadow < 1.0)
+    {
+        float nextX = direction.x > 0.0 ? (float(cell.x + 1) - p.x) / direction.x : direction.x < 0.0 ? (float(cell.x) - p.x) / direction.x : 1e30;
+        float nextZ = direction.y > 0.0 ? (float(cell.y + 1) - p.y) / direction.y : direction.y < 0.0 ? (float(cell.y) - p.y) / direction.y : 1e30;
+        float end = min(reach, min(nextX, nextZ));
+        if (lumenInside(cell, mapSize) && texelFetch(_LumenOcclusionCoarse, cell, 0).g != 0.0)
+        {
+            int steps = int(ceil((end - distance) * 4.0));
+            float ds = (end - distance) / float(steps);
+            for (int step = 0; step < steps; step++)
+            {
+                float at = distance + (float(step) + 0.5) * ds;
+                shadow = max(shadow, lumenSunShadow(p + direction * at, at / len));
+            }
+        }
+        distance = end;
+        if (nextX <= end) cell.x += direction.x > 0.0 ? 1 : -1;
+        if (nextZ <= end) cell.y += direction.y > 0.0 ? 1 : -1;
+    }
+    return 1.0 - shadow;
+}

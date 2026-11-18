@@ -561,7 +561,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             Vector3 rgb = lightRgb[i];
             if (radius <= 0f || MathF.Max(rgb.X, MathF.Max(rgb.Y, rgb.Z)) <= 0f) continue;
             Vector3 world = nodeWorldMatrices[i].Translation;
-            into.Add(new VisualPointLight(world.X, world.Z, radius, rgb));
+            into.Add(new VisualPointLight(world.X, world.Z, radius, rgb, VisualPointLightKind.Effect));
         }
     }
 
