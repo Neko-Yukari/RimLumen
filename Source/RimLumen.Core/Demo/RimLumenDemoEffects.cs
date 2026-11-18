@@ -1,8 +1,8 @@
+using System;
 using System.Numerics;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Scene;
-using Verse;
 using CurveKey = RimLumen.Core.Contracts.CurveKey;
 
 namespace RimLumen.Core.Demo;
@@ -13,8 +13,8 @@ namespace RimLumen.Core.Demo;
 // Coordinates follow docs/api.md section 2: world +X is east, +Y is altitude and +Z is north (up on
 // screen). Every emitter that should shoot upwards uses Vertical3D: the simulation is true 3D (the Cone
 // axis stays world +Y, GravityDrag runs along (0, -1, 0)) and only the drawn position adapts to the camera.
-// LocalPosition.Y is the height above the effect's play origin; KillBelowFloor removes particles that fall
-// back below that origin height.
+// Every Y is height above the ground (Y = 0) in cells: play origins sit on the ground, except the firework's,
+// which rises with the rocket (PlayFirework). KillBelowFloor removes particles that fall back to the ground.
 internal static class RimLumenDemoEffects
 {
     internal const string FireworkGoldId = "RimLumen.Demo.Firework.Gold";
@@ -39,6 +39,10 @@ internal static class RimLumenDemoEffects
 
     // Seconds from launch to apex; the trail stops here, the burst fires here.
     internal const float LaunchSeconds = 0.65f;
+
+    // Rocket height above the ground at launch (the launcher mouth) and at the apex.
+    internal const float LaunchHeight = 0.35f;
+    internal const float ApexHeight = 4.8f;
 
     // Seconds the launched firework stays visible (burst particles live at most 2.1 s past the apex).
     internal const float FireworkVisibleSeconds = 2.75f;
@@ -85,17 +89,50 @@ internal static class RimLumenDemoEffects
         }
     }
 
-    // Requires: effectId is non-empty; variantIndex selects hue/ember (wrapped into range).
-    // Ensures: returns a 5-node firework: L1 launch trail (0..0.65 s), L2 apex burst fired at 0.65 s whose sparks
-    //          bounce off walls and expire under roofs, L1 white-hot sparkle core at the same instant, a point light
-    //          that stays dark until the apex, peaks there and is gone by 2.2 s, and the L2 crackle the sparks
+    // Ensures: LaunchHeight at 0 s and ApexHeight from LaunchSeconds on, slowing to zero vertical speed at the apex:
+    //          h = LaunchHeight + (ApexHeight - LaunchHeight) * (1 - (1 - u)^2), u = min(1, seconds / LaunchSeconds).
+    internal static float RocketHeight(float seconds)
+    {
+        float u = MathF.Min(1f, seconds / LaunchSeconds);
+        return LaunchHeight + (ApexHeight - LaunchHeight) * (1f - (1f - u) * (1f - u));
+    }
+
+    // Requires: play is RimLumenApi.Play or Core's LumenVfxService.Play, so an alive handle is an EffectInstanceHandle.
+    // Ensures: plays the firework with a Follow that keeps the origin over launcherGround and lifts it to
+    //          RocketHeight(the handle's own PlaybackTime; 0 while Play builds it). The rocket and the burst schedule
+    //          share that clock, so every node rides the rocket and the bursts fire exactly at the apex.
+    internal static ILumenEffectHandle PlayFirework(Func<LumenPlayRequest, ILumenEffectHandle> play, string effectId,
+        int mapIndex, Vector3 launcherGround)
+    {
+        EffectInstanceHandle? clock = null;
+        ILumenEffectHandle handle = play(new LumenPlayRequest
+        {
+            EffectId = effectId,
+            MapIndex = mapIndex,
+            OriginWorld = launcherGround,
+            Follow = (out Vector3 position, out float rotationDegrees) =>
+            {
+                position = launcherGround + new Vector3(0f, RocketHeight(clock?.PlaybackTime ?? 0f), 0f);
+                rotationDegrees = 0f;
+                return true;
+            },
+            RealTime = false,
+        });
+        if (handle.IsAlive) clock = (EffectInstanceHandle)handle;
+        return handle;
+    }
+
+    // Requires: effectId is non-empty; variantIndex selects hue/ember (wrapped into range); played with PlayFirework.
+    // Ensures: returns a 5-node firework whose nodes all sit at the rising play origin: the rocket's native trail
+    //          ribbon and L1 shed sparks (0..0.65 s), L2 apex burst fired at 0.65 s whose sparks bounce off walls and
+    //          expire under roofs, L1 white-hot sparkle core at the same instant, a point light and a screen dim that
+    //          stay dark until the apex, peak there and are gone by 2.2 s and 1.6 s, and the L2 crackle the sparks
     //          spawn when they hit a wall or die (in the air, on the floor or under a roof).
     internal static EffectAsset CreateFireworkAsset(string effectId, int variantIndex)
     {
         int variant = variantIndex % FireworkHues.Length;
         Vector4 hue = FireworkHues[variant];
         Vector4 ember = FireworkEmbers[variant];
-        const float apexY = 4.8f;
 
         return new EffectAsset
         {
@@ -103,12 +140,32 @@ internal static class RimLumenDemoEffects
             DefaultDuration = 2.8f,
             Nodes = new[]
             {
-                // 0: the rising rocket trail; it stops emitting the moment the shell bursts.
+                // 0: the rocket: a native trail ribbon behind the rising origin, plus sparks it sheds until the shell
+                //    bursts. At the apex the head stops, so the ribbon shrinks into it within its Lifetime.
                 new EffectNodeSpec
                 {
                     Name = "launch_trail",
                     SpacePlane = LumenSpacePlane.Vertical3D,
-                    LocalPosition = new Vector3(0f, 0.35f, 0f),
+                    Ribbon = new RibbonSpec
+                    {
+                        Mode = LumenRibbonMode.Trail,
+                        Lifetime = 0.4f,
+                        MinVertexDistance = 0.06f,
+                        MaxPoints = 64,
+                        Width = 0.14f,
+                        WidthOverLength = new ScalarCurve(new[]
+                        {
+                            new CurveKey(0f, 1f),
+                            new CurveKey(1f, 0f),
+                        }),
+                        ColorOverLength = new ColorGradient(new[]
+                        {
+                            new ColorStop(0f, new Vector4(1.0f, 0.96f, 0.82f, 1.0f)),
+                            new ColorStop(0.35f, new Vector4(1.0f, 0.70f, 0.28f, 0.85f)),
+                            new ColorStop(1f, new Vector4(0.70f, 0.16f, 0.03f, 0.0f)),
+                        }),
+                        HdrIntensity = 5f,
+                    },
                     Emitter = new EmitterSpec
                     {
                         Name = "launch_trail",
@@ -119,14 +176,14 @@ internal static class RimLumenDemoEffects
                         Looping = false,
                         WorldSpaceSimulation = true,
                         RateOverTime = 240f,
-                        Shape = LumenShapeKind.Cone,
-                        ConeAngleDegrees = 7f,
-                        StartSpeedMin = 8.0f,
-                        StartSpeedMax = 10.5f,
-                        StartLifetimeMin = 0.45f,
-                        StartLifetimeMax = 0.65f,
-                        StartSizeMin = 0.10f,
-                        StartSizeMax = 0.20f,
+                        Shape = LumenShapeKind.Sphere,
+                        ShapeExtents = new Vector3(0.04f, 0.04f, 0.04f),
+                        StartSpeedMin = 0.3f,
+                        StartSpeedMax = 1.5f,
+                        StartLifetimeMin = 0.25f,
+                        StartLifetimeMax = 0.5f,
+                        StartSizeMin = 0.06f,
+                        StartSizeMax = 0.14f,
                         StartColor = new Vector4(1.0f, 0.90f, 0.65f, 1f),
                         HdrIntensity = 4.0f,
                         SoftParticleFadeDistance = 0.4f,
@@ -157,7 +214,6 @@ internal static class RimLumenDemoEffects
                 {
                     Name = "apex_burst",
                     SpacePlane = LumenSpacePlane.Vertical3D,
-                    LocalPosition = new Vector3(0f, apexY, 0f),
                     Emitter = new EmitterSpec
                     {
                         Name = "apex_burst",
@@ -223,7 +279,6 @@ internal static class RimLumenDemoEffects
                 {
                     Name = "sparkle_core",
                     SpacePlane = LumenSpacePlane.Vertical3D,
-                    LocalPosition = new Vector3(0f, apexY, 0f),
                     Emitter = new EmitterSpec
                     {
                         Name = "sparkle_core",
@@ -260,11 +315,23 @@ internal static class RimLumenDemoEffects
                     },
                 },
 
-                // 3: the apex flash. Dark until the shell bursts (IntensityOverTime starts at 0).
+                // 3: the apex flash and a short background dim that makes the burst pop. Both dark until the shell
+                //    bursts (their curves start at 0).
                 new EffectNodeSpec
                 {
                     Name = "apex_flash",
-                    LocalPosition = new Vector3(0f, apexY, 0f),
+                    ScreenDim = new ScreenDimSpec
+                    {
+                        Strength = 0.35f,
+                        Duration = 1.6f,
+                        StrengthOverTime = new ScalarCurve(new[]
+                        {
+                            new CurveKey(0f, 0f),
+                            new CurveKey(LaunchSeconds, 0f),
+                            new CurveKey(LaunchSeconds + 0.08f, 1f),
+                            new CurveKey(1.6f, 0f),
+                        }),
+                    },
                     PointLight = new PointLightSpec(
                         9f,
                         new Vector3(hue.X, hue.Y, hue.Z),
@@ -283,7 +350,6 @@ internal static class RimLumenDemoEffects
                 {
                     Name = "spark_crackle",
                     SpacePlane = LumenSpacePlane.Vertical3D,
-                    LocalPosition = new Vector3(0f, apexY, 0f),
                     Emitter = new EmitterSpec
                     {
                         Name = "spark_crackle",
@@ -335,8 +401,6 @@ internal static class RimLumenDemoEffects
     //          an L2 ground mist disc, and a steady cool-cyan point light at the jet's throat.
     internal static EffectAsset CreateParticleFountainAsset()
     {
-        float yMote = AltitudeLayer.MoteOverhead.AltitudeFor();
-
         return new EffectAsset
         {
             EffectId = ParticleFountainId,
@@ -402,12 +466,11 @@ internal static class RimLumenDemoEffects
                     },
                 },
 
-                // 1: the splash mist pooling on the ground around the basin.
+                // 1: the splash mist pooling on the ground around the basin; GroundXZ draws on the mote layer in 2D.
                 new EffectNodeSpec
                 {
                     Name = "base_mist",
                     SpacePlane = LumenSpacePlane.GroundXZ,
-                    LocalPosition = new Vector3(0f, yMote, 0f),
                     Emitter = new EmitterSpec
                     {
                         Name = "base_mist",
@@ -494,7 +557,8 @@ internal static class RimLumenDemoEffects
             EffectId = DistortionPylonId,
             Nodes = new[]
             {
-                // 0: continuous shimmer around the orbit; Duration 0 = while the effect plays.
+                // 0: continuous shimmer around the orbit; Duration 0 = while the effect plays. It bends the scene and,
+                //    with the player's refract-layer setting on (default), the orbit trail and the arc passing through.
                 new EffectNodeSpec
                 {
                     Name = "heat_haze",

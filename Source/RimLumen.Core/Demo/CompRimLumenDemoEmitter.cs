@@ -165,13 +165,8 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
         RimLumenDemoEffects.EnsureRegistered();
         string effectId = RimLumenDemoEffects.FireworkEffectIds[
             variantCursor++ % RimLumenDemoEffects.FireworkEffectIds.Length];
-        ILumenEffectHandle handle = RimLumenApi.Play(new LumenPlayRequest
-        {
-            EffectId = effectId,
-            MapIndex = parent.Map.uniqueID,
-            OriginWorld = EffectOrigin,
-            RealTime = false,
-        });
+        ILumenEffectHandle handle = RimLumenDemoEffects.PlayFirework(request => RimLumenApi.Play(request), effectId,
+            parent.Map.uniqueID, EffectOrigin);
         if (!handle.IsAlive) return;
 
         launches.Add(new ActiveLaunch(handle));

@@ -127,14 +127,14 @@ internal static class ShowcaseValidationSave
 
         Spawn(map, DefDatabase<ThingDef>.GetNamed("RimLumen_FireworkLauncher"), Cell(4, 6));
         Spawn(map, DefDatabase<ThingDef>.GetNamed("RimLumen_ParticleFountain"), Cell(12, 6));
-        Report("RimLumen_FireworkLauncher (auto-launch on)", Rect(4, 6, 4, 6));
+        Report("RimLumen_FireworkLauncher (auto-launch on; rising ribbon trail, background dim at the burst)", Rect(4, 6, 4, 6));
         Report("RimLumen_ParticleFountain (active)", Rect(12, 6, 12, 6));
 
-        // Up-screen of the launcher, so the climb and the burst pass through the haze and the shock ring.
+        // Up-screen of the launcher, so the rocket's ribbon and the burst pass through the haze and the shock ring.
         Spawn(map, DefDatabase<ThingDef>.GetNamed(DemoBuildingRegistry.DistortionPylonDefName), Cell(4, 9));
         Report("RimLumen_DistortionPylon (haze, shock ring every 2.5 s, orbit trail + arc beam)", Rect(4, 9, 4, 9));
-        // Distortion bends the scene behind the effect layer, not RimLumen particles: this wall, lit by the pylon's own
-        // light pool, gives the haze straight edges to bend.
+        // This wall, lit by the pylon's own light pool, gives the haze straight scene edges to bend next to the
+        // RimLumen trail and arc it also bends.
         CellRect pylonWall = Rect(2, 11, 6, 11);
         foreach (IntVec3 cell in pylonWall) Spawn(map, ThingDefOf.Wall, cell, ThingDefOf.BlocksGranite);
         Report("pylon backdrop wall: Wall x5, 2 cells north of the pylon", pylonWall);
