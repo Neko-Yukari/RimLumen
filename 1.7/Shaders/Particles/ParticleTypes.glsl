@@ -1,6 +1,8 @@
 #ifndef LUMEN_PARTICLE_TYPES
 #define LUMEN_PARTICLE_TYPES
 
+const float LUMEN_GROUND_Y = 0.0;
+
 // std430 matches the sequential C# structs: 64 / 480 / 48 / 32 bytes.
 struct GpuParticle
 {

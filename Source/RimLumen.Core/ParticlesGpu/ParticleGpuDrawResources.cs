@@ -133,7 +133,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             properties[3] = DrawProperty.Vector(ProjectionPropertyId, projectionPacked);
             properties[4] = DrawProperty.Vector(DepthUvPropertyId, depthUv);
             properties[5] = DrawProperty.Vector(VerticalPropertyId, emitter.IsVertical3D
-                ? new Vector4(verticalMode, emitter.BaseY, vanillaMoteY, 0f) : Vector4.Zero);
+                ? new Vector4(verticalMode, 0f, vanillaMoteY, 0f) : Vector4.Zero);
             properties[6] = DrawProperty.Vector(TintPropertyId, emitter.MaterialTint);
             properties[7] = DrawProperty.Vector(ColorPropertyId,
                 new Vector4(emitter.ColorSpace == LumenColorSpace.Linear ? 1f : 0f, textureSrgb[i] ? 1f : 0f,

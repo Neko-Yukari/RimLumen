@@ -500,7 +500,7 @@ public static class ParticleParitySuite
     }
 
     [LumenFact]
-    public static void PausedKillBelowFloorFreezesGameTimeButStillRechecksMovedFloor()
+    public static void PausedKillBelowFloorRechecksLocalParticlesWhenTheEmitterMoves()
     {
         var spec = new EmitterSpec
         {
@@ -517,9 +517,9 @@ public static class ParticleParitySuite
         Vector(before.Position, cpu.LiveParticles[0].Position);
         Vector(before.Velocity, cpu.LiveParticles[0].Velocity);
         Near(before.Age, cpu.LiveParticles[0].Age);
-        cpu.SetEmitterVerticalState(id, false, new Vector3(0f, 1f, 0f));
+        cpu.SetEmitterTransform(id, new LumenEmitterTransform(Matrix4x4.CreateTranslation(0f, 1f, 0f), Quaternion.Identity));
         cpu.CaptureMainThread(paused);
-        Require(cpu.LiveParticleCount == 0, "A zero-dt capture still expires a descending particle below a moved floor.");
+        Require(cpu.LiveParticleCount == 0, "Moving a local-space particle below world ground still expires it on a zero-dt capture.");
         using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
         gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), mapIndex: 7, realTime: false, emissionSeed: 1u);
         gpu.CaptureMainThread(paused);

@@ -253,7 +253,7 @@ public static class WorldPhysicsSuite
             && sim.Contains("particle.PositionAndAge.w += particle.VelocityAndLifetime.w * emitter.Collision.w", StringComparison.Ordinal)
             && sim.Contains("if (collision) appendEvent(emitter, particle, 1u)", StringComparison.Ordinal)
             && sim.Contains("if (particle.ActiveEmitter == 0u) appendEvent(emitter, particle, 0u)", StringComparison.Ordinal), "Collision/Death distinction or upstream response changed.");
-        Check(collision.Contains("slab(from.y, delta.y, 0.0, 2.0", StringComparison.Ordinal)
+        Check(collision.Contains("slab(from.y, delta.y, LUMEN_GROUND_Y, 2.0", StringComparison.Ordinal)
             && collision.Contains("position += normal * 0.0001", StringComparison.Ordinal), "Wall height or contact offset changed.");
     }
 

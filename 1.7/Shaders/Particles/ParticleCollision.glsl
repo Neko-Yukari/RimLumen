@@ -40,7 +40,7 @@ uint traceMap(GpuEmitterParams emitter, vec3 from, vec3 to, out vec3 position, o
             float enter = 0.0, exit = 1.0;
             normal = vec3(0.0);
             if (slab(from.x, delta.x, float(x), float(x+1), vec3(1,0,0), enter, exit, normal) &&
-                slab(from.y, delta.y, 0.0, 2.0, vec3(0,1,0), enter, exit, normal) &&
+                slab(from.y, delta.y, LUMEN_GROUND_Y, 2.0, vec3(0,1,0), enter, exit, normal) &&
                 slab(from.z, delta.z, float(z), float(z+1), vec3(0,0,1), enter, exit, normal))
             {
                 position = from + delta * enter;

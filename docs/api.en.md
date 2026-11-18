@@ -21,23 +21,27 @@ Choose one of the following three approaches based on your needs:
 RimWorld 1.7 uses a 2.5D orthographic/perspective top-down view with the following world axes:
 
 - `+X`: East (screen right)
-- `+Y`: Height axis (toward the camera)
+- `+Y`: Up from the ground
 - `+Z`: North (screen up)
+
+The ground is the fixed world plane `Y = 0`. The play origin (`LumenPlayRequest.OriginWorld.Y`) and every world position use Y as height above ground in cells, not as a RimWorld draw-altitude layer. A node's `LocalPosition` remains an offset from its parent, or from the play origin for a root node.
 
 ### 2. Node Space Planes (`LumenSpacePlane`)
 
 | Enum Value | Numeric Value | Rotation Behavior | Typical Usage |
 | --- | --- | --- | --- |
 | `GroundXZ` | `0` | Uses the node's own `LocalRotation` verbatim with no extra pitch rotation; no camera adaptation at render time | Ground sigils, ground halos, horizontal shockwaves, arbitrary 3D-oriented child emitters (such as RimUnity-imported assets) |
-| `Vertical3D` | `3` | Same node matrix as `GroundXZ`, so local `+Y` is world `+Y`; simulates in true 3D, with **render-only** camera adaptation: under IsoRim (where Y is squashed), height above `baseY` is divided by the squash factor to restore true altitude; under the vanilla straight-down 2D camera, it draws as a true orthographic view pitched 60°: around the play origin, the ground component along screen-up is scaled by `sin60°≈0.866`, height adds `cos60°=0.5` along screen-up, the screen-right component is kept, and draw height is `max(baseY, MoteOverhead)`; `StretchedVelocity` velocity and `Local` axes go through the same linear map | Fireworks, fountains, and other effects that launch truly skyward and fall back to the ground |
+| `Vertical3D` | `3` | Same node matrix as `GroundXZ`; simulation is true 3D. Only rendering adapts to the camera: a height of `h` cells appears `0.5 × h` cells up the screen in vanilla straight-down 2D. In 3D the camera projects the full world height, with IsoRim's Y squash cancelled. | Fireworks, fountains, trails behind rising projectiles |
 
-`Vertical3D`'s `baseY` is the height of the play origin (`LumenPlayRequest.OriginWorld.Y`); a node's `LocalPosition.Y` is relative to that origin (for example, a firework burst apex at `4.8` draws `2.4` cells above the origin in 2D). `GroundXZ` display is unaffected. The numeric values `1` and `2` are no longer valid and fail at parse time.
+For example, a play origin at `Y = 2` appears one cell above its ground position in 2D. If it rises another four cells without moving sideways, its trail extends two cells up the screen. `GroundXZ` does not use this projection. Space-plane values `1` and `2` are invalid.
 
-The straight-down 2D 60° view is a true orthographic projection: a sphere draws as a circle, a horizontal ring as an ellipse `0.866` tall, and the projection follows screen-up when the camera turns about Y. The pivot's ground position is the play origin `OriginWorld.XZ`, shared by every node of the effect; local-space particles use the current origin and world-space particles the origin at their birth, so the trail of a moving emitter or projectile does not drift with it. L2 records the birth origin at `1/32` cell precision within `±1024` cells.
+Vanilla 2D uses a 60° orthographic pitch: the ground component along screen-up is scaled by `sin 60° ≈ 0.866`, height contributes `cos 60° = 0.5` along screen-up, and the screen-right component is unchanged. A sphere projects to a circle and a horizontal ring to a foreshortened ellipse. The projection follows camera yaw. `StretchedVelocity` velocity and `Local` axes use the same linear map; the draw layer is `MoteOverhead`.
+
+All nodes share the play origin's XZ ground anchor. Local-space particles use the current anchor; world-space particles keep their birth anchor, so a moving emitter leaves its trail behind. L2 records the birth anchor at `1/32` cell precision within `±1024` cells.
 
 ### Ground-Contact Expiration (`EmitterSpec.KillBelowFloor` / `killBelowFloor`)
 
-`killBelowFloor` (default `false`) can be set on `EmitterSpec.KillBelowFloor` in C#, inside `.lumen.json` emitter objects, and under `<emitter>` in XML `LumenEffectDef`. When `true`, a particle expires and is reclaimed on the frame its world height drops below the play origin height `baseY` **and** its world velocity `Y < 0` (descending). Particles still rising below floor height or freshly spawned right on the floor are unaffected. L1 (CPU) and L2 (GPU compute) behave identically regardless of space plane; local-space emitters are evaluated after applying their world matrix.
+`killBelowFloor` (default `false`) can be set on `EmitterSpec.KillBelowFloor` in C#, inside `.lumen.json` emitter objects, and under `<emitter>` in XML `LumenEffectDef`. When `true`, a particle expires and is reclaimed on the frame its world position has `Y < 0` **and** its world velocity has `vY < 0` (descending). Particles still rising below floor height or freshly spawned right on the floor are unaffected. L1 (CPU) and L2 (GPU compute) behave identically regardless of space plane; local-space emitters are evaluated after applying their world matrix.
 
 > Tip: Across all emitter shapes, `Cone` defaults its primary emission axis to local `+Y`. To make particles shoot skyward in real altitude and fall back down, set the node to `Vertical3D`, set world-space gravity to `(0, -1, 0)` (or desired magnitude), and enable `KillBelowFloor` if they should vanish on impact.
 

@@ -11,6 +11,8 @@ namespace RimLumen.Core.Scene;
 /// </summary>
 public static class SpacePlaneTransform
 {
+    internal const float GroundY = 0f; // Shader counterpart: LUMEN_GROUND_Y in ParticleTypes.glsl.
+
     // Requires: node is non-null.
     // Ensures: returns the node's matrix relative to its parent's frame, in this order:
     //            S(node.LocalScale) * R(node.LocalRotation) * T(node.LocalPosition)
