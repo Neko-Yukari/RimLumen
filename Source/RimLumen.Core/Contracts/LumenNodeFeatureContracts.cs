@@ -9,6 +9,8 @@ public enum LumenNodeFeature : byte
     Distortion = 0,
     // EffectNodeSpec.Ribbon; backend owned by ribbon-trails.
     Ribbon = 1,
+    // EffectNodeSpec.ScreenDim; backend owned by screen-dim.
+    ScreenDim = 2,
 }
 
 // One node's state for the current frame.

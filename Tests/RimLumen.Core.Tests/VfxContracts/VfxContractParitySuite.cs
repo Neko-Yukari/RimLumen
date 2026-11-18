@@ -35,6 +35,7 @@ public static class VfxContractParitySuite
                 new EffectNodeSpec { Name = "plain", Emitter = new EmitterSpec { Name = "plain" } },
                 new EffectNodeSpec { Name = "trail", Ribbon = new RibbonSpec { Mode = LumenRibbonMode.Trail, Lifetime = 1f, MinVertexDistance = 0.1f, MaxPoints = 8 } },
                 new EffectNodeSpec { Name = "haze", Distortion = new DistortionSpec { Kind = LumenDistortionKind.HeatHaze, Radius = 2f, Strength = 0.1f, Frequency = 1f } },
+                new EffectNodeSpec { Name = "dim", ScreenDim = new ScreenDimSpec { Strength = 0.4f } },
             },
         };
         string expected = Describe(csharp.Nodes);
@@ -42,12 +43,14 @@ public static class VfxContractParitySuite
             { "effectId": "vfx.defaults", "nodes": [
               { "name": "plain", "emitter": {} },
               { "name": "trail", "ribbon": { "mode": "Trail", "lifetime": 1, "minVertexDistance": 0.1, "maxPoints": 8 } },
-              { "name": "haze", "distortion": { "kind": "HeatHaze", "radius": 2, "strength": 0.1, "frequency": 1 } } ] }
+              { "name": "haze", "distortion": { "kind": "HeatHaze", "radius": 2, "strength": 0.1, "frequency": 1 } },
+              { "name": "dim", "screenDim": { "strength": 0.4 } } ] }
             """).Nodes), "JSON");
         Same(expected, Describe(Xml("vfx.defaults",
             "<li><name>plain</name><emitter /></li>",
             "<li><name>trail</name><ribbon><mode>Trail</mode><lifetime>1</lifetime><minVertexDistance>0.1</minVertexDistance><maxPoints>8</maxPoints></ribbon></li>",
-            "<li><name>haze</name><distortion><kind>HeatHaze</kind><radius>2</radius><strength>0.1</strength><frequency>1</frequency></distortion></li>").Nodes), "XML");
+            "<li><name>haze</name><distortion><kind>HeatHaze</kind><radius>2</radius><strength>0.1</strength><frequency>1</frequency></distortion></li>",
+            "<li><name>dim</name><screenDim><strength>0.4</strength></screenDim></li>").Nodes), "XML");
     }
 
     // A. Environment forces
@@ -97,7 +100,22 @@ public static class VfxContractParitySuite
     [LumenFact] public static void RejectsNegativeDistortionDuration() => RejectJson(Distortion(Haze("\"radius\": 2, \"strength\": 0.1, \"duration\": -1")), "distortion.duration", ">= 0");
     [LumenFact] public static void RejectsNegativeStrengthOverTime() => RejectJson(Distortion(Haze("\"radius\": 2, \"strength\": 0.1, \"strengthOverTime\": [[0, -1]]")), "distortion.strengthOverTime[0]", ">= 0");
 
-    // E. Ribbon
+    // E. Screen dim
+    [LumenFact] public static void RequiresScreenDimStrengthJson() => RejectJson(ScreenDim("\"duration\": 1"), "screenDim.strength", "required");
+    [LumenFact] public static void RequiresScreenDimStrengthXml() => RejectXml("<li><name>fx</name><screenDim><duration>1</duration></screenDim></li>", "screenDim.strength", "required");
+    [LumenFact] public static void RejectsScreenDimStrengthAboveOne() => RejectJson(ScreenDim("\"strength\": 1.5"), "screenDim.strength", "[0,1]");
+    [LumenFact] public static void RejectsNegativeScreenDimStrength() => RejectJson(ScreenDim("\"strength\": -0.1"), "screenDim.strength", "[0,1]");
+    [LumenFact] public static void RejectsNegativeScreenDimDuration() => RejectJson(ScreenDim("\"strength\": 0.5, \"duration\": -1"), "screenDim.duration", ">= 0");
+    [LumenFact] public static void RejectsNegativeScreenDimStrengthOverTime() => RejectJson(ScreenDim("\"strength\": 0.5, \"strengthOverTime\": [[0, -1]]"), "screenDim.strengthOverTime[0]", ">= 0");
+    [LumenFact] public static void RejectsEmptyScreenDimStrengthOverTimeJson() => RejectJson(ScreenDim("\"strength\": 0.5, \"strengthOverTime\": []"), "screenDim.strengthOverTime", "at least one key");
+    [LumenFact] public static void RejectsEmptyScreenDimStrengthOverTimeXml() => RejectXml("<li><name>fx</name><screenDim><strength>0.5</strength><strengthOverTime /></screenDim></li>", "screenDim.strengthOverTime", "at least one key");
+    [LumenFact] public static void RejectsEmptyScreenDimStrengthOverTimeCSharp() => Reject(() => LumenAssetRules.Validate(new EffectAsset
+    {
+        EffectId = "vfx.reject",
+        Nodes = [new EffectNodeSpec { Name = "fx", ScreenDim = new ScreenDimSpec { Strength = 0.5f, StrengthOverTime = new ScalarCurve(Array.Empty<CurveKey>()) } }],
+    }, "vfx.reject"), "vfx.reject", "screenDim.strengthOverTime", "at least one key");
+
+    // F. Ribbon
     [LumenFact] public static void RejectsEmptyStrengthOverTimeXml() => RejectXml("<li><name>fx</name><distortion><kind>HeatHaze</kind><radius>2</radius><strength>0.1</strength><frequency>1</frequency><strengthOverTime /></distortion></li>", "distortion.strengthOverTime", "at least one key");
     [LumenFact] public static void RejectsEmptyWidthOverLengthXml() => RejectXml("<li><name>fx</name><ribbon><mode>Beam</mode><endAtTarget>true</endAtTarget><segments>1</segments><widthOverLength /></ribbon></li>", "ribbon.widthOverLength", "at least one key");
     [LumenFact] public static void RejectsEmptyColorOverLengthXml() => RejectXml("<li><name>fx</name><ribbon><mode>Beam</mode><endAtTarget>true</endAtTarget><segments>1</segments><colorOverLength /></ribbon></li>", "ribbon.colorOverLength", "at least one stop");
@@ -134,6 +152,7 @@ public static class VfxContractParitySuite
     private static string Distortion(string fields) => $"{{ \"name\": \"fx\", \"distortion\": {{ {fields} }} }}";
     private static string Ring(string fields) => $"\"kind\": \"RingWave\", \"radius\": 4, \"strength\": 0.3, {fields}";
     private static string Haze(string fields) => $"\"kind\": \"HeatHaze\", \"frequency\": 1, {fields}";
+    private static string ScreenDim(string fields) => $"{{ \"name\": \"fx\", \"screenDim\": {{ {fields} }} }}";
     private static string Ribbon(string fields) => $"{{ \"name\": \"fx\", \"ribbon\": {{ {fields} }} }}";
     private static string Trail(string fields) => $"\"mode\": \"Trail\", \"lifetime\": 1, \"minVertexDistance\": 0.1, {fields}";
     private static string Beam(string fields) => $"\"mode\": \"Beam\", \"endAtTarget\": true, \"segments\": 1, {fields}";
@@ -265,6 +284,15 @@ public static class VfxContractParitySuite
                 Ribbon = new RibbonSpec { Mode = LumenRibbonMode.Beam, EndLocal = new Vector3(0f, 0f, 5f), Segments = 8, NoiseAmplitude = 0.2f, NoiseFrequency = 10f },
             },
             new EffectNodeSpec { Name = "zap", Ribbon = new RibbonSpec { Mode = LumenRibbonMode.Beam, EndAtTarget = true, Segments = 1 } },
+            new EffectNodeSpec
+            {
+                Name = "dim",
+                ScreenDim = new ScreenDimSpec
+                {
+                    Strength = 0.7f, Duration = 1.5f,
+                    StrengthOverTime = new ScalarCurve(new[] { new CurveKey(0f, 0f), new CurveKey(0.3f, 1f), new CurveKey(1.5f, 0f) }),
+                },
+            },
         },
     };
 
@@ -284,7 +312,8 @@ public static class VfxContractParitySuite
               "widthOverLength": [[0,1],[1,0]], "colorOverLength": [[0,[1,0.5,0,1]],[1,[1,0,0,0]]], "hdrIntensity": 2,
               "textureKey": "Lumen/Trail", "blendMode": "AlphaBlend", "textureMode": "Tile", "alignment": "Ground", "softParticleFadeDistance": 0.25 } },
           { "name": "beam", "ribbon": { "mode": "Beam", "endLocal": [0,0,5], "segments": 8, "noiseAmplitude": 0.2, "noiseFrequency": 10 } },
-          { "name": "zap", "ribbon": { "mode": "Beam", "endAtTarget": true, "segments": 1 } } ] }
+          { "name": "zap", "ribbon": { "mode": "Beam", "endAtTarget": true, "segments": 1 } },
+          { "name": "dim", "screenDim": { "strength": 0.7, "duration": 1.5, "strengthOverTime": [[0,0],[0.3,1],[1.5,0]] } } ] }
         """;
 
     private static readonly string[] FullXml =
@@ -311,5 +340,7 @@ public static class VfxContractParitySuite
         "<li><name>beam</name><ribbon><mode>Beam</mode><endLocal>(0,0,5)</endLocal><segments>8</segments><noiseAmplitude>0.2</noiseAmplitude>" +
         "<noiseFrequency>10</noiseFrequency></ribbon></li>",
         "<li><name>zap</name><ribbon><mode>Beam</mode><endAtTarget>true</endAtTarget><segments>1</segments></ribbon></li>",
+        "<li><name>dim</name><screenDim><strength>0.7</strength><duration>1.5</duration><strengthOverTime><li><time>0</time><value>0</value></li>" +
+        "<li><time>0.3</time><value>1</value></li><li><time>1.5</time><value>0</value></li></strengthOverTime></screenDim></li>",
     };
 }

@@ -314,6 +314,7 @@ public sealed class EffectNodeSpec
     public PointLightSpec? PointLight { get; init; }
     public DistortionSpec? Distortion { get; init; }
     public RibbonSpec? Ribbon { get; init; }
+    public ScreenDimSpec? ScreenDim { get; init; }
 }
 
 public sealed class EffectAsset

@@ -501,8 +501,13 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
 
     private static readonly int FeatureCount = Enum.GetValues<LumenNodeFeature>().Length;
 
-    private static bool HasFeature(EffectNodeSpec node, LumenNodeFeature feature) =>
-        feature == LumenNodeFeature.Distortion ? node.Distortion is not null : node.Ribbon is not null;
+    private static bool HasFeature(EffectNodeSpec node, LumenNodeFeature feature) => feature switch
+    {
+        LumenNodeFeature.Distortion => node.Distortion is not null,
+        LumenNodeFeature.Ribbon => node.Ribbon is not null,
+        LumenNodeFeature.ScreenDim => node.ScreenDim is not null,
+        _ => throw new ArgumentOutOfRangeException(nameof(feature), feature, null),
+    };
 
     // Ensures: emits one pulse on TargetNodeIndex's emitter when that node has one (Bursts[0].Count if the
     //          emitter declares bursts, else round(RateOverTime), clamped to [0, MaxParticles]) through
