@@ -544,17 +544,18 @@ public static class CpuParticleSimulatorSuite
         Step(simulator, 0.25f);
         Vector(firstVelocity, simulator.LiveParticles[0].Velocity);
         simulator.SetEmitterParams(later, true, 1f, 1f);
-        for (int i = 0; i < 20; i++) { Step(simulator, 0.25f); simulator.RecordHdrDraws(default); }
+        for (uint frame = 1; frame <= 20; frame++) { Step(simulator, 0.25f, frameIndex: frame); simulator.RecordHdrDraws(default); }
         long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 100; i++)
+        for (uint frame = 21; frame <= 120; frame++)
         {
-            Step(simulator, 0.25f);
+            Step(simulator, 0.25f, frameIndex: frame);
             simulator.RecordHdrDraws(default);
             simulator.EnqueuePreCompute(default);
             simulator.RecordBufferBarriers(default);
             _ = simulator.HasActiveWork;
         }
         long bytes = GC.GetAllocatedBytesForCurrentThread() - before;
+        Console.WriteLine($"[L1] 100 distinct steady-state captures: {bytes} bytes allocated.");
         Check(bytes == 0, $"Steady-state allocated {bytes} bytes");
     }
 
@@ -957,12 +958,12 @@ public static class CpuParticleSimulatorSuite
         -forward.X, -forward.Y, -forward.Z, 0f,
         0f, 0f, 0f, 1f);
 
-    private static void Step(CpuParticleSimulator simulator, float dt, Matrix4x4? view = null, int mapIndex = -1)
+    private static void Step(CpuParticleSimulator simulator, float dt, Matrix4x4? view = null, int mapIndex = -1, ulong frameIndex = 0)
     {
         simulator.CaptureMainThread(new LumenCaptureContext
         {
             CurrentMapIndex = mapIndex,
-            FrameIndex = 0, DeltaTime = dt, ViewportWidth = 100, ViewportHeight = 100,
+            FrameIndex = frameIndex, DeltaTime = dt, ViewportWidth = 100, ViewportHeight = 100,
             ViewMatrix = view ?? Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
         });
     }

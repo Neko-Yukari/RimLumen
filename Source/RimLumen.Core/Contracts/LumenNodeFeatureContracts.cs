@@ -15,8 +15,8 @@ public enum LumenNodeFeature : byte
 // Transform: the node's world matrix and world rotation, parent composed (the same values emitters receive).
 // TargetWorld: LumenPlayRequest.TargetWorld. MapIndex: the handle's resolved Map.uniqueID, fixed for its lifetime.
 // Intensity: the handle's "intensity" parameter (finite >= 0). Active: the node belongs to the playing state;
-// false after its state exits and while the handle drains. DeltaTime: seconds this frame, already the unscaled
-// delta for a real-time handle; 0 in the frame passed to CreateInstance.
+// false after its state exits and while the handle drains. DeltaTime: seconds elapsed this frame, excluding time
+// before the node's latest restart within the frame. Real-time handles use unscaled seconds; CreateInstance gets 0.
 // Origin: the handle's current play origin (LumenPlayRequest.OriginWorld, then Follow); its XZ is the Vertical3D
 // ground anchor shared with particles. Height is measured from the world ground Y = 0, not from Origin.Y.
 public readonly record struct LumenNodeFeatureFrame(

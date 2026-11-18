@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Numerics;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.ParticlesGpu;
@@ -76,9 +77,10 @@ public static class EffectStateMachineSuite
         var log = Record(handle);
         VfxTestData.Step(service, 0.25f);
         VfxAssert.Equal(2, service.Simulator.LiveParticleCount);
+        VfxTestData.Step(service, 0.25f); // Entry at the frame end: release has had zero emission time.
+        VfxAssert.Equal(2, service.Simulator.LiveParticleCount);
         VfxTestData.Step(service, 0.25f);
         VfxAssert.Equal(5, service.Simulator.LiveParticleCount);
-        VfxTestData.Step(service, 0.25f);
         VfxAssert.Equal("state:charge,state:release,notify:impact", string.Join(",", log));
         VfxTestData.Step(service, 0.25f);
         VfxAssert.Check(handle.IsAlive && !handle.IsEmitting, "the last state without next ends the effect");
@@ -109,6 +111,29 @@ public static class EffectStateMachineSuite
         VfxTestData.Step(service, 1f);
         VfxAssert.Equal("state:a,state:b,state:c,notify:c0,finished", string.Join(",", log));
         VfxAssert.Check(!handle.IsAlive, "an effect without particles or lights dies on the frame it ends");
+    }
+
+    [LumenFact]
+    public static void LifecycleMiddleStateLightFadesWhileLastStateEmitterRestartsAgain()
+    {
+        var asset = new EffectAsset { EffectId = "fsm.middle-fade",
+            Nodes = [new() { Name = "middle", Emitter = VfxTestData.Emitter(rate: 0), PointLight = new(2f, Vector3.One,
+                new ScalarCurve([new(0, 0, 1, 1), new(1, 1, 1, 1)])) }, new() { Name = "again", Emitter = VfxTestData.Emitter(rate: 32) }],
+            States = [new() { Name = "A", Duration = 0.25f, Next = "B" },
+                new() { Name = "B", Nodes = ["middle", "again"], Duration = 0.125f, Next = "C" }, new() { Name = "C", Nodes = ["again"], Loop = true }] };
+        var service = VfxTestData.Service(asset);
+        using var engine = new LumenGpuParticleEngine(256);
+        service.GpuEngineProvider = () => engine;
+        using var handle = service.Play(new LumenPlayRequest { MapIndex = 7, EffectId = asset.EffectId });
+        VfxTestData.Step(service, 0.4375f, 7);
+        engine.CaptureMainThread(new LumenCaptureContext { FrameIndex = 1, CurrentMapIndex = 7, DeltaTime = 0.4375f,
+            ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, ViewportWidth = 100, ViewportHeight = 100, LumenRenderPassId = 0 });
+        var rows = engine.CapturedFrame!.Emitters;
+        VfxAssert.Equal(0.1875f, rows[0].Parameters.WorldPhysics.X); // The B-only node still ages during C.
+        VfxAssert.Equal(0.0625f, rows[1].Parameters.WorldPhysics.X);
+        VfxAssert.Equal(2f, rows[1].Parameters.Slots.Z); // Last restart wins, not the first one.
+        VfxAssert.Equal(1, service.Lights.Count);
+        VfxAssert.Close(new Vector3(0.140625f), service.Lights[0].Light); // Age .1875 × fade .75 (1/16 s into a 1/4 s fade).
     }
 
     [LumenFact]

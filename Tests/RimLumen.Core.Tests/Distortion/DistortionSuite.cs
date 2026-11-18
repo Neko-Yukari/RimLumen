@@ -90,6 +90,35 @@ public static class DistortionSuite
     }
 
     [LumenFact]
+    public static void LifecycleRingEnteredMidFrameFadesOnItsOwnClock()
+    {
+        var asset = new EffectAsset { EffectId = "distortion.mid-frame",
+            Nodes = [Node(new DistortionSpec { Kind = LumenDistortionKind.RingWave, Radius = 4, Strength = 1, Thickness = 1, Speed = 4, Duration = 0.100f })],
+            States = [new() { Name = "wait", Duration = 0.120f, Next = "wave" }, new() { Name = "wave", Nodes = ["wave"], Loop = true }] };
+        var service = SceneAndLighting.VfxTestData.Service(asset);
+        var backend = new LumenDistortionBackend();
+        LumenHostRegistry.RegisterNodeFeatureBackend(backend);
+        try
+        {
+            (bool Fading, bool Finished) PlayAndStop(int frames)
+            {
+                using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7 });
+                for (int i = 0; i < frames; i++) SceneAndLighting.VfxTestData.Step(service, 8f / 60 / frames);
+                handle.Stop(true);
+                bool fading = handle.IsAlive;
+                SceneAndLighting.VfxTestData.Step(service, 0.09f);
+                SceneAndLighting.VfxTestData.Step(service, 0f);
+                return (fading, !handle.IsAlive);
+            }
+            var split = PlayAndStop(8);
+            var whole = PlayAndStop(1);
+            Check(split == (true, true) && whole == split,
+                $"Expected (fading at 8 ticks, finished 90ms later) = (True, True); split={split}, whole={whole}.");
+        }
+        finally { LumenHostRegistry.UnregisterNodeFeatureBackend(backend); }
+    }
+
+    [LumenFact]
     public static void BackendInstancesDrainUntilTheirTimelineEnds()
     {
         var backend = new LumenDistortionBackend();

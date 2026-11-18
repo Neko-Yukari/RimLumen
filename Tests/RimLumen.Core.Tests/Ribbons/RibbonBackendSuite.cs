@@ -155,6 +155,30 @@ public static class RibbonBackendSuite
     }
 
     [LumenFact]
+    public static void LifecycleMidFrameBeamUsesOnlyItsOwnNoiseClock()
+    {
+        var asset = new EffectAsset { EffectId = "ribbon.mid-frame",
+            Nodes = [new() { Name = "beam", Ribbon = new() { Mode = LumenRibbonMode.Beam,
+                EndLocal = new Vector3(4, 0, 0), Segments = 3, NoiseAmplitude = 0.5f, NoiseFrequency = 4f } }],
+            States = [new() { Name = "wait", Duration = 0.5f, Next = "show" }, new() { Name = "show", Nodes = ["beam"], Loop = true }] };
+        var service = SceneAndLighting.VfxTestData.Service(asset);
+        var backend = new LumenRibbonBackend();
+        LumenHostRegistry.RegisterNodeFeatureBackend(backend);
+        try
+        {
+            using var handle = service.Play(new LumenPlayRequest { MapIndex = 7, EffectId = asset.EffectId });
+            SceneAndLighting.VfxTestData.Step(service, 0.625f);
+            Vector3[] entered = Centres(backend);
+            handle.Trigger("beam");
+            SceneAndLighting.VfxTestData.Step(service, 0.125f);
+            Build(backend);
+            Equal(4, entered.Length);
+            Check(entered.SequenceEqual(Centres(backend)), "After 0.5 s waiting, a 0.625 s frame must draw the 0.125 s beam, not the 0.625 s noise roll.");
+        }
+        finally { LumenHostRegistry.UnregisterNodeFeatureBackend(backend); }
+    }
+
+    [LumenFact]
     public static void RisingVertical3DTrailProjectsHalfItsRiseAboveFixedGround()
     {
         var backend = new LumenRibbonBackend();
