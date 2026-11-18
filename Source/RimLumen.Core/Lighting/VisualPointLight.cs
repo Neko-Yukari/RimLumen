@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using RimLumen.Core.Scene;
 
 namespace RimLumen.Core.Lighting;
 
@@ -18,19 +19,20 @@ internal readonly record struct VisualPointLight(float X, float Z, float Radius,
         return q * q;
     }
 
-    internal Vector3 EvaluateAt(float worldX, float worldZ)
+    internal Vector3 EvaluateAt(float worldX, float worldZ, ParticleMapGrid walls)
     {
         float dx = worldX - X;
         float dz = worldZ - Z;
-        return Light * Falloff(MathF.Sqrt(dx * dx + dz * dz), Radius);
+        return Light * Falloff(MathF.Sqrt(dx * dx + dz * dz), Radius) * LightOcclusion.Visibility(walls, X, Z, worldX, worldZ);
     }
 
     // The scene multiplier term at one ground point: overlapping pools add linearly (RimLumenLightPoolAccumulate),
     // then RimLumenLightPool.frag.glsl compresses the sum once, so the scene becomes scene * (1 + result).
-    internal static Vector3 AccumulateAndCompress(ReadOnlySpan<VisualPointLight> lights, float worldX, float worldZ)
+    internal static Vector3 AccumulateAndCompress(ReadOnlySpan<VisualPointLight> lights, float worldX, float worldZ,
+        ParticleMapGrid walls)
     {
         Vector3 sum = Vector3.Zero;
-        foreach (VisualPointLight light in lights) sum += light.EvaluateAt(worldX, worldZ);
+        foreach (VisualPointLight light in lights) sum += light.EvaluateAt(worldX, worldZ, walls);
         return CompressHighlights(sum);
     }
 

@@ -49,13 +49,17 @@ internal static class ParticleCollisionFields
         if (mapId < 0 || (spec.Mode == LumenCollisionMode.None && !spec.KillUnderRoof)) return null;
         if (Fields.TryGetValue(mapId, out Field? field)) return field.Capture();
         foreach (Map map in Find.Maps)
-            if (map.uniqueID == mapId)
-            {
-                field = new Field(map);
-                Fields.Add(mapId, field);
-                return field.Grid;
-            }
+            if (map.uniqueID == mapId) return Capture(map);
         return null; // A removed map has no collidable geometry while its effects drain.
+    }
+
+    // Also the light-pool wall source (LightPoolRenderer): bit 0 is the one wall rule both features share.
+    internal static ParticleMapGrid Capture(Map map)
+    {
+        if (Fields.TryGetValue(map.uniqueID, out Field? field)) return field.Capture();
+        field = new Field(map);
+        Fields.Add(map.uniqueID, field);
+        return field.Grid;
     }
 
     internal static void Forget(int mapId)
