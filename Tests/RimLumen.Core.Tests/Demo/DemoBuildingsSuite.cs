@@ -27,7 +27,7 @@ public static class DemoBuildingsSuite
             LumenAssetRules.Validate(asset, id);
 
             NativeTestData.Check(asset.EffectId == id, $"{id}: keeps the requested effect id");
-            NativeTestData.Check(asset.Nodes.Length == 4, $"{id}: 4 nodes (trail, burst, sparkle, light)");
+            NativeTestData.Check(asset.Nodes.Length == 5, $"{id}: 5 nodes (trail, burst, sparkle, light, crackle)");
             NativeTestData.Check(asset.TimelineEvents.Length == 0, $"{id}: bursts are time-driven, not Trigger-driven");
 
             EffectNodeSpec trailNode = asset.Nodes[0];
@@ -159,7 +159,7 @@ public static class DemoBuildingsSuite
         });
         var typed = (EffectInstanceHandle)handle;
         VfxAssert.Check(typed.IsAlive && typed.IsEmitting, "firework starts playing");
-        VfxAssert.Equal(1, typed.GpuEmitterCount);
+        VfxAssert.Equal(2, typed.GpuEmitterCount);
         VfxAssert.Equal(2, typed.CpuEmitterCount);
         VfxAssert.Check(service.HasActiveWork, "a playing firework keeps the pipeline active");
 
@@ -223,7 +223,7 @@ public static class DemoBuildingsSuite
         handle.Stop(allowFadeOut: false);
         handle.Dispose();
         VfxAssert.Check(!handle.IsAlive, "an immediate stop kills the handle");
-        VfxAssert.Equal(1, engine.Destroys.Count);
+        VfxAssert.Equal(2, engine.Destroys.Count);
         VfxAssert.Check(engine.Destroys[0].Immediate, "the L2 instance is destroyed immediately");
 
         VfxTestData.Step(service, 0.05f);
@@ -295,6 +295,7 @@ public static class DemoBuildingsSuite
     {
         var asset = RimLumenDemoEffects.CreateFireworkAsset(RimLumenDemoEffects.FireworkGoldId, 0);
         var service = VfxTestData.Service(asset);
+        service.GpuEngineProvider = () => new SpyGpuEngine();
         using var handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         VfxTestData.Step(service, 0.016f);
         EmitterSpec spec = asset.Nodes[0].Emitter!;
@@ -308,6 +309,10 @@ public static class DemoBuildingsSuite
         VfxAssert.Check(MathF.Abs(velocity.Z) < 0.15f * spec.StartSpeedMax,
             $"Launch must not drift along the ground +Z, actual velocity={velocity}");
     }
+
+    [LumenFact]
+    public static void DistortionPylonValidates() =>
+        LumenAssetRules.Validate(RimLumenDemoEffects.CreateDistortionPylonAsset(), RimLumenDemoEffects.DistortionPylonId);
 
     private static bool HasGravityDown(EmitterSpec emitter)
     {

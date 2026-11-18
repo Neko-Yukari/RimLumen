@@ -7,7 +7,8 @@ using CurveKey = RimLumen.Core.Contracts.CurveKey;
 
 namespace RimLumen.Core.Demo;
 
-// Built-in optional demo EffectAssets for the Firework Launcher, Particle Fountain and street lamp joy buildings.
+// Built-in optional demo EffectAssets for the Firework Launcher, Particle Fountain, Distortion Pylon and street lamp
+// joy buildings.
 //
 // Coordinates follow docs/api.md section 2: world +X is east, +Y is altitude and +Z is north (up on
 // screen). Every emitter that should shoot upwards uses Vertical3D: the simulation is true 3D (the Cone
@@ -21,6 +22,10 @@ internal static class RimLumenDemoEffects
     internal const string FireworkMagentaId = "RimLumen.Demo.Firework.Magenta";
     internal const string ParticleFountainId = "RimLumen.Demo.ParticleFountain";
     internal const string StreetLampId = "RimLumen.Demo.StreetLamp";
+    internal const string DistortionPylonId = "RimLumen.Demo.DistortionPylon";
+
+    // The pylon node that CompRimLumenDemoEmitter re-fires with ILumenEffectHandle.Trigger.
+    internal const string PylonShockRingNode = "shock_ring";
 
     // Shared by the street lamp's visual pool and CompProperties_RimLumenLogicalLight in the lamp ThingDefs.
     internal const float StreetLampRadius = 5f;
@@ -73,12 +78,18 @@ internal static class RimLumenDemoEffects
         {
             catalog.Register(CreateStreetLampAsset());
         }
+
+        if (!catalog.TryResolveEffect(DistortionPylonId, out _))
+        {
+            catalog.Register(CreateDistortionPylonAsset());
+        }
     }
 
     // Requires: effectId is non-empty; variantIndex selects hue/ember (wrapped into range).
-    // Ensures: returns a 4-node firework: L1 launch trail (0..0.65 s), L2 apex burst fired at 0.65 s,
-    //          L1 white-hot sparkle core at the same instant, and a point light that stays dark until
-    //          the apex, peaks there and is gone by 2.2 s.
+    // Ensures: returns a 5-node firework: L1 launch trail (0..0.65 s), L2 apex burst fired at 0.65 s whose sparks
+    //          bounce off walls and expire under roofs, L1 white-hot sparkle core at the same instant, a point light
+    //          that stays dark until the apex, peaks there and is gone by 2.2 s, and the L2 crackle the sparks
+    //          spawn when they hit a wall or die (in the air, on the floor or under a roof).
     internal static EffectAsset CreateFireworkAsset(string effectId, int variantIndex)
     {
         int variant = variantIndex % FireworkHues.Length;
@@ -191,6 +202,19 @@ internal static class RimLumenDemoEffects
                             new ForceFieldSpec(ForceFieldKind.CurlTurbulence,
                                 Vector3.Zero, Vector3.Zero, 0f, 1.8f, 1.3f),
                         },
+                        Collision = new CollisionSpec
+                        {
+                            Mode = LumenCollisionMode.Bounce,
+                            Bounce = 0.4f,
+                            Dampen = 0.25f,
+                            LifetimeLoss = 0.15f,
+                            KillUnderRoof = true,
+                        },
+                        SubEmitters = new[]
+                        {
+                            new SubEmitterSpec(LumenSubEmitterTrigger.Collision, CrackleNodeIndex, 4),
+                            new SubEmitterSpec(LumenSubEmitterTrigger.Death, CrackleNodeIndex, 3, 0.12f),
+                        },
                     },
                 },
 
@@ -253,9 +277,59 @@ internal static class RimLumenDemoEffects
                             new CurveKey(2.2f, 0f),
                         })),
                 },
+
+                // 4: crackle, emitted only by the apex sparks' Collision and Death events at the event position.
+                new EffectNodeSpec
+                {
+                    Name = "spark_crackle",
+                    SpacePlane = LumenSpacePlane.Vertical3D,
+                    LocalPosition = new Vector3(0f, apexY, 0f),
+                    Emitter = new EmitterSpec
+                    {
+                        Name = "spark_crackle",
+                        PreferredTier = LumenParticleTier.L2_GpuCompute,
+                        KillBelowFloor = true,
+                        MaxParticles = 1200,
+                        Duration = LaunchSeconds + 0.30f,
+                        Looping = false,
+                        WorldSpaceSimulation = true,
+                        RateOverTime = 0f,
+                        Shape = LumenShapeKind.Sphere,
+                        ShapeExtents = new Vector3(0.05f, 0.05f, 0.05f),
+                        StartSpeedMin = 0.8f,
+                        StartSpeedMax = 3.2f,
+                        StartLifetimeMin = 0.12f,
+                        StartLifetimeMax = 0.32f,
+                        StartSizeMin = 0.05f,
+                        StartSizeMax = 0.14f,
+                        StartColor = Vector4.One,
+                        HdrIntensity = 10.0f,
+                        SoftParticleFadeDistance = 0.3f,
+                        BillboardMode = LumenBillboardMode.StretchedVelocity,
+                        VelocityStretchFactor = 0.05f,
+                        SizeOverLifetime = new ScalarCurve(new[]
+                        {
+                            new CurveKey(0f, 1.0f),
+                            new CurveKey(1f, 0.2f),
+                        }),
+                        ColorOverLifetime = new ColorGradient(new[]
+                        {
+                            new ColorStop(0f, new Vector4(1f, 1f, 0.92f, 1f)),
+                            new ColorStop(0.4f, hue),
+                            new ColorStop(1f, new Vector4(hue.X, hue.Y, hue.Z, 0f)),
+                        }),
+                        ForceFields = new[]
+                        {
+                            new ForceFieldSpec(ForceFieldKind.GravityDrag,
+                                new Vector3(0f, -1f, 0f), new Vector3(1.5f, 0f, 0f), 0f, 3.0f),
+                        },
+                    },
+                },
             },
         };
     }
+
+    private const int CrackleNodeIndex = 4;
 
     // Ensures: returns a 3-node looping fountain: an L2 cone jet that arcs over and fades to alpha 0,
     //          an L2 ground mist disc, and a steady cool-cyan point light at the jet's throat.
@@ -315,6 +389,15 @@ internal static class RimLumenDemoEffects
                                 new Vector3(0f, -1f, 0f), new Vector3(0.35f, 0f, 0f), 0f, 9.0f),
                             new ForceFieldSpec(ForceFieldKind.CurlTurbulence,
                                 Vector3.Zero, Vector3.Zero, 0f, 1.1f, 2.0f),
+                        },
+                        // Droplets bounce off walls below 2 cells and vanish where they enter a roofed cell.
+                        Collision = new CollisionSpec
+                        {
+                            Mode = LumenCollisionMode.Bounce,
+                            Bounce = 0.35f,
+                            Dampen = 0.2f,
+                            LifetimeLoss = 0.1f,
+                            KillUnderRoof = true,
                         },
                     },
                 },
@@ -393,6 +476,150 @@ internal static class RimLumenDemoEffects
             States = new[]
             {
                 new EffectStateSpec { Name = "lit", Nodes = new[] { "lamp_light" }, Loop = true },
+            },
+        };
+    }
+
+    // Ensures: returns a looping pylon: a heat haze over the pylon, a ground shock ring that fires on every
+    //          (re)start of node "shock_ring", a spark orbiting 1.5 cells out at 2 cells height that draws a native
+    //          trail ribbon, a jittering beam arc from the pylon tip to that spark, and a steady violet light pool.
+    //          The orbit comes from the play request's Follow yaw: the nodes sit at a fixed local offset.
+    internal static EffectAsset CreateDistortionPylonAsset()
+    {
+        var orbit = new Vector3(1.5f, 2.0f, 0f);
+        var tip = new Vector3(0f, 1.1f, 0f);
+
+        return new EffectAsset
+        {
+            EffectId = DistortionPylonId,
+            Nodes = new[]
+            {
+                // 0: continuous shimmer around the orbit; Duration 0 = while the effect plays.
+                new EffectNodeSpec
+                {
+                    Name = "heat_haze",
+                    SpacePlane = LumenSpacePlane.Vertical3D,
+                    LocalPosition = new Vector3(0f, 1.6f, 0f),
+                    Distortion = new DistortionSpec
+                    {
+                        Kind = LumenDistortionKind.HeatHaze,
+                        Radius = 2.6f,
+                        Strength = 0.18f,
+                        Frequency = 1.5f,
+                    },
+                },
+
+                // 1: one shock ring on the ground per restart, fading out as it reaches 5 cells.
+                new EffectNodeSpec
+                {
+                    Name = PylonShockRingNode,
+                    Distortion = new DistortionSpec
+                    {
+                        Kind = LumenDistortionKind.RingWave,
+                        Radius = 5f,
+                        Strength = 0.45f,
+                        Thickness = 0.6f,
+                        Speed = 6f,
+                        Duration = 0.85f,
+                        StrengthOverTime = new ScalarCurve(new[]
+                        {
+                            new CurveKey(0f, 1f),
+                            new CurveKey(0.85f, 0f),
+                        }),
+                    },
+                },
+
+                // 2: the orbiting spark: a native trail ribbon plus a few sparks shed from its head.
+                new EffectNodeSpec
+                {
+                    Name = "orbit_spark",
+                    SpacePlane = LumenSpacePlane.Vertical3D,
+                    LocalPosition = orbit,
+                    Ribbon = new RibbonSpec
+                    {
+                        Mode = LumenRibbonMode.Trail,
+                        Lifetime = 0.45f,
+                        MinVertexDistance = 0.08f,
+                        MaxPoints = 96,
+                        Width = 0.22f,
+                        WidthOverLength = new ScalarCurve(new[]
+                        {
+                            new CurveKey(0f, 1f),
+                            new CurveKey(1f, 0f),
+                        }),
+                        ColorOverLength = new ColorGradient(new[]
+                        {
+                            new ColorStop(0f, new Vector4(0.85f, 0.92f, 1f, 1f)),
+                            new ColorStop(0.4f, new Vector4(0.50f, 0.45f, 1f, 0.8f)),
+                            new ColorStop(1f, new Vector4(0.35f, 0.15f, 0.90f, 0f)),
+                        }),
+                        HdrIntensity = 4f,
+                    },
+                    Emitter = new EmitterSpec
+                    {
+                        Name = "orbit_spark",
+                        PreferredTier = LumenParticleTier.L1_NativeCpu,
+                        KillBelowFloor = true,
+                        MaxParticles = 120,
+                        Duration = 1f,
+                        Looping = true,
+                        WorldSpaceSimulation = true,
+                        RateOverTime = 90f,
+                        Shape = LumenShapeKind.Sphere,
+                        ShapeExtents = new Vector3(0.05f, 0.05f, 0.05f),
+                        StartSpeedMin = 0.2f,
+                        StartSpeedMax = 0.8f,
+                        StartLifetimeMin = 0.2f,
+                        StartLifetimeMax = 0.4f,
+                        StartSizeMin = 0.12f,
+                        StartSizeMax = 0.28f,
+                        StartColor = Vector4.One,
+                        HdrIntensity = 6f,
+                        SoftParticleFadeDistance = 0.3f,
+                        SizeOverLifetime = new ScalarCurve(new[]
+                        {
+                            new CurveKey(0f, 1f),
+                            new CurveKey(1f, 0.2f),
+                        }),
+                        ColorOverLifetime = new ColorGradient(new[]
+                        {
+                            new ColorStop(0f, new Vector4(1f, 1f, 1f, 1f)),
+                            new ColorStop(1f, new Vector4(0.55f, 0.35f, 1f, 0f)),
+                        }),
+                        ForceFields = new[]
+                        {
+                            new ForceFieldSpec(ForceFieldKind.GravityDrag,
+                                new Vector3(0f, -1f, 0f), new Vector3(0.8f, 0f, 0f), 0f, 1.5f),
+                        },
+                    },
+                },
+
+                // 3: a jagged arc from the pylon tip to the orbiting spark; both ends turn with the Follow yaw.
+                new EffectNodeSpec
+                {
+                    Name = "arc_beam",
+                    SpacePlane = LumenSpacePlane.Vertical3D,
+                    LocalPosition = tip,
+                    Ribbon = new RibbonSpec
+                    {
+                        Mode = LumenRibbonMode.Beam,
+                        EndLocal = orbit - tip,
+                        Segments = 8,
+                        NoiseAmplitude = 0.15f,
+                        NoiseFrequency = 24f,
+                        Width = 0.09f,
+                        ColorOverLength = ColorGradient.Constant(new Vector4(0.75f, 0.70f, 1f, 1f)),
+                        HdrIntensity = 4f,
+                    },
+                },
+
+                // 4: the pylon's light pool; it lies in the scene behind the effect layer, so the haze bends it.
+                new EffectNodeSpec
+                {
+                    Name = "pylon_light",
+                    LocalPosition = new Vector3(0f, 1.6f, 0f),
+                    PointLight = new PointLightSpec(4.5f, new Vector3(0.62f, 0.45f, 1f)),
+                },
             },
         };
     }

@@ -130,6 +130,25 @@ internal static class ShowcaseValidationSave
         Report("RimLumen_FireworkLauncher (auto-launch on)", Rect(4, 6, 4, 6));
         Report("RimLumen_ParticleFountain (active)", Rect(12, 6, 12, 6));
 
+        // Up-screen of the launcher, so the climb and the burst pass through the haze and the shock ring.
+        Spawn(map, DefDatabase<ThingDef>.GetNamed(DemoBuildingRegistry.DistortionPylonDefName), Cell(4, 9));
+        Report("RimLumen_DistortionPylon (haze, shock ring every 2.5 s, orbit trail + arc beam)", Rect(4, 9, 4, 9));
+        // Distortion bends the scene behind the effect layer, not RimLumen particles: this wall, lit by the pylon's own
+        // light pool, gives the haze straight edges to bend.
+        CellRect pylonWall = Rect(2, 11, 6, 11);
+        foreach (IntVec3 cell in pylonWall) Spawn(map, ThingDefOf.Wall, cell, ThingDefOf.BlocksGranite);
+        Report("pylon backdrop wall: Wall x5, 2 cells north of the pylon", pylonWall);
+
+        // Jet droplets reach about 2 cells out: they bounce off this wall below 2 cells height and vanish where they
+        // enter the roof strip, which the wall also supports.
+        CellRect fountainWall = Rect(14, 3, 14, 9);
+        foreach (IntVec3 cell in fountainWall) Spawn(map, ThingDefOf.Wall, cell, ThingDefOf.BlocksGranite);
+        CellRect fountainRoof = Rect(9, 8, 13, 9);
+        foreach (IntVec3 cell in fountainRoof) map.roofGrid.SetRoof(cell, RoofDefOf.RoofConstructed);
+        Report("fountain wall: Wall x7, 1.5 cells east of the jet", fountainWall);
+        Report("fountain roof strip: RoofConstructed x10, 1.5 cells north of the jet", fountainRoof);
+        Report("explosion test ground: open soil next to the fountain", Rect(8, 1, 11, 4));
+
         IntVec3 visualLamp = Cell(22, 12);
         IntVec3 logicLamp = Cell(22, 0);
         IntVec3 bothLamp = Cell(22, -12);
@@ -147,7 +166,7 @@ internal static class ShowcaseValidationSave
         if (outdoor == null || outdoor.CellCount != 36 || outdoor.OpenRoofCount != 12 || !outdoor.UsesOutdoorTemperature ||
             indoor == null || indoor.CellCount != 25 || indoor.OpenRoofCount != 0 || indoor.UsesOutdoorTemperature ||
             cave == null || cave.CellCount != 9 || cave.OpenRoofCount != 0 || cave.TouchesMapEdge ||
-            Cell(3, -14).GetRoom(map) != null)
+            Cell(3, -14).GetRoom(map) != null || !fountainRoof.Cells.All(cell => cell.Roofed(map)))
             throw new InvalidOperationException("Validation scene room/roof contracts were not established.");
 
         // Refog last: subsequent wall spawning/removal can trigger vanilla unfogging.

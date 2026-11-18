@@ -12,6 +12,7 @@ public enum DemoEmitterKind
     Firework,
     Fountain,
     StreetLamp,
+    DistortionPylon,
 }
 
 public sealed class CompProperties_RimLumenDemoEmitter : CompProperties
@@ -27,7 +28,8 @@ public sealed class CompProperties_RimLumenDemoEmitter : CompProperties
 // Drives the optional demo buildings. Every effect is played with realTime = false, so the play handle
 // follows the game clock: the firework trail, burst and light all freeze mid-air while the game is
 // paused and scale with 1x/2x/3x, with no per-frame work on this component beyond the tick counter.
-// The fountain and the street lamp keep one steady looping effect alive; only the fountain can be toggled.
+// The fountain, the street lamp and the distortion pylon keep one steady looping effect alive; only the fountain
+// can be toggled. The pylon also re-fires its shock ring on a tick timer and turns its orbit by the game tick.
 public sealed class CompRimLumenDemoEmitter : ThingComp
 {
     // 3.2 s between automatic launches; the visible lifetime comes from the firework asset itself.
@@ -36,6 +38,9 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
     private static readonly int FireworkVisibleTicks =
         (int)MathF.Ceiling(RimLumenDemoEffects.FireworkVisibleSeconds * TicksPerSecond);
     private const int MaxConcurrentFireworks = 3;
+    // 2.5 s between pylon shock rings; one orbit every 90 ticks (1.5 s at 1x).
+    private const int PylonPulseIntervalTicks = 150;
+    private const int PylonOrbitTicks = 90;
 
     private sealed class ActiveLaunch
     {
@@ -50,6 +55,7 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
     private bool autoLaunch = true;
     private bool fountainActive = true;
     private int autoLaunchTicks;
+    private int pylonPulseTicks;
     private int variantCursor;
 
     private CompProperties_RimLumenDemoEmitter Props => (CompProperties_RimLumenDemoEmitter)props;
@@ -67,13 +73,17 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
         }
 
         if (fountainActive && steady is not { IsAlive: true }) StartSteady();
+        if (Props.kind != DemoEmitterKind.DistortionPylon || ++pylonPulseTicks < PylonPulseIntervalTicks) return;
+        pylonPulseTicks = 0;
+        steady?.Trigger(RimLumenDemoEffects.PylonShockRingNode);
     }
 
     public override void PostSpawnSetup(bool respawningAfterLoad)
     {
         base.PostSpawnSetup(respawningAfterLoad);
-        // The lamp has no toggle: a Play that failed in an earlier session is retried on every spawn.
-        if (Props.kind == DemoEmitterKind.StreetLamp || (Props.kind == DemoEmitterKind.Fountain && fountainActive)) StartSteady();
+        // The lamp and the pylon have no toggle: a Play that failed in an earlier session is retried on every spawn.
+        if (Props.kind is DemoEmitterKind.StreetLamp or DemoEmitterKind.DistortionPylon ||
+            (Props.kind == DemoEmitterKind.Fountain && fountainActive)) StartSteady();
     }
 
     public override void PostDeSpawn(Map map, DestroyMode mode)
@@ -172,13 +182,26 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
         if (parent.Map is null) return;
 
         RimLumenDemoEffects.EnsureRegistered();
+        System.Numerics.Vector3 origin = EffectOrigin;
         ILumenEffectHandle handle = RimLumenApi.Play(new LumenPlayRequest
         {
-            EffectId = Props.kind == DemoEmitterKind.Fountain
-                ? RimLumenDemoEffects.ParticleFountainId
-                : RimLumenDemoEffects.StreetLampId,
+            EffectId = Props.kind switch
+            {
+                DemoEmitterKind.Fountain => RimLumenDemoEffects.ParticleFountainId,
+                DemoEmitterKind.DistortionPylon => RimLumenDemoEffects.DistortionPylonId,
+                _ => RimLumenDemoEffects.StreetLampId,
+            },
             MapIndex = parent.Map.uniqueID,
-            OriginWorld = EffectOrigin,
+            OriginWorld = origin,
+            // The pylon's orbit: the root yaw follows the game tick, so it stops while paused and speeds up at 2x/3x.
+            Follow = Props.kind == DemoEmitterKind.DistortionPylon
+                ? (out System.Numerics.Vector3 position, out float rotationDegrees) =>
+                {
+                    position = origin;
+                    rotationDegrees = Find.TickManager.TicksGame % PylonOrbitTicks * (360f / PylonOrbitTicks);
+                    return true;
+                }
+                : null,
             RealTime = false,
         });
         if (!handle.IsAlive)
