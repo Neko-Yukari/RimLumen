@@ -65,6 +65,7 @@ public sealed partial class LumenEffectDef : Def
                 PointLight = node.pointLight is null ? null : ToPointLightSpec(node.pointLight, nodePath),
                 Distortion = node.distortion is null ? null : ToDistortionSpec(node.distortion, nodePath),
                 Ribbon = node.ribbon is null ? null : ToRibbonSpec(node.ribbon, nodePath),
+                ScreenDim = node.screenDim is null ? null : ToScreenDimSpec(node.screenDim, nodePath),
             };
         }
 
@@ -320,6 +321,7 @@ public sealed class LumenNodeXml
     public LumenPointLightXml? pointLight;
     public LumenDistortionXml? distortion;
     public LumenRibbonXml? ribbon;
+    public LumenScreenDimXml? screenDim;
 }
 
 // XML mirror of <see cref="EmitterSpec"/>. Field initialisers are the SAME defaults the .lumen.json loader
@@ -559,6 +561,8 @@ internal static partial class LumenAssetRules
                 ValidateDistortion(distortion, $"{path} ('{node.Name}').distortion");
             if (node.Ribbon is { } ribbon)
                 ValidateRibbon(ribbon, $"{path} ('{node.Name}').ribbon");
+            if (node.ScreenDim is { } screenDim)
+                ValidateScreenDim(screenDim, $"{path} ('{node.Name}').screenDim");
         }
 
         ValidateSubEmitterGraph(nodes, source);
@@ -907,7 +911,7 @@ public static partial class LumenJsonAssetLoader
     private static readonly string[] NodeProperties =
     {
         "name", "parentIndex", "spacePlane", "depthMask", "localPosition", "localRotation", "localYawDegrees",
-        "localScale", "emitter", "pointLight", "distortion", "ribbon",
+        "localScale", "emitter", "pointLight", "distortion", "ribbon", "screenDim",
     };
 
     private static readonly string[] EmitterProperties =
@@ -977,6 +981,7 @@ public static partial class LumenJsonAssetLoader
             PointLight = scope.TryGet("pointLight", out JsonElement lightElement) ? ParsePointLight(lightElement, path + ".pointLight") : null,
             Distortion = scope.TryGet("distortion", out JsonElement distortionElement) ? ParseDistortion(distortionElement, path + ".distortion") : null,
             Ribbon = scope.TryGet("ribbon", out JsonElement ribbonElement) ? ParseRibbon(ribbonElement, path + ".ribbon") : null,
+            ScreenDim = scope.TryGet("screenDim", out JsonElement dimElement) ? ParseScreenDim(dimElement, path + ".screenDim") : null,
         };
     }
 

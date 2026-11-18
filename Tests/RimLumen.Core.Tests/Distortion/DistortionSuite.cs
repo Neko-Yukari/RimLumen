@@ -12,6 +12,7 @@ using RimLumen.Core.Distortion;
 using RimLumen.Core.Mod;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Rendering.Logic;
+using RimLumen.Core.Scene;
 using Waylith.Rendering;
 
 namespace RimLumen.Core.Tests.Distortion;
@@ -37,14 +38,14 @@ public static class DistortionSuite
     [LumenFact]
     public static void VisibilityFollowsStartDurationAndActivity()
     {
-        Check(!DistortionTimeline.IsVisible(Ring, started: false, 0f, active: true), "nothing shows before the first restart");
-        Check(DistortionTimeline.IsVisible(Ring, true, 0f, true), "a started wave shows at t=0");
-        Check(DistortionTimeline.IsVisible(Ring, true, 1.4f, false), "a launched wave finishes after its node deactivates");
-        Check(!DistortionTimeline.IsVisible(Ring, true, 1.5f, true), "a wave ends at Duration even while active");
-        Check(DistortionTimeline.IsVisible(Ripple, true, 100f, true), "Duration 0 shows while active");
-        Check(!DistortionTimeline.IsVisible(Ripple, true, 0.1f, false), "Duration 0 stops with its node");
-        Check(DistortionTimeline.IsVisible(Haze, true, 2.9f, false), "a timed haze finishes its Duration");
-        Check(!DistortionTimeline.IsVisible(Haze, true, 3f, true), "a timed haze ends at Duration");
+        Check(!IsVisible(Ring, started: false, 0f, active: true), "nothing shows before the first restart");
+        Check(IsVisible(Ring, true, 0f, true), "a started wave shows at t=0");
+        Check(IsVisible(Ring, true, 1.4f, false), "a launched wave finishes after its node deactivates");
+        Check(!IsVisible(Ring, true, 1.5f, true), "a wave ends at Duration even while active");
+        Check(IsVisible(Ripple, true, 100f, true), "Duration 0 shows while active");
+        Check(!IsVisible(Ripple, true, 0.1f, false), "Duration 0 stops with its node");
+        Check(IsVisible(Haze, true, 2.9f, false), "a timed haze finishes its Duration");
+        Check(!IsVisible(Haze, true, 3f, true), "a timed haze ends at Duration");
     }
 
     [LumenFact]
@@ -214,19 +215,22 @@ public static class DistortionSuite
         },
     };
 
+    private static bool IsVisible(DistortionSpec spec, bool started, float time, bool active) =>
+        new NodeFeatureClock { Started = started, Time = time, Active = active }.IsVisible(spec.Duration);
+
     private static EffectNodeSpec Node(DistortionSpec spec) => new() { Name = "wave", Distortion = spec };
 
     private static LumenNodeFeatureFrame Frame(bool active, float deltaTime) =>
         new(new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), null, 7, 1f, active, deltaTime, null);
 
-    private static void CompileFile(string relativePath, RuntimeShaderStage stage)
+    internal static void CompileFile(string relativePath, RuntimeShaderStage stage)
     {
         string path = Path.Combine(RepoRoot(), "1.7", relativePath);
         byte[] spirv = RuntimeShaderCompiler.Compile(ShaderSourceLoader.ReadShaderSource(path), path, "main", RuntimeShaderLanguage.Glsl, stage);
         Check(spirv.Length >= 20 && BitConverter.ToUInt32(spirv) == 0x07230203u, $"{relativePath}: invalid SPIR-V.");
     }
 
-    private static void WithSlangLoaded(Action action)
+    internal static void WithSlangLoaded(Action action)
     {
         string gameRoot = Environment.GetEnvironmentVariable("GameRoot")
             ?? XDocument.Load(Path.Combine(RepoRoot(), "Directory.Build.props")).Descendants("GameRoot").Single().Value;

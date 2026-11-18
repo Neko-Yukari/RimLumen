@@ -8,7 +8,7 @@ using RimLumen.Core.Contracts;
 namespace RimLumen.Core.Assets;
 
 // Authoring boundary for the VFX feature contracts (Contracts/VfxFeatureContracts.cs): environment forces, collision,
-// sub-emitters, distortion and ribbon nodes. Every field has the same name in C# (PascalCase), .lumen.json and XML.
+// sub-emitters, distortion, ribbon and screen-dim nodes. Every field has the same name in C# (PascalCase), .lumen.json and XML.
 
 public sealed partial class LumenEffectDef
 {
@@ -58,6 +58,19 @@ public sealed partial class LumenEffectDef
             StrengthOverTime = xml.strengthOverTime is null
                 ? null
                 : new ScalarCurve(ToCurveKeys(xml.strengthOverTime, distortionPath + ".strengthOverTime")),
+        };
+    }
+
+    private static ScreenDimSpec ToScreenDimSpec(LumenScreenDimXml xml, string path)
+    {
+        string dimPath = path + ".screenDim";
+        return new ScreenDimSpec
+        {
+            Strength = xml.strength ?? throw new InvalidDataException($"{dimPath}.strength: required."),
+            Duration = xml.duration,
+            StrengthOverTime = xml.strengthOverTime is null
+                ? null
+                : new ScalarCurve(ToCurveKeys(xml.strengthOverTime, dimPath + ".strengthOverTime")),
         };
     }
 
@@ -121,6 +134,14 @@ public sealed class LumenDistortionXml
     public float thickness;
     public float speed;
     public float frequency;
+    public float duration;
+    public List<LumenCurveKeyXml>? strengthOverTime;
+}
+
+// XML mirror of ScreenDimSpec; strength is required.
+public sealed class LumenScreenDimXml
+{
+    public float? strength;
     public float duration;
     public List<LumenCurveKeyXml>? strengthOverTime;
 }
@@ -241,6 +262,14 @@ internal static partial class LumenAssetRules
             ValidateNonnegativeCurve(curve, path + ".strengthOverTime", normalized: false);
     }
 
+    private static void ValidateScreenDim(ScreenDimSpec screenDim, string path)
+    {
+        ValidateRange(screenDim.Strength, 1f, path + ".strength");
+        ValidateNonnegative(screenDim.Duration, path + ".duration");
+        if (screenDim.StrengthOverTime is { } curve)
+            ValidateNonnegativeCurve(curve, path + ".strengthOverTime", normalized: false);
+    }
+
     private static void ValidateRibbon(RibbonSpec ribbon, string path)
     {
         ValidateEnum(ribbon.Mode, path + ".mode");
@@ -328,6 +357,8 @@ public static partial class LumenJsonAssetLoader
         "kind", "radius", "strength", "thickness", "speed", "frequency", "duration", "strengthOverTime",
     };
 
+    private static readonly string[] ScreenDimProperties = { "strength", "duration", "strengthOverTime" };
+
     private static readonly string[] RibbonProperties =
     {
         "mode", "lifetime", "minVertexDistance", "maxPoints", "endLocal", "endAtTarget", "segments", "noiseAmplitude",
@@ -384,6 +415,19 @@ public static partial class LumenJsonAssetLoader
             Thickness = scope.Float("thickness", 0f),
             Speed = scope.Float("speed", 0f),
             Frequency = scope.Float("frequency", 0f),
+            Duration = scope.Float("duration", 0f),
+            StrengthOverTime = scope.TryGet("strengthOverTime", out JsonElement curve) && curve.ValueKind != JsonValueKind.Null
+                ? ParseCurve(curve, path + ".strengthOverTime")
+                : null,
+        };
+    }
+
+    private static ScreenDimSpec ParseScreenDim(JsonElement element, string path)
+    {
+        JsonScope scope = ObjectScope(element, path, ScreenDimProperties);
+        return new ScreenDimSpec
+        {
+            Strength = scope.OptionalFloat("strength") ?? throw new InvalidDataException($"{path}.strength: required."),
             Duration = scope.Float("duration", 0f),
             StrengthOverTime = scope.TryGet("strengthOverTime", out JsonElement curve) && curve.ValueKind != JsonValueKind.Null
                 ? ParseCurve(curve, path + ".strengthOverTime")
