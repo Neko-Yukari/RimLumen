@@ -706,8 +706,8 @@ It is evaluated once per frame. The frame runs as if the setting were off when a
 - **Effect pools become additive**: effect pools are added into the lighting term instead of `scene × (1 + L)`. At night they are noticeably brighter than with the setting off; this is intended.
 - **Sun shadows**: vanilla's static sun shadows (`SunShadow`) and the shadows printed into the map mesh (persistent `SunShadowFade`) are no longer drawn; the occlusion map reproduces them. Direction, length and colour come from vanilla's cast vector and shadow colour, so weather, eclipses and night-time moon shadows still apply.
   - Buildings cast with their `staticSunShadowHeight` and sprite shape; furniture, trees and other things with `shadowData` cast vanilla's box and fade along its height.
-  - A wall's own top lies in shadow, as in vanilla.
-  - Indoors, natural rock tops and non-rendered terrain get no sun shadow; the test calls vanilla's own `SectionLayer_IndoorMask` functions.
+  - Sun shadows are drawn at vanilla `SunShadow`'s ground altitude, so scene depth keeps them off walls, statues and other sprites, as in vanilla.
+  - Indoors, natural rock tops and non-rendered terrain get no sun shadow; vanilla's stencil bit 4 decides.
   - On maps with sun shadows disabled (`disableSunShadows` or the biome's `disableShadows`), only static building shadows go away; `shadowData` shadows stay, as in vanilla.
 
 **Dynamic shadow rule**
@@ -736,7 +736,6 @@ Each pixel is darkened once: where both shadows are `c`, the result is `c`, not 
 #### Known differences
 
 - Vanilla glow floods around wall corners by path distance; takeover pools use straight line of sight, so light shapes near corners differ from vanilla. `GlowGrid` values are unaffected.
-- The indoor sun-shadow mask is stored per cell and does not reproduce vanilla's 0.16-cell overage toward non-solid buildings.
 - Vanilla `VisualGlowAt` is 0 on vacuum terrain; takeover pools do not reproduce this (Odyssey space maps).
 - When a ray that has just left one wall grazes another wall by less than one texel (0.25 cell), that graze has no soft edge. A ray that actually crosses the other wall is still fully blocked.
 

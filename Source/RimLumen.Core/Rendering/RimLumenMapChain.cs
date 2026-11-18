@@ -75,7 +75,7 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
             if (payload.Takeover)
             {
                 owner.PoolShadows.LightSum.Bind(slot.LightSum);
-                return; // LightOverlay consumes this sum in the immediately following queue-3100 slice.
+                return; // The takeover LightOverlay (3100) and sun shade (3170) read this sum.
             }
             FrameContext composite = attachment.MakeFrameContext(in ctx);
             BeginPass(in composite, clear: false, ref renderPassOpen);

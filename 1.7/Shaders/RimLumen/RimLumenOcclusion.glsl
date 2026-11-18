@@ -54,6 +54,17 @@ float lumenSolidRunLength(vec2 start, vec2 direction, float limit)
     return distance;
 }
 
+// TexelSplit.Of: x = bilerp(occupied), y = bilerp(occupied ? value : 0), z = bilerp(occupied ? 0 : value); texels in
+// gather order 00, 10, 01, 11. Shared by the point-light and sun paths (design 1.8).
+vec3 lumenTexelSplit(vec4 values, vec4 occupied, vec2 f)
+{
+    vec4 inside = values * occupied;
+    vec4 outside = values - inside;
+    return vec3(mix(mix(occupied.x, occupied.y, f.x), mix(occupied.z, occupied.w, f.x), f.y),
+        mix(mix(inside.x, inside.y, f.x), mix(inside.z, inside.w, f.x), f.y),
+        mix(mix(outside.x, outside.y, f.x), mix(outside.z, outside.w, f.x), f.y));
+}
+
 void lumenSample(vec2 p, bool doors, out float solid, out float cover)
 {
     ivec2 size = textureSize(_LumenOcclusion, 0);
@@ -64,7 +75,7 @@ void lumenSample(vec2 p, bool doors, out float solid, out float cover)
     vec4 values = textureGather(_LumenOcclusion, gatherUv, 0).wzxy;
     ivec2 points[4] = ivec2[4](base, base + ivec2(1, 0), base + ivec2(0, 1), base + ivec2(1, 1));
     vec4 flags = doors ? textureGather(_LumenOcclusion, gatherUv, 3).wzxy : vec4(0.0);
-    vec4 solids = vec4(0.0), covers = vec4(0.0);
+    vec4 opacities = vec4(0.0);
     ivec2 doorCells[4];
     vec4 doorValues[4];
     int doorCount = 0;
@@ -86,10 +97,11 @@ void lumenSample(vec2 p, bool doors, out float solid, out float cover)
             }
             opacity = lumenDoorOpacityWithState(points[i], opacity, flag, doorValues[found]);
         }
-        if (opacity == 1.0) solids[i] = 1.0; else covers[i] = opacity;
+        opacities[i] = opacity;
     }
-    solid = mix(mix(solids.x, solids.y, f.x), mix(solids.z, solids.w, f.x), f.y);
-    cover = mix(mix(covers.x, covers.y, f.x), mix(covers.z, covers.w, f.x), f.y);
+    vec3 split = lumenTexelSplit(opacities, vec4(equal(opacities, vec4(1.0))), f);
+    solid = split.x;
+    cover = split.z;
 }
 
 float lightVisibility(vec2 light, vec2 target)
@@ -176,7 +188,8 @@ float lightVisibility(vec2 light, vec2 target)
     return min(solidVisibility, lightRun > 0.0 ? 1.0 : pendingSolid) * coverVisibility;
 }
 
-// Sun path (SunTransport.Shadow): bilinear G height at q against height t, faded by 1 - t / h on FlagSunFade texels.
+// Sun path (SunTransport.Shadow): split G height at q against height t, the edge ramp inside the footprint, faded by
+// 1 - t / h on FlagSunFade texels.
 float lumenSunShadow(vec2 q, float t)
 {
     ivec2 size = textureSize(_LumenOcclusion, 0);
@@ -186,22 +199,24 @@ float lumenSunShadow(vec2 q, float t)
     vec4 heights = textureGather(_LumenOcclusion, q * 4.0 / vec2(size), 1).wzxy;
     ivec2 points[4] = ivec2[4](base, base + ivec2(1, 0), base + ivec2(0, 1), base + ivec2(1, 1));
     for (int i = 0; i < 4; i++) if (!lumenInside(points[i], size)) heights[i] = 0.0;
-    float h = mix(mix(heights.x, heights.y, f.x), mix(heights.z, heights.w, f.x), f.y) * 2.0;
-    float s = clamp((h - t) / 0.125, 0.0, 1.0);
+    vec3 split = lumenTexelSplit(heights, vec4(greaterThan(heights, vec4(0.0))), f);
+    float edge = 2.0 * split.x - 1.0;
+    if (edge <= 0.0) return 0.0;
+    float h = split.y / split.x * 2.0;
+    float s = clamp((h - t) / 0.125, 0.0, 1.0) * edge;
     ivec2 nearest = ivec2(floor(q * 4.0));
     if (s > 0.0 && lumenInside(nearest, size) && (int(round(texelFetch(_LumenOcclusion, nearest, 0).a * 255.0)) & 128) != 0)
         s *= 1.0 - t / h;
     return s;
 }
 
-// SunTransport.Visibility: castXZ is vanilla _CastVect.xz (|castXZ| > 0). 1 outside the map and on sun-masked cells.
+// SunTransport.Visibility: castXZ is vanilla _CastVect.xz (|castXZ| > 0). 1 outside the map.
 float lumenSunVisibility(vec2 p, vec2 castXZ)
 {
     ivec2 mapSize = textureSize(_LumenOcclusionCoarse, 0);
     ivec2 cell = ivec2(floor(p));
     if (!lumenInside(cell, mapSize)) return 1.0;
     vec4 here = texelFetch(_LumenOcclusionCoarse, cell, 0);
-    if (here.a != 0.0) return 1.0;
     float len = length(castXZ);
     vec2 direction = -castXZ / len;
     float reach = len * 2.0;

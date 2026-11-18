@@ -18,21 +18,25 @@ layout(set = 2, binding = 0) uniform MaterialUniforms
 
 void main()
 {
+    // Kind selects only the falloff (VisualPointLight.EvaluateAt); both kinds share one visibility query.
+    float falloff;
+    vec3 rgb;
     if (uMaterial._LumenLightAt.z == 1.0)
     {
         float radius = uMaterial._LumenLightAt.w;
         float dPrime = 1.0 + distance(vWorldPos.xz, uMaterial._LumenLightAt.xy);
-        float falloff = dPrime <= radius ? mix(1.0 - dPrime / radius, 1.0 / (dPrime * dPrime), 0.4) : 0.0;
-        vec3 rgb = uMaterial._LumenLight.rgb * falloff;
+        falloff = dPrime <= radius ? mix(1.0 - dPrime / radius, 1.0 / (dPrime * dPrime), 0.4) : 0.0;
+        rgb = uMaterial._LumenLight.rgb * falloff;
         rgb /= max(1.0, max(rgb.r, max(rgb.g, rgb.b)));
-        float visibility = falloff > 0.0 ? lightVisibility(uMaterial._LumenLightAt.xy, vWorldPos.xz) : 0.0;
-        outColor = vec4(rgb * visibility, 0.0);
-        return;
     }
-    // d = offset / R, so dot(d, d) = (distance / R)^2 and the falloff (1 - (distance / R)^2)^2 is 0 at and beyond R.
-    vec2 d = vUv * 2.0 - 1.0;
-    float q = max(0.0, 1.0 - dot(d, d));
-    float falloff = q * q;
+    else
+    {
+        // d = offset / R, so dot(d, d) = (distance / R)^2 and the falloff (1 - (distance / R)^2)^2 is 0 at and beyond R.
+        vec2 d = vUv * 2.0 - 1.0;
+        float q = max(0.0, 1.0 - dot(d, d));
+        falloff = q * q;
+        rgb = uMaterial._LumenLight.rgb * falloff;
+    }
     float visibility = falloff > 0.0 ? lightVisibility(uMaterial._LumenLightAt.xy, vWorldPos.xz) : 0.0;
-    outColor = vec4(uMaterial._LumenLight.rgb * (falloff * visibility), 0.0);
+    outColor = vec4(rgb * visibility, 0.0);
 }

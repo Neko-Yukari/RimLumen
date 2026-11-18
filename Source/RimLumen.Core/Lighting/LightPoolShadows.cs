@@ -29,7 +29,11 @@ internal sealed class LightPoolShadows
     private static Action<FinalDrawItem, DrawSortKey>? setSortKey;
     private static readonly MethodInfo CloneProgram = typeof(object)
         .GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic)!;
-    private static readonly int LightSumPropertyId = Shader.PropertyToID("_LumenLightSum");
+    // Texture and appended-uniform contracts checked by LayoutMatches (LightPoolRenderer.BindOcclusion fills slots 0-2).
+    internal const string LightSumTexture = "_LumenLightSum";
+    internal static readonly string[] OcclusionTextures = ["_LumenOcclusion", "_LumenOcclusionCoarse", "_LumenDoorOpen"];
+    internal static readonly string[] ShadeTextures = [.. OcclusionTextures, LightSumTexture];
+    internal static readonly string[] ShadeUniforms = ["_LumenCastVect", "_LumenSunShadowColor"];
 
     // Requires: main thread, install time (RimLumenMapHooks.Arm), before any capture.
     // Ensures: binds the two Waylith members this file reaches; throws when either was renamed or changed signature,
@@ -62,7 +66,8 @@ internal sealed class LightPoolShadows
         return method;
     }
 
-    internal sealed class Kind(string defName, string vertexFile, string fragmentFile, string? liftedFile,
+    // liftedTextures: the lifted program's textures in binding order (LayoutMatches); empty when liftedFile is null.
+    internal sealed class Kind(string defName, string vertexFile, string fragmentFile, string? liftedFile, string[] liftedTextures,
         UnityEngine.Material material, int bindingId, bool takeover = false, string? liftedVertex = null)
     {
         internal readonly string DefName = defName;
@@ -72,7 +77,6 @@ internal sealed class LightPoolShadows
         internal Shader? Lifted;
         internal int MaterialId;
         internal bool OriginalProgram;
-        internal int LightSumSlot;
         internal MaterialBinding? Binding;
         internal bool SkipLogged;
 
@@ -97,13 +101,12 @@ internal sealed class LightPoolShadows
             }
             OriginalProgram = true;
             if (liftedFile is null) return null; // Takeover suppresses SunShadow rather than replacing its program.
-            var lifted = (ShaderProgramDefinition)CloneProgram.Invoke(program, null)!;
+            ShaderProgramDefinition lifted = Clone(program);
             if (liftedVertex is not null) lifted.vertexShaderFileName = liftedVertex;
             lifted.fragmentShaderFileName = liftedFile;
             Shader shader = LightPoolRenderer.CreateShader("RimLumen." + (IsTakeover ? "Takeover." : string.Empty) + DefName, lifted, Vanilla.PipelineState);
-            if (!(IsTakeover ? LightingTakeover.LayoutMatches(shader.MaterialLayout, Vanilla.MaterialLayout, DefName == "LightOverlay") : LiftedLayoutMatches(shader.MaterialLayout, Vanilla.MaterialLayout)))
+            if (!LayoutMatches(shader.MaterialLayout, Vanilla.MaterialLayout, liftedTextures))
                 throw new InvalidOperationException($"[RimLumen] {liftedFile} no longer matches the material layout of vanilla {fragmentFile}.");
-            if (!IsTakeover) LightSumSlot = shader.MaterialLayout.TextureSlots[0].ResourceSlot;
             Lifted = shader;
             return null;
         }
@@ -146,14 +149,31 @@ internal sealed class LightPoolShadows
             ShaderSourceLoader.ResolveShaderPath(file).StartsWith(coreShaders, StringComparison.OrdinalIgnoreCase);
     }
 
-    // The lifted draw carries vanilla's resolved uniform bytes and resource set, so both layouts must agree byte for
-    // byte and the light-sum sampler must be the only texture.
-    internal static bool LiftedLayoutMatches(MaterialLayout lifted, MaterialLayout vanilla) =>
-        lifted.UniformSize == vanilla.UniformSize && vanilla.TextureSlots.Length == 0 && lifted.TextureSlots.Length == 1 &&
-        lifted.TextureSlots[0].PropertyId == LightSumPropertyId &&
-        lifted.TextureSlots[0].Default == MaterialTextureDefault.Black &&
-        lifted.UniformSlots.Select(s => (s.Offset, s.Type, s.PropertyName))
-            .SequenceEqual(vanilla.UniformSlots.Select(s => (s.Offset, s.Type, s.PropertyName)));
+    // A lifted or takeover copy carries the vanilla draw's uniform bytes (written past vanilla's block only for appended
+    // vectors) and binds its textures by resource slot. Ensures: true when vanilla binds no texture, lifted starts with
+    // vanilla's uniform slots, appends exactly the named vec4s after vanilla's block, and binds exactly textures as
+    // sampler2D, black when unbound, at resource slot i and set 2 binding i + 1.
+    internal static bool LayoutMatches(MaterialLayout lifted, MaterialLayout vanilla, string[] textures, params string[] appended)
+    {
+        int own = vanilla.UniformSlots.Length;
+        if (vanilla.TextureSlots.Length != 0 || lifted.TextureSlots.Length != textures.Length || lifted.StorageBufferSlots.Length != 0 ||
+            lifted.UniformSize != vanilla.UniformSize + 16 * appended.Length || lifted.UniformSlots.Length != own + appended.Length ||
+            !lifted.UniformSlots.Take(own).SequenceEqual(vanilla.UniformSlots)) return false;
+        for (int i = 0; i < textures.Length; i++)
+        {
+            MaterialTextureSlot slot = lifted.TextureSlots[i];
+            if (slot.ResourceSlot != i || slot.Binding != i + 1 || slot.PropertyName != textures[i] ||
+                slot.Kind != MaterialTextureKind.Combined || slot.Default != MaterialTextureDefault.Black) return false;
+        }
+        for (int i = 0; i < appended.Length; i++)
+        {
+            var slot = lifted.UniformSlots[own + i];
+            if (slot.PropertyName != appended[i] || slot.Offset != vanilla.UniformSize + 16 * i || slot.Type != MaterialUniformType.Vector4) return false;
+        }
+        return true;
+    }
+
+    internal static ShaderProgramDefinition Clone(ShaderProgramDefinition program) => (ShaderProgramDefinition)CloneProgram.Invoke(program, null)!;
 
     // Set 2 binding 1 of both lifted materials. RimLumenMapHooks clears it before each map record with pools and
     // RimLumenMapChain.RecordLightPools points it at the submission's LightSum once that pass succeeded; cleared, the
@@ -169,7 +189,7 @@ internal sealed class LightPoolShadows
     internal void Rebind(MeshDrawFrame frame) => Rewrite(frame, kinds ??= ResolveKinds(), (draw, kind, _) =>
     {
         MaterialTextureResourceSet<Texture?> resources = draw.Resources;
-        resources.Set(kind.LightSumSlot, LightSum);
+        resources.Set(0, LightSum); // LayoutMatches([LightSumTexture])
         return CopyDraw(draw, kind, in draw.Uniforms, in resources);
     });
 
@@ -228,6 +248,17 @@ internal sealed class LightPoolShadows
         return copy;
     }
 
+    // Ensures: a copy of draw through binding, raised by dy along world y and sorted at renderQueue (Rent's own key).
+    //          Draw matrices use Unity's column-vector layout (UnityStubs Matrix4x4: m13 = M24), so M24 is the y translation.
+    internal static FinalDrawItem MoveDraw(FinalDrawItem draw, MaterialBinding binding, int renderQueue, float dy,
+        in MaterialUniformBytes uniforms, in MaterialTextureResourceSet<Texture?> resources)
+    {
+        Matrix4x4 matrix = draw.Matrix;
+        matrix.M24 += dy;
+        return rent!(matrix, draw.PassId, draw.Mesh, binding, hasOverride: true, in uniforms, in resources, 0, renderQueue,
+            draw.Instancing, draw.Layer, 0, draw.Storage);
+    }
+
     internal static string CoreShaderRoot()
     {
         ModContentPack core = LoadedModManager.RunningModsListForReading.Find(mod => mod.IsCoreMod)
@@ -241,9 +272,9 @@ internal sealed class LightPoolShadows
         Kind[] result =
         [
             new("SunShadow", "SunShadow.vert.glsl", "SunShadow.frag.glsl", "RimLumen/RimLumenSunShadow.frag.glsl",
-                MatBases.SunShadow, -1),
+                [LightSumTexture], MatBases.SunShadow, -1),
             new("SunShadowFade", "SunShadowFade.vert.glsl", "SunShadowFade.frag.glsl",
-                "RimLumen/RimLumenSunShadowFade.frag.glsl", MatBases.SunShadowFade, -2),
+                "RimLumen/RimLumenSunShadowFade.frag.glsl", [LightSumTexture], MatBases.SunShadowFade, -2),
         ];
         foreach (Kind kind in result)
             if (kind.Resolve(coreShaders) is { } overridden) kind.SkipOnce("its program is overridden " + overridden);

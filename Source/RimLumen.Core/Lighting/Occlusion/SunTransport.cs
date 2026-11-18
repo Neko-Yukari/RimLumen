@@ -10,16 +10,17 @@ internal static class SunTransport
     internal const float HeightBand = 0.125f;
 
     // castXZ: vanilla _CastVect.xz, the ground offset of a unit-height shadow (SkyManager; |castXZ| > 0).
-    // Ensures: in [0, 1]. 1 when the coarse sun mask (coarse A) at p is set, and outside the map.
-    //          Otherwise 1 - max over t in [0, MaxSunHeight] of shadow(t), q = p - castXZ * t, h = bilinear G(q) decoded,
-    //          shadow(t) = clamp((h - t) / HeightBand, 0, 1), scaled by (1 - t / h) where the nearest texel at q has
-    //          FlagSunFade. t = 0 counts, so the occluder's own top is shadowed (vanilla SunShadow prints the cell).
+    // Ensures: in [0, 1]. 1 outside the map (sun-masked cells are vanilla's stencil bit 4, applied by the GPU).
+    //          Otherwise 1 - max over t in [0, MaxSunHeight] of shadow(t), q = p - castXZ * t. TexelSplit of G at q with
+    //          occupied = G > 0 gives coverage c and h = Inside / c decoded; shadow(t) = clamp((h - t) / HeightBand, 0, 1)
+    //          * (2c - 1) where c > 0.5, else 0, so the edge ramp lies inside the footprint; scaled by (1 - t / h) where
+    //          the nearest texel at q has FlagSunFade. t = 0 counts, so the occluder's own top is shadowed (vanilla SunShadow prints the cell).
     //          Coarse steps skip cells whose coarse G is 0; fine steps are one texel along castXZ.
     internal static float Visibility(in OcclusionFrame frame, Vector2 p, Vector2 castXZ)
     {
         OcclusionMap map = frame.Map;
         int cellX = (int)MathF.Floor(p.X), cellZ = (int)MathF.Floor(p.Y);
-        if (!Inside(map, cellX, cellZ) || map.Coarse[(cellZ * map.Width + cellX) * OcclusionLayout.Channels + 3] != 0) return 1f;
+        if (!Inside(map, cellX, cellZ)) return 1f;
         float length = castXZ.Length();
         Vector2 direction = -castXZ / length;
         float reach = length * OcclusionLayout.MaxSunHeight;
@@ -55,11 +56,13 @@ internal static class SunTransport
     {
         Vector2 uv = q * OcclusionLayout.TexelsPerCell - new Vector2(0.5f);
         int x = (int)MathF.Floor(uv.X), z = (int)MathF.Floor(uv.Y);
-        float fx = uv.X - x, fz = uv.Y - z;
-        float g = (Height(map, x, z) * (1 - fx) + Height(map, x + 1, z) * fx) * (1 - fz) +
-            (Height(map, x, z + 1) * (1 - fx) + Height(map, x + 1, z + 1) * fx) * fz;
-        float h = g / 255f * OcclusionLayout.MaxSunHeight;
-        float s = Math.Clamp((h - t) / HeightBand, 0f, 1f);
+        var g = new Vector4(Height(map, x, z), Height(map, x + 1, z), Height(map, x, z + 1), Height(map, x + 1, z + 1));
+        var occupied = new Vector4(g.X > 0f ? 1f : 0f, g.Y > 0f ? 1f : 0f, g.Z > 0f ? 1f : 0f, g.W > 0f ? 1f : 0f);
+        TexelSplit split = TexelSplit.Of(g, occupied, uv.X - x, uv.Y - z);
+        float edge = 2f * split.Coverage - 1f;
+        if (edge <= 0f) return 0f;
+        float h = split.Inside / split.Coverage / 255f * OcclusionLayout.MaxSunHeight;
+        float s = Math.Clamp((h - t) / HeightBand, 0f, 1f) * edge;
         if (s > 0f && (Flags(map, (int)MathF.Floor(q.X * OcclusionLayout.TexelsPerCell), (int)MathF.Floor(q.Y * OcclusionLayout.TexelsPerCell)) & OcclusionLayout.FlagSunFade) != 0)
             s *= 1f - t / h;
         return s;

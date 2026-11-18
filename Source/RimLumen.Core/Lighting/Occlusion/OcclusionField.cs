@@ -18,7 +18,7 @@ internal static class OcclusionField
         internal readonly Map Map;
         internal readonly OcclusionBuilder Builder;
         internal readonly HashSet<Building_Door> Doors = new();
-        internal readonly HashSet<int> Dirty = new(), MaskDirty = new();
+        internal readonly HashSet<int> Dirty = new();
         private readonly bool sunDisabled;
         private readonly StampLedger<Thing> ledger = new();
         internal OcclusionMap Snapshot;
@@ -33,11 +33,7 @@ internal static class OcclusionField
             DoorSnapshot = new DoorStates(map.Size.x, map.Size.z, new byte[map.Size.x * map.Size.z * 4]);
             sunDisabled = map.info.disableSunShadows || map.Biome.disableShadows;
             ledger.BuildAll(map.listerThings.AllThings, this, Builder);
-            var whole = new CellBox(0, 0, map.Size.x - 1, map.Size.z - 1);
-            Builder.RecomputeDerived(whole);
-            bool[] mask = new bool[map.Size.x * map.Size.z];
-            for (int i = 0; i < mask.Length; i++) mask[i] = LightingTakeover.SunMasked(map, map.cellIndices.IndexToCell(i));
-            Builder.SetSunMask(whole, mask);
+            Builder.RecomputeDerived(new CellBox(0, 0, map.Size.x - 1, map.Size.z - 1));
             Snapshot = Builder.Publish();
             UpdateDoors();
         }
@@ -70,15 +66,6 @@ internal static class OcclusionField
                 dirtyDoorCells = new byte[DoorSnapshot.Cells.Length];
                 changed = ledger.Update(cells, this, Builder);
             }
-            foreach (int i in MaskDirty)
-            {
-                IntVec3 cell = Map.cellIndices.IndexToCell(i);
-                bool masked = LightingTakeover.SunMasked(Map, cell);
-                if (masked == (Snapshot.Coarse[i * OcclusionLayout.Channels + 3] != 0)) continue;
-                Builder.SetSunMask(new CellBox(cell.x, cell.z, cell.x, cell.z), [masked]);
-                changed = true;
-            }
-            MaskDirty.Clear();
             if (changed) Snapshot = Builder.Publish();
             UpdateDoors();
             return new OcclusionFrame(Snapshot, DoorSnapshot);
@@ -147,15 +134,12 @@ internal static class OcclusionField
     private static void MapMeshDirty(MapDrawer __instance, IntVec3 loc, ulong dirtyFlags, bool regenAdjacentCells)
     {
         if (!Drawers.TryGetValue(__instance, out Field? field) || !loc.InBounds(field.Map)) return;
-        int i = field.Map.cellIndices.CellToIndex(loc);
         if ((dirtyFlags & ((ulong)MapMeshFlagDefOf.Things | (ulong)MapMeshFlagDefOf.Buildings)) != 0)
             field.Dirty.UnionWith(MeshDirtyCells.Of(loc.x, loc.z, regenAdjacentCells, field.Map.Size.x, field.Map.Size.z));
-        if ((dirtyFlags & ((ulong)MapMeshFlagDefOf.Buildings | (ulong)MapMeshFlagDefOf.Roofs | (ulong)MapMeshFlagDefOf.FogOfWar | (ulong)MapMeshFlagDefOf.Terrain)) != 0)
-            field.MaskDirty.Add(i);
     }
 
     // Requires: main thread, once per capture (LightPoolRenderer.AppendDraws).
-    // Ensures: the map's frame: first call builds the whole map; later calls restamp overlapping ledger entries and refresh dirty sun-mask cells
+    // Ensures: the map's frame: first call builds the whole map; later calls restamp overlapping ledger entries
     //          and recompute derived data, publishing a new OcclusionMap only when something changed, and republish
     //          DoorStates only when a door's quantised OpenPct changed. Unchanged frames return the same instances,
     //          so callers can skip uploads by reference.

@@ -435,8 +435,9 @@ public static class ParticleShaderTests
             "Waylith reports mismatched SceneDefault/RimLumenLightPoolAccumulate varyings.");
         Require(fragment.Contains("vec2 d = vUv * 2.0 - 1.0;", StringComparison.Ordinal)
             && fragment.Contains("float q = max(0.0, 1.0 - dot(d, d));", StringComparison.Ordinal)
-            && fragment.Contains("float falloff = q * q;", StringComparison.Ordinal)
-            && fragment.Contains("vec4(uMaterial._LumenLight.rgb * (falloff * visibility), 0.0)", StringComparison.Ordinal),
+            && fragment.Contains("falloff = q * q;", StringComparison.Ordinal)
+            && fragment.Contains("rgb = uMaterial._LumenLight.rgb * falloff;", StringComparison.Ordinal)
+            && fragment.Contains("outColor = vec4(rgb * visibility, 0.0);", StringComparison.Ordinal),
             "Light-pool accumulation must evaluate (1 - (d/R)^2)^2 times wall visibility with zero alpha.");
         string composite = ShaderSourceLoader.ReadShaderSource(
             Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", LightPoolRenderer.CompositeFile)));
@@ -464,9 +465,10 @@ public static class ParticleShaderTests
         MaterialLayout liftedShadow = Layout(Lifted("RimLumenSunShadow.frag.glsl"));
         MaterialLayout liftedFade = Layout(Lifted("RimLumenSunShadowFade.frag.glsl"));
         Require(!liftedShadow.HasErrors && !liftedFade.HasErrors, "Waylith rejected the lifted sun-shadow material metadata.");
-        Require(LightPoolShadows.LiftedLayoutMatches(liftedShadow, shadow) && LightPoolShadows.LiftedLayoutMatches(liftedFade, fade),
+        string[] lightSum = [LightPoolShadows.LightSumTexture];
+        Require(LightPoolShadows.LayoutMatches(liftedShadow, shadow, lightSum) && LightPoolShadows.LayoutMatches(liftedFade, fade, lightSum),
             "Lifted sun shadows must keep vanilla's uniform block byte for byte and add only _LumenLightSum.");
-        Require(!LightPoolShadows.LiftedLayoutMatches(liftedShadow, fade),
+        Require(!LightPoolShadows.LayoutMatches(liftedShadow, fade, lightSum),
             "The layout check must reject a lifted shader whose uniform block differs from vanilla's.");
         Require(liftedShadow.TextureSlots[0].Default == MaterialTextureDefault.Black &&
                 liftedFade.TextureSlots[0].Default == MaterialTextureDefault.Black,
@@ -474,15 +476,19 @@ public static class ParticleShaderTests
 
         string Varyings(string vertex, string lifted) => string.Join(" ", ShaderMetadataParser.ValidateStageInterface(
             File.ReadAllText(Path.Combine(vanillaShaders, vertex)), ShaderSourceLoader.ReadShaderSource(Lifted(lifted)), vertex, lifted));
-        Require(LightingTakeover.LayoutMatches(Layout(Lifted("RimLumenLightTakeover.frag.glsl")), Layout(Path.Combine(vanillaShaders, "LightOverlay.frag.glsl")), true),
-            "Takeover LightOverlay must prefix vanilla uniforms, append exactly two vectors and bind only the four RimLumen textures.");
-        Require(LightingTakeover.LayoutMatches(Layout(Lifted("RimLumenSunShadowFadeTakeover.frag.glsl")), fade, false),
+        MaterialLayout overlay = Layout(Path.Combine(vanillaShaders, "LightOverlay.frag.glsl"));
+        Require(LightPoolShadows.LayoutMatches(Layout(Lifted("RimLumenLightTakeover.frag.glsl")), overlay, lightSum),
+            "Takeover LightOverlay must keep vanilla uniforms and bind only the light sum.");
+        Require(LightPoolShadows.LayoutMatches(Layout(Lifted("RimLumenSunShadowTakeover.frag.glsl")), overlay, LightPoolShadows.ShadeTextures, LightPoolShadows.ShadeUniforms),
+            "Takeover sun shade must prefix vanilla LightOverlay uniforms, append exactly two vectors and bind only the four RimLumen textures.");
+        Require(LightPoolShadows.LayoutMatches(Layout(Lifted("RimLumenSunShadowFadeTakeover.frag.glsl")), fade, LightPoolShadows.OcclusionTextures),
             "Takeover SunShadowFade must keep vanilla uniforms and bind exactly the three occlusion textures.");
         string shadowErrors = Varyings("SunShadow.vert.glsl", "RimLumenSunShadow.frag.glsl");
         string fadeErrors = Varyings("SunShadowFade.vert.glsl", "RimLumenSunShadowFade.frag.glsl");
         foreach ((string vert, string frag) in new[]
         {
             (Path.Combine(gameRoot, "Rendering", "Shaders", LightPoolRenderer.VertexFile), Lifted("RimLumenLightTakeover.frag.glsl")),
+            (Path.Combine(gameRoot, "Rendering", "Shaders", LightPoolRenderer.VertexFile), Lifted("RimLumenSunShadowTakeover.frag.glsl")),
             (Lifted("RimLumenSunShadowFadeTakeover.vert.glsl"), Lifted("RimLumenSunShadowFadeTakeover.frag.glsl"))
         })
         {
@@ -524,7 +530,7 @@ public static class ParticleShaderTests
             materialLayout: ShaderSourceLoader.CreateMaterialLayout("SunShadowFade.frag.glsl"),
             vertexInputLayout: ShaderSourceLoader.CreateVertexInputLayout("SunShadowFade.vert.glsl"), precompiledStages: stages));
         var material = new UnityEngine.Material(UnityEngine.Shader.FromEngineShader(key, shader));
-        var kind = new LightPoolShadows.Kind(key, "SunShadow.vert.glsl", "SunShadow.frag.glsl", null, material, -1);
+        var kind = new LightPoolShadows.Kind(key, "SunShadow.vert.glsl", "SunShadow.frag.glsl", null, [], material, -1);
         string? reason = kind.Resolve(core + Path.DirectorySeparatorChar);
         Require(!kind.OriginalProgram && reason != null && reason.Contains(shader.Key, StringComparison.Ordinal)
             && reason.Contains("vertex", StringComparison.OrdinalIgnoreCase) && reason.Contains("fragment", StringComparison.OrdinalIgnoreCase),
@@ -596,6 +602,7 @@ public static class ParticleShaderTests
         CompileFile("RimLumen/RimLumenSunShadow.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("RimLumen/RimLumenSunShadowFade.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("RimLumen/RimLumenLightTakeover.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("RimLumen/RimLumenSunShadowTakeover.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("RimLumen/RimLumenSunShadowFadeTakeover.vert.glsl", RuntimeShaderStage.Vertex);
         CompileFile("RimLumen/RimLumenSunShadowFadeTakeover.frag.glsl", RuntimeShaderStage.Fragment);
         Console.WriteLine("[SPIR-V] compute strides=64,480,48,4,16,32; vertex strides=64,480,32; LocalSize=64,1,1");

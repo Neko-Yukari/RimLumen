@@ -52,7 +52,7 @@ internal sealed class LightPoolRenderer : IDisposable
         LightingTakeover.CollectVanillaPools(map, staged);
     }
 
-    // Texture resource indices are validated by LightingTakeover.LayoutMatches before rebinding the draw.
+    // Texture resource indices are validated by LightPoolShadows.LayoutMatches before rebinding the draw.
     internal void BindOcclusion(ref MaterialTextureResourceSet<Texture?> resources)
     {
         resources.Set(0, occlusion);

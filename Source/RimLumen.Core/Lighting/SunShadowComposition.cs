@@ -3,8 +3,9 @@ using System.Numerics;
 
 namespace RimLumen.Core.Lighting;
 
-// Takeover shading references (design 3.3 and 3.9), mirrored line for line by RimLumenLightTakeover.frag.glsl and
-// RimLumenSunShadowFadeTakeover.frag.glsl.
+// Takeover shading references (design 3.3 and 3.9), mirrored line for line by RimLumenTakeover.glsl,
+// RimLumenLightTakeover.frag.glsl (3100, Overlay with s = 1), RimLumenSunShadowTakeover.frag.glsl (3170, ShadeFactor)
+// and RimLumenSunShadowFadeTakeover.frag.glsl (3175, DynamicFactor).
 internal static class SunShadowComposition
 {
     // Ground sun factor S = mix(c, 1, vis). Both this and DynamicFactor apply per RGB channel in C# and GLSL.
@@ -30,5 +31,14 @@ internal static class SunShadowComposition
         if (color.Y > clampBase) color *= clampBase / color.Y;
         if (color.Z > clampBase) color *= clampBase / color.Z;
         return color;
+    }
+
+    // Sun shade at vanilla's SunShadow slot, multiplied onto a scene that LightOverlay already scaled by Overlay(s = 1).
+    // Ensures: per channel Overlay(s).rgb / Overlay(1).rgb, so the pixel ends at Overlay(s) and a pool keeps its additive
+    //          term; 1 where Overlay(1) is 0 (no sky and no pool reach the pixel, so the sun has nothing to shade).
+    internal static Vector3 ShadeFactor(Vector4 sky, float roof, Vector3 s, Vector3 glow)
+    {
+        Vector4 lit = Overlay(sky, roof, Vector3.One, glow), shaded = Overlay(sky, roof, s, glow);
+        return new Vector3(lit.X > 0f ? shaded.X / lit.X : 1f, lit.Y > 0f ? shaded.Y / lit.Y : 1f, lit.Z > 0f ? shaded.Z / lit.Z : 1f);
     }
 }
