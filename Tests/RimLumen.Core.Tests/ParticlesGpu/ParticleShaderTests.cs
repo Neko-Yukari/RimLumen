@@ -425,16 +425,18 @@ public static class ParticleShaderTests
 
         MaterialLayout layout = ShaderMetadataParser.ExtractMaterialLayout(fragment, "RimLumenLightPoolAccumulate.frag.glsl");
         Require(!layout.HasErrors, "Waylith rejected the light-pool material metadata.");
-        Require(layout.UniformSize == 16, $"Light-pool material UBO must be 16 bytes; got {layout.UniformSize}.");
-        CheckOverrideSlots(layout, ("_LumenLight", 0));
-        Require(layout.TextureSlots.Length == 0 && layout.StorageBufferSlots.Length == 0,
-            "Light-pool shader declares only the _LumenLight uniform.");
+        Require(layout.UniformSize == 32, $"Light-pool material UBO must be 32 bytes; got {layout.UniformSize}.");
+        CheckOverrideSlots(layout, ("_LumenLight", 0), ("_LumenLightAt", 16));
+        Require(layout.TextureSlots.Select(x => (x.Binding, x.PropertyName)).SequenceEqual(new[] { (1, "_LumenOccluders") })
+            && layout.StorageBufferSlots.Length == 0,
+            "Light-pool shader declares _LumenLight, _LumenLightAt and the _LumenOccluders wall grid at binding 1.");
         Require(ShaderMetadataParser.ValidateStageInterface(vertex, fragment, LightPoolRenderer.VertexFile, "RimLumenLightPoolAccumulate.frag.glsl").Count == 0,
             "Waylith reports mismatched SceneDefault/RimLumenLightPoolAccumulate varyings.");
         Require(fragment.Contains("vec2 d = vUv * 2.0 - 1.0;", StringComparison.Ordinal)
             && fragment.Contains("float q = max(0.0, 1.0 - dot(d, d));", StringComparison.Ordinal)
-            && fragment.Contains("vec4(uMaterial._LumenLight.rgb * (q * q), 0.0)", StringComparison.Ordinal),
-            "Light-pool accumulation must evaluate (1 - (d/R)^2)^2 with zero alpha.");
+            && fragment.Contains("float falloff = q * q;", StringComparison.Ordinal)
+            && fragment.Contains("vec4(uMaterial._LumenLight.rgb * (falloff * visibility), 0.0)", StringComparison.Ordinal),
+            "Light-pool accumulation must evaluate (1 - (d/R)^2)^2 times wall visibility with zero alpha.");
         string composite = ShaderSourceLoader.ReadShaderSource(
             Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", LightPoolRenderer.CompositeFile)));
         Require(composite.Contains("if (peak <= 1.0) return color;", StringComparison.Ordinal)
