@@ -17,8 +17,8 @@ public enum LumenNodeFeature : byte
 // Intensity: the handle's "intensity" parameter (finite >= 0). Active: the node belongs to the playing state;
 // false after its state exits and while the handle drains. DeltaTime: seconds this frame, already the unscaled
 // delta for a real-time handle; 0 in the frame passed to CreateInstance.
-// Origin: the handle's current play origin (LumenPlayRequest.OriginWorld, then Follow), the Vertical3D pivot shared
-// with particles (baseY = Origin.Y, anchor XZ = Origin XZ).
+// Origin: the handle's current play origin (LumenPlayRequest.OriginWorld, then Follow); its XZ is the Vertical3D
+// ground anchor shared with particles. Height is measured from the world ground Y = 0, not from Origin.Y.
 public readonly record struct LumenNodeFeatureFrame(
     LumenEmitterTransform Transform,
     Vector3? TargetWorld,
