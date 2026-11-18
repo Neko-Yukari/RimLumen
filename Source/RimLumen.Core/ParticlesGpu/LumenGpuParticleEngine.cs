@@ -29,13 +29,14 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         public bool RealTime;
         public int MapIndex = -1;
         public bool IsVertical3D;
-        public Vector3 Origin;
+        public float? DepthReferenceZ;
         public double DrainRemaining;
         public int PendingBurst;
         public InstanceState State;
         public float NodeTime;
         public int[] Targets = Array.Empty<int>();
         public readonly HashSet<int> Sources = new();
+        public float? FrameDelta;
         public bool GpuBurstCarry;
         public uint ResetVersion;
         public readonly List<GpuExplicitBurst> ExplicitBursts = new();
@@ -116,13 +117,13 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
     }
 
     // Requires: main thread. Unknown ids are ignored.
-    // Ensures: the next capture carries the Vertical3D display flag and the effect's play origin: Y is the floor height,
-    //          XZ the ground anchor uploaded in ShapePosition.w/ShapeScale.w (world-space particles record it at birth).
-    internal void SetInstanceVerticalState(int instanceId, bool isVertical3D, Vector3 origin)
+    // Ensures: the draw derives the 2D ground anchor from the uploaded World (lumenNodeGroundXZ); world-space particles
+    //          record it at birth. Capture uploads the depth mask in ShapePosition.w (on) and ShapeScale.w (reference Z).
+    public void SetInstanceDisplayState(int instanceId, bool isVertical3D, float? depthReferenceZ)
     {
         if (!instances.TryGetValue(instanceId, out Instance? instance)) return;
         instance.IsVertical3D = isVertical3D;
-        instance.Origin = origin;
+        instance.DepthReferenceZ = depthReferenceZ;
     }
 
     // Requires: main thread, id from this engine; intensityMultiplier/rateMultiplier finite >= 0.
@@ -165,7 +166,10 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         instance.ResetVersion++;
         instance.Emitting = true;
         instance.Activated = true;
+        instance.FrameDelta = null;
     }
+
+    public void SetInstanceFrameDelta(int instanceId, float frameDelta) => instances[instanceId].FrameDelta = frameDelta;
 
     public bool IsInstanceAlive(int instanceId) => !disposed && instances.ContainsKey(instanceId);
 
@@ -204,12 +208,14 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         float density = RimLumenRenderHost.ParticleDensityScale;
         foreach (Instance instance in instances.Values)
         {
-            float dt = instance.RealTime && context.UnscaledDeltaTime > 0f ? context.UnscaledDeltaTime : context.DeltaTime;
+            float hostDt = instance.RealTime && context.UnscaledDeltaTime > 0f ? context.UnscaledDeltaTime : context.DeltaTime;
+            float scheduleDt = instance.FrameDelta ?? hostDt;
+            instance.FrameDelta = null;
             instance.Activated |= instance.Emitting;
             bool drainedBeforeFrame = instance.State == InstanceState.Draining && instance.DrainRemaining <= 0;
             if (instance.State == InstanceState.Draining)
             {
-                instance.DrainRemaining -= dt;
+                instance.DrainRemaining -= hostDt;
                 // A target can receive new particles until all sources finish; then it gets a full final lifetime.
                 if (instance.PendingBurst > 0 || instance.ExplicitBursts.Count != 0 || instance.Sources.Count != 0)
                     instance.DrainRemaining = instance.Spec.StartLifetimeMax;
@@ -223,10 +229,10 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 continue;
             }
             EmitterSpec spec = instance.Spec;
-            if (instance.Activated) instance.NodeTime += dt;
+            if (instance.Activated) instance.NodeTime += scheduleDt;
             double requested = instance.PendingBurst;
-            if (instance.State == InstanceState.Emitting && instance.Activated && dt > 0f)
-                requested += instance.Scheduler.Advance(dt, instance.Emitting, density, instance.RateMultiplier);
+            if (instance.State == InstanceState.Emitting && instance.Activated && scheduleDt > 0f)
+                requested += instance.Scheduler.Advance(scheduleDt, instance.Emitting, density, instance.RateMultiplier);
             int budget = (int)Math.Min(instance.Slots.Capacity, requested);
             instance.PendingBurst = 0;
             int row = rows.Count;
@@ -243,9 +249,8 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
             Matrix4x4 inverse = default;
             bool worldInteraction = spec.WorldSpaceSimulation || Matrix4x4.Invert(instance.Transform.World, out inverse);
             if (worldInteraction)
-                foreach (ParticleEnvironmentSource source in ParticleEnvironment.ForMap(instance.MapIndex))
+                foreach (ParticleEnvironmentSource source in ParticleEnvironment.ForMap(instance.MapIndex, spec.EnvironmentChannels).Span)
                 {
-                    if ((source.Channel & spec.EnvironmentChannels) == 0) continue;
                     fields.Add(new GpuForceField
                     {
                         CenterOrAxisAndKind = new(source.Center, source.Channel == LumenEnvironmentChannel.Explosion ? 5f : 6f),
@@ -284,10 +289,10 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 Flipbook = new Vector4(spec.FlipbookTilesX, spec.FlipbookTilesY, spec.FlipbookCycles, (float)spec.BillboardMode),
                 Appearance = new Vector4(spec.VelocityStretchFactor, spec.LengthScale, spec.HdrIntensity, ParticleAppearanceMath.SizeScale(instance.Transform.World)),
                 Tables = new Vector4(row, fieldOffset, fields.Count - fieldOffset, instance.Id & 0x00ffffff),
-                State = new Vector4(dt, spec.SoftParticleFadeDistance, 0, instance.Intensity),
-                ShapePosition = new Vector4(spec.ShapePosition, instance.Origin.X),
+                State = new Vector4(hostDt, spec.SoftParticleFadeDistance, 0, instance.Intensity),
+                ShapePosition = new Vector4(spec.ShapePosition, instance.DepthReferenceZ.HasValue ? 1f : 0f),
                 ShapeRotation = new Vector4(spec.ShapeRotation.X, spec.ShapeRotation.Y, spec.ShapeRotation.Z, spec.ShapeRotation.W),
-                ShapeScale = new Vector4(spec.ShapeScale, instance.Origin.Z),
+                ShapeScale = new Vector4(spec.ShapeScale, instance.DepthReferenceZ.GetValueOrDefault()),
                 ShapeOptions = new Vector4(spec.RadiusThickness, spec.ArcDegrees * (MathF.PI / 180f), spec.ArcSpread, spec.RadiusSpread),
                 ShapeMix = new Vector4(spec.RandomDirectionAmount, spec.SphericalDirectionAmount, spec.RandomPositionAmount, spec.ConeLength),
                 BoxThicknessDonut = new Vector4(spec.BoxThickness, spec.DonutRadius),
@@ -302,7 +307,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 StateSlot = (uint)instance.StateSlot, EmitEvents = instance.Targets.Length == 0 ? 0u : 1u
             };
             rows.Add(new ParticleEmitterFrame(instance.Id, parameters, instance.Curves, spec.TextureKey, spec.BlendMode,
-                instance.MapIndex, instance.IsVertical3D, instance.Origin.Y, spec.KillBelowFloor)
+                instance.MapIndex, instance.IsVertical3D, spec.KillBelowFloor)
                 { MaterialTint = spec.MaterialTint, ColorSpace = spec.ColorSpace });
             eventCapacity += ownEventCapacity;
         }
@@ -352,7 +357,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
 
 internal readonly record struct ParticleEmitterFrame(int InstanceId, GpuEmitterParams Parameters,
     GpuCurveSample[] Curves, string? TextureKey, LumenBlendMode Blend, int MapIndex = -1,
-    bool IsVertical3D = false, float BaseY = 0f, bool KillBelowFloor = false)
+    bool IsVertical3D = false, bool KillBelowFloor = false)
 {
     internal Vector4 MaterialTint { get; init; } = Vector4.One;
     internal LumenColorSpace ColorSpace { get; init; }

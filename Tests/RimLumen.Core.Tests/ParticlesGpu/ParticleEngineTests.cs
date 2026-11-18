@@ -63,7 +63,7 @@ public static class ParticleEngineTests
             ShapeRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f),
             ShapeScale = new Vector3(5f, 6f, 7f),
         };
-        int id = engine.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.CreateTranslation(10f, 20f, 30f), Quaternion.Identity), -1, false, 1u);
+        engine.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.CreateTranslation(10f, 20f, 30f), Quaternion.Identity), -1, false, 1u);
         engine.CaptureMainThread(Frame(0));
         GpuEmitterParams p = engine.CapturedFrame!.Emitters[0].Parameters;
         Require(p.ShapePosition == new Vector4(1f, 2f, 3f, 0f) && p.ShapeScale == new Vector4(5f, 6f, 7f, 0f),
@@ -71,12 +71,6 @@ public static class ParticleEngineTests
         Require(p.ShapeRotation == new Vector4(0f, 0f, spec.ShapeRotation.Z, spec.ShapeRotation.W)
             && p.World.M14 == 10f && p.World.M24 == 20f && p.World.M34 == 30f && p.Appearance.W == 1f,
             "Quaternion xyzw and node matrix/size scale must remain independent.");
-        engine.SetInstanceVerticalState(id, true, new Vector3(12f, 3f, 34f));
-        engine.CaptureMainThread(Frame(0));
-        ParticleEmitterFrame row = engine.CapturedFrame!.Emitters[0];
-        Require(row.Parameters.ShapePosition == new Vector4(1f, 2f, 3f, 12f) && row.Parameters.ShapeScale == new Vector4(5f, 6f, 7f, 34f)
-            && row.IsVertical3D && row.BaseY == 3f,
-            "Vertical3D play origin must upload as ground anchor ShapePosition.w/ShapeScale.w and floor BaseY.");
     }
 
     [LumenFact]
@@ -326,6 +320,28 @@ public static class ParticleEngineTests
     }
 
     [LumenFact]
+    public static void LifecycleMidFrameRestartUsesOnlyRemainingTimeOnBothTiers()
+    {
+        var asset = new EffectAsset { EffectId = "particles.mid-frame",
+            Nodes = [new() { Name = "cpu", Emitter = SceneAndLighting.VfxTestData.Emitter(rate: 100f, tier: LumenParticleTier.L1_NativeCpu) },
+                     new() { Name = "gpu", Emitter = SceneAndLighting.VfxTestData.Emitter(rate: 100f) }],
+            States = [new() { Name = "wait", Duration = 0.120f, Next = "emit" }, new() { Name = "emit", Nodes = ["cpu", "gpu"], Loop = true }] };
+        var service = SceneAndLighting.VfxTestData.Service(asset);
+        using var gpu = new LumenGpuParticleEngine(128);
+        service.GpuEngineProvider = () => gpu;
+        using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7 });
+        var frame = Frame(8f / 60);
+        Require(!service.Simulator.HasActiveWork, "The wait state has not activated L1 yet.");
+        ILumenFrameContributor[] contributors = [service, service.Simulator, gpu];
+        foreach (var contributor in contributors)
+            if (contributor.HasActiveWork) contributor.CaptureMainThread(frame);
+        int cpuBirths = service.Simulator.LiveParticleCount;
+        var row = gpu.CapturedFrame!.Emitters[0].Parameters;
+        Require(cpuBirths == 1 && row.Slots.Z == 1 && MathF.Abs(row.WorldPhysics.X - (8f / 60 - 0.120f)) < 1e-6f,
+            $"Expected L1/L2 births 1/1, node age 0.01333s; actual {cpuBirths}/{row.Slots.Z}, age {row.WorldPhysics.X}s.");
+    }
+
+    [LumenFact]
     public static void InitialStateCanWaitPastDurationBeforeTrigger()
     {
         using var engine = new LumenGpuParticleEngine(8);
@@ -353,7 +369,8 @@ public static class ParticleEngineTests
         Require(engine.HasActiveWork, "A node outside the initial state must not expire before its state is entered.");
         handle.GoTo("burst");
         engine.CaptureMainThread(Frame(0.25f, 2));
-        Require(engine.HasActiveWork, "The triggered node retains its spawned particles.");
+        float births = engine.CapturedFrame!.Emitters[0].Parameters.Slots.Z;
+        Require(births == 8f, $"GoTo before a standalone capture must request all 8 time-zero births, got {births}.");
     }
 
     [LumenFact]

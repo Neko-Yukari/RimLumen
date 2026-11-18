@@ -177,6 +177,30 @@ public static class LumenVfxServiceSuite
     }
 
     [LumenFact]
+    public static void ReplacementGpuEngineReceivesDisplayStateThroughInterface()
+    {
+        var asset = new EffectAsset
+        {
+            EffectId = "spi.display-state", Nodes = new[]
+            {
+                new EffectNodeSpec { Name = "masked", Emitter = VfxTestData.Emitter(), DepthMask = LumenDepthMask.NorthBehindReference },
+                new EffectNodeSpec { Name = "vertical", Emitter = VfxTestData.Emitter(), SpacePlane = LumenSpacePlane.Vertical3D },
+            },
+        };
+        var catalog = new InMemoryAssetCatalog();
+        catalog.Register(asset);
+        LumenHostRegistry.RegisterAssetProvider(catalog);
+        var gpu = new SpyGpuEngine();
+        var service = new LumenVfxService(new CpuParticleSimulator()) { GpuEngineProvider = () => gpu };
+        using var handle = service.Play(new LumenPlayRequest
+        {
+            EffectId = asset.EffectId, MapIndex = 7201, OriginWorld = new Vector3(3f, 0f, 10f), DepthReferenceZ = 12f,
+        });
+        VfxAssert.Check(gpu.DisplayStates.Contains((0, false, 12f)), $"masked node: {string.Join(", ", gpu.DisplayStates)}");
+        VfxAssert.Check(gpu.DisplayStates.Contains((1, true, null)), $"vertical node: {string.Join(", ", gpu.DisplayStates)}");
+    }
+
+    [LumenFact]
     public static void R1CapacityReportsSelectedRealEnginePoolInsteadOfBuiltinDefault()
     {
         using var engine = new LumenGpuParticleEngine(64);
@@ -398,6 +422,11 @@ internal sealed class SpyGpuEngine : ILumenGpuParticleEngine
     public readonly List<(int Id, int Count)> Bursts = new();
     public void RestartInstance(int instanceId) => Restarts.Add(instanceId);
     public void BindNodeInstances(int[] instanceIdsByNode) { }
+    public readonly List<(int Id, bool IsVertical3D, float? DepthReferenceZ)> DisplayStates = new();
+    public readonly List<(int Id, float FrameDelta)> FrameDeltas = new();
+    public void SetInstanceDisplayState(int instanceId, bool isVertical3D, float? depthReferenceZ)
+        => DisplayStates.Add((instanceId, isVertical3D, depthReferenceZ));
+    public void SetInstanceFrameDelta(int instanceId, float frameDelta) => FrameDeltas.Add((instanceId, frameDelta));
     public void EmitBurst(int instanceId, int count) => Bursts.Add((instanceId, count));
     // Ids the test has declared drained; every other created, not immediately destroyed id is alive.
     public readonly HashSet<int> Drained = new();

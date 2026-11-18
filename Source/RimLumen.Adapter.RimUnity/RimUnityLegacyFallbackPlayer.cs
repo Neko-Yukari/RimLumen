@@ -129,8 +129,7 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
         {
             var subTargets = systems.Where(system => system.subEmitters.enabled)
                 .SelectMany(system => system.subEmitters.entries).Select(entry => entry.system).ToHashSet();
-            // request.InitialState names a native asset state; translated RimUnity assets declare none, so the native
-            // handle has already rejected any non-null value and the External part starts every system.
+            // The native handle owns state selection. External playback starts its independent root systems.
             foreach (var system in systems)
                 if (system.gameObject.activeInHierarchy && !subTargets.Contains(system)) system.Play(false);
             trails = trails.Where(trail => trail.gameObject.activeInHierarchy).ToArray();

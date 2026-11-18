@@ -52,6 +52,7 @@ public sealed partial class LumenEffectDef : Def
                 Name = nodeName,
                 ParentIndex = node.parentIndex,
                 SpacePlane = node.spacePlane,
+                DepthMask = node.depthMask,
                 LocalPosition = new Vector3(
                     node.localPosition.x,
                     node.localPosition.y + node.heightOffset,
@@ -64,6 +65,7 @@ public sealed partial class LumenEffectDef : Def
                 PointLight = node.pointLight is null ? null : ToPointLightSpec(node.pointLight, nodePath),
                 Distortion = node.distortion is null ? null : ToDistortionSpec(node.distortion, nodePath),
                 Ribbon = node.ribbon is null ? null : ToRibbonSpec(node.ribbon, nodePath),
+                ScreenDim = node.screenDim is null ? null : ToScreenDimSpec(node.screenDim, nodePath),
             };
         }
 
@@ -169,12 +171,12 @@ public sealed partial class LumenEffectDef : Def
             StartColor = ParseColor(xml.startColor, path + ".emitter.startColor"),
             ColorSpace = xml.colorSpace,
             MaterialTint = ParseColor(xml.materialTint, path + ".emitter.materialTint"),
-            SizeOverLifetime = xml.sizeOverLifetime is { Count: > 0 }
-                ? new ScalarCurve(ToCurveKeys(xml.sizeOverLifetime, path + ".sizeOverLifetime"))
-                : ScalarCurve.Constant(1f),
-            ColorOverLifetime = xml.colorOverLifetime is { Count: > 0 }
-                ? new ColorGradient(ToColorStops(xml.colorOverLifetime, path + ".colorOverLifetime"))
-                : ColorGradient.Constant(Vector4.One),
+            SizeOverLifetime = xml.sizeOverLifetime is null
+                ? ScalarCurve.Constant(1f)
+                : new ScalarCurve(ToCurveKeys(xml.sizeOverLifetime, path + ".sizeOverLifetime")),
+            ColorOverLifetime = xml.colorOverLifetime is null
+                ? ColorGradient.Constant(Vector4.One)
+                : new ColorGradient(ToColorStops(xml.colorOverLifetime, path + ".colorOverLifetime")),
             ForceFields = ToForceFields(xml.forceFields, path),
             EnvironmentChannels = xml.environmentChannels,
             EnvironmentForceScale = xml.environmentForceScale,
@@ -202,7 +204,7 @@ public sealed partial class LumenEffectDef : Def
         // PointLightSpec carries no intensity column: the light pool multiplies the colour by
         // Evaluate(IntensityOverTime) * runtime multiplier, so the authored intensity rides on the curve's multiplier.
         ScalarCurve? intensity;
-        if (xml.intensityOverTime is { Count: > 0 })
+        if (xml.intensityOverTime is not null)
         {
             intensity = new ScalarCurve(ToCurveKeys(xml.intensityOverTime, path + ".pointLight.intensityOverTime"), xml.intensity);
         }
@@ -241,7 +243,7 @@ public sealed partial class LumenEffectDef : Def
         for (int i = 0; i < keys.Count; i++)
         {
             LumenCurveKeyXml key = keys[i] ?? throw new InvalidDataException($"{path}[{i}] is null.");
-            result[i] = new CurveKey(key.time, key.value);
+            result[i] = new CurveKey(key.time, key.value, key.inTangent, key.outTangent);
         }
 
         return result;
@@ -310,6 +312,7 @@ public sealed class LumenNodeXml
     public string? name;
     public int parentIndex = -1;
     public LumenSpacePlane spacePlane = LumenSpacePlane.GroundXZ;
+    public LumenDepthMask depthMask = LumenDepthMask.None;
     public UnityEngine.Vector3 localPosition;
     public float localYawDegrees;
     public float localScale = 1f;
@@ -318,6 +321,7 @@ public sealed class LumenNodeXml
     public LumenPointLightXml? pointLight;
     public LumenDistortionXml? distortion;
     public LumenRibbonXml? ribbon;
+    public LumenScreenDimXml? screenDim;
 }
 
 // XML mirror of <see cref="EmitterSpec"/>. Field initialisers are the SAME defaults the .lumen.json loader
@@ -425,6 +429,8 @@ public sealed class LumenCurveKeyXml
 {
     public float time;
     public float value = 1f;
+    public float inTangent;
+    public float outTangent;
 }
 
 public sealed class LumenGradientStopXml
@@ -523,6 +529,10 @@ internal static partial class LumenAssetRules
 
             ValidateRotation(node.LocalRotation, $"{path} ('{node.Name}').localRotation");
             ValidateEnum(node.SpacePlane, $"{path} ('{node.Name}').spacePlane");
+            ValidateEnum(node.DepthMask, $"{path} ('{node.Name}').depthMask");
+            if (node.DepthMask != LumenDepthMask.None
+                && (node.SpacePlane != LumenSpacePlane.GroundXZ || (node.Emitter is null && node.Ribbon is null)))
+                throw new InvalidDataException($"{path} ('{node.Name}').depthMask: only a GroundXZ node with an emitter or ribbon takes a depth mask.");
 
             if (node.Emitter is { } emitter)
             {
@@ -553,6 +563,8 @@ internal static partial class LumenAssetRules
                 ValidateDistortion(distortion, $"{path} ('{node.Name}').distortion");
             if (node.Ribbon is { } ribbon)
                 ValidateRibbon(ribbon, $"{path} ('{node.Name}').ribbon");
+            if (node.ScreenDim is { } screenDim)
+                ValidateScreenDim(screenDim, $"{path} ('{node.Name}').screenDim");
         }
 
         ValidateSubEmitterGraph(nodes, source);
@@ -900,8 +912,8 @@ public static partial class LumenJsonAssetLoader
 
     private static readonly string[] NodeProperties =
     {
-        "name", "parentIndex", "spacePlane", "localPosition", "localRotation", "localYawDegrees",
-        "localScale", "emitter", "pointLight", "distortion", "ribbon",
+        "name", "parentIndex", "spacePlane", "depthMask", "localPosition", "localRotation", "localYawDegrees",
+        "localScale", "emitter", "pointLight", "distortion", "ribbon", "screenDim",
     };
 
     private static readonly string[] EmitterProperties =
@@ -963,6 +975,7 @@ public static partial class LumenJsonAssetLoader
             Name = name,
             ParentIndex = scope.Int("parentIndex", -1),
             SpacePlane = scope.Enum("spacePlane", LumenSpacePlane.GroundXZ),
+            DepthMask = scope.Enum("depthMask", LumenDepthMask.None),
             LocalPosition = scope.Vector3("localPosition", Vector3.Zero),
             LocalRotation = rotation,
             LocalScale = scope.Vector3("localScale", Vector3.One),
@@ -970,6 +983,7 @@ public static partial class LumenJsonAssetLoader
             PointLight = scope.TryGet("pointLight", out JsonElement lightElement) ? ParsePointLight(lightElement, path + ".pointLight") : null,
             Distortion = scope.TryGet("distortion", out JsonElement distortionElement) ? ParseDistortion(distortionElement, path + ".distortion") : null,
             Ribbon = scope.TryGet("ribbon", out JsonElement ribbonElement) ? ParseRibbon(ribbonElement, path + ".ribbon") : null,
+            ScreenDim = scope.TryGet("screenDim", out JsonElement dimElement) ? ParseScreenDim(dimElement, path + ".screenDim") : null,
         };
     }
 

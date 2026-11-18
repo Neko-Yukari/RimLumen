@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.ParticlesGpu;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Scene;
 
@@ -391,9 +392,11 @@ public static class CpuParticleSimulatorSuite
         Vector(new Vector3(1f, -1f, 0f), simulator.Vertices[1].Position);
         Vector(new Vector3(1f, 1f, 0f), simulator.Vertices[2].Position);
         Vector(new Vector3(-1f, 1f, 0f), simulator.Vertices[3].Position);
+        // A straight-down view: the quad lies in the ground plane on the mote layer.
+        float moteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
         Step(simulator, 0f, Matrix4x4.CreateRotationX(MathF.PI / 2f));
-        Vector(new Vector3(-1f, 0f, -1f), simulator.Vertices[0].Position);
-        Vector(new Vector3(1f, 0f, 1f), simulator.Vertices[2].Position);
+        Vector(new Vector3(-1f, moteY, -1f), simulator.Vertices[0].Position);
+        Vector(new Vector3(1f, moteY, 1f), simulator.Vertices[2].Position);
     }
 
     [LumenFact]
@@ -423,6 +426,7 @@ public static class CpuParticleSimulatorSuite
         Vector(new Vector3(0f, -4f, 0f), Vector3.Cross(
             simulator.Vertices[2].Position - simulator.Vertices[0].Position,
             simulator.Vertices[3].Position - simulator.Vertices[0].Position));
+        // RotationZ(90 degrees) rolls a level camera about its view axis: not straight-down, world height is kept.
         Step(simulator, 0f, Matrix4x4.CreateRotationZ(MathF.PI / 2f));
         Vector(new Vector3(-1f, 5f, -1f), simulator.Vertices[0].Position);
     }
@@ -543,17 +547,18 @@ public static class CpuParticleSimulatorSuite
         Step(simulator, 0.25f);
         Vector(firstVelocity, simulator.LiveParticles[0].Velocity);
         simulator.SetEmitterParams(later, true, 1f, 1f);
-        for (int i = 0; i < 20; i++) { Step(simulator, 0.25f); simulator.RecordHdrDraws(default); }
+        for (uint frame = 1; frame <= 20; frame++) { Step(simulator, 0.25f, frameIndex: frame); simulator.RecordHdrDraws(default); }
         long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 100; i++)
+        for (uint frame = 21; frame <= 120; frame++)
         {
-            Step(simulator, 0.25f);
+            Step(simulator, 0.25f, frameIndex: frame);
             simulator.RecordHdrDraws(default);
             simulator.EnqueuePreCompute(default);
             simulator.RecordBufferBarriers(default);
             _ = simulator.HasActiveWork;
         }
         long bytes = GC.GetAllocatedBytesForCurrentThread() - before;
+        Console.WriteLine($"[L1] 100 distinct steady-state captures: {bytes} bytes allocated.");
         Check(bytes == 0, $"Steady-state allocated {bytes} bytes");
     }
 
@@ -669,7 +674,7 @@ public static class CpuParticleSimulatorSuite
         Matrix4x4 apex = Matrix4x4.CreateTranslation(0f, 4.8f, 0f);
         int free = simulator.AcquireEmitter(quad, new LumenEmitterTransform(apex, Quaternion.Identity), 1u, false);
         int ground = simulator.AcquireEmitter(quad, new LumenEmitterTransform(apex, Quaternion.Identity), 1u, false);
-        simulator.SetEmitterVerticalState(free, true, Vector3.Zero);
+        simulator.SetEmitterDisplayState(free, true, null);
         simulator.EmitBurst(free, 1);
         simulator.EmitBurst(ground, 1);
         Step(simulator, 0f, isoView);
@@ -687,7 +692,7 @@ public static class CpuParticleSimulatorSuite
             ConeAngleDegrees = 0f, ShapeExtents = Vector3.Zero, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 4f, StartSpeedMax = 4f,
             VelocityStretchFactor = 0.25f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
         }, new LumenEmitterTransform(Matrix4x4.CreateRotationZ(-MathF.PI / 4f) * apex, Quaternion.CreateFromAxisAngle(Vector3.UnitZ, -MathF.PI / 4f)), 1u, false);
-        streak.SetEmitterVerticalState(streakId, true, Vector3.Zero);
+        streak.SetEmitterDisplayState(streakId, true, null);
         streak.EmitBurst(streakId, 1);
         Step(streak, 0f, isoView);
         Vector3 velocity = Vector3.Normalize(new Vector3(1f, 1f, 0f)) * 4f;
@@ -719,9 +724,9 @@ public static class CpuParticleSimulatorSuite
             ConeAngleDegrees = 0f, ShapeExtents = Vector3.Zero, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 4f, StartSpeedMax = 4f,
             VelocityStretchFactor = 0.25f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
         }, new LumenEmitterTransform(apex, Quaternion.Identity), 1u, false);
-        // Play origin (3, 0, 7): the apex node sits 4.8 straight above it.
-        simulator.SetEmitterVerticalState(free, true, new Vector3(3f, 0f, 7f));
-        simulator.SetEmitterVerticalState(streak, true, new Vector3(3f, 0f, 7f));
+        // The apex node sits 4.8 straight above its ground anchor (3, 0, 7).
+        simulator.SetEmitterDisplayState(free, true, null);
+        simulator.SetEmitterDisplayState(streak, true, null);
         simulator.EmitBurst(free, 1);
         simulator.EmitBurst(ground, 1);
         simulator.EmitBurst(streak, 1);
@@ -736,7 +741,7 @@ public static class CpuParticleSimulatorSuite
         Close(3f, freeCenter.X);
         Close(9.4f, freeCenter.Z);
         Check(freeCenter.Y >= moteY - 1e-4f, $"Vertical3D must draw at or above the mote layer, y={freeCenter.Y}");
-        Vector(new Vector3(3f, 4.8f, 7f), Center(4));
+        Vector(new Vector3(3f, moteY, 7f), Center(4));
         Vector3 streakCenter = Center(8);
         Close(9.4f, streakCenter.Z);
         // Velocity (0, 4, 0) draws as (0, 0, 2): length = size 2 + stretch 0.25 * 2.
@@ -754,8 +759,8 @@ public static class CpuParticleSimulatorSuite
             var groundRight = new Vector3(MathF.Cos(yaw), 0f, -MathF.Sin(yaw));
             var groundUp = new Vector3(MathF.Sin(yaw), 0f, MathF.Cos(yaw));
             Matrix4x4 view = RigidView(groundRight, groundUp, -Vector3.UnitY);
-            CameraBillboardBasis.Extract(view, out _, out Vector3 cameraUp, out float yScale);
-            Check(CameraBillboardBasis.IsStraightTopDown2D(cameraUp, yScale), $"yaw {yawDegrees}: not straight-down");
+            CameraBillboardBasis.Extract(view, out Vector3 cameraRight, out Vector3 cameraUp, out float yScale);
+            Check(CameraBillboardBasis.IsStraightTopDown2D(cameraRight, cameraUp, yScale), $"yaw {yawDegrees}: not straight-down");
             Vector3 u = CameraBillboardBasis.GroundUp(cameraUp);
             Vector(groundUp, u);
             // Reference camera pitched 60 degrees down about groundRight: screen-up = sin * groundUp + cos * worldUp.
@@ -786,7 +791,41 @@ public static class CpuParticleSimulatorSuite
     }
 
     [LumenFact]
-    public static void Vertical3DWorldSpaceParticlesKeepTheirBirthAnchorWhenTheOriginMoves()
+    public static void Vertical3DSubEmitterBirthsAnchorAtTheirEventPosition()
+    {
+        // A projectile flies 25 cells north and dies there; its impact burst belongs to a node at the launch point.
+        var simulator = new CpuParticleSimulator();
+        int source = simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "projectile", RateOverTime = 0, Bursts = new[] { new ParticleBurstSpec(0f, 1) }, MaxParticles = 1,
+            Shape = LumenShapeKind.Cone, ConeAngleDegrees = 0f, ShapeExtents = Vector3.Zero,
+            StartSpeedMin = 25f, StartSpeedMax = 25f, StartLifetimeMin = 1.5f, StartLifetimeMax = 1.5f,
+            SubEmitters = new[] { new SubEmitterSpec(LumenSubEmitterTrigger.Death, 1, 1) },
+        }, new LumenEmitterTransform(Matrix4x4.CreateRotationX(MathF.PI / 2f) * Matrix4x4.CreateTranslation(10f, 0f, 20f),
+            Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2f)), 1u);
+        int impact = simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "impact", RateOverTime = 0, MaxParticles = 1, StartSpeedMin = 0f, StartSpeedMax = 0f,
+            StartSizeMin = 1f, StartSizeMax = 1f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+        }, new LumenEmitterTransform(Matrix4x4.CreateTranslation(10f, 0f, 20f), Quaternion.Identity), 2u);
+        simulator.SetEmitterDisplayState(impact, true, null);
+        simulator.BindNodeInstances(new[] { source, impact }, null, Array.Empty<int>());
+        Step(simulator, 0.01f);
+        Step(simulator, 1f);
+        Step(simulator, 1f);
+        Step(simulator, 0.01f, RigidView(Vector3.UnitX, Vector3.UnitZ, -Vector3.UnitY));
+        Check(simulator.GetLiveParticleCount(source) == 0 && simulator.GetLiveParticleCount(impact) == 1, "The death event spawns one impact particle.");
+        Vector3 center = (simulator.Vertices[0].Position + simulator.Vertices[1].Position
+            + simulator.Vertices[2].Position + simulator.Vertices[3].Position) * 0.25f;
+        float eventZ = simulator.LiveParticles[0].Position.Z;
+        Console.WriteLine($"[ANCHOR] sub-emitter birth at Z={eventZ:F4} draws at Z={center.Z:F4}, off by {center.Z - eventZ:F4}");
+        Close(10f, center.X);
+        Close(eventZ, center.Z);
+        Check(eventZ > 44f, $"The event lies about 25 cells north of the node, z={eventZ}");
+    }
+
+    [LumenFact]
+    public static void Vertical3DWorldSpaceParticlesKeepTheirBirthAnchorWhenTheNodeMoves()
     {
         // Camera turned 90 degrees: screen-up is world +X, so height draws along +X.
         Matrix4x4 view = RigidView(-Vector3.UnitZ, Vector3.UnitX, -Vector3.UnitY);
@@ -800,19 +839,18 @@ public static class CpuParticleSimulatorSuite
         var simulator = new CpuParticleSimulator();
         Vector3 first = new(10f, 0f, 20f), second = new(30f, 0f, 50f);
         int id = simulator.AcquireEmitter(spec, new LumenEmitterTransform(Matrix4x4.CreateTranslation(first), Quaternion.Identity), 1u, false);
-        simulator.SetEmitterVerticalState(id, true, first);
+        simulator.SetEmitterDisplayState(id, true, null);
         simulator.EmitBurst(id, 1);
         Step(simulator, 0f, view);
         Vector3 Center(int firstVertex)
             => (simulator.Vertices[firstVertex].Position + simulator.Vertices[firstVertex + 1].Position
                 + simulator.Vertices[firstVertex + 2].Position + simulator.Vertices[firstVertex + 3].Position) * 0.25f;
-        // Offset (2, 3, 0) from the origin: 2 along screen-up shrinks to 2 sin 60, height 3 adds 1.5.
+        // Offset (2, 3, 0) from the node: 2 along screen-up shrinks to 2 sin 60, height 3 adds 1.5.
         Vector3 expected = new(10f + 2f * sin + 1.5f, 0f, 20f);
         Vector3 born = Center(0);
         Close(expected.X, born.X); Close(expected.Z, born.Z);
 
         simulator.SetEmitterTransform(id, new LumenEmitterTransform(Matrix4x4.CreateTranslation(second), Quaternion.Identity));
-        simulator.SetEmitterVerticalState(id, true, second);
         simulator.EmitBurst(id, 1);
         Step(simulator, 0f, view);
         Check(simulator.LiveParticleCount == 2, "Both particles stay alive");
@@ -822,27 +860,94 @@ public static class CpuParticleSimulatorSuite
     }
 
     [LumenFact]
-    public static void GroundEmittersStayOnTheLegacyPathUnderIsoRimAndTopDownCameras()
+    public static void GroundEmittersDrawOnTheMoteLayerUnderTopDownAndKeepWorldGeometryUnderIsoRim()
     {
-        // RimUnity prefabs use GroundXZ with Unity-baked rotations and MoteOverhead-sized Y offsets: no display remap.
+        // A GroundXZ particle on the ground (Y = 0) would sit at terrain depth and be occluded by it in vanilla 2D.
         Matrix4x4 isoView = IsoRimView().View;
         Matrix4x4 topDown = RigidView(Vector3.UnitX, Vector3.UnitZ, -Vector3.UnitY);
+        float moteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
         var simulator = new CpuParticleSimulator();
         int id = simulator.AcquireEmitter(new EmitterSpec
         {
-            Name = "ground-legacy", StartSizeMin = 2f, StartSizeMax = 2f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-        }, new LumenEmitterTransform(Matrix4x4.CreateTranslation(3f, 11f, 7f), Quaternion.Identity), 1u, false);
+            Name = "ground", StartSizeMin = 2f, StartSizeMax = 2f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+        }, new LumenEmitterTransform(Matrix4x4.CreateTranslation(3f, 0f, 7f), Quaternion.Identity), 1u, false);
         simulator.EmitBurst(id, 1);
         Vector3 Center() => (simulator.Vertices[0].Position + simulator.Vertices[1].Position
             + simulator.Vertices[2].Position + simulator.Vertices[3].Position) * 0.25f;
         Step(simulator, 0f, topDown);
-        Vector(new Vector3(3f, 11f, 7f), Center());
+        Vector(new Vector3(3f, moteY, 7f), Center());
         Step(simulator, 0f, isoView);
-        Vector(new Vector3(3f, 11f, 7f), Center());
+        Vector(new Vector3(3f, 0f, 7f), Center());
     }
 
     [LumenFact]
-    public static void KillBelowFloorExpiresOnlyDescendingParticlesBelowTheBaseHeight()
+    public static void GroundLocalBillboardCornersAllDrawOnTheMoteLayerUnderTopDownCamera()
+    {
+        // A node tilted 45 degrees about X: its Local quad still has ground area, and every corner must share the layer.
+        float moteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
+        Quaternion tilt = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 4f);
+        var simulator = new CpuParticleSimulator();
+        int id = simulator.AcquireEmitter(new EmitterSpec
+        {
+            Name = "tilted-local", BillboardMode = LumenBillboardMode.Local, StartSizeMin = 2f, StartSizeMax = 2f,
+            StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+        }, new LumenEmitterTransform(Matrix4x4.CreateFromQuaternion(tilt) * Matrix4x4.CreateTranslation(3f, 0f, 7f), tilt), 1u, false);
+        simulator.EmitBurst(id, 1);
+        Step(simulator, 0f, RigidView(Vector3.UnitX, Vector3.UnitZ, -Vector3.UnitY));
+        float minY = float.MaxValue, maxY = float.MinValue;
+        for (int i = 0; i < 4; i++)
+        {
+            minY = MathF.Min(minY, simulator.Vertices[i].Position.Y);
+            maxY = MathF.Max(maxY, simulator.Vertices[i].Position.Y);
+        }
+        Console.WriteLine($"[LAYER] tilted Local quad corner Y in [{minY - moteY:F4}, {maxY - moteY:F4}] of the mote layer");
+        Close(moteY, minY);
+        Close(moteY, maxY);
+        // The ground footprint is kept: the quad still spans 2 cells along X.
+        Close(2f, MathF.Abs(simulator.Vertices[1].Position.X - simulator.Vertices[0].Position.X));
+    }
+
+    [LumenFact]
+    public static void Vertical3DNodesAnchorAtTheirOwnGroundPositionUnderTopDownCamera()
+    {
+        // A second node 25 cells north of the play origin, as a long-range impact: it must draw on its own cell,
+        // not 25 * (1 - sin 60) = 3.35 cells short of it.
+        EmitterSpec Point(string name) => new()
+        {
+            Name = name, MaxParticles = 1, Duration = 1f, Bursts = new[] { new ParticleBurstSpec(0f, 1) },
+            Shape = LumenShapeKind.Cone, ConeAngleDegrees = 0f, ShapeExtents = Vector3.Zero,
+            StartSizeMin = 1f, StartSizeMax = 1f, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
+        };
+        var asset = new EffectAsset
+        {
+            EffectId = "node-ground-anchor",
+            Nodes = new[]
+            {
+                new EffectNodeSpec { Name = "muzzle", SpacePlane = LumenSpacePlane.Vertical3D, Emitter = Point("muzzle") },
+                new EffectNodeSpec
+                {
+                    Name = "impact", SpacePlane = LumenSpacePlane.Vertical3D, LocalPosition = new Vector3(0f, 2f, 25f), Emitter = Point("impact"),
+                },
+            },
+        };
+        LumenVfxService service = VfxTestData.Service(asset);
+        using ILumenEffectHandle handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new(10f, 0f, 20f) });
+        CpuParticleSimulator sim = service.Simulator;
+        Step(sim, 0.01f, RigidView(Vector3.UnitX, Vector3.UnitZ, -Vector3.UnitY));
+        Vector3 Center(int firstVertex) => (sim.Vertices[firstVertex].Position + sim.Vertices[firstVertex + 1].Position
+            + sim.Vertices[firstVertex + 2].Position + sim.Vertices[firstVertex + 3].Position) * 0.25f;
+        Check(sim.LiveParticleCount == 2, $"Both nodes emit one particle, live={sim.LiveParticleCount}");
+        Vector3 impact = Center(4);
+        Console.WriteLine($"[ANCHOR] impact node at Z=45 (height 2) draws at Z={impact.Z:F4}, off by {impact.Z - 46f:F4} from its cell + 0.5*height");
+        // Its 2 cells of height draw 2 * cos 60 = 1 cell up-screen of its own cell.
+        Close(10f, impact.X);
+        Close(46f, impact.Z);
+        Close(10f, Center(0).X);
+        Close(20f, Center(0).Z);
+    }
+
+    [LumenFact]
+    public static void KillBelowFloorExpiresOnlyDescendingParticlesBelowGround()
     {
         var falling = new EmitterSpec
         {
@@ -871,10 +976,7 @@ public static class CpuParticleSimulatorSuite
         // Starts at -3 and rises to -1 within the step: still below the floor, but not descending.
         int belowFloor = simulator.AcquireEmitter(rising, new LumenEmitterTransform(Matrix4x4.CreateTranslation(0f, -3f, 0f), Quaternion.Identity), 1u, false);
         foreach (int id in new[] { expires, ignoresFlag, local, atFloor, belowFloor })
-        {
-            simulator.SetEmitterVerticalState(id, true, Vector3.Zero);
             simulator.EmitBurst(id, 1);
-        }
         Step(simulator, 0f);
         Check(simulator.LiveParticleCount == 5, "Five particles admitted before the simulation step");
         Step(simulator, 0.5f);
@@ -887,7 +989,7 @@ public static class CpuParticleSimulatorSuite
     }
 
     [LumenFact]
-    public static void EffectHandleUsesPlayOriginHeightAsTheFloor()
+    public static void ElevatedParticleProjectsAndExpiresAgainstFixedGround()
     {
         var asset = new EffectAsset
         {
@@ -896,26 +998,41 @@ public static class CpuParticleSimulatorSuite
             {
                 new EffectNodeSpec
                 {
-                    Name = "drop", SpacePlane = LumenSpacePlane.Vertical3D, LocalPosition = new Vector3(0f, 0.5f, 0f),
+                    Name = "drop", SpacePlane = LumenSpacePlane.Vertical3D,
                     Emitter = new EmitterSpec
                     {
-                        Name = "drop", PreferredTier = LumenParticleTier.L1_NativeCpu, KillBelowFloor = true,
+                        Name = "drop", KillBelowFloor = true, MaxParticles = 1,
                         Duration = 1f, Bursts = new[] { new ParticleBurstSpec(0f, 1) }, StartLifetimeMin = 10f, StartLifetimeMax = 10f,
-                        ForceFields = new[] { new ForceFieldSpec(ForceFieldKind.GravityDrag, new Vector3(0f, -1f, 0f), Vector3.Zero, 0f, 10f) },
+                        ShapeRotation = new Quaternion(1f, 0f, 0f, 0f), // Half turn about X: launch straight down.
+                        StartSpeedMin = 2f, StartSpeedMax = 2f,
                     },
                 },
             },
         };
         LumenVfxService service = VfxTestData.Service(asset);
-        using ILumenEffectHandle handle = service.Play(new LumenPlayRequest
-        {
-            MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new Vector3(0f, 5f, 0f),
-        });
-        VfxTestData.Step(service, 0.1f);
-        Check(service.Simulator.LiveParticleCount == 1, "The drop spawns 0.5 above the play origin");
-        // At 5.5 it falls to y = 3.0 within 0.5 s: below the origin height 5, above world zero.
-        VfxTestData.Step(service, 0.5f);
-        Check(service.Simulator.LiveParticleCount == 0, "The play origin height is the floor of KillBelowFloor emitters");
+        var request = new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, OriginWorld = new(0f, 2f, 7f) };
+        using ILumenEffectHandle cpuHandle = service.Play(request);
+        using var gpu = new LumenGpuParticleEngine(1);
+        service.GpuEngineProvider = () => gpu;
+        using ILumenEffectHandle gpuHandle = service.Play(request);
+        gpu.CaptureMainThread(new LumenCaptureContext { FrameIndex = 1, DeltaTime = 0.125f, ViewportWidth = 100, ViewportHeight = 100,
+            ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0 });
+        var row = gpu.CapturedFrame!.Emitters[0];
+        Check(row.IsVertical3D && row.KillBelowFloor && row.Parameters.World.M24 == 2f && row.Parameters.Slots.Z == 1f,
+            "L2 must receive the same single birth at world Y=2 with Vertical3D and floor expiry enabled.");
+
+        CpuParticleSimulator sim = service.Simulator;
+        Step(sim, 0.125f, RigidView(Vector3.UnitX, Vector3.UnitZ, -Vector3.UnitY));
+        float screenRise = (sim.Vertices[0].Position.Z + sim.Vertices[2].Position.Z) * 0.5f - request.OriginWorld.Z;
+        Step(sim, 0f, IsoRimView().View);
+        float isoHeight = (sim.Vertices[0].Position.Y + sim.Vertices[2].Position.Y) * 0.5f * 0.003f;
+        Step(sim, 0.5f); int atOne = sim.LiveParticleCount;
+        Step(sim, 0.5f); int atZero = sim.LiveParticleCount;
+        Step(sim, 0.125f); int below = sim.LiveParticleCount;
+        Console.WriteLine($"[GROUND] Spawn Y=2, screen rise={screenRise}, IsoRim height={isoHeight:G5}, live at Y=1/0/-0.25: {atOne}/{atZero}/{below}");
+        Close(1f, screenRise);
+        Close(2f, isoHeight);
+        Check((atOne, atZero, below) == (1, 1, 0), "The descending drop must survive at Y=1 and Y=0, and expire below Y=0.");
     }
 
     // IsoRim Waylith: pitch 55, yaw 45, world Y squashed by 0.003 inside the view matrix.
@@ -944,12 +1061,12 @@ public static class CpuParticleSimulatorSuite
         -forward.X, -forward.Y, -forward.Z, 0f,
         0f, 0f, 0f, 1f);
 
-    private static void Step(CpuParticleSimulator simulator, float dt, Matrix4x4? view = null, int mapIndex = -1)
+    private static void Step(CpuParticleSimulator simulator, float dt, Matrix4x4? view = null, int mapIndex = -1, ulong frameIndex = 0)
     {
         simulator.CaptureMainThread(new LumenCaptureContext
         {
             CurrentMapIndex = mapIndex,
-            FrameIndex = 0, DeltaTime = dt, ViewportWidth = 100, ViewportHeight = 100,
+            FrameIndex = frameIndex, DeltaTime = dt, ViewportWidth = 100, ViewportHeight = 100,
             ViewMatrix = view ?? Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
         });
     }

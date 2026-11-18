@@ -13,7 +13,7 @@ namespace RimLumen.Core.Distortion;
 // Node feature backend for EffectNodeSpec.Distortion. During capture every visible instance on the current map becomes
 // one quad enqueued on RimLumenRenderHost.DistortionPassId, the route a third-party layer-14 draw takes, so
 // DistortionPass sums both into the `distortion` input. The quad spans 2R x 2R around the node's ground position (the
-// Vertical3D display projection shared with particles, pivot = the play origin); LumenDistortion.frag.glsl turns the
+// Vertical3D display projection shared with particles, anchored at the play origin's XZ on the ground; LumenDistortion.frag.glsl turns the
 // quad's DistortionFrame into a pixel offset through the quad's own screen derivatives, so any camera gets the
 // projected footprint.
 public sealed class LumenDistortionBackend : ILumenNodeFeatureBackend, ILumenFrameContributor
@@ -31,12 +31,9 @@ public sealed class LumenDistortionBackend : ILumenNodeFeatureBackend, ILumenFra
         // Offsets the haze noise in time so two hazes never shimmer in lockstep.
         internal readonly float HazeSeedPhase = seed % 4096u * 1.618034f;
         internal LumenNodeFeatureFrame Frame = frame;
-        internal bool Started;
-        internal bool Active;
-        internal bool Draining;
-        internal float Time;
+        internal NodeFeatureClock Clock;
 
-        internal bool IsVisible => DistortionTimeline.IsVisible(Spec, Started, Time, Active);
+        internal bool IsVisible => Clock.IsVisible(Spec.Duration);
     }
 
     private readonly Dictionary<int, Instance> instances = new();
@@ -58,22 +55,13 @@ public sealed class LumenDistortionBackend : ILumenNodeFeatureBackend, ILumenFra
         return id;
     }
 
-    public void RestartInstance(int instanceId)
-    {
-        Instance instance = instances[instanceId];
-        // A draining node produces no new output, including a Trigger after Stop(true).
-        if (instance.Draining) return;
-        instance.Started = true;
-        instance.Active = true;
-        instance.Time = 0f;
-    }
+    public void RestartInstance(int instanceId) => instances[instanceId].Clock.Restart();
 
     public void UpdateInstance(int instanceId, in LumenNodeFeatureFrame frame)
     {
         Instance instance = instances[instanceId];
         instance.Frame = frame;
-        instance.Active = frame.Active && !instance.Draining;
-        if (instance.Started) instance.Time += frame.DeltaTime;
+        instance.Clock.Update(frame);
         ReleaseIfDrained(instanceId, instance);
     }
 
@@ -86,8 +74,7 @@ public sealed class LumenDistortionBackend : ILumenNodeFeatureBackend, ILumenFra
             return;
         }
         Instance instance = instances[instanceId];
-        instance.Draining = true;
-        instance.Active = false;
+        instance.Clock.Drain();
         ReleaseIfDrained(instanceId, instance);
     }
 
@@ -95,14 +82,14 @@ public sealed class LumenDistortionBackend : ILumenNodeFeatureBackend, ILumenFra
 
     private void ReleaseIfDrained(int instanceId, Instance instance)
     {
-        if (instance.Draining && !instance.IsVisible) instances.Remove(instanceId);
+        if (instance.Clock.IsDrained(instance.Spec.Duration)) instances.Remove(instanceId);
     }
 
     // Ensures: one additive quad per visible instance of context.CurrentMapIndex, in this frame's draw submission.
     public void CaptureMainThread(in LumenCaptureContext context)
     {
-        CameraBillboardBasis.Extract(context.ViewMatrix, out _, out Vector3 up, out float yScaleRatio);
-        bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(up, yScaleRatio);
+        CameraBillboardBasis.Extract(context.ViewMatrix, out Vector3 right, out Vector3 up, out float yScaleRatio);
+        bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(right, up, yScaleRatio);
         Vector3 groundUp = CameraBillboardBasis.GroundUp(up);
         float moteY = Altitudes.AltitudeFor(AltitudeLayer.MoteOverhead);
         foreach (Instance instance in instances.Values)
@@ -117,27 +104,20 @@ public sealed class LumenDistortionBackend : ILumenNodeFeatureBackend, ILumenFra
     private void Enqueue(Instance instance, bool isTopDown2D, float yScaleRatio, Vector3 groundUp, float moteY)
     {
         DistortionSpec spec = instance.Spec;
-        DistortionFrame frame = DistortionTimeline.Evaluate(spec, instance.Time, instance.Frame.Intensity);
+        DistortionFrame frame = DistortionTimeline.Evaluate(spec, instance.Clock.Time, instance.Frame.Intensity);
         Matrix4x4 world = instance.Frame.Transform.World;
         float diameter = 2f * spec.Radius * new Vector3(world.M11, world.M12, world.M13).Length();
         Vector3 center = world.Translation;
         Vector3 axisX = new(diameter, 0f, 0f);
         Vector3 axisZ = new(0f, 0f, diameter);
-        if (instance.Node.SpacePlane == LumenSpacePlane.Vertical3D)
+        bool vertical3D = instance.Node.SpacePlane == LumenSpacePlane.Vertical3D;
+        Vector3 velocity = Vector3.Zero;
+        CameraBillboardBasis.ProjectToDisplay(vertical3D, isTopDown2D, yScaleRatio, groundUp,
+            CameraBillboardBasis.NodeGroundXZ(world), moteY, ref center, ref velocity);
+        if (vertical3D && isTopDown2D)
         {
-            Vector3 origin = instance.Frame.Origin;
-            Vector3 velocity = Vector3.Zero;
-            CameraBillboardBasis.ProjectVertical3D(isTopDown2D, yScaleRatio, groundUp, new Vector2(origin.X, origin.Z),
-                origin.Y, moteY, ref center, ref velocity);
-            if (isTopDown2D)
-            {
-                axisX = CameraBillboardBasis.ProjectTopDownPitch(axisX, groundUp);
-                axisZ = CameraBillboardBasis.ProjectTopDownPitch(axisZ, groundUp);
-            }
-        }
-        else
-        {
-            center.Y = moteY;
+            axisX = CameraBillboardBasis.ProjectTopDownPitch(axisX, groundUp);
+            axisZ = CameraBillboardBasis.ProjectTopDownPitch(axisZ, groundUp);
         }
         Span<DrawProperty> properties = MeshDrawSubmission.ActiveArena.Allocate(3, out DrawPropertyRange range);
         properties[0] = DrawProperty.Vector(RingRadiiId, frame.RingRadii / spec.Radius);

@@ -1,24 +1,6 @@
 #version 450
 #include "../../Shaders/RimLumen/RimLumenColorSpace.glsl"
-layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
-{
-    mat4 InvViewProjection;
-    vec4 ScreenAndMapSize;
-    float GameSeconds;
-    float RealSeconds;
-    float SkyGlow;
-    float ZoomRootSize;
-    float HasHdrDraws;
-    float HasSceneDepth;
-    float HasMapLightField;
-    float IsPaused;
-    float DepthValid;
-    float GameDeltaSeconds;
-    float RealDeltaSeconds;
-    float ColorBlendSpace;
-    vec4 BloomParams;
-    vec4 PackParams[4];
-} ubo;
+#include "../../Shaders/PostFx/RimLumenPackUniforms.glslinc"
 #include "../../Shaders/PostFx/RimLumenDistortion.glslinc"
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
@@ -37,11 +19,12 @@ vec3 sanitizeHdr(vec3 c)
 
 void main()
 {
-    vec4 hdr = texture(hdrImage, uv);
-    hdr.rgb = sanitizeHdr(hdr.rgb);
-    vec3 bloom = texture(bloomImage, uv).rgb * ubo.BloomParams.x;
-    bool linearBlend = ubo.ColorBlendSpace > 0.5;
     vec2 sceneUv = lumenRefractedUv(distortionImage, uv);
+    vec2 layerUv = lumenLayerUv(uv, sceneUv);
+    vec4 hdr = texture(hdrImage, layerUv);
+    hdr.rgb = sanitizeHdr(hdr.rgb);
+    vec3 bloom = texture(bloomImage, layerUv).rgb * ubo.BloomParams.x;
+    bool linearBlend = ubo.ColorBlendSpace > 0.5;
     // Linear: empty, undistorted pixels leave the scene bit-exact.
     if (linearBlend && hdr == vec4(0.0) && bloom == vec3(0.0) && sceneUv == uv)
     {

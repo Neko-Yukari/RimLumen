@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Scene;
 using Verse;
 using Waylith;
 using Waylith.Rendering;
@@ -27,6 +28,7 @@ internal static class LumenGpuParticlesBootstrap
             initialized = true;
             string assemblyDirectory = Path.GetDirectoryName(typeof(LumenGpuParticlesBootstrap).Assembly.Location)!;
             ShaderSourceLoader.RegisterShaderSourceDirectory(Path.GetFullPath(Path.Combine(assemblyDirectory, "..", "Shaders")));
+            LumenSceneBootstrap.EnsureInitialized();
             engine = new LumenGpuParticleEngine();
             LumenHostRegistry.RegisterGpuParticleEngine(engine);
             EngineApplication.Instance.BeforeGraphicsShutdown += Shutdown;

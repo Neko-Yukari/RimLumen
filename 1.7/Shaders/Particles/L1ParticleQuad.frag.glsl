@@ -22,6 +22,7 @@ layout(location = 0) in vec2 uv;
 layout(location = 1) in vec4 color;
 layout(location = 2) in vec2 radialUv;
 layout(location = 3) in float hdrGain;
+layout(location = 4) in vec2 depthMask;
 layout(location = 0) out vec4 outColor;
 
 float eyeDistance(float depth)
@@ -44,11 +45,15 @@ void main()
     }
     vec4 c = lumenParticleStoredColor(color, lumen._LumenMaterialTint, texel,
         lumen._LumenColor.x > 0.5, lumen._LumenColor.y > 0.5);
-    if (lumen._LumenDepth.w > 0.0)
+    if (lumen._LumenDepth.w > 0.0 || depthMask.x > 0.0)
     {
         float sceneRaw = texelFetch(_LumenSceneDepth, ivec2(gl_FragCoord.xy), 0).r;
         float separation = eyeDistance(sceneRaw) - eyeDistance(gl_FragCoord.z);
-        c.a *= clamp(separation / lumen._LumenDepth.w, 0.0, 1.0);
+        // LumenDepthMask: north of the reference the fragment is tested at the Projectile altitude, depthMask.x below.
+        if (depthMask.x > 0.0 && depthMask.y > 0.0 && separation < depthMask.x)
+            discard;
+        if (lumen._LumenDepth.w > 0.0)
+            c.a *= clamp(separation / lumen._LumenDepth.w, 0.0, 1.0);
     }
     if (c.a <= 0.0)
         discard;

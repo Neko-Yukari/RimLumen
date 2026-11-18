@@ -10,6 +10,7 @@ using RimLumen.Core.ParticlesGpu;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Lighting;
+using RimLumen.Core.Scene;
 using Waylith.Assets;
 using Waylith.Graphics.Meshes;
 using Waylith.Rendering;
@@ -215,9 +216,46 @@ public static class ParticleShaderTests
         Require(draw.Contains("(along * (0.8660254 - 1.0) + value.y * 0.5) * groundUp", StringComparison.Ordinal)
             && twin.Contains("(along * (SinPitch - 1f) + value.Y * CosPitch) * groundUp", StringComparison.Ordinal)
             && twin.Contains("SinPitch = 0.8660254f", StringComparison.Ordinal) && twin.Contains("CosPitch = 0.5f", StringComparison.Ordinal)
-            && draw.Contains("emitter.SizeCone.w > 0.5 ? lumenUnpackAnchor(particle.SpawnAnchorXZ)", StringComparison.Ordinal)
-            && sim.Contains("lumenPackAnchor(vec2(emitter.ShapePosition.w, emitter.ShapeScale.w))", StringComparison.Ordinal),
-            "Vertical3D top-down pitch or the world-space birth anchor drifted between CPU and GPU.");
+            && draw.Contains("emitter.SizeCone.w > 0.5 ? lumenUnpackAnchor(particle.SpawnAnchorXZ) : lumenNodeGroundXZ(emitter.World)", StringComparison.Ordinal)
+            && sim.Contains("particle.SpawnAnchorXZ = lumenPackAnchor(lumenNodeGroundXZ(emitter.World))", StringComparison.Ordinal)
+            && sim.Contains("child.SpawnAnchorXZ = lumenPackAnchor(ev.PositionAndTrigger.xz)", StringComparison.Ordinal),
+            "Vertical3D top-down pitch or the node ground anchor drifted between CPU and GPU.");
+    }
+
+    [LumenFact]
+    public static void Vertical3DAndKillBelowFloorUseFixedGroundInGpuStages()
+    {
+        string draw = Read("ParticleBillboard.vert.glsl"), sim = Read("ParticleSim.comp.glsl");
+        bool absoluteProjection = draw.Contains("projectTopDownPitch(center - vec3(anchor.x, LUMEN_GROUND_Y, anchor.y), groundUp)", StringComparison.Ordinal)
+            && draw.Contains("center.y /= yScale;", StringComparison.Ordinal);
+        bool descendingBelowGround = sim.Contains("if (worldY < LUMEN_GROUND_Y && worldVelY < 0.0)", StringComparison.Ordinal);
+        // GroundXZ under the straight-down 2D camera draws on the mote layer, as CameraBillboardBasis.ProjectToDisplay.
+        // Every corner shares it: the billboard axes lose their Y before the corners are placed.
+        bool groundDrawLayer = Regex.IsMatch(draw, @"else\s+center\.y = material\._LumenVertical\.z;")
+            && Regex.IsMatch(draw, @"if \(topDown2D\)\s*\{[^}]*right\.y = 0\.0;\s*up\.y = 0\.0;\s*\}\s*vec3 worldPosition = center \+")
+            && draw.Contains("bool topDown2D = material._LumenVertical.y > 0.5;", StringComparison.Ordinal);
+        Require(groundDrawLayer, "L2 must draw every corner on the mote layer under the straight-down 2D camera.");
+        Require(absoluteProjection && descendingBelowGround,
+            $"L2 fixed-ground formulas: absolute projection={absoluteProjection}, descending below ground={descendingBelowGround}.");
+
+        Match ground = Regex.Match(sim, @"\bconst\s+float\s+LUMEN_GROUND_Y\s*=\s*(?<y>[-.\d]+)\s*;");
+        Require(ground.Success, "L2 ground-plane include must define LUMEN_GROUND_Y.");
+        float shaderGroundY = float.Parse(ground.Groups["y"].Value, System.Globalization.CultureInfo.InvariantCulture);
+        Require(shaderGroundY == SpacePlaneTransform.GroundY,
+            $"L1/L2 ground-plane constants differ: CPU={SpacePlaneTransform.GroundY}, GPU={shaderGroundY}.");
+    }
+
+    [LumenFact]
+    public static void DepthMaskDiscardsNorthFragmentsWithinTheLiftInL1AndL2()
+    {
+        string l2Vertex = Read("ParticleBillboard.vert.glsl"), l2Fragment = Read("ParticleBillboard.frag.glsl");
+        string l1Vertex = Read("L1ParticleQuad.vert.glsl"), l1Fragment = Read("L1ParticleQuad.frag.glsl");
+        // The vertex input slot (TexCoord2, location 4) is checked by the L1 layout test through Waylith's parser.
+        bool l2 = Regex.IsMatch(l2Vertex, @"vDepthMask\s*=\s*vec2\(\s*material\._LumenVertical\.w\s*,\s*worldPosition\.z\s*-\s*emitter\.ShapeScale\.w\s*\)")
+            && Regex.IsMatch(l2Fragment, @"vDepthMask\.y\s*>\s*0\.0\s*&&\s*separation\s*<\s*vDepthMask\.x\s*\)\s*discard");
+        bool l1 = Regex.IsMatch(l1Vertex, @"depthMask\s*=\s*vec2\(\s*inDepthMask\.x\s*,\s*inPosition\.z\s*-\s*inDepthMask\.y\s*\)")
+            && Regex.IsMatch(l1Fragment, @"depthMask\.y\s*>\s*0\.0\s*&&\s*separation\s*<\s*depthMask\.x\s*\)\s*discard");
+        Require(l1 && l2, $"Depth mask north discard: L1={l1}, L2={l2}.");
     }
 
     [LumenFact]
@@ -370,8 +408,9 @@ public static class ParticleShaderTests
             (0, VertexAttributeSemantic.Position, true),
             (1, VertexAttributeSemantic.TexCoord0, true),
             (2, VertexAttributeSemantic.Color, true),
-            (3, VertexAttributeSemantic.TexCoord1, true)
-        }), "L1 vertex input must require Position/TexCoord0/Color/TexCoord1 at locations 0..3.");
+            (3, VertexAttributeSemantic.TexCoord1, true),
+            (4, VertexAttributeSemantic.TexCoord2, true)
+        }), "L1 vertex input must require Position/TexCoord0/Color/TexCoord1/TexCoord2 at locations 0..4.");
     }
 
     [LumenFact]

@@ -500,7 +500,7 @@ public static class ParticleParitySuite
     }
 
     [LumenFact]
-    public static void PausedKillBelowFloorFreezesGameTimeButStillRechecksMovedFloor()
+    public static void PausedKillBelowFloorRechecksLocalParticlesWhenTheEmitterMoves()
     {
         var spec = new EmitterSpec
         {
@@ -517,9 +517,9 @@ public static class ParticleParitySuite
         Vector(before.Position, cpu.LiveParticles[0].Position);
         Vector(before.Velocity, cpu.LiveParticles[0].Velocity);
         Near(before.Age, cpu.LiveParticles[0].Age);
-        cpu.SetEmitterVerticalState(id, false, new Vector3(0f, 1f, 0f));
+        cpu.SetEmitterTransform(id, new LumenEmitterTransform(Matrix4x4.CreateTranslation(0f, 1f, 0f), Quaternion.Identity));
         cpu.CaptureMainThread(paused);
-        Require(cpu.LiveParticleCount == 0, "A zero-dt capture still expires a descending particle below a moved floor.");
+        Require(cpu.LiveParticleCount == 0, "Moving a local-space particle below world ground still expires it on a zero-dt capture.");
         using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
         gpu.CreateInstance(spec, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), mapIndex: 7, realTime: false, emissionSeed: 1u);
         gpu.CaptureMainThread(paused);
@@ -677,10 +677,11 @@ public static class ParticleParitySuite
         Require(sim.Vertices[0].RadialUv == Vector2.Zero && sim.Vertices[1].RadialUv == Vector2.UnitX
             && sim.Vertices[2].RadialUv == Vector2.One && sim.Vertices[3].RadialUv == Vector2.UnitY,
             "All four local corners must remain unchanged when the atlas advances to its bottom row.");
-        Require(System.Runtime.InteropServices.Marshal.SizeOf<ParticleVertex>() == 48
+        Require(System.Runtime.InteropServices.Marshal.SizeOf<ParticleVertex>() == 56
             && System.Runtime.InteropServices.Marshal.OffsetOf<ParticleVertex>(nameof(ParticleVertex.RadialUv)).ToInt32() == 36
-            && System.Runtime.InteropServices.Marshal.OffsetOf<ParticleVertex>(nameof(ParticleVertex.HdrGain)).ToInt32() == 44,
-            "TexCoord1 (radial uv, gain) must occupy offsets 36..47 of the 48-byte vertex.");
+            && System.Runtime.InteropServices.Marshal.OffsetOf<ParticleVertex>(nameof(ParticleVertex.HdrGain)).ToInt32() == 44
+            && System.Runtime.InteropServices.Marshal.OffsetOf<ParticleVertex>(nameof(ParticleVertex.DepthMask)).ToInt32() == 48,
+            "TexCoord1 (radial uv, gain) must occupy offsets 36..47 and TexCoord2 (depth mask) 48..55 of the 56-byte vertex.");
     }
 
     [LumenFact]

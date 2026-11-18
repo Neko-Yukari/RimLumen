@@ -1,7 +1,11 @@
+using System.IO;
 using System.Linq;
 using System.Numerics;
+using System.Text.Json;
+using RimLumen.Core.Api;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
+using RimLumen.Core.Scene;
 using RimUnity.Serialization;
 using static RimLumen.Adapter.RimUnity.Tests.Export;
 
@@ -13,12 +17,29 @@ internal static class RibbonTranslationTests
     {
         var trail = Ribbon("RimUnity.TrailRenderer",
             Member("time", Number(.5f)), Member("minVertexDistance", Number(.2f)), Member("textureMode", Number(1)));
-        var asset = Translate(trail, out var report);
-        var entry = report.Nodes.Single();
+        using var temp = new TestDirectory();
+        var json = new JsonSerializerOptions { IncludeFields = true };
+        void Write(string file, object data) => File.WriteAllText(Path.Combine(temp.Root, file), JsonSerializer.Serialize(data, json));
+        Write("catalog.json", new Manifest { assets = [
+            new AssetRecord { id = "trail", path = "Effects/Trail", file = "trail.json", type = "Prefab" },
+            new AssetRecord { id = "material", path = "Materials/Trail", file = "material.json", type = "Material" },
+            new AssetRecord { id = "additive", path = "Shaders/Additive", file = "shader.json", type = "Shader" },
+            new AssetRecord { id = "tex", path = "Textures/Trail", file = "trail.rutex", type = "Texture2D" },
+        ] });
+        Write("trail.json", Prefab(trail));
+        Write("material.json", Material("material")!);
+        Write("shader.json", Shader("additive")!);
+        var provider = new RimUnityAssetProvider();
+        provider.RegisterPackageRoot("Ribbon", temp.Root);
+        Check.True(provider.TryResolveEffect("Ribbon:trail", out var asset), "resolve trail from catalog");
+        RibbonSpec spec = asset!.Nodes[0].Ribbon!;
+        Check.True(spec.TextureKey == "tex" && provider.Textures.ResolvedTextureKeys.Contains(spec.TextureKey),
+            $"expected native ribbon texture 'tex' in provider bridge; ribbon='{spec.TextureKey}', resolved=[{string.Join(",", provider.Textures.ResolvedTextureKeys)}]");
+        Check.True(provider.TryInspectTranslation("Ribbon:trail", out var report), "inspect trail translation");
+        var entry = report!.Nodes.Single();
         Check.Equal(RimUnityPrefabTranslator.TrailComponent, entry.Component, "trail component");
         Check.Equal(LumenParticleTier.L1_NativeCpu, entry.Tier, "trail native");
         Check.Reasons([], entry.Reasons, "trail reasons");
-        RibbonSpec spec = asset.Nodes[0].Ribbon!;
         Check.Equal(LumenRibbonMode.Trail, spec.Mode, "trail mode");
         Check.Near(.5f, spec.Lifetime, "time");
         Check.Near(.2f, spec.MinVertexDistance, "minVertexDistance");
@@ -32,7 +53,6 @@ internal static class RibbonTranslationTests
         Check.True(Vector4.Distance(new Vector4(2f, .5f, .5f, 1f), head) < 1e-5f, "stored head colour: " + head);
         Check.Near(0f, GradientEvaluator.Evaluate(spec.ColorOverLength, 1f).W, "alpha fades to the tail");
         Check.Equal(LumenBlendMode.Additive, spec.BlendMode, "additive shader");
-        Check.Equal("tex", spec.TextureKey, "texture");
         Check.Equal(LumenRibbonAlignment.View, spec.Alignment, "View alignment");
         RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
 
@@ -46,6 +66,62 @@ internal static class RibbonTranslationTests
         Check.Equal(1, spec.Segments, "one straight segment");
         Check.Equal(LumenRibbonTextureMode.Stretch, spec.TextureMode, "two-point RepeatPerSegment is Stretch");
         RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+    }
+
+    internal static void ResidentRibbon(bool withParticles)
+    {
+        var prefab = Prefab(Ribbon("RimUnity.TrailRenderer"));
+        if (withParticles)
+        {
+            var particles = Particles();
+            particles.members.Single(m => m.name == "main").value = Data(("duration", Number(1)), ("loop", Number(0)),
+                ("maxParticles", Number(32)), ("startLifetime", Constant(1)));
+            prefab.nodes.Add(Node("particles", particles, "root"));
+        }
+        var asset = new RimUnityPrefabTranslator().Translate("ribbon:residency", prefab, Material, Shader, out _);
+        Check.Equal(0, asset.States.Length, "imported ribbon retains the implicit state");
+        Check.True(asset.DefaultDuration > 2.01f, "native ribbon extends adapter playback beyond the old fallback duration");
+        RimLumenApi.RegisterEffect(asset);
+        var ribbon = new RecordingRibbon();
+        var service = new LumenVfxService(new CpuParticleSimulator());
+        LumenHostRegistry.RegisterNodeFeatureBackend(ribbon);
+        try
+        {
+            using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 1 });
+            Step(0, .25f);
+            Check.Equal(withParticles, service.Simulator.LiveParticleCount > 0, "finite emitter plays on its own schedule");
+            Step(1, .75f);
+            Step(2, 1.01f);
+            Check.Equal(0, service.Simulator.LiveParticleCount, "no particles after duration + lifetime");
+            Check.Equal(true, ribbon.Active, "native trail emitting at 2.01 s without Stop");
+            handle.Stop();
+            Check.Equal(false, ribbon.Active, "Stop ends ribbon emission");
+        }
+        finally
+        {
+            LumenHostRegistry.UnregisterNodeFeatureBackend(ribbon);
+            LumenSceneBootstrap.Catalog.Unregister(asset.EffectId);
+        }
+
+        void Step(ulong index, float dt)
+        {
+            var frame = new LumenCaptureContext { FrameIndex = index, DeltaTime = dt, CurrentMapIndex = 1,
+                ViewportWidth = 100, ViewportHeight = 100, ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 1 };
+            service.CaptureMainThread(in frame);
+            service.Simulator.CaptureMainThread(in frame);
+        }
+    }
+
+    // Observes the node activity sent by the real playback service; no game renderer is installed offline.
+    private sealed class RecordingRibbon : ILumenNodeFeatureBackend
+    {
+        public LumenNodeFeature Feature => LumenNodeFeature.Ribbon;
+        public bool Active { get; private set; }
+        public int CreateInstance(EffectNodeSpec node, in LumenNodeFeatureFrame initial, bool realTime, uint seed) => 0;
+        public void RestartInstance(int instanceId) => Active = true;
+        public void UpdateInstance(int instanceId, in LumenNodeFeatureFrame frame) => Active = frame.Active;
+        public void DestroyInstance(int instanceId, bool immediate) => Active = false;
+        public bool IsInstanceAlive(int instanceId) => Active;
     }
 
     internal static void RibbonFallbackReasons()
@@ -99,7 +175,7 @@ internal static class RibbonTranslationTests
             Member("shader", new ValueData { kind = "asset", text = "additive" })]
     };
 
-    private static ShaderData? Shader(string key) => new() { blend = true, srcColor = "SrcAlpha", dstColor = "One" };
+    private static ShaderData? Shader(string key) => new() { key = key, profile = "world", blend = true, srcColor = "SrcAlpha", dstColor = "One" };
 
     // A ribbon with RimUnity's serialized defaults plus the given members.
     private static ComponentData Ribbon(string type, params MemberData[] members)

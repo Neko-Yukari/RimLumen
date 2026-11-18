@@ -279,12 +279,10 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             if (emitterFrame.Parameters.State.X == 0f && emitterFrame.Parameters.Slots.Z == 0f &&
                 emitterFrame.Parameters.State.Z == 0f && !emitterFrame.KillBelowFloor &&
                 emitterFrame.Parameters.Map.Y == 0f && emitterFrame.Parameters.ExplicitCount == 0u) continue;
-            // Padding0 bit 0 = KillBelowFloor, upper bits = simulation phase; Padding1 = floor height bits.
             var push = new GpuSimPushConstants
             {
                 EmitterIndex = (uint)i, FrameSeed = unchecked((uint)snapshot.Context.FrameIndex),
                 Padding0 = emitterFrame.KillBelowFloor ? 1u : 0u,
-                Padding1 = BitConverter.SingleToUInt32Bits(emitterFrame.BaseY),
             };
             int emitterCapacity = (int)emitterFrame.Parameters.Slots.Y;
             if (!ParticleSimulationDispatch.UsesParallelScan(emitterCapacity))
@@ -295,7 +293,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             int blocks = ParticleSimulationDispatch.BlockCount(emitterCapacity);
             push.Padding0 |= 2u; // Integrate and count dead slots in parallel.
             DispatchSimulation(frame, push, blocks);
-            if (emitterFrame.Parameters.Slots.Z == 0f && emitterFrame.Parameters.Events.Z == 0f) continue;
+            if (emitterFrame.Parameters.Slots.Z == 0f && emitterFrame.Parameters.ExplicitCount == 0u) continue;
             RecordSimulationStageBarrier(frame, resources, eventWork);
             push.Padding0 = (push.Padding0 & 1u) | 4u; // Exclusive prefix of block counts.
             DispatchSimulation(frame, push, 1);

@@ -32,6 +32,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     // This frame's ColorRgb * effective intensity for every node whose light is on.
     private readonly Vector3[] lightRgb;
     private readonly bool[] nodeActive;
+    private readonly float[] nodeFrameDelta;
     // PlaybackTime of the node's last (re)start: the origin of its light's IntensityOverTime curve.
     private readonly float[] nodeActivatedAt;
     // PlaybackTime the node stopped emitting: the origin of its light's LightFadeSeconds fade.
@@ -52,6 +53,8 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private bool stateEntryPending;
     private bool stopRequested;
     private Vector3 origin;
+    // LumenPlayRequest.DepthReferenceZ - OriginWorld.Z: the depth-mask reference rides the origin (and Follow).
+    private readonly float? depthReferenceOffsetZ;
     private float rotation;
     private float playbackTime;
     private Matrix4x4 rootWorld;
@@ -73,6 +76,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         lightOn = new bool[asset.Nodes.Length];
         lightRgb = new Vector3[asset.Nodes.Length];
         nodeActive = new bool[asset.Nodes.Length];
+        nodeFrameDelta = new float[asset.Nodes.Length];
         nodeActivatedAt = new float[asset.Nodes.Length];
         nodeDeactivatedAt = new float[asset.Nodes.Length];
         Array.Fill(cpuIds, -1);
@@ -89,6 +93,8 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             EffectNodeSpec node = asset.Nodes[i];
             if (node.Ribbon is { EndAtTarget: true } && request.TargetWorld is null)
                 throw new ArgumentException($"Effect '{asset.EffectId}' node {i} '{node.Name}': ribbon endAtTarget needs LumenPlayRequest.TargetWorld.", nameof(request));
+            if (node.DepthMask != LumenDepthMask.None && request.DepthReferenceZ is null)
+                throw new ArgumentException($"Effect '{asset.EffectId}' node {i} '{node.Name}': depthMask needs LumenPlayRequest.DepthReferenceZ.", nameof(request));
             for (int f = 0; f < FeatureCount; f++)
             {
                 var feature = (LumenNodeFeature)f;
@@ -98,6 +104,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             }
         }
         origin = request.OriginWorld;
+        depthReferenceOffsetZ = request.DepthReferenceZ - request.OriginWorld.Z;
         rotation = request.TargetWorld is Vector3 target
             ? SpacePlaneTransform.ComputeFacingDegrees(origin, target) : request.RotationDegrees;
         // A throwing backend call (e.g. an L2 slot that no longer fits) must not leak the emitters
@@ -124,7 +131,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                 {
                     cpuIds[i] = owner.Simulator.AcquireEmitter(spec, NodeTransform(i), nodeSeed, emitting: initialNodes[i], rateMultiplier: 1f, realTime: request.RealTime, mapIndex: request.MapIndex);
                 }
-                PushVerticalState(i);
+                PushDisplayState(i);
             }
             owner.Simulator.BindNodeInstances(cpuIds, engine, gpuIds);
             EnterState(initial);
@@ -275,29 +282,35 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         {
             playbackTime += deltaTime;
             RefreshTransforms();
+            Array.Fill(nodeFrameDelta, deltaTime);
             if (state == PlaybackState.Playing) AdvanceStates(deltaTime);
             float intensity = parameters["intensity"];
             for (int i = 0; i < asset.Nodes.Length; i++)
             {
-                PushVerticalState(i);
                 bool emitting = state == PlaybackState.Playing && nodeActive[i];
                 if (cpuIds[i] >= 0)
                 {
                     owner.Simulator.SetEmitterTransform(cpuIds[i], NodeTransform(i));
                     owner.Simulator.SetEmitterParams(cpuIds[i], emitting, parameters["rate"], intensity);
-                    if (state == PlaybackState.Draining && !owner.Simulator.IsEmitterAlive(cpuIds[i])) cpuIds[i] = -1;
+                    if (asset.Nodes[i].DepthMask != LumenDepthMask.None) PushDisplayState(i);
+                    if (nodeFrameDelta[i] != deltaTime) owner.Simulator.SetEmitterFrameDelta(cpuIds[i], nodeFrameDelta[i]);
                 }
                 if (gpuIds[i] >= 0)
                 {
                     if (state == PlaybackState.Draining && !engine!.IsInstanceAlive(gpuIds[i])) gpuIds[i] = -1;
-                    else engine!.UpdateInstance(gpuIds[i], NodeTransform(i), emitting, intensity, parameters["rate"]);
+                    else
+                    {
+                        engine!.UpdateInstance(gpuIds[i], NodeTransform(i), emitting, intensity, parameters["rate"]);
+                        if (asset.Nodes[i].DepthMask != LumenDepthMask.None) PushDisplayState(i);
+                        if (nodeFrameDelta[i] != deltaTime) engine.SetInstanceFrameDelta(gpuIds[i], nodeFrameDelta[i]);
+                    }
                 }
                 for (int f = 0; f < FeatureCount; f++)
                 {
                     int id = featureIds[f][i];
                     if (id < 0) continue;
                     if (state == PlaybackState.Draining && !featureBackends[f]!.IsInstanceAlive(id)) featureIds[f][i] = -1;
-                    else featureBackends[f]!.UpdateInstance(id, FeatureFrame(i, emitting, deltaTime));
+                    else featureBackends[f]!.UpdateInstance(id, FeatureFrame(i, emitting, nodeFrameDelta[i]));
                 }
             }
             UpdateLights(intensity);
@@ -342,8 +355,8 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             stateTime = stop;
             if (current.Loop || end < current.Duration) return;
             remaining = end - current.Duration;
-            if (stopRequested || current.Next < 0) BeginDrain();
-            else EnterState(current.Next);
+            if (stopRequested || current.Next < 0) BeginDrain((float)remaining);
+            else EnterState(current.Next, (float)remaining);
         }
     }
 
@@ -373,7 +386,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     // Ensures: the state clock restarts at 0; every node of the state restarts its emission (RestartNode), every
     //          other node stops emitting while its live particles finish and its light fades; StateChanged(name) is
     //          queued for a declared state.
-    private void EnterState(int index)
+    private void EnterState(int index, float frameDelta = 0f)
     {
         currentState = index;
         stateTime = 0d;
@@ -381,18 +394,19 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         var entered = graph.States[index];
         for (int i = 0; i < asset.Nodes.Length; i++)
         {
-            if (entered.NodeMask[i]) RestartNode(i);
-            else DeactivateNode(i);
+            if (entered.NodeMask[i]) RestartNode(i, frameDelta);
+            else DeactivateNode(i, frameDelta);
         }
         if (entered.Name is { } name) pendingEvents.Enqueue((EventKind.StateChanged, name));
     }
 
     // Ensures: the node emits again from the start of its own schedule (burst times, Duration and rate measured
     //          from now) on L1 and L2 alike, and its light curve restarts.
-    private void RestartNode(int index)
+    private void RestartNode(int index, float frameDelta = 0f)
     {
         nodeActive[index] = true;
-        nodeActivatedAt[index] = playbackTime;
+        nodeFrameDelta[index] = frameDelta;
+        nodeActivatedAt[index] = playbackTime - frameDelta;
         if (cpuIds[index] >= 0) owner.Simulator.RestartEmitter(cpuIds[index]);
         if (gpuIds[index] >= 0) engine!.RestartInstance(gpuIds[index]);
         for (int f = 0; f < FeatureCount; f++)
@@ -401,29 +415,27 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
 
     // Ensures: the node's backend stops emitting now, so a switch made from an event handler (after this frame's
     //          push) does not leave the old state's emitters running through this frame's capture.
-    private void DeactivateNode(int index)
+    private void DeactivateNode(int index, float frameDelta)
     {
         if (!nodeActive[index]) return;
         nodeActive[index] = false;
-        nodeDeactivatedAt[index] = playbackTime;
+        nodeDeactivatedAt[index] = playbackTime - frameDelta;
+        // A light can start and enter its fade between two captures without ever being drawn fully lit.
+        if (asset.Nodes[index].PointLight.HasValue && nodeDeactivatedAt[index] > nodeActivatedAt[index]) lightOn[index] = true;
         if (cpuIds[index] >= 0) owner.Simulator.SetEmitterParams(cpuIds[index], false, parameters["rate"], parameters["intensity"]);
         if (gpuIds[index] >= 0) engine!.UpdateInstance(gpuIds[index], NodeTransform(index), false, parameters["intensity"], parameters["rate"]);
         for (int f = 0; f < FeatureCount; f++)
             if (featureIds[f][index] >= 0) featureBackends[f]!.UpdateInstance(featureIds[f][index], FeatureFrame(index, false, 0f));
     }
 
-    private void BeginDrain()
+    private void BeginDrain(float frameDelta = 0f)
     {
         state = PlaybackState.Draining;
         currentState = -1;
         for (int i = 0; i < asset.Nodes.Length; i++)
         {
-            DeactivateNode(i);
-            if (cpuIds[i] >= 0)
-            {
-                owner.Simulator.ReleaseEmitter(cpuIds[i], immediate: false);
-                if (!owner.Simulator.IsEmitterAlive(cpuIds[i])) cpuIds[i] = -1;
-            }
+            DeactivateNode(i, frameDelta);
+            if (cpuIds[i] >= 0) owner.Simulator.ReleaseEmitter(cpuIds[i], immediate: false);
             if (gpuIds[i] >= 0) engine!.DestroyInstance(gpuIds[i], immediate: false);
             for (int f = 0; f < FeatureCount; f++)
             {
@@ -456,15 +468,18 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         pendingEvents.Enqueue((EventKind.Finished, null));
     }
 
-    // Ensures: the node's L1/L2 emitter knows whether it is Vertical3D and the effect's current play origin, the 3D
-    //          pivot shared by every node (Y: display baseline and KillBelowFloor floor; XZ: ground anchor);
-    //          follows a moving origin every frame.
-    private void PushVerticalState(int index)
+    // Pushed at creation, and every frame for a depth-masked node so its reference follows the origin. Each backend
+    // derives the 2D ground anchor from the node's world transform.
+    private void PushDisplayState(int index)
     {
         bool isVertical3D = asset.Nodes[index].SpacePlane == LumenSpacePlane.Vertical3D;
-        if (cpuIds[index] >= 0) owner.Simulator.SetEmitterVerticalState(cpuIds[index], isVertical3D, origin);
-        if (gpuIds[index] >= 0) (engine as LumenGpuParticleEngine)?.SetInstanceVerticalState(gpuIds[index], isVertical3D, origin);
+        float? depthReferenceZ = DepthReferenceZ(index);
+        if (cpuIds[index] >= 0) owner.Simulator.SetEmitterDisplayState(cpuIds[index], isVertical3D, depthReferenceZ);
+        if (gpuIds[index] >= 0) engine!.SetInstanceDisplayState(gpuIds[index], isVertical3D, depthReferenceZ);
     }
+
+    private float? DepthReferenceZ(int index) => asset.Nodes[index].DepthMask == LumenDepthMask.None
+        ? null : origin.Z + depthReferenceOffsetZ!.Value;
 
     private void RefreshTransforms()
     {
@@ -482,12 +497,17 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private LumenEmitterTransform NodeTransform(int index) => new(nodeWorldMatrices[index], nodeWorldRotations[index]);
 
     private LumenNodeFeatureFrame FeatureFrame(int index, bool active, float deltaTime) =>
-        new(NodeTransform(index), request.TargetWorld, request.MapIndex, parameters["intensity"], active, deltaTime, origin);
+        new(NodeTransform(index), request.TargetWorld, request.MapIndex, parameters["intensity"], active, deltaTime, DepthReferenceZ(index));
 
     private static readonly int FeatureCount = Enum.GetValues<LumenNodeFeature>().Length;
 
-    private static bool HasFeature(EffectNodeSpec node, LumenNodeFeature feature) =>
-        feature == LumenNodeFeature.Distortion ? node.Distortion is not null : node.Ribbon is not null;
+    private static bool HasFeature(EffectNodeSpec node, LumenNodeFeature feature) => feature switch
+    {
+        LumenNodeFeature.Distortion => node.Distortion is not null,
+        LumenNodeFeature.Ribbon => node.Ribbon is not null,
+        LumenNodeFeature.ScreenDim => node.ScreenDim is not null,
+        _ => throw new ArgumentOutOfRangeException(nameof(feature), feature, null),
+    };
 
     // Ensures: emits one pulse on TargetNodeIndex's emitter when that node has one (Bursts[0].Count if the
     //          emitter declares bursts, else round(RateOverTime), clamped to [0, MaxParticles]) through
@@ -549,7 +569,10 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
 
     private void FinishDrain()
     {
-        if (state == PlaybackState.Draining && CpuEmitterCount == 0 && GpuEmitterCount == 0 && LightCount == 0 && FeatureInstanceCount() == 0)
+        if (state != PlaybackState.Draining) return;
+        for (int i = 0; i < cpuIds.Length; i++)
+            if (cpuIds[i] >= 0 && !owner.Simulator.IsEmitterAlive(cpuIds[i])) cpuIds[i] = -1;
+        if (CpuEmitterCount == 0 && GpuEmitterCount == 0 && LightCount == 0 && FeatureInstanceCount() == 0)
         {
             state = PlaybackState.Dead;
             pendingEvents.Enqueue((EventKind.Finished, null));

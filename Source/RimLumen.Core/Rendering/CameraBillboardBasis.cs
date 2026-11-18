@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using RimLumen.Core.Scene;
 
 namespace RimLumen.Core.Rendering;
 
@@ -24,10 +25,12 @@ internal static class CameraBillboardBasis
         yScaleRatio = col1Len / col0Len;
     }
 
-    // Ensures: true for the vanilla straight-down 2D camera (no Y squash, screen-up lies in the ground plane);
-    //          false for IsoRim and any other tilted camera. `up` is the Extract() screen-up.
-    internal static bool IsStraightTopDown2D(in Vector3 up, float yScaleRatio)
-        => yScaleRatio >= 0.9f && MathF.Abs(up.Y) <= 0.05f * MathF.Max(1e-6f, up.Length());
+    // Ensures: true for the vanilla straight-down 2D camera (no Y squash, screen right and up both lie in the ground
+    //          plane, so the view axis is world Y); false for IsoRim, any other tilted camera and a level camera rolled
+    //          about its view axis. `right`/`up` are the Extract() axes.
+    internal static bool IsStraightTopDown2D(in Vector3 right, in Vector3 up, float yScaleRatio)
+        => yScaleRatio >= 0.9f && MathF.Abs(up.Y) <= 0.05f * MathF.Max(1e-6f, up.Length())
+            && MathF.Abs(right.Y) <= 0.05f * MathF.Max(1e-6f, right.Length());
 
     // Vertical3D under the straight-down 2D camera is drawn as a true orthographic view pitched 60 degrees.
     internal const float SinPitch = 0.8660254f;
@@ -49,28 +52,43 @@ internal static class CameraBillboardBasis
         return new Vector3(value.X, 0f, value.Z) + (along * (SinPitch - 1f) + value.Y * CosPitch) * groundUp;
     }
 
-    // Display-only remap for Vertical3D emitters, whose simulation stays true 3D (+Y up). `anchorXZ` and `baseY` are
-    // the 3D pivot: the play origin's ground position (at birth for world-space particles) and height.
-    // Callers pass scaleVelocityY: false to ComputeStretchedAxes afterwards.
-    // Ensures: straight-down 2D: the offset from the pivot goes through ProjectTopDownPitch, so a sphere draws as a
-    //          circle; the draw altitude is max(baseY, vanillaMoteY) and velocity goes through the same operator.
-    //          Otherwise (3D / IsoRim): height above baseY is divided by the view's Y squash so it reaches the screen
-    //          at full size; velocity is untouched.
-    internal static void ProjectVertical3D(bool isTopDown2D, float yScaleRatio, in Vector3 groundUp, Vector2 anchorXZ,
-        float baseY, float vanillaMoteY, ref Vector3 position, ref Vector3 velocity)
+    // A node's ground anchor: the XZ of its world translation (row-vector matrix). Mirrored by lumenNodeGroundXZ.
+    internal static Vector2 NodeGroundXZ(in Matrix4x4 nodeWorld) => new(nodeWorld.M41, nodeWorld.M43);
+
+    // Display rule for both space planes. anchorXZ is the owner's ground position: its node's world XZ (at birth for
+    // world-space particles), or a ribbon sample's own XZ.
+    // Straight-down 2D: everything draws on the mote layer; Vertical3D pitches about the anchor on world ground, so the
+    //   anchor lands on its own cell and only the shape around it is foreshortened.
+    // Tilted cameras: GroundXZ stays world geometry; Vertical3D un-squashes world height.
+    internal static void ProjectToDisplay(bool isVertical3D, bool isTopDown2D, float yScaleRatio, in Vector3 groundUp,
+        Vector2 anchorXZ, float vanillaMoteY, ref Vector3 position, ref Vector3 velocity)
     {
         if (isTopDown2D)
         {
-            Vector3 offset = ProjectTopDownPitch(
-                new Vector3(position.X - anchorXZ.X, position.Y - baseY, position.Z - anchorXZ.Y), groundUp);
-            position = new Vector3(anchorXZ.X + offset.X, MathF.Max(baseY, vanillaMoteY), anchorXZ.Y + offset.Z);
-            velocity = ProjectTopDownPitch(velocity, groundUp);
+            if (isVertical3D)
+            {
+                Vector3 offset = ProjectTopDownPitch(position - new Vector3(anchorXZ.X, SpacePlaneTransform.GroundY, anchorXZ.Y), groundUp);
+                position = new Vector3(anchorXZ.X + offset.X, 0f, anchorXZ.Y + offset.Z);
+                velocity = ProjectTopDownPitch(velocity, groundUp);
+            }
+            position.Y = vanillaMoteY;
             return;
         }
 
+        if (!isVertical3D) return;
         float invYScale = yScaleRatio > 1e-5f ? 1f / yScaleRatio : 1f;
-        position = new Vector3(position.X, baseY + (position.Y - baseY) * invYScale, position.Z);
+        position.Y *= invYScale;
     }
+
+    // LumenDepthMask.NorthBehindReference: the eye-distance margin from the mote layer down to the Projectile altitude
+    // (just below Pawn). Under the straight-down camera eye distance runs along -Y, so a north fragment whose scene
+    // depth lies closer than this margin sits under a pawn-level thing and is discarded.
+    internal static float NorthBehindLift(float vanillaMoteY)
+        => vanillaMoteY - Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.Projectile);
+
+    // ParticleVertex.DepthMask: (lift, reference Z) under the straight-down 2D camera for a masked owner; zero otherwise.
+    internal static Vector2 DepthMaskAttribute(bool isTopDown2D, float? depthReferenceZ, float vanillaMoteY)
+        => isTopDown2D && depthReferenceZ is { } z ? new Vector2(NorthBehindLift(vanillaMoteY), z) : Vector2.Zero;
 
     // scaleVelocityY: legacy emitters pre-squash world Y so a velocity along world Y does not vanish on screen;
     // Vertical3D passes false because its velocity is already a true 3D direction.

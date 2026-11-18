@@ -204,7 +204,7 @@ internal readonly record struct ShaderPackUniformBlockSnapshot(
     Vector4 PackParam2,
     Vector4 PackParam3);
 
-// 208-byte std140 UBO bound at set=0, binding=5 across ShaderPack passes.
+// 224-byte std140 UBO bound at set=0, binding=5 across ShaderPack passes.
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
 public struct ShaderPackUniforms
 {
@@ -227,6 +227,7 @@ public struct ShaderPackUniforms
     public Vector4 PackParam1;          // 160
     public Vector4 PackParam2;          // 176
     public Vector4 PackParam3;          // 192
+    public Vector4 LayerFlags;          // 208: x = distortion refracts the RimLumen layer (0/1); yzw reserved 0
 
     internal static ShaderPackUniforms Build(
         in Matrix4x4 viewProjection,
@@ -245,6 +246,7 @@ public struct ShaderPackUniforms
         bool hasMapLightField,
         bool isPaused,
         bool linearBlendSpace,
+        bool refractLayer,
         in ShaderPackUniformBlockSnapshot runtime)
     {
         Matrix4x4 invViewProj = Matrix4x4.Invert(viewProjection, out Matrix4x4 inv) ? inv : Matrix4x4.Identity;
@@ -267,6 +269,7 @@ public struct ShaderPackUniforms
             PackParam1 = runtime.PackParam1,
             PackParam2 = runtime.PackParam2,
             PackParam3 = runtime.PackParam3,
+            LayerFlags = new Vector4(refractLayer ? 1f : 0f, 0f, 0f, 0f),
         };
     }
 }

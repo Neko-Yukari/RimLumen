@@ -9,16 +9,18 @@ public enum LumenNodeFeature : byte
     Distortion = 0,
     // EffectNodeSpec.Ribbon; backend owned by ribbon-trails.
     Ribbon = 1,
+    // EffectNodeSpec.ScreenDim; backend owned by screen-dim.
+    ScreenDim = 2,
 }
 
 // One node's state for the current frame.
 // Transform: the node's world matrix and world rotation, parent composed (the same values emitters receive).
 // TargetWorld: LumenPlayRequest.TargetWorld. MapIndex: the handle's resolved Map.uniqueID, fixed for its lifetime.
 // Intensity: the handle's "intensity" parameter (finite >= 0). Active: the node belongs to the playing state;
-// false after its state exits and while the handle drains. DeltaTime: seconds this frame, already the unscaled
-// delta for a real-time handle; 0 in the frame passed to CreateInstance.
-// Origin: the handle's current play origin (LumenPlayRequest.OriginWorld, then Follow), the Vertical3D pivot shared
-// with particles (baseY = Origin.Y, anchor XZ = Origin XZ).
+// false after its state exits and while the handle drains. DeltaTime: seconds elapsed this frame, excluding time
+// before the node's latest restart within the frame. Real-time handles use unscaled seconds; CreateInstance gets 0.
+// DepthReferenceZ: this frame's world Z of LumenPlayRequest.DepthReferenceZ (moved with Follow) when the node declares
+// a depthMask; null otherwise.
 public readonly record struct LumenNodeFeatureFrame(
     LumenEmitterTransform Transform,
     Vector3? TargetWorld,
@@ -26,7 +28,7 @@ public readonly record struct LumenNodeFeatureFrame(
     float Intensity,
     bool Active,
     float DeltaTime,
-    Vector3 Origin);
+    float? DepthReferenceZ);
 
 // Implemented by the line that owns a LumenNodeFeature; registered once through
 // LumenHostRegistry.RegisterNodeFeatureBackend from the backend's own [StaticConstructorOnStartup] bootstrap.

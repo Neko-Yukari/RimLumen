@@ -155,7 +155,51 @@ public static class RibbonBackendSuite
     }
 
     [LumenFact]
-    public static void Vertical3DRibbonsProjectAroundThePlayOriginLikeParticles()
+    public static void LifecycleMidFrameBeamUsesOnlyItsOwnNoiseClock()
+    {
+        var asset = new EffectAsset { EffectId = "ribbon.mid-frame",
+            Nodes = [new() { Name = "beam", Ribbon = new() { Mode = LumenRibbonMode.Beam,
+                EndLocal = new Vector3(4, 0, 0), Segments = 3, NoiseAmplitude = 0.5f, NoiseFrequency = 4f } }],
+            States = [new() { Name = "wait", Duration = 0.5f, Next = "show" }, new() { Name = "show", Nodes = ["beam"], Loop = true }] };
+        var service = SceneAndLighting.VfxTestData.Service(asset);
+        var backend = new LumenRibbonBackend();
+        LumenHostRegistry.RegisterNodeFeatureBackend(backend);
+        try
+        {
+            using var handle = service.Play(new LumenPlayRequest { MapIndex = 7, EffectId = asset.EffectId });
+            SceneAndLighting.VfxTestData.Step(service, 0.625f);
+            Vector3[] entered = Centres(backend);
+            handle.Trigger("beam");
+            SceneAndLighting.VfxTestData.Step(service, 0.125f);
+            Build(backend);
+            Equal(4, entered.Length);
+            Check(entered.SequenceEqual(Centres(backend)), "After 0.5 s waiting, a 0.625 s frame must draw the 0.125 s beam, not the 0.625 s noise roll.");
+        }
+        finally { LumenHostRegistry.UnregisterNodeFeatureBackend(backend); }
+    }
+
+    [LumenFact]
+    public static void RisingVertical3DTrailProjectsHalfItsRiseAboveFixedGround()
+    {
+        var backend = new LumenRibbonBackend();
+        Vector3 launch = new(3f, 0f, 7f), apex = new(3f, 4f, 7f);
+        int id = backend.CreateInstance(new EffectNodeSpec
+        {
+            Name = "trail", SpacePlane = LumenSpacePlane.Vertical3D, Ribbon = Trail(1f, 0.5f, 8),
+        }, Frame(launch, active: false), false, 1u);
+        backend.RestartInstance(id);
+        backend.UpdateInstance(id, Frame(launch));
+        backend.UpdateInstance(id, Frame(apex));
+        Build(backend, TopDown);
+        Vector3[] centres = Centres(backend);
+        Equal(2, centres.Length);
+        Console.WriteLine($"[GROUND] Trail rise=4, screen length={centres[0].Z - centres[1].Z} cells");
+        Vector(new Vector3(0f, 0f, 2f), centres[0] - centres[1]);
+        Close(7f, centres[1].Z);
+    }
+
+    [LumenFact]
+    public static void Vertical3DBeamProjectsNodeAndEndpointHeights()
     {
         var backend = new LumenRibbonBackend();
         int id = backend.CreateInstance(new EffectNodeSpec
@@ -163,16 +207,48 @@ public static class RibbonBackendSuite
             Name = "bolt", SpacePlane = LumenSpacePlane.Vertical3D, Ribbon = Beam(new Vector3(0f, 2f, 0f)),
         }, Frame(Vector3.Zero, active: false), false, 1u);
         backend.RestartInstance(id);
-        // The node sits 1 cell above the play origin; the beam rises 2 more cells.
-        backend.UpdateInstance(id, Frame(new Vector3(3f, 1f, 0f), origin: new Vector3(3f, 0f, 0f)));
+        // The node sits 1 cell above the ground; the beam rises 2 more cells.
+        backend.UpdateInstance(id, Frame(new Vector3(3f, 1f, 0f)));
         Build(backend, TopDown);
         Vector3[] centres = Centres(backend);
-        float drawnY = MathF.Max(0f, Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead));
-        // Straight-down 2D: height above the origin draws cos(60) = 0.5 cells towards screen-up (+Z).
+        float drawnY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
+        // Straight-down 2D: each cell of world height draws cos(60) = 0.5 cells towards screen-up (+Z).
         Vector(new Vector3(3f, drawnY, 0.5f), centres[0]);
         Vector(new Vector3(3f, drawnY, 1.5f), centres[1]);
         // A beam along screen-up widens along screen-right.
         Vector(new Vector3(-0.5f, 0f, 0f), backend.Vertices[0].Position - centres[0]);
+    }
+
+    [LumenFact]
+    public static void Vertical3DBeamEndsLandOnTheirOwnCells()
+    {
+        var backend = new LumenRibbonBackend();
+        int id = backend.CreateInstance(new EffectNodeSpec
+        {
+            Name = "rail", SpacePlane = LumenSpacePlane.Vertical3D, Ribbon = Beam(new Vector3(0f, 0f, 25f)),
+        }, Frame(Vector3.Zero, active: false), false, 1u);
+        backend.RestartInstance(id);
+        backend.UpdateInstance(id, Frame(new Vector3(3f, 0f, 7f)));
+        Build(backend, TopDown);
+        Vector3[] centres = Centres(backend);
+        float drawnY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
+        Console.WriteLine($"[ANCHOR] beam end at Z=32 draws at Z={centres[1].Z:F4}, off by {centres[1].Z - 32f:F4}");
+        Vector(new Vector3(3f, drawnY, 7f), centres[0]);
+        Vector(new Vector3(3f, drawnY, 32f), centres[1]);
+    }
+
+    [LumenFact]
+    public static void GroundXZRibbonsDrawOnTheMoteLayerUnderTopDownCamera()
+    {
+        // At Y = 0 a ground ribbon would sit at terrain depth: occluded, and its soft fade would zero it.
+        var backend = new LumenRibbonBackend();
+        int id = Play(backend, Beam(new Vector3(2f, 0f, 0f)));
+        backend.UpdateInstance(id, Frame(new Vector3(3f, 0f, 7f)));
+        Build(backend, TopDown);
+        float drawnY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
+        Vector3[] centres = Centres(backend);
+        Vector(new Vector3(3f, drawnY, 7f), centres[0]);
+        Vector(new Vector3(5f, drawnY, 7f), centres[1]);
     }
 
     [LumenFact]
@@ -246,10 +322,10 @@ public static class RibbonBackendSuite
         return id;
     }
 
-    private static LumenNodeFeatureFrame Frame(Vector3 position, bool active = true, float dt = 0.1f, Vector3 origin = default,
+    private static LumenNodeFeatureFrame Frame(Vector3 position, bool active = true, float dt = 0.1f, float? depthReferenceZ = null,
         int map = 1, Vector3? target = null, float intensity = 1f)
         => new(new LumenEmitterTransform(Matrix4x4.CreateTranslation(position), Quaternion.Identity), target, map, intensity,
-            active, dt, origin);
+            active, dt, depthReferenceZ);
 
     private static void Build(LumenRibbonBackend backend, Matrix4x4? view = null, int map = -1)
         => backend.Build(new LumenCaptureContext

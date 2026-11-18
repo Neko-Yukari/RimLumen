@@ -34,15 +34,16 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         public int LiveCount;
         public int PendingBurst;
         public bool IsVertical3D;
-        public float BaseY;
-        public Vector2 AnchorXZ;
+        public float? DepthReferenceZ;
         public Matrix4x4 InverseWorld;
         public bool WorldInteraction;
         public float NodeTime;
         public ParticleMapGrid? CollisionGrid;
-        public ParticleEnvironmentSource[] Environment = Array.Empty<ParticleEnvironmentSource>();
+        public ReadOnlyMemory<ParticleEnvironmentSource> Environment;
         public int[] Targets = Array.Empty<int>();
         public readonly HashSet<int> Sources = new();
+        public float? FrameDelta;
+        public bool CanReclaim => State == EmissionState.Draining && LiveCount == 0 && PendingBurst == 0 && Sources.Count == 0;
     }
 
     private readonly int seed;
@@ -148,15 +149,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         if (emitters.TryGetValue(emitterId, out var emitter)) emitter.Transform = worldTransform;
     }
 
-    // Ensures: marks the emitter as Vertical3D (display remap in BuildBatch) and sets its 3D pivot, the effect's play
-    //          origin: origin.Y is the floor of Vertical3D display and KillBelowFloor, origin.XZ the ground anchor that
-    //          local-space particles use now and world-space particles record at birth. Unknown ids are ignored.
-    internal void SetEmitterVerticalState(int emitterId, bool isVertical3D, Vector3 origin)
+    // depthReferenceZ: the node's LumenDepthMask reference this frame; null without a mask.
+    internal void SetEmitterDisplayState(int emitterId, bool isVertical3D, float? depthReferenceZ)
     {
         if (!emitters.TryGetValue(emitterId, out var emitter)) return;
         emitter.IsVertical3D = isVertical3D;
-        emitter.BaseY = origin.Y;
-        emitter.AnchorXZ = new Vector2(origin.X, origin.Z);
+        emitter.DepthReferenceZ = depthReferenceZ;
     }
 
     // Requires: rateMultiplier and intensityMultiplier are finite and >= 0 (validated by the public SetParam boundary).
@@ -193,7 +191,10 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         emitter.Scheduler.Restart();
         emitter.NodeTime = 0f;
         emitter.State = EmissionState.Emitting;
+        emitter.FrameDelta = null;
     }
+
+    internal void SetEmitterFrameDelta(int emitterId, float frameDelta) => emitters[emitterId].FrameDelta = frameDelta;
 
     internal bool IsEmitterAlive(int emitterId) => emitters.ContainsKey(emitterId);
 
@@ -231,7 +232,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 if (particles[i].EmitterId == emitterId) RemoveParticle(i);
             BuildBatch();
         }
-        if (immediate || (emitter.LiveCount == 0 && emitter.PendingBurst == 0 && emitter.Sources.Count == 0)) RemoveEmitter(emitterId);
+        if (immediate || emitter.CanReclaim) RemoveEmitter(emitterId, emitter);
     }
 
     // Requires: main thread; context.DeltaTime >= 0.
@@ -260,11 +261,16 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             Emitter emitter = emitters[id];
             emitter.WorldInteraction = emitter.Spec.WorldSpaceSimulation || Matrix4x4.Invert(emitter.Transform.World, out emitter.InverseWorld);
             emitter.CollisionGrid = emitter.WorldInteraction ? ParticleCollisionFields.Capture(emitter.MapIndex, emitter.Spec.Collision) : null;
-            ReadOnlySpan<ParticleEnvironmentSource> environment = ParticleEnvironment.ForMap(emitter.MapIndex);
-            if (emitter.Environment.Length != environment.Length) Array.Resize(ref emitter.Environment, environment.Length);
-            environment.CopyTo(emitter.Environment);
-            if (emitter.State != EmissionState.Dormant)
-                emitter.NodeTime += emitter.RealTime && unscaledDt > 0f ? unscaledDt : dt;
+            emitter.Environment = emitter.WorldInteraction ? ParticleEnvironment.ForMap(emitter.MapIndex, emitter.Spec.EnvironmentChannels) : default;
+            float scheduleDt = emitter.FrameDelta ?? (emitter.RealTime && unscaledDt > 0f ? unscaledDt : dt);
+            emitter.FrameDelta = null;
+            if (emitter.State != EmissionState.Dormant) emitter.NodeTime += scheduleDt;
+            if (scheduleDt > 0f && emitter.State is EmissionState.Emitting or EmissionState.Paused)
+            {
+                double scheduled = emitter.Scheduler.Advance(scheduleDt, emitter.State == EmissionState.Emitting, density, emitter.RateMultiplier);
+                emitter.PendingBurst = (int)Math.Min(emitter.Spec.MaxParticles, emitter.PendingBurst + scheduled);
+                if (!emitter.Spec.Looping && emitter.Scheduler.Finished) emitter.State = EmissionState.Paused;
+            }
         }
         for (int i = 0; i < particleCount; i++)
         {
@@ -289,7 +295,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                     particle.Velocity = world ? velocity : Vector3.TransformNormal(velocity, owner.InverseWorld);
                     if (collision) RecordEvent(owner, particle, LumenSubEmitterTrigger.Collision);
                 }
-                if (owner.Spec.KillBelowFloor && IsDescendingBelow(owner, particle, owner.BaseY))
+                if (owner.Spec.KillBelowFloor && IsDescendingBelowGround(owner, particle))
                 {
                     // L2 clears ActiveEmitter without advancing age: inherit the appearance at contact.
                     RecordEvent(owner, particle, LumenSubEmitterTrigger.Death);
@@ -304,16 +310,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         foreach (int id in emitterIds)
         {
             var emitter = emitters[id];
-            var spec = emitter.Spec;
-            double requested = emitter.PendingBurst;
+            Spawn(id, emitter, emitter.PendingBurst);
             emitter.PendingBurst = 0;
-            float emitterDt = emitter.RealTime && unscaledDt > 0f ? unscaledDt : dt;
-            if (emitterDt > 0f && emitter.State is EmissionState.Emitting or EmissionState.Paused)
-            {
-                requested += emitter.Scheduler.Advance(emitterDt, emitter.State == EmissionState.Emitting, density, emitter.RateMultiplier);
-                if (!spec.Looping && emitter.Scheduler.Finished) emitter.State = EmissionState.Paused;
-            }
-            Spawn(id, emitter, (int)Math.Min(requested, spec.MaxParticles - emitter.LiveCount));
         }
         foreach (ParticleSubEvent ev in subEvents)
         {
@@ -329,18 +327,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 if (target.WorldInteraction) Spawn(targetId, target, count, ev, sub.Inherit);
             }
         }
-        bool removed;
-        do
-        {
-            removed = false;
-            for (int i = emitterIds.Count - 1; i >= 0; i--)
-            {
-                int id = emitterIds[i];
-                if (emitters[id].State != EmissionState.Draining || emitters[id].LiveCount != 0 || emitters[id].Sources.Count != 0) continue;
-                RemoveEmitter(id);
-                removed = true;
-            }
-        } while (removed);
+        // Dictionary permits removal during enumeration, including targets reclaimed by the same cascade.
+        foreach (var (id, emitter) in emitters)
+            if (emitter.CanReclaim) RemoveEmitter(id, emitter);
         view = context.ViewMatrix;
         BuildBatch();
     }
@@ -361,11 +350,11 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         particles[index] = particles[--particleCount];
     }
 
-    private void RemoveEmitter(int id)
+    private void RemoveEmitter(int id, Emitter emitter)
     {
-        Emitter emitter = emitters[id];
         foreach (int target in emitter.Targets)
-            if (emitters.TryGetValue(target, out Emitter? child)) child.Sources.Remove(id);
+            if (emitters.TryGetValue(target, out Emitter? child) && child.Sources.Remove(id) && child.CanReclaim)
+                RemoveEmitter(target, child);
         reservedCapacity -= emitter.Spec.MaxParticles;
         emitters.Remove(id);
         emitterIds.Remove(id);
@@ -397,9 +386,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 size *= ParticleAppearanceMath.SizeScale(emitter.Transform.World);
             }
             Vector4 color = spec.StartColor;
+            Vector2 anchorXZ = CameraBillboardBasis.NodeGroundXZ(emitter.Transform.World);
             if (subEvent is { } ev)
             {
                 position = spec.WorldSpaceSimulation ? ev.Position : Vector3.Transform(ev.Position, emitter.InverseWorld);
+                // A sub-emitter birth anchors at its event point (read only by world-space particles).
+                anchorXZ = new Vector2(ev.Position.X, ev.Position.Z);
                 // RimUnity ParticleSystem.SubEmissionEvents.cs:144-155 @45ca90987f7d3721715b45c021cab986ee14c468:
                 // inherited colour/size multiply the child's own birth values.
                 if ((inherit & LumenSubEmitterInherit.Color) != 0) color *= ev.Color;
@@ -408,13 +400,13 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             particles[particleCount++] = new CpuParticle
             {
                 EmitterId = id, Position = position, Velocity = direction * speed,
-                Lifetime = lifetime, StartSize = size, StartColor = color, SpawnAnchorXZ = emitter.AnchorXZ,
+                Lifetime = lifetime, StartSize = size, StartColor = color, SpawnAnchorXZ = anchorXZ,
             };
             emitter.LiveCount++;
         }
     }
 
-    private static bool IsDescendingBelow(Emitter owner, in CpuParticle particle, float floorY)
+    private static bool IsDescendingBelowGround(Emitter owner, in CpuParticle particle)
     {
         Vector3 position = particle.Position, velocity = particle.Velocity;
         if (!owner.Spec.WorldSpaceSimulation)
@@ -422,7 +414,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             position = Vector3.Transform(position, owner.Transform.World);
             velocity = Vector3.TransformNormal(velocity, owner.Transform.World);
         }
-        return position.Y < floorY && velocity.Y < 0f;
+        return position.Y < SpacePlaneTransform.GroundY && velocity.Y < 0f;
     }
 
     private int GroupOf(EmitterSpec spec)
@@ -440,8 +432,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     private static void ApplyForces(ref CpuParticle particle, Emitter emitter, float dt)
     {
         Vector3 force = ParticleForceMath.Acceleration(emitter.Spec, emitter.Transform.World, particle.Position, out float drag, emitter.NodeTime);
-        if (emitter.WorldInteraction)
-            force += ParticleEnvironmentMath.Acceleration(emitter.Environment, emitter.Spec, emitter.Transform.World,
+        if (!emitter.Environment.IsEmpty)
+            force += ParticleEnvironmentMath.Acceleration(emitter.Environment.Span, emitter.Spec, emitter.Transform.World,
                 emitter.InverseWorld, particle.Position);
         particle.Velocity = (particle.Velocity + force * dt) * MathF.Exp(-drag * dt);
     }
@@ -489,7 +481,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         }
 
         CameraBillboardBasis.Extract(view, out Vector3 cameraRight, out Vector3 cameraUp, out float yScaleRatio);
-        bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(cameraUp, yScaleRatio);
+        bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(cameraRight, cameraUp, yScaleRatio);
         Vector3 groundUp = CameraBillboardBasis.GroundUp(cameraUp);
         float vanillaMoteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
         for (int i = 0; i < particleCount; i++)
@@ -511,10 +503,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 position = Vector3.Transform(position, emitter.Transform.World);
                 velocity = Vector3.TransformNormal(velocity, emitter.Transform.World);
             }
-            if (emitter.IsVertical3D)
-                CameraBillboardBasis.ProjectVertical3D(isTopDown2D, yScaleRatio, groundUp,
-                    spec.WorldSpaceSimulation ? particle.SpawnAnchorXZ : emitter.AnchorXZ, emitter.BaseY, vanillaMoteY,
-                    ref position, ref velocity);
+            CameraBillboardBasis.ProjectToDisplay(emitter.IsVertical3D, isTopDown2D, yScaleRatio, groundUp,
+                spec.WorldSpaceSimulation ? particle.SpawnAnchorXZ : CameraBillboardBasis.NodeGroundXZ(emitter.Transform.World),
+                vanillaMoteY, ref position, ref velocity);
             Vector3 right = cameraRight, up = cameraUp;
             float halfWidth = particle.Size * 0.5f, halfHeight = halfWidth;
             if (spec.BillboardMode == LumenBillboardMode.Horizontal)
@@ -532,6 +523,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                     scaleVelocityY: !emitter.IsVertical3D);
                 halfHeight = (particle.Size * spec.LengthScale + spec.VelocityStretchFactor * velocity.Length()) * 0.5f;
             }
+            if (isTopDown2D)
+            {
+                // Every corner shares the draw layer; the orthographic straight-down view keeps the XZ footprint.
+                right.Y = 0f;
+                up.Y = 0f;
+            }
             right *= halfWidth;
             up *= halfHeight;
             float u0 = (float)(particle.FlipbookFrame % spec.FlipbookTilesX) / spec.FlipbookTilesX;
@@ -542,10 +539,11 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             if (activeMapIndex >= 0 && emitter.MapIndex >= 0 && emitter.MapIndex != activeMapIndex) continue;
             int slot = groupCursors[emitter.Group]++;
             int vertex = slot * 4, index = slot * 6;
-            vertices[vertex] = new(position - right - up, new Vector2(u0, v0), particle.Color, Vector2.Zero, gain);
-            vertices[vertex + 1] = new(position + right - up, new Vector2(u1, v0), particle.Color, Vector2.UnitX, gain);
-            vertices[vertex + 2] = new(position + right + up, new Vector2(u1, v1), particle.Color, Vector2.One, gain);
-            vertices[vertex + 3] = new(position - right + up, new Vector2(u0, v1), particle.Color, Vector2.UnitY, gain);
+            Vector2 mask = CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, emitter.DepthReferenceZ, vanillaMoteY);
+            vertices[vertex] = new(position - right - up, new Vector2(u0, v0), particle.Color, Vector2.Zero, gain, mask);
+            vertices[vertex + 1] = new(position + right - up, new Vector2(u1, v0), particle.Color, Vector2.UnitX, gain, mask);
+            vertices[vertex + 2] = new(position + right + up, new Vector2(u1, v1), particle.Color, Vector2.One, gain, mask);
+            vertices[vertex + 3] = new(position - right + up, new Vector2(u0, v1), particle.Color, Vector2.UnitY, gain, mask);
             indices[index] = (uint)vertex;
             indices[index + 1] = (uint)vertex + 1;
             indices[index + 2] = (uint)vertex + 2;

@@ -22,8 +22,8 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
     private readonly List<L1SubBatch> subBatches = new();
     private ParticleVertex[] vertices = Array.Empty<ParticleVertex>();
     private uint[] indices = Array.Empty<uint>();
-    // Per-ribbon scratch, newest (head, length 0) first: 3D centre, its Vertical3D pivot, its drawn centre.
-    private Vector3[] path = Array.Empty<Vector3>(), pivots = Array.Empty<Vector3>(), drawn = Array.Empty<Vector3>();
+    // Per-ribbon scratch, newest (head, length 0) first: world centre and drawn centre.
+    private Vector3[] path = Array.Empty<Vector3>(), drawn = Array.Empty<Vector3>();
     private int vertexCount, indexCount, nextId;
 
     public LumenNodeFeature Feature => LumenNodeFeature.Ribbon;
@@ -62,40 +62,40 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
 
     // Requires: main thread, after this frame's UpdateInstance calls.
     // Ensures: rebuilds Vertices/Indices/SubBatches for the ribbons on context.CurrentMapIndex (-1: every map).
-    //   View ribbons face the camera; Vertical3D ribbons draw through CameraBillboardBasis.ProjectVertical3D around
-    //   each centre's play origin, as particles do. Arrays grow only; steady state allocates nothing.
+    //   View ribbons face the camera; every centre draws through CameraBillboardBasis.ProjectToDisplay anchored at its
+    //   own XZ, so both ends of a beam land on their cells and only height projects. Arrays grow only; steady state
+    //   allocates nothing.
     internal void Build(in LumenCaptureContext context)
     {
         vertexCount = indexCount = 0;
         subBatches.Clear();
         CameraBillboardBasis.Extract(context.ViewMatrix, out Vector3 cameraRight, out Vector3 cameraUp, out float yScaleRatio);
-        bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(cameraUp, yScaleRatio);
+        bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(cameraRight, cameraUp, yScaleRatio);
         Vector3 groundUp = CameraBillboardBasis.GroundUp(cameraUp);
         float vanillaMoteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
         foreach (Ribbon ribbon in ribbons.Values)
         {
             if (context.CurrentMapIndex >= 0 && ribbon.MapIndex >= 0 && ribbon.MapIndex != context.CurrentMapIndex) continue;
             EnsureScratch(ribbon.MaxCentres);
-            int count = ribbon.Collect(path, pivots);
+            int count = ribbon.Collect(path);
             if (count < 2) continue;
             for (int i = 0; i < count; i++)
             {
                 drawn[i] = path[i];
-                if (!ribbon.Vertical3D) continue;
                 Vector3 unusedVelocity = default;
-                CameraBillboardBasis.ProjectVertical3D(isTopDown2D, yScaleRatio, groundUp, new Vector2(pivots[i].X, pivots[i].Z),
-                    pivots[i].Y, vanillaMoteY, ref drawn[i], ref unusedVelocity);
+                CameraBillboardBasis.ProjectToDisplay(ribbon.Vertical3D, isTopDown2D, yScaleRatio, groundUp,
+                    new Vector2(path[i].X, path[i].Z), vanillaMoteY, ref drawn[i], ref unusedVelocity);
             }
             bool ground = ribbon.Spec.Alignment == LumenRibbonAlignment.Ground;
             AppendStrip(ribbon, count, ground ? Vector3.UnitX : cameraRight, ground ? Vector3.UnitZ : cameraUp,
-                ground ? 1f : yScaleRatio);
+                ground ? 1f : yScaleRatio, CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, ribbon.DepthReferenceZ, vanillaMoteY));
         }
     }
 
     // Strip of `count` centres in path/drawn. axisX/axisY span the facing plane (camera right/up for View, world X/Z
     // for Ground); a world direction maps to that plane as in CameraBillboardBasis.ComputeStretchedAxes, which also
     // removes IsoRim's Y squash. Side = (dy, -dx) is Unity's Cross(direction, facing) for the RimWorld cameras.
-    private void AppendStrip(Ribbon ribbon, int count, Vector3 axisX, Vector3 axisY, float yScale)
+    private void AppendStrip(Ribbon ribbon, int count, Vector3 axisX, Vector3 axisY, float yScale, Vector2 depthMask)
     {
         RibbonSpec spec = ribbon.Spec;
         float total = 0f;
@@ -128,8 +128,8 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
             Vector3 offset = axisX * miter.X + axisY * miter.Y;
             float u = spec.TextureMode == LumenRibbonTextureMode.Stretch ? t : distance;
             Vector4 color = GradientEvaluator.Evaluate(spec.ColorOverLength, t);
-            vertices[vertexCount++] = new ParticleVertex(drawn[i] - offset, new Vector2(u, 0f), color, new Vector2(0.5f, 0f), gain);
-            vertices[vertexCount++] = new ParticleVertex(drawn[i] + offset, new Vector2(u, 1f), color, new Vector2(0.5f, 1f), gain);
+            vertices[vertexCount++] = new ParticleVertex(drawn[i] - offset, new Vector2(u, 0f), color, new Vector2(0.5f, 0f), gain, depthMask);
+            vertices[vertexCount++] = new ParticleVertex(drawn[i] + offset, new Vector2(u, 1f), color, new Vector2(0.5f, 1f), gain, depthMask);
         }
         for (int i = 0; i + 1 < count; i++)
         {
@@ -148,7 +148,6 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
     {
         if (path.Length >= centres) return;
         path = new Vector3[centres];
-        pivots = new Vector3[centres];
         drawn = new Vector3[centres];
     }
 
@@ -161,7 +160,6 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
     private struct TrailPoint
     {
         public Vector3 Position;
-        public Vector3 Pivot;
         public float Birth;
     }
 
@@ -189,6 +187,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
 
         internal int MapIndex => frame.MapIndex;
         internal float Intensity => frame.Intensity;
+        internal float? DepthReferenceZ => frame.DepthReferenceZ;
         private bool IsTrail => Spec.Mode == LumenRibbonMode.Trail;
 
         // Trail: the stored points plus the head; beam: Segments + 1 vertices.
@@ -228,7 +227,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
                     start = (start + 1) % points.Length;
                     count--;
                 }
-                points[(start + count++) % points.Length] = new TrailPoint { Position = head, Pivot = next.Origin, Birth = elapsed };
+                points[(start + count++) % points.Length] = new TrailPoint { Position = head, Birth = elapsed };
             }
             float cutoff = elapsed - Spec.Lifetime;
             while (count > 1 && At(1).Birth <= cutoff)
@@ -239,15 +238,15 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
             if (count == 1 && At(0).Birth < cutoff) count = 0;
         }
 
-        // Ensures: writes the visible centres head first into path/pivots (deduplicated) and returns their count.
-        internal int Collect(Vector3[] path, Vector3[] pivots)
+        // Ensures: writes the visible centres head first into path (deduplicated) and returns their count.
+        internal int Collect(Vector3[] path)
         {
             int n = 0;
             if (IsTrail)
             {
                 // TrailRenderer.cs:63-80: the live head leads; the oldest point is clipped to the Lifetime cutoff.
                 if (count == 0) return 0;
-                if (frame.Active) Push(path, pivots, ref n, frame.Transform.World.Translation, frame.Origin);
+                if (frame.Active) Push(path, ref n, frame.Transform.World.Translation);
                 float cutoff = elapsed - Spec.Lifetime;
                 for (int i = count - 1; i >= 0; i--)
                 {
@@ -257,9 +256,8 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
                         TrailPoint next = At(1);
                         float fraction = (cutoff - point.Birth) / (next.Birth - point.Birth);
                         point.Position = Vector3.Lerp(point.Position, next.Position, fraction);
-                        point.Pivot = Vector3.Lerp(point.Pivot, next.Pivot, fraction);
                     }
-                    Push(path, pivots, ref n, point.Position, point.Pivot);
+                    Push(path, ref n, point.Position);
                 }
                 return n;
             }
@@ -285,18 +283,17 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
                     float radius = ParticleRandom.Next01(ref random) * Spec.NoiseAmplitude;
                     position += (across * MathF.Cos(angle) + normal * MathF.Sin(angle)) * radius;
                 }
-                Push(path, pivots, ref n, position, frame.Origin);
+                Push(path, ref n, position);
             }
             return n;
         }
 
         private TrailPoint At(int index) => points[(start + index) % points.Length];
 
-        private static void Push(Vector3[] path, Vector3[] pivots, ref int n, Vector3 position, Vector3 pivot)
+        private static void Push(Vector3[] path, ref int n, Vector3 position)
         {
             if (n > 0 && Vector3.DistanceSquared(path[n - 1], position) <= 1e-12f) return;
-            path[n] = position;
-            pivots[n++] = pivot;
+            path[n++] = position;
         }
     }
 }

@@ -19,12 +19,6 @@ public static class DistortionTimeline
     // HeatHaze noise lattice steps per second.
     public const float HazeEvolveRate = 1f;
 
-    // Ensures: nothing shows before the first restart; afterwards a node with Duration > 0 shows while t < Duration
-    //          whether or not it is still active (a wave already launched finishes), and a node with Duration 0 shows
-    //          exactly while it is active.
-    public static bool IsVisible(DistortionSpec spec, bool started, float time, bool active)
-        => started && (spec.Duration > 0f ? time < spec.Duration : active);
-
     // Requires: spec validated by LumenAssetRules; time >= 0; intensity finite >= 0.
     // Ensures: A = Strength * intensity * StrengthOverTime(t) (1 without a curve).
     //   RingWave: one ring at r0 = Speed * t with amplitude A * min(1, r0 / Thickness).

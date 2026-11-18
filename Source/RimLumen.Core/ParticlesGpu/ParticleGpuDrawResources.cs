@@ -111,7 +111,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         var cameraRight = new Vector4(right, 0);
         var cameraUp = new Vector4(up, yScaleRatio);
         var projectionPacked = new Vector4(projection.M33, projection.M34, projection.M43, projection.M44);
-        float verticalMode = CameraBillboardBasis.IsStraightTopDown2D(up, yScaleRatio) ? 2f : 1f;
+        float topDown2D = CameraBillboardBasis.IsStraightTopDown2D(right, up, yScaleRatio) ? 1f : 0f;
         float vanillaMoteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
         RetireStale(frameIndex);
         frameKeys.Clear();
@@ -132,8 +132,8 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             properties[2] = DrawProperty.Vector(CameraUpPropertyId, cameraUp);
             properties[3] = DrawProperty.Vector(ProjectionPropertyId, projectionPacked);
             properties[4] = DrawProperty.Vector(DepthUvPropertyId, depthUv);
-            properties[5] = DrawProperty.Vector(VerticalPropertyId, emitter.IsVertical3D
-                ? new Vector4(verticalMode, emitter.BaseY, vanillaMoteY, 0f) : Vector4.Zero);
+            properties[5] = DrawProperty.Vector(VerticalPropertyId,
+                new Vector4(emitter.IsVertical3D ? 1f : 0f, topDown2D, vanillaMoteY, CameraBillboardBasis.NorthBehindLift(vanillaMoteY)));
             properties[6] = DrawProperty.Vector(TintPropertyId, emitter.MaterialTint);
             properties[7] = DrawProperty.Vector(ColorPropertyId,
                 new Vector4(emitter.ColorSpace == LumenColorSpace.Linear ? 1f : 0f, textureSrgb[i] ? 1f : 0f,
@@ -293,7 +293,7 @@ internal sealed class ParticleGpuFrame : IDisposable
         Fields = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Fields", (long)FieldCapacity * 48);
         Curves = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Curves", (long)EmitterCapacity * 64 * 32);
         MapCells = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.CollisionCells", (long)CellCapacity * 4);
-        Events = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.SubEvents", (long)EventCapacity * 48, deviceLocal: true);
+        Events = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.SubEvents", (long)EventCapacity * Marshal.SizeOf<GpuSubEvent>(), deviceLocal: true);
         SubLinks = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.SubLinks", (long)LinkCapacity * 32);
         ExplicitBursts = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.ExplicitBursts", (long)BurstCapacity * 16);
         SimulationEmitters = new ParticleEmitterFrame[EmitterCapacity];

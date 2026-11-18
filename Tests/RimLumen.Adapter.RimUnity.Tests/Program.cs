@@ -39,6 +39,8 @@ internal static class Program
             ("PhaseA WotF Probe external handoff", IntegrationTests.WotfProbeMaterial),
             ("D20 per-particle lights ownership", TranslationTests.ParticleLights),
             ("Native trail and beam ribbons", RibbonTranslationTests.NativeTrailAndBeam),
+            ("Resident native ribbon until Stop", () => RibbonTranslationTests.ResidentRibbon(false)),
+            ("Resident native ribbon with finite particles", () => RibbonTranslationTests.ResidentRibbon(true)),
             ("Ribbon External reasons", RibbonTranslationTests.RibbonFallbackReasons),
             ("Catalog required, gzip payloads, aliases, shared owner and traversal", FileTests.Catalog),
             ("RimUnity same-root reload refreshes catalogs and translations", FileTests.Reload),

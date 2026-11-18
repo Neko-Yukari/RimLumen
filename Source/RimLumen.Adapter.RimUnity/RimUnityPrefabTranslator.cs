@@ -103,7 +103,10 @@ public sealed class RimUnityPrefabTranslator
             EffectId = effectId, PackageId = string.Empty, DataDirectory = string.Empty,
             LogicalPath = effectId, Prefab = prefab, Nodes = classifications,
         };
-        return new EffectAsset { EffectId = effectId, DefaultDuration = duration > 0 ? duration : 2f, Nodes = nodes };
+        // An enabled RimUnity trail/line lives until Stop. Keep the implicit state and extend only the adapter asset's
+        // lifetime; emitter schedules still stop finite particle emission on their own durations.
+        float defaultDuration = nodes.Any(node => node.Ribbon is not null) ? float.MaxValue : duration > 0 ? duration : 2f;
+        return new EffectAsset { EffectId = effectId, DefaultDuration = defaultDuration, Nodes = nodes };
     }
 
     public const string ParticleComponent = "ParticleSystem", TrailComponent = "TrailRenderer", LineComponent = "LineRenderer";

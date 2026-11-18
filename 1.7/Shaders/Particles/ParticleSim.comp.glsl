@@ -163,7 +163,7 @@ GpuParticle spawnParticle(GpuEmitterParams emitter, uint slot)
     particle.Size = mix(emitter.SizeCone.x, emitter.SizeCone.y, randomUnit(seed)) * sizeScale;
     particle.Seed = seed;
     particle.ActiveEmitter = sim.emitterIndex + 1u;
-    particle.SpawnAnchorXZ = lumenPackAnchor(vec2(emitter.ShapePosition.w, emitter.ShapeScale.w));
+    particle.SpawnAnchorXZ = lumenPackAnchor(lumenNodeGroundXZ(emitter.World));
     return particle;
 }
 
@@ -337,14 +337,11 @@ GpuParticle integrateParticle(GpuEmitterParams emitter, uint slot)
             }
             if ((sim.pad0 & 1u) != 0u)
             {
-                // KillBelowFloor: pad1 carries the floor height (float bits); expire descending particles below it.
-                float floorY = uintBitsToFloat(sim.pad1);
-                bool worldSpace = emitter.SizeCone.w > 0.5;
-                float worldY = worldSpace ? particle.PositionAndAge.y
+                float worldY = world ? particle.PositionAndAge.y
                     : (emitter.World * vec4(particle.PositionAndAge.xyz, 1.0)).y;
-                float worldVelY = worldSpace ? particle.VelocityAndLifetime.y
+                float worldVelY = world ? particle.VelocityAndLifetime.y
                     : (emitter.World * vec4(particle.VelocityAndLifetime.xyz, 0.0)).y;
-                if (worldY < floorY && worldVelY < 0.0)
+                if (worldY < LUMEN_GROUND_Y && worldVelY < 0.0)
                     particle.ActiveEmitter = 0u;
             }
         }
@@ -378,6 +375,8 @@ void consumeEvents(GpuEmitterParams emitter)
                 GpuParticle child = spawnParticle(emitter, slot);
                 child.PositionAndAge.xyz = emitter.SizeCone.w > 0.5 ? ev.PositionAndTrigger.xyz
                     : (emitter.WorldInverse * vec4(ev.PositionAndTrigger.xyz, 1.0)).xyz;
+                // A sub-emitter birth anchors at its event point (read only by world-space particles).
+                child.SpawnAnchorXZ = lumenPackAnchor(ev.PositionAndTrigger.xz);
                 // RimUnity ParticleSystem.SubEmissionEvents.cs:144-155 @45ca90987f7d3721715b45c021cab986ee14c468.
                 if ((link.Inherit & 1u) != 0u) child.StartColor *= ev.Color;
                 if ((link.Inherit & 2u) != 0u) child.Size *= ev.Size.x;
@@ -433,6 +432,8 @@ void main()
         return;
     }
     uint budget = emitter.Events.z > 0.5 ? burstStates[emitter.StateSlot].Budget : min(uint(emitter.Slots.z), capacity);
+    // An explicit request can spend its entire budget on density debt in phase 4.
+    if (budget == 0u && (phase == 2u || phase == 3u)) return;
     if (phase == 2u)
     {
         uint blocks = (capacity + 63u) / 64u;

@@ -9,6 +9,7 @@ layout(location = 0) in vec4 vColor;
 layout(location = 1) in vec2 vUv;
 layout(location = 2) in vec2 vRadialUv;
 layout(location = 3) in vec2 vSoftAndGain;
+layout(location = 4) in vec2 vDepthMask;
 layout(location = 0) out vec4 outColor;
 
 float eyeDistance(float depth)
@@ -37,6 +38,9 @@ void main()
         float separation = eyeDistance(sceneDepth) - eyeDistance(gl_FragCoord.z);
         if (separation < 0.0)
             discard; // Occlusion test lives here: the material pipeline runs with fixed-function depth test disabled.
+        // LumenDepthMask: north of the reference the fragment is tested at the Projectile altitude, vDepthMask.x below.
+        if (vDepthMask.x > 0.0 && vDepthMask.y > 0.0 && separation < vDepthMask.x)
+            discard;
         if (vSoftAndGain.x > 0.0)
             color.a *= clamp(separation / vSoftAndGain.x, 0.0, 1.0);
     }

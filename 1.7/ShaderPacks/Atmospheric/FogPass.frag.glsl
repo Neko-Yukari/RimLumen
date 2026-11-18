@@ -1,23 +1,5 @@
 #version 450
-layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
-{
-    mat4 InvViewProjection;
-    vec4 ScreenAndMapSize;
-    float GameSeconds;
-    float RealSeconds;
-    float SkyGlow;
-    float ZoomRootSize;
-    float HasHdrDraws;
-    float HasSceneDepth;
-    float HasMapLightField;
-    float IsPaused;
-    float DepthValid;
-    float GameDeltaSeconds;
-    float RealDeltaSeconds;
-    float ColorBlendSpace;
-    vec4 BloomParams;
-    vec4 PackParams[4];
-} ubo;
+#include "../../Shaders/PostFx/RimLumenPackUniforms.glslinc"
 
 layout(set = 0, binding = 0) uniform sampler2D sceneImage;
 layout(set = 0, binding = 1) uniform sampler2D bloomImage;

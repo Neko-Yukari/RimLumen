@@ -4,7 +4,8 @@ using System.Numerics;
 namespace RimLumen.Core.Contracts;
 
 // Runtime formulas for the emitter fields in this file (environment channels, collision, sub-emitters, RingWave) are
-// owned by particle-world-physics; distortion nodes by screen-distortion; ribbon nodes by ribbon-trails.
+// owned by particle-world-physics; distortion nodes by screen-distortion; ribbon nodes by ribbon-trails; screen-dim
+// nodes by screen-dim.
 
 // Environment force sources an emitter's particles react to. Values outside the named bits reject the asset.
 [Flags]
@@ -102,6 +103,20 @@ public sealed class DistortionSpec
     // 1/cell: ripple spacing or haze noise frequency (Ripple, HeatHaze).
     public float Frequency { get; init; }
     // Seconds since node activation.
+    public float Duration { get; init; }
+    public ScalarCurve? StrengthOverTime { get; init; }
+}
+
+// Full-screen background dim: darkens what is composited under RimLumen's HDR layer at the queue-3152 split, never the
+// layer's own effects. Coverage = min(1, Strength * intensity * StrengthOverTime(t)), t in seconds since the node's last
+// (re)start; dims visible on the same map combine as 1 - (1-a)(1-b). Duration 0 means "while the node is active";
+// Duration > 0 keeps the dim and its curve running after the node deactivates or drains until t reaches Duration.
+// StrengthOverTime (null = 1) is Hermite, endpoint-held, keys and multiplier finite >= 0.
+public sealed class ScreenDimSpec
+{
+    // Coverage, finite [0,1]: the fraction of the scene hidden at full strength.
+    public required float Strength { get; init; }
+    // Seconds since node activation, finite >= 0.
     public float Duration { get; init; }
     public ScalarCurve? StrengthOverTime { get; init; }
 }

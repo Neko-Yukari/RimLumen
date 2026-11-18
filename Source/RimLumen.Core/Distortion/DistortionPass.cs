@@ -22,12 +22,10 @@ internal sealed class DistortionPass(EngineApplication app) : IDisposable
     private int width;
     private int height;
 
-    // Requires: render thread, no render pass open, draws captured for this frame.
-    // Ensures: null when draws is empty; otherwise the slot's target, cleared to 0, holding the additive sum of draws
-    //          and left in ShaderReadOnlyOptimal for this submission's ShaderPack passes.
-    internal RenderTexture? Record(in FrameContext ctx, MeshDrawFrame draws, RenderTexture scene)
+    // Requires: render thread, no render pass open, at least one distortion draw captured for this frame.
+    // Ensures: the slot's target holds the additive sum and is ShaderReadOnlyOptimal for this submission's ShaderPack.
+    internal RenderTexture Record(in FrameContext ctx, MeshDrawFrame draws, RenderTexture scene)
     {
-        if (draws.Draws.Count == 0) return null;
         int slot = ctx.SubmissionFrameIndex;
         VkFramebuffer framebuffer = Ensure(slot, scene.Width, scene.Height);
         RenderTexture target = targets[slot]!;

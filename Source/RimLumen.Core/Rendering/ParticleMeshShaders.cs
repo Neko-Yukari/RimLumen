@@ -30,6 +30,27 @@ internal sealed class ParticleMeshShaders
     internal static ParticleMeshShaders Create(string keyPrefix, string vertexFile, string fragmentFile,
         bool depthTest, int renderQueue = ParticleRenderQueue)
     {
+        (MaterialLayout materialLayout, ShaderVertexInputLayout vertexInput) = ReadLayouts(vertexFile, fragmentFile);
+        return new ParticleMeshShaders(
+            CreateShader(keyPrefix + "-additive", vertexFile, fragmentFile, depthTest, renderQueue, materialLayout, vertexInput,
+                new BlendState(Enabled: true, BlendFactor.One, BlendFactor.One, BlendOp.Add, BlendFactor.Zero, BlendFactor.One, BlendOp.Add)),
+            CreateShader(keyPrefix + "-alpha", vertexFile, fragmentFile, depthTest, renderQueue, materialLayout, vertexInput,
+                BlendState.Alpha),
+            CreateShader(keyPrefix + "-premultiplied", vertexFile, fragmentFile, depthTest, renderQueue, materialLayout, vertexInput,
+                new BlendState(Enabled: true, BlendFactor.One, BlendFactor.OneMinusSrcAlpha, BlendOp.Add,
+                    BlendFactor.One, BlendFactor.OneMinusSrcAlpha, BlendOp.Add)));
+    }
+
+    // Requires and Ensures as Create, for one shader with the given blend.
+    internal static Shader CreateSingle(string key, string vertexFile, string fragmentFile, bool depthTest, int renderQueue,
+        BlendState blend)
+    {
+        (MaterialLayout materialLayout, ShaderVertexInputLayout vertexInput) = ReadLayouts(vertexFile, fragmentFile);
+        return CreateShader(key, vertexFile, fragmentFile, depthTest, renderQueue, materialLayout, vertexInput, blend);
+    }
+
+    private static (MaterialLayout, ShaderVertexInputLayout) ReadLayouts(string vertexFile, string fragmentFile)
+    {
         string vertexSource = ShaderSourceLoader.ReadShaderSource(vertexFile);
         string fragmentSource = ShaderSourceLoader.ReadShaderSource(fragmentFile);
         // Waylith derives the material (set 2) layout from the fragment stage only. ParticleMaterial.glsl is
@@ -46,14 +67,7 @@ internal sealed class ParticleMeshShaders
                 $"stage interface broken: {stageInterfaceBroken}).");
         }
 
-        return new ParticleMeshShaders(
-            CreateShader(keyPrefix + "-additive", vertexFile, fragmentFile, depthTest, renderQueue, materialLayout, vertexInput,
-                new BlendState(Enabled: true, BlendFactor.One, BlendFactor.One, BlendOp.Add, BlendFactor.Zero, BlendFactor.One, BlendOp.Add)),
-            CreateShader(keyPrefix + "-alpha", vertexFile, fragmentFile, depthTest, renderQueue, materialLayout, vertexInput,
-                BlendState.Alpha),
-            CreateShader(keyPrefix + "-premultiplied", vertexFile, fragmentFile, depthTest, renderQueue, materialLayout, vertexInput,
-                new BlendState(Enabled: true, BlendFactor.One, BlendFactor.OneMinusSrcAlpha, BlendOp.Add,
-                    BlendFactor.One, BlendFactor.OneMinusSrcAlpha, BlendOp.Add)));
+        return (materialLayout, vertexInput);
     }
 
     private static Shader CreateShader(string name, string vertexFile, string fragmentFile, bool depthTest, int renderQueue,

@@ -28,11 +28,13 @@ vec3 compressHighlights(vec3 color)
 
 void main()
 {
-    vec4 hdr = texture(hdrImage, uv);
-    hdr.rgb = sanitizeHdr(hdr.rgb);
-    vec3 bloom = texture(bloomImage, uv).rgb * pc.value.x;
-    // The scene behind the layer, refracted; equal to uv wherever nothing distorts.
+    // The scene behind the layer, refracted, and the layer with its bloom refracted with it unless the player turned
+    // that off; both equal uv wherever nothing distorts.
     vec2 sceneUv = lumenRefractedUv(distortionImage, uv);
+    vec2 layerUv = lumenLayerUv(uv, sceneUv);
+    vec4 hdr = texture(hdrImage, layerUv);
+    hdr.rgb = sanitizeHdr(hdr.rgb);
+    vec3 bloom = texture(bloomImage, layerUv).rgb * pc.value.x;
     if (ubo.ColorBlendSpace < 0.5)
     {
         vec3 layer = compressHighlights(hdr.rgb + bloom);

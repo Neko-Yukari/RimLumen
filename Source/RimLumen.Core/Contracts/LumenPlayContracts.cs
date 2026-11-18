@@ -18,6 +18,9 @@ public readonly struct LumenPlayRequest
     public int MapIndex { get; init; } = -1;
     public Vector3 OriginWorld { get; init; }
     public Vector3? TargetWorld { get; init; }
+    // World Z of the LumenDepthMask reference line (world cells). Play records it as an offset from OriginWorld.Z, so
+    // it moves with Follow; Play throws ArgumentException when a node declares a depthMask and this is null.
+    public float? DepthReferenceZ { get; init; }
     public float Scale { get; init; } = 1f;
     public float RotationDegrees { get; init; }
     public LumenFollowProvider? Follow { get; init; }

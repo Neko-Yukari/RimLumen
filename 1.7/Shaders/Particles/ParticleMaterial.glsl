@@ -10,7 +10,7 @@ layout(std140, set = 2, binding = 0) uniform MaterialUniforms
     vec4 _LumenCameraUp;    // display camera up xyz, inverse-Y compensated; w is Y scale ratio
     vec4 _LumenProjection; // System.Numerics projection M33, M43, M34, M44 (A,B,C,D)
     vec4 _LumenDepthUv;    // gl_FragCoord.xy * xy + zw -> depth texture UV
-    vec4 _LumenVertical;   // Vertical3D display: x mode (0 legacy, 1 un-squash for 3D/IsoRim, 2 60-degree orthographic pitch for straight-down 2D), y baseY, z vanilla MoteOverhead altitude, w 0
+    vec4 _LumenVertical;   // Display rule: x Vertical3D (1) or GroundXZ (0), y straight-down 2D camera (1), z vanilla MoteOverhead altitude, w LumenDepthMask occlusion lift (MoteOverhead - Projectile)
     vec4 _LumenMaterialTint;
     vec4 _LumenColor;       // x: Linear material, y: resolved sRGB texture, z: Linear blending
 } material;

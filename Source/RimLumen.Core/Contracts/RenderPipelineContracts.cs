@@ -107,6 +107,10 @@ public interface ILumenFrameContributor
     // Ensures: returns false when idle so the HDR pipeline can short-circuit with zero draws/clears.
     bool HasActiveWork { get; }
 
+    /// <summary>Read on the main thread after capture. Return true if RecordHdrDraws needs an HDR pass for
+    /// this frame. Routed mesh draws are counted separately; lifecycle or compute work alone does not request HDR.</summary>
+    bool RequiresDirectHdrPass => false;
+
     // Requires: called on main thread during frame capture.
     // Ensures: snapshots per-frame draw/simulation inputs without mutating engine pass state.
     void CaptureMainThread(in LumenCaptureContext context);
@@ -151,6 +155,17 @@ public interface ILumenGpuParticleEngine : ILumenFrameContributor
     // Ensures: updates transform, emission state, RGB intensity and scheduled particles/s multiplier for next capture.
     //          A zero rateMultiplier does not suppress authored or explicit bursts.
     void UpdateInstance(int instanceId, in LumenEmitterTransform transform, bool emitting, float intensityMultiplier, float rateMultiplier);
+
+    // Requires: main thread. Pushed at creation, and every frame for a node that declares a depthMask.
+    // Ensures: under the vanilla straight-down 2D camera, isVertical3D draws the instance through the Vertical3D
+    //          projection anchored at the node's ground XZ (world-space particles: at birth); depthReferenceZ, when not
+    //          null, is this frame's world Z of the LumenDepthMask reference. Unknown ids are ignored.
+    void SetInstanceDisplayState(int instanceId, bool isVertical3D, float? depthReferenceZ);
+
+    // Requires: main thread; id from this backend; frameDelta finite >= 0.
+    // Ensures: the next capture advances this instance's emission schedule by frameDelta instead of the frame's
+    //          delta, once. Sent when a state transition restarts the node part-way through a frame.
+    void SetInstanceFrameDelta(int instanceId, float frameDelta);
 
     // Ensures: stops emission or reclaims GPU slot when particles expire.
     void DestroyInstance(int instanceId, bool immediate = false);
