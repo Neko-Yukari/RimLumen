@@ -30,6 +30,7 @@ internal sealed class RimLumenPipeline : IDisposable
     internal LightPoolRenderer LightPool { get; private set; } = null!;
     internal LightingTakeover Takeover { get; private set; } = null!;
     private bool takeoverFrame;
+    private Map? lastMap;
     private ulong captureIndex;
     private float gameSeconds;
     private float gameDeltaSeconds;
@@ -112,6 +113,20 @@ internal sealed class RimLumenPipeline : IDisposable
         App.FrameRenderer.RenderToMainThread.Enqueue(() => Log.Error(message));
     }
 
+    // The current map unless it is torn down. Leaving a game (GenScene.GoToMainMenu, loading a save) first disposes every
+    // map (Game.Dispose sets Map.Disposed) and then runs MemoryUtility.ClearAllMapsAndWorld as an asynchronous long
+    // event, which nulls each map's reference fields (glowGrid included) and clears Game.maps while currentMapIndex
+    // still points into it, so Find.CurrentMap itself can throw. That clear runs only while ShouldWaitForEvent holds and
+    // only after the map read last here was disposed; such waiting frames skip the read. Other waiting frames still
+    // capture (simDt 0, real time runs), with the current map read fresh.
+    private Map? RenderableMap()
+    {
+        if (Current.ProgramState != ProgramState.Playing) return lastMap = null;
+        if (LongEventHandler.ShouldWaitForEvent && lastMap is { Disposed: true }) return null;
+        lastMap = Find.CurrentMap;
+        return lastMap is { Disposed: false } ? lastMap : null;
+    }
+
     internal void BeginCapture(in FrameTiming timing)
     {
         // FrameRenderer.BeginMainThreadFrame:220-230 runs all early hooks before CaptureFrame:186-192.
@@ -122,12 +137,13 @@ internal sealed class RimLumenPipeline : IDisposable
         mapIndex = -1;
         contributors = Array.Empty<ILumenFrameContributor>();
         var camera = Current.CameraDriver?.MyCamera;
-        if (Current.ProgramState != ProgramState.Playing || Current.Game == null || Find.CurrentMap == null || camera == null)
+        Map? map = RenderableMap();
+        if (Current.Game == null || map == null || camera == null)
         {
             MapLightFieldCollector.BeginCapture(App, null);
             return;
         }
-        MapLightFieldCollector.BeginCapture(App, Find.CurrentMap);
+        MapLightFieldCollector.BeginCapture(App, map);
         takeoverFrame = LightingTakeover.EvaluateFrame();
         // TickManagerUpdate counts completed ticks; its time budget may run fewer than the requested speed.
         TickManager tickManager = Current.Game.tickManager;
@@ -140,7 +156,7 @@ internal sealed class RimLumenPipeline : IDisposable
         view = CameraViewFactory.GetView(camera);
         depthParams = new Vector4(camera.nearClipPlane, camera.farClipPlane, camera.orthographic ? 1f : 0f, 1f);
         var extent = App.RenderContext!.Extent;
-        int currentMapIndex = Find.CurrentMap?.uniqueID ?? -1;
+        int currentMapIndex = map.uniqueID;
         mapIndex = currentMapIndex;
         var capture = new LumenCaptureContext
         {
@@ -170,7 +186,7 @@ internal sealed class RimLumenPipeline : IDisposable
             if (ReferenceEquals(contributor, LumenSceneBootstrap.Service))
                 LightPool.Stage(captureIndex, LumenSceneBootstrap.Service.Lights);
         }
-        if (takeoverFrame) LightPool.StageVanilla(captureIndex, Find.CurrentMap!);
+        if (takeoverFrame) LightPool.StageVanilla(captureIndex, map);
         bool changed = activeContributorBuffer.Count != activeContributors.Length;
         for (int i = 0; !changed && i < activeContributors.Length; i++)
             changed = !ReferenceEquals(activeContributorBuffer[i], activeContributors[i]);
@@ -182,7 +198,7 @@ internal sealed class RimLumenPipeline : IDisposable
     internal PipelineFrame? Capture(in FrameTiming timing)
     {
         Captured = null;
-        if (Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || Current.CameraDriver?.MyCamera == null)
+        if (RenderableMap() == null || Current.CameraDriver?.MyCamera == null)
             return null;
         MeshDrawSubmissionSnapshot snapshot = MeshDrawSubmission.CaptureFlushedSnapshot(App.GraphicsDevice!);
         MeshDrawFrame? mesh = null, glowMesh = null, lightMesh = null, distortionMesh = null;
