@@ -39,6 +39,7 @@ internal static class RimLumenMapHooks
         MethodInfo record = RequireMethod(mainPass, "Record", typeof(void), typeof(FrameContext).MakeByRefType(), typeof(object));
         MethodInfo grab = RequireMethod(typeof(SceneGrabTargets), "RecordGrab", typeof(void),
             typeof(CommandBuffer), typeof(SceneGrabPoint), typeof(VkImage));
+        Lighting.LightPoolShadows.BindEngineMembers();
         sceneGrabs = RequireField(typeof(MeshDrawFrame), "<SceneGrabs>k__BackingField", typeof(IReadOnlyList<SceneGrabPoint>));
         sceneTargets = RequireField(mainPass, "sceneTargets", typeof(SceneColorTargets));
         mapRenderer = RequireField(mainPass, "renderer", typeof(MeshBatchRenderer));
@@ -110,7 +111,11 @@ internal static class RimLumenMapHooks
             IReadOnlyList<SceneGrabPoint>? grabs = map.SceneGrabs;
             for (int i = 0; i < sentinels.Length; i++)
                 if (payload.ShouldSplit((GlowGroup)i)) grabs = SceneGrabSplit.Insert(grabs, sentinels[i], static point => point.Queue);
-            if (payload.HasLightPools) grabs = SceneGrabSplit.Insert(grabs, lightPoolSentinel, static point => point.Queue);
+            if (payload.HasLightPools)
+            {
+                grabs = SceneGrabSplit.Insert(grabs, lightPoolSentinel, static point => point.Queue);
+                RimLumenRenderHost.Pipeline!.PoolShadows.Rebind(map);
+            }
             sceneGrabs.SetValue(map, grabs);
             Frames.Add(map, payload);
         }
@@ -125,6 +130,8 @@ internal static class RimLumenMapHooks
         {
             current = new RecordScope(ctx, payload, (SceneColorTargets)sceneTargets.GetValue(__instance)!,
                 (MeshBatchRenderer)mapRenderer.GetValue(__instance)!);
+            // The lifted shadows read no pool unless this record's queue-3101 pass rebinds the light sum.
+            if (payload.HasLightPools) RimLumenRenderHost.Pipeline!.PoolShadows.LightSum.Clear();
         }
         catch (Exception ex) { RimLumenRenderHost.Pipeline!.TripRenderFailSafe(ex); }
     }
