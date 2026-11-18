@@ -243,7 +243,7 @@ public sealed partial class LumenEffectDef : Def
         for (int i = 0; i < keys.Count; i++)
         {
             LumenCurveKeyXml key = keys[i] ?? throw new InvalidDataException($"{path}[{i}] is null.");
-            result[i] = new CurveKey(key.time, key.value);
+            result[i] = new CurveKey(key.time, key.value, key.inTangent, key.outTangent);
         }
 
         return result;
@@ -429,6 +429,8 @@ public sealed class LumenCurveKeyXml
 {
     public float time;
     public float value = 1f;
+    public float inTangent;
+    public float outTangent;
 }
 
 public sealed class LumenGradientStopXml

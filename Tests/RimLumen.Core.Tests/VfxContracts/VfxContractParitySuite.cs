@@ -119,6 +119,20 @@ public static class VfxContractParitySuite
     [LumenFact] public static void RejectsEmptyStrengthOverTimeXml() => RejectXml("<li><name>fx</name><distortion><kind>HeatHaze</kind><radius>2</radius><strength>0.1</strength><frequency>1</frequency><strengthOverTime /></distortion></li>", "distortion.strengthOverTime", "at least one key");
     [LumenFact] public static void RejectsEmptyWidthOverLengthXml() => RejectXml("<li><name>fx</name><ribbon><mode>Beam</mode><endAtTarget>true</endAtTarget><segments>1</segments><widthOverLength /></ribbon></li>", "ribbon.widthOverLength", "at least one key");
     [LumenFact] public static void RejectsEmptyColorOverLengthXml() => RejectXml("<li><name>fx</name><ribbon><mode>Beam</mode><endAtTarget>true</endAtTarget><segments>1</segments><colorOverLength /></ribbon></li>", "ribbon.colorOverLength", "at least one stop");
+    [LumenFact]
+    public static void XmlCurveKeysCarryTangentsLikeJson()
+    {
+        EffectAsset json = LumenJsonAssetLoader.Parse("{ \"effectId\": \"vfx.tangent\", \"nodes\": [{ \"name\": \"fx\", \"emitter\": { \"sizeOverLifetime\": [" +
+            "{ \"time\": 0, \"value\": 0, \"outTangent\": 2 }, { \"time\": 1, \"value\": 1, \"inTangent\": 0.5 }] } }] }");
+        EffectAsset xml = Xml("vfx.tangent", "<li><name>fx</name><emitter><sizeOverLifetime>" +
+            "<li><time>0</time><value>0</value><outTangent>2</outTangent></li><li><time>1</time><value>1</value><inTangent>0.5</inTangent></li>" +
+            "</sizeOverLifetime></emitter></li>");
+        CurveKey[] expected = json.Nodes[0].Emitter!.SizeOverLifetime.Keys;
+        CurveKey[] actual = xml.Nodes[0].Emitter!.SizeOverLifetime.Keys;
+        if (!expected.AsSpan().SequenceEqual(actual))
+            throw new InvalidOperationException($"XML keys {string.Join(", ", actual)} differ from JSON {string.Join(", ", expected)}.");
+    }
+
     [LumenFact] public static void RejectsEmptySizeOverLifetimeXml() => RejectXml("<li><name>fx</name><emitter><sizeOverLifetime /></emitter></li>", "sizeOverLifetime", "at least one key");
     [LumenFact] public static void RejectsEmptyColorOverLifetimeXml() => RejectXml("<li><name>fx</name><emitter><colorOverLifetime /></emitter></li>", "colorOverLifetime", "at least one stop");
     [LumenFact] public static void RejectsEmptyLightIntensityOverTimeXml() => RejectXml("<li><name>fx</name><pointLight><radiusCells>2</radiusCells><intensityOverTime /></pointLight></li>", "pointLight.intensityOverTime", "at least one key");
