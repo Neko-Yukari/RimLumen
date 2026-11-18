@@ -174,7 +174,7 @@ Callers using `RimUnityAssetProvider` can call `RegisterPackageRoot` again, even
   For particle size curves, both L1 and L2 use the same 64-sample lookup table (LUT): samples are at `i/63` (`i = 0…63`), including both endpoints, with interpolation between adjacent samples. A step can be smoothed across a sample interval of width `1/63`; exact preservation is not guaranteed. Point-light curves are evaluated directly in seconds, not through the particle LUT.
 - **Material colour**: `materialTint` defaults to `(1,1,1,1)` and follows the colour domain above, as do `startColor` and the gradient; `colorSpace` is `Stored` (default) or `Linear`. Let `vertex = startColor × gradient`. Stored RGB is `vertex × tint × texel`; Linear RGB is `E(vertex × D(tint) × (texture is sRGB ? D(texel) : texel))`. `vertex` is not decoded. The scalar gain `g = hdrIntensity × intensity` multiplies RGB only after that material colour is in the frame's blend space (Legacy `g × rgb`, Linear blend space `g × D(rgb)`), so no sRGB transfer raises or crushes it. `D` / `E` are sRGB decode / encode extended to nonnegative values above 1 without clamping. Alpha is always the product of the three raw alpha values, followed by soft-particle coverage and any blend-mode premultiplication. Componentwise, `D(x) = x/12.92` for `x <= 0.04045`, otherwise `((x+0.055)/1.055)^2.4`; `E(x) = 12.92*x` for `x <= 0.0031308`, otherwise `1.055*x^(1/2.4)-0.055`. Source: RimUnity `Source/Shared/ShaderColorSpace.cs:69-103,122-134` at revision `45ca90987f7d3721715b45c021cab986ee14c468`. This describes material calculation only, not the player blend space.
 - **Gradients (`colorOverLifetime`)**: Supports a stop array `[[time, [r,g,b,a]], ...]` or an object `{ "stops": [{ "time": 0, "color": [r,g,b,a] }] }`, requiring strictly increasing `time`.
-- **`pointLight`**: The JSON colour key is `color` (RGBA); the radius key is `glowRadius` (in map cells). A point light is a purely visual light pool: it never writes vanilla `GlowGrid` and has no effect on mood, plant growth or work speed. Its centre is the node's world position projected to the ground, its radius is `R = glowRadius`, and its falloff is `w = (1 - (d/R)^2)^2`, zero at `d >= R`. Each light term `L = color × intensityOverTime × w` is summed linearly over overlapping pools, and the sum is applied once: the scene becomes `scene × (1 + C(ΣL))`, where `C` is identity up to a peak of 1 and above it whitens along the hue with the peak held at 1, so overlaps brighten a pixel at most 2x. This is drawn right after vanilla lighting, so fog, darkness and roofs cover it as usual. Recommended `intensity`: `0.5–1.2` for steady lamps, `1.0–2.0` for short bright flashes; do not copy vanilla `GlowGrid`'s `3.6` scale onto visual light pools. The pool follows its node every frame. `intensity` and curve key values must be finite and `>= 0`, with no upper bound; at effective intensity `<= 0` nothing is drawn. `overlightRadius` has been removed and is rejected in both JSON and XML. Walls block light pools. A wall is any cell that particle collision also treats as a wall (`cell.Impassable(map)`), and walls count as infinitely high, so occlusion is a 2D line-of-sight test on the cell grid. Roofs never block, and neither do cells outside the map. Neither the light's own cell nor the lit cell blocks, so the side of a wall that faces the light stays lit and its shadow starts at the far side. Wall corners cast a smooth penumbra: the edge is sharp right at the corner and widens with distance from it. Two walls that touch only at a corner let no light through between them. Occlusion is visual only and adds no asset field or toggle. After a wall changes or the map switches, at most one frame can still use the old wall data. Vanilla sun and moon shadows (`SunShadow` at 3170, `SunShadowFade` at 3175) that fall inside a light pool remove only sunlight: the shadow multiplier changes from `c` to the per-channel `(c+L)/(1+L)`, where `L` is the compressed pool term at that pixel; pixels outside every pool stay pixel-identical to vanilla. Only draws using the vanilla material through the vanilla shader are replaced; shadows another mod has replaced (for example RimIris water shadows) stay as they are and log one warning. Known approximations: where a pool saturates the image the shadow restores too little; refraction, additive draws and fog drawn after 3101 are lifted too; vanilla lamp light is not separated; the HDR particle/bloom layer and IsoRim 3D shadows are not covered. For gameplay light, see `CompRimLumenLogicalLight` in section 7.3.
+- **`pointLight`**: The JSON colour key is `color` (RGBA); the radius key is `glowRadius` (in map cells). A point light is a purely visual light pool: it never writes vanilla `GlowGrid` and has no effect on mood, plant growth or work speed. Its centre is the node's world position projected to the ground, its radius is `R = glowRadius`, and its falloff is `w = (1 - (d/R)^2)^2`, zero at `d >= R`. Each light term `L = color × intensityOverTime × w` is summed linearly over overlapping pools, and the sum is applied once: the scene becomes `scene × (1 + C(ΣL))`, where `C` is identity up to a peak of 1 and above it whitens along the hue with the peak held at 1, so overlaps brighten a pixel at most 2x. This is drawn right after vanilla lighting, so fog, darkness and roofs cover it as usual. Recommended `intensity`: `0.5–1.2` for steady lamps, `1.0–2.0` for short bright flashes; do not copy vanilla `GlowGrid`'s `3.6` scale onto visual light pools. The pool follows its node every frame. `intensity` and curve key values must be finite and `>= 0`, with no upper bound; at effective intensity `<= 0` nothing is drawn. `overlightRadius` has been removed and is rejected in both JSON and XML. Walls, doors and cover occlude light pools through an occlusion map built from each thing's sprite; see section 7.4. Occlusion is visual only and adds no asset field. Vanilla sun and moon shadows (`SunShadow` at 3170, `SunShadowFade` at 3175) that fall inside a light pool remove only sunlight: the shadow multiplier changes from `c` to the per-channel `(c+L)/(1+L)`, where `L` is the compressed pool term at that pixel; pixels outside every pool stay pixel-identical to vanilla. Only draws using the vanilla material through the vanilla shader are replaced; shadows another mod has replaced (for example RimIris water shadows) stay as they are and log one warning. Known approximations: where a pool saturates the image the shadow restores too little; refraction, additive draws and fog drawn after 3101 are lifted too; vanilla lamp light is not separated; the HDR particle/bloom layer and IsoRim 3D shadows are not covered. For gameplay light, see `CompRimLumenLogicalLight` in section 7.3.
 - **Force-field `strength`**: Required explicitly in JSON, XML, and C#. Omission rejects the asset; no default is used.
 - **`timelineEvents` / `states` / `initialState` / `stopState`**: see the next section, "State Machine".
 - **Particle density setting**: The public setter `RimLumenRenderHost.ParticleDensityScale` accepts a range of `0.1`–`1.0`; finite values outside it are silently clamped without logging, while NaN and positive or negative infinity throw `ArgumentOutOfRangeException`. The settings slider is continuous and displays a rounded whole percentage. Density `1` is exact; after clamping to `d`, the effective burst density is `floor(d * 65536) / 65536`.
@@ -626,6 +626,119 @@ To opt a custom `ShaderDef` out of automatic HDR redraw, attach `<li Class="RimL
 With the "demo recreation buildings" setting on, the Recreation build menu offers three comparison street lamps: `RimLumen_StreetLamp_Visual` has the visual light only, `RimLumen_StreetLamp_Logic` the logical light only, and `RimLumen_StreetLamp_Both` both.
 
 ---
+
+### 4. Light-Pool Occlusion and Lighting Takeover
+
+#### Light-pool occlusion map
+
+RimLumen's visual light pools (`pointLight` effect pools, plus vanilla glower pools while the takeover is on) test line of sight against a dedicated occlusion map. The map is separate from the particle collision grid, kept per map, and only the current map holds GPU textures. Its resolution is 4×4 texels per cell.
+
+**What blocks light**
+
+Classification reads def fields only, never names, so modded buildings written the vanilla way work automatically.
+
+| Kind | Test | Effect on pools |
+| --- | --- | --- |
+| Walls, smoothed walls, natural rock, doors, coolers and similar | `def.blockLight` | Infinitely high blocker. The shape comes from sprite alpha; texels with alpha ≥ 0.5 are solid |
+| Cover (sandbags, barricades, low walls, some plants and items) | not `blockLight`, `Fillage == Partial`, category Building, Plant or Item | Partial transmission set by `fillPercent` |
+| Things with `Fillage == Full` but no `blockLight` | as above | Treated as cover with `fillPercent ≈ 1`: almost opaque, but without the wall rules |
+
+Pawns, animals, motes and projectiles are not in the map. Roofs never block, and neither do positions outside the map. A `blockLight` thing whose sprite pixels cannot be read is stamped solid over `def.size`, with one warning per def; cover with an unreadable sprite does not occlude.
+
+**Walls and doors**
+
+- Wall outlines come from the sprite, so linked-wall corners and gaps show in the lighting.
+- A lamp embedded in a wall is not blocked by the solid run it sits in.
+- A one-cell-wide wall column takes one brightness along its whole length, the brightness of its lit face. The alternating per-cell banding is gone.
+- Wall cores deeper than about 0.75 cell receive no light, so the far row of a two-cell-thick wall and mountain interiors stay dark.
+- A closed door blocks all light. An open door lets light through only the gap its leaves clear: the opening half-width is `0.45 × openness` for ordinary doors and `0.35 × openness` for multi-tile doors (in door widths). A multi-tile door that is `StuckOpen` draws no leaves and counts as fully open.
+- Door state is polled every frame and only updates a small door-state texture, so opening and closing doors never rebuilds the whole occlusion map.
+
+**Cover transmission**
+
+Cover attenuates by the distance travelled through it, independent of step length:
+
+```
+T = Π (1 − o_i)^(Δs_i)
+```
+
+`o_i` is the opacity of segment i (sprite alpha × `fillPercent`) and `Δs_i` is the length of that segment in cells. Light crossing a one-cell sandbag head-on keeps `1 − fillPercent`; a diagonal crossing is longer and blocks more.
+
+**Smooth edges**
+
+Every step bilinearly interpolates the surrounding 2×2 texels instead of reading a single texel. A ray grazing a wall corner falls from fully visible to fully blocked continuously over one texel (0.25 cell), and cover edges are soft too.
+
+**When the map updates**
+
+The map is updated incrementally through a per-map stamp ledger that records the rectangle each thing last wrote:
+
+1. When a thing spawns, despawns or changes its graphic (stuff, plant growth, a linked-wall neighbour changing), its old rectangle is cleared first.
+2. Every other ledger entry that overlaps a cleared area is restamped, so a large tree whose art overhangs several cells leaves no hole or stale shadow.
+3. When vanilla asks for its 8 neighbouring cells to be redrawn as well (linked walls), the things on those cells are restamped too.
+
+The incremental result is byte-identical to a full rebuild. The main texture is uploaded only on frames where something changed, at most once per frame.
+
+#### Lighting takeover setting
+
+**The setting**
+
+| Item | Value |
+| --- | --- |
+| Label | Replace map lighting and sun shadows |
+| Field | `RimLumenSettings.LightingTakeover` |
+| Scribe key | `lightingTakeover` |
+| Default | off |
+
+With the setting off, the picture is exactly what it was before the setting existed: pools are composited after vanilla lighting, and vanilla sun and moon shadows inside a pool are lifted to `(c+L)/(1+L)`.
+
+**When it takes effect**
+
+It is evaluated once per frame. The frame runs as if the setting were off when any of these holds:
+
+- The setting is unchecked.
+- IsoRim is active and its 3D view is ready (`IsoRim.Api.ViewReady` is true). The takeover returns on the frame after the 3D view closes.
+- Another mod overrides vanilla `LightOverlay`, `SunShadow` or `SunShadowFade`, including with precompiled SPIR-V. The takeover then stays off for the rest of the session, and one warning names the overridden programs. The takeover never runs half on.
+
+**What changes under the takeover**
+
+- **Map lighting**: vanilla's lighting overlay (`LightOverlay`) is replaced by RimLumen's shader. Sky light, roof coverage and indoor darkening come from vanilla's own mesh data. With no shadow and no pool, the result equals vanilla per component.
+- **Vanilla glowers**: lamps, campfires and every other vanilla `GlowGrid` light each become a light pool bounded by the occlusion map. Falloff follows vanilla: `lerp(1 − d′/R, 1/d′², 0.4)` with `d′ = 1 + distance`.
+- **Effect pools become additive**: effect pools are added into the lighting term instead of `scene × (1 + L)`. At night they are noticeably brighter than with the setting off; this is intended.
+- **Sun shadows**: vanilla's static sun shadows (`SunShadow`) and the shadows printed into the map mesh (persistent `SunShadowFade`) are no longer drawn; the occlusion map reproduces them. Direction, length and colour come from vanilla's cast vector and shadow colour, so weather, eclipses and night-time moon shadows still apply.
+  - Buildings cast with their `staticSunShadowHeight` and sprite shape; furniture, trees and other things with `shadowData` cast vanilla's box and fade along its height.
+  - A wall's own top lies in shadow, as in vanilla.
+  - Indoors, natural rock tops and non-rendered terrain get no sun shadow; the test calls vanilla's own `SectionLayer_IndoorMask` functions.
+  - On maps with sun shadows disabled (`disableSunShadows` or the biome's `disableShadows`), only static building shadows go away; `shadowData` shadows stay, as in vanilla.
+
+**Dynamic shadow rule**
+
+Shadows of things drawn in real time, such as pawns and door leaves (dynamic `SunShadowFade`), are still drawn by vanilla with only the fragment shader swapped; stencil state is unchanged. With `S` the ground sun factor and `s_d` vanilla's dynamic shadow factor, the final factor is:
+
+```
+min(S, s_d)
+```
+
+Each pixel is darkened once: where both shadows are `c`, the result is `c`, not `c²`. Where the ground is unshadowed, the result is `s_d`, as in vanilla. The shadow colour is applied per channel, so tinted weather shadows keep vanilla's tint.
+
+**What does not change**
+
+- Vanilla `GlowGrid` values are unchanged. Mood, plant growth, work speed and every other gameplay reading of light are the same as without RimLumen.
+- Vanilla materials, meshes and `MatBases` are never modified. Toggling takes effect on the next frame with no state to restore.
+
+#### Compatibility
+
+| Mod | Behaviour |
+| --- | --- |
+| IsoRim | The whole takeover turns off while the 3D view is ready; pools composite as with the setting off, and the occlusion map still applies |
+| RimIris | Known incompatible with the takeover and not adapted. Compatible as usual with the setting off |
+| RimUnity | Particles, bloom and ScreenEfx are unaffected; the `GlowGrid` values it reads are unchanged |
+
+#### Known differences
+
+- Vanilla glow floods around wall corners by path distance; takeover pools use straight line of sight, so light shapes near corners differ from vanilla. `GlowGrid` values are unaffected.
+- The indoor sun-shadow mask is stored per cell and does not reproduce vanilla's 0.16-cell overage toward non-solid buildings.
+- Vanilla `VisualGlowAt` is 0 on vacuum terrain; takeover pools do not reproduce this (Odyssey space maps).
+- When a ray that has just left one wall grazes another wall by less than one texel (0.25 cell), that graze has no soft edge. A ray that actually crosses the other wall is still fully blocked.
 
 ## 8. Optional `Chezhou.RimUnity` Bridge
 
