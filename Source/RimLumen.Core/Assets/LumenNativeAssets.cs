@@ -169,12 +169,12 @@ public sealed partial class LumenEffectDef : Def
             StartColor = ParseColor(xml.startColor, path + ".emitter.startColor"),
             ColorSpace = xml.colorSpace,
             MaterialTint = ParseColor(xml.materialTint, path + ".emitter.materialTint"),
-            SizeOverLifetime = xml.sizeOverLifetime is { Count: > 0 }
-                ? new ScalarCurve(ToCurveKeys(xml.sizeOverLifetime, path + ".sizeOverLifetime"))
-                : ScalarCurve.Constant(1f),
-            ColorOverLifetime = xml.colorOverLifetime is { Count: > 0 }
-                ? new ColorGradient(ToColorStops(xml.colorOverLifetime, path + ".colorOverLifetime"))
-                : ColorGradient.Constant(Vector4.One),
+            SizeOverLifetime = xml.sizeOverLifetime is null
+                ? ScalarCurve.Constant(1f)
+                : new ScalarCurve(ToCurveKeys(xml.sizeOverLifetime, path + ".sizeOverLifetime")),
+            ColorOverLifetime = xml.colorOverLifetime is null
+                ? ColorGradient.Constant(Vector4.One)
+                : new ColorGradient(ToColorStops(xml.colorOverLifetime, path + ".colorOverLifetime")),
             ForceFields = ToForceFields(xml.forceFields, path),
             EnvironmentChannels = xml.environmentChannels,
             EnvironmentForceScale = xml.environmentForceScale,
@@ -202,7 +202,7 @@ public sealed partial class LumenEffectDef : Def
         // PointLightSpec carries no intensity column: the light pool multiplies the colour by
         // Evaluate(IntensityOverTime) * runtime multiplier, so the authored intensity rides on the curve's multiplier.
         ScalarCurve? intensity;
-        if (xml.intensityOverTime is { Count: > 0 })
+        if (xml.intensityOverTime is not null)
         {
             intensity = new ScalarCurve(ToCurveKeys(xml.intensityOverTime, path + ".pointLight.intensityOverTime"), xml.intensity);
         }
