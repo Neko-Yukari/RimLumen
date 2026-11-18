@@ -294,7 +294,7 @@ You can define `RimLumen.Core.Assets.LumenEffectDef` in any mod's `Defs/**/*.xml
 
 1. **ID**: Uses `<defName>`, registering both the bare short name and `<packageId>:<defName>`.
 2. **Node fields**: Adds `<heightOffset>` (added to `localPosition.y`), `localScale` is a single float scalar, and `localRotation` quaternion is omitted (use `<localYawDegrees>`).
-3. **Point light keys**: Uses `<radiusCells>` (matching JSON `glowRadius`), `<color>` (raw float syntax `(r, g, b)` or `(r, g, b, a)`), `<intensity>`, and `<intensityOverTime>` (`<keys>` made of `<li><time>..</time><value>..</value></li>`).
+3. **Point light keys**: Uses `<radiusCells>` (matching JSON `glowRadius`), `<color>` (raw float syntax `(r, g, b)` or `(r, g, b, a)`), `<intensity>`, and `<intensityOverTime>`. A curve directly contains `<li>` keys, each with `<time>`, `<value>`, `<inTangent>`, and `<outTangent>`; both tangents default to 0. XML curves have no `multiplier` field.
 4. **List fields**: `<states>`, `<timelineEvents>` and a state's `<nodes>` are `<li>` lists; state fields are `<name>`, `<nodes>`, `<duration>`, `<loop>`, `<next>`, event fields are `<time>`, `<eventName>`, `<targetNodeIndex>`, `<state>`, `<notify>`; the root also takes `<defaultDuration>`, `<initialState>` and `<stopState>`. Meanings and defaults match the "State Machine" section above.
 
 XML emitters use `<colorSpace>` and `<materialTint>`, defaulting to `Stored` and `(1,1,1,1)`. XML `<startColor>`, gradient-stop `<color>`, `<materialTint>`, and point-light `<color>` use parenthesized raw float components: three components imply alpha 1; four preserve the given values, without byte-colour interpretation. Malformed text or component counts report the asset and field.
@@ -404,7 +404,7 @@ After sampling, apply shape-local TRS, then mix random direction, spherical dire
 
 ### 3. Environment Forces, Collision, and Sub-emitters
 
-These fields belong to `emitter`; JSON and XML use lower camel case. Flags can use the JSON string `"Explosion, Cursor"` or XML `<environmentChannels>Explosion, Cursor</environmentChannels>`; vectors use `[x,y,z]` or `(x,y,z)`, and curves use `[[time,value], ...]` or XML `<li>` entries containing `time` and `value`. `environmentChannels` is a flag set: `None`, `Explosion`, `Cursor`, default `Explosion, Cursor`; `environmentForceScale` is finite and nonnegative, default 1. Explosions add visual acceleration only, enabled by default with multiplier 1. For radius R the shell travels at `2R` cells/s, has half-thickness `R/8`, peak acceleration `24R × multiplier`, center lowered by `R/4`, and lasts 0.5 game seconds; each map retains at most eight pulses. The cursor defaults to off and can repel or attract; its default radius is 5 cells and acceleration 4 cells/s², with linear horizontal falloff. World forces are summed and scaled, then transformed back for local simulation. A local emitter with a noninvertible transform (such as zero scale) skips world environment forces and wall collision.
+These fields belong to `emitter`; JSON and XML use lower camel case. Flags can use the JSON string `"Explosion, Cursor"` or XML `<environmentChannels>Explosion, Cursor</environmentChannels>`; vectors use `[x,y,z]` or `(x,y,z)`, and curves use `[[time,value], ...]` or XML `<li>` entries containing `time`, `value`, and optional `inTangent` / `outTangent`; tangents default to 0. `environmentChannels` is a flag set: `None`, `Explosion`, `Cursor`, default `Explosion, Cursor`; `environmentForceScale` is finite and nonnegative, default 1. Explosions add visual acceleration only, enabled by default with multiplier 1. For radius R the shell travels at `2R` cells/s, has half-thickness `R/8`, peak acceleration `24R × multiplier`, center lowered by `R/4`, and lasts 0.5 game seconds; each map retains at most eight pulses. The cursor defaults to off and can repel or attract; its default radius is 5 cells and acceleration 4 cells/s², with linear horizontal falloff. World forces are summed and scaled, then transformed back for local simulation. A local emitter with a noninvertible transform (such as zero scale) skips world environment forces and wall collision.
 
 `RingWave` radius is speed times seconds since node restart; weight is `max(0, 1 - abs(distance - waveRadius) / halfThickness)`, and zero beyond the end radius. Loop wraps do not reset node time.
 
@@ -431,6 +431,30 @@ A node may contain both `emitter` and `ribbon`. Required `mode` is `Trail`, foll
 Beam requires exactly one of `endLocal` (node-local coordinates) or `endAtTarget`, `segments >= 1`, and finite nonnegative `noiseAmplitude` and `noiseFrequency`; frequency 0 keeps the shape until restart. `endAtTarget` without a play target throws `ArgumentException`. A beam draws only while active. Fields for the other mode must remain 0, null, or false.
 
 Common fields: `width` defaults to 1 and is finite positive; `widthOverLength` defaults to 1, with finite nonnegative keys and multiplier; `colorOverLength` defaults to white and follows the particle gradient colour contract. Normalized length is 0 at the head and 1 at the tail. `hdrIntensity` defaults to 1 and is finite nonnegative, `textureKey` defaults to null, `blendMode` to `Additive`, `textureMode` is `Stretch` (default) or `Tile` (one repeat per cell), and `alignment` is `View` (default) or `Ground`. `softParticleFadeDistance` defaults to 0.5, finite nonnegative. Ribbons draw in the HDR layer on their play map; `Vertical3D` uses the same display projection as particles.
+
+### 6. Screen Dim Nodes
+
+A node's `screenDim` darkens the full screen under RimLumen's HDR layer at the queue-3152 composite. It is purely visual and does not change game logic.
+
+| Field | Default | Domain and meaning |
+| --- | --- | --- |
+| `strength` | required | Finite in `[0,1]`, the fraction of the scene hidden at full strength. |
+| `duration` | `0` | Finite nonnegative seconds since the node's last start or restart. `0` applies while the node is active; a positive duration continues until time reaches `duration`, even after deactivation or `Stop(true)` begins draining. |
+| `strengthOverTime` | none, treated as 1 | Endpoint-held Hermite scalar curve sampled in seconds since the node's last start or restart. Key times are finite, nonnegative and non-decreasing; values are finite and nonnegative, tangents are finite, and the JSON curve `multiplier` is finite and nonnegative. An explicit empty curve is rejected. |
+
+A node's coverage is `min(1, strength × intensity × strengthOverTime(t))`, where `intensity` is the handle's intensity parameter. Visible nodes on the same map combine as `1 - Π(1 - a)`, where `a` is each node's coverage. Only full-screen dimming is supported.
+
+Dimming affects content under the HDR layer at the queue-3152 composite; vanilla fog, the darkness overlay and late bloom groups (1–3) drawn afterward are unaffected. HDR-layer effects retain their colour; a custom ShaderPack must follow the `scene × (1 - hdr.a) + hdr.rgb` composite relationship to show the dimming.
+
+```json
+{ "name": "dim", "screenDim": { "strength": 0.6, "duration": 1.5, "strengthOverTime": [[0, 0], [0.3, 1], [1.5, 0]] } }
+```
+
+```xml
+<li><name>dim</name><screenDim><strength>0.6</strength><duration>1.5</duration>
+  <strengthOverTime><li><time>0</time><value>0</value></li><li><time>0.3</time><value>1</value></li><li><time>1.5</time><value>0</value></li></strengthOverTime>
+</screenDim></li>
+```
 
 ---
 
@@ -1090,9 +1114,9 @@ Pair capture and recording by `FrameIndex`: recording may lag or a frame may be 
 
 `ILumenGpuParticleEngine` extends the frame contributor and is registered by `RegisterGpuParticleEngine`. Instance operations run on the main thread: after `CreateInstance`, call `BindNodeInstances` with node-indexed IDs, then `UpdateInstance` each frame. `RestartInstance` resets the schedule, `EmitBurst` queues extra particles, `DestroyInstance` supports immediate removal or drain, and `IsInstanceAlive` reports reclamation. IDs belong to the backend; capacity is the shared particle slot count. Core implements `LumenGpuParticleEngine`.
 
-`ILumenNodeFeatureBackend` manages `LumenNodeFeatureFrame`: node world transform, target, map ID, intensity, active state, frame delta and `DepthReferenceZ`. `DepthReferenceZ` is this frame's world Z of the mask reference (`LumenPlayRequest.DepthReferenceZ` moved with `Follow`) when the node declares `depthMask`, and null otherwise. There is no play-origin field; backends read the node position from `Transform`. All instance calls run on the main thread. `CreateInstance` creates an inactive instance at Play; state entry or Trigger calls `RestartInstance`, each frame calls `UpdateInstance`, and state exit immediately updates it inactive. Fade-out stop calls `DestroyInstance(id, false)` and waits for `IsInstanceAlive` to become false; immediate stop or disposal uses true. Playing without a required backend throws `InvalidOperationException`. Core supplies distortion and ribbon backends; a backend that is also a contributor initializes the scene before registering the contributor, so node updates precede capture.
+`ILumenNodeFeatureBackend` manages `LumenNodeFeatureFrame`: node world transform, target, map ID, intensity, active state, frame delta and `DepthReferenceZ`. `DepthReferenceZ` is this frame's world Z of the mask reference (`LumenPlayRequest.DepthReferenceZ` moved with `Follow`) when the node declares `depthMask`, and null otherwise. There is no play-origin field; backends read the node position from `Transform`. All instance calls run on the main thread. `CreateInstance` creates an inactive instance at Play; state entry or Trigger calls `RestartInstance`, each frame calls `UpdateInstance`, and state exit immediately updates it inactive. Fade-out stop calls `DestroyInstance(id, false)` and waits for `IsInstanceAlive` to become false; immediate stop or disposal uses true. Playing without a required backend throws `InvalidOperationException`. Core supplies distortion, ribbon and screen-dim backends; a backend that is also a contributor initializes the scene before registering the contributor, so node updates precede capture.
 
-`LumenNodeFeature` is a closed enum containing only `Distortion` and `Ribbon`; it cannot currently add new node kinds.
+`LumenNodeFeature` is a closed enum containing only `Distortion`, `Ribbon`, and `ScreenDim`; it cannot currently add new node kinds.
 
 ### 4. Adapter Example
 

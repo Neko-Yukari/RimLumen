@@ -294,7 +294,7 @@ tornado.Stop();                                      // 进入 collapse，播完
 
 1. **ID**：使用 `<defName>`，同样会同时注册裸短名与 `<packageId>:<defName>`。
 2. **节点字段**：额外提供 `<heightOffset>`（会累加到 `localPosition.y`），`localScale` 为单个浮点标量，不提供 `localRotation` 四元数（用 `<localYawDegrees>`）。
-3. **点光键名**：使用 `<radiusCells>`（对应 JSON 的 `glowRadius`）、`<color>`（原始浮点语法 `(r, g, b)` 或 `(r, g, b, a)`）、`<intensity>` 与 `<intensityOverTime>`（`<keys>` 由 `<li><time>..</time><value>..</value></li>` 组成）。
+3. **点光键名**：使用 `<radiusCells>`（对应 JSON 的 `glowRadius`）、`<color>`（原始浮点语法 `(r, g, b)` 或 `(r, g, b, a)`）、`<intensity>` 与 `<intensityOverTime>`。曲线直接包含 `<li>` 关键帧，每项可写 `<time>`、`<value>`、`<inTangent>` 和 `<outTangent>`；两个切线默认 0。XML 曲线没有 `multiplier` 字段。
 4. **列表字段**：`<states>`、`<timelineEvents>` 与状态的 `<nodes>` 用 `<li>` 列表；状态字段为 `<name>`、`<nodes>`、`<duration>`、`<loop>`、`<next>`，事件字段为 `<time>`、`<eventName>`、`<targetNodeIndex>`、`<state>`、`<notify>`；根上另有 `<defaultDuration>`、`<initialState>`、`<stopState>`。含义与默认值同上一节「状态机」。
 
 XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Stored` 和 `(1,1,1,1)`。XML 的 `<startColor>`、渐变停靠点 `<color>`、`<materialTint>` 和点光 `<color>` 使用带括号的原始浮点分量：三分量时 alpha 为 1，四分量时保留给定值，不按字节颜色解释。格式错误或分量数错误会报告资产和字段。
@@ -404,7 +404,7 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 
 ### 3. 环境力、碰撞与子发射器
 
-以下字段属于 `emitter`，JSON 与 XML 使用小驼峰名称。标志可写 JSON 字符串 `"Explosion, Cursor"` 或 XML `<environmentChannels>Explosion, Cursor</environmentChannels>`；向量分别写 `[x,y,z]` 或 `(x,y,z)`，曲线分别写 `[[time,value], ...]` 或含 `time` / `value` 的 `<li>`。`environmentChannels` 是标志：`None`、`Explosion`、`Cursor`，默认 `Explosion, Cursor`；`environmentForceScale` 为有限非负数，默认 1。爆炸只产生视觉加速度，默认开启、倍率为 1；半径为 R 的爆炸波速度为 `2R` 格/秒，半厚度为 `R/8`，峰值加速度为 `24R × 倍率`，中心降低 `R/4`，持续 0.5 游戏秒，每图最多保留八个波。光标默认关闭，可排斥或吸引；默认半径 5 格、加速度 4 格/秒²，按水平距离线性衰减。世界力求和并乘以倍率后，局部模拟转换回局部空间。局部变换不可逆（例如零缩放）时，不参与世界环境力和墙碰撞。
+以下字段属于 `emitter`，JSON 与 XML 使用小驼峰名称。标志可写 JSON 字符串 `"Explosion, Cursor"` 或 XML `<environmentChannels>Explosion, Cursor</environmentChannels>`；向量分别写 `[x,y,z]` 或 `(x,y,z)`，曲线分别写 `[[time,value], ...]` 或含 `time` / `value` 及可选 `inTangent` / `outTangent` 的 XML `<li>`；切线默认 0。`environmentChannels` 是标志：`None`、`Explosion`、`Cursor`，默认 `Explosion, Cursor`；`environmentForceScale` 为有限非负数，默认 1。爆炸只产生视觉加速度，默认开启、倍率为 1；半径为 R 的爆炸波速度为 `2R` 格/秒，半厚度为 `R/8`，峰值加速度为 `24R × 倍率`，中心降低 `R/4`，持续 0.5 游戏秒，每图最多保留八个波。光标默认关闭，可排斥或吸引；默认半径 5 格、加速度 4 格/秒²，按水平距离线性衰减。世界力求和并乘以倍率后，局部模拟转换回局部空间。局部变换不可逆（例如零缩放）时，不参与世界环境力和墙碰撞。
 
 `RingWave` 半径为速度乘以节点重启后的秒数；权重为 `max(0, 1 - abs(distance - waveRadius) / halfThickness)`，超过终止半径后为零。循环回绕不重置节点计时。
 
@@ -431,6 +431,30 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 Beam 要求 `endLocal`（节点局部坐标）或 `endAtTarget` 恰选一项、`segments >= 1`，`noiseAmplitude` 和 `noiseFrequency` 有限非负；频率为 0 时形状在本次重启内固定。`endAtTarget` 缺少播放目标时抛 `ArgumentException`。Beam 仅在节点活动时绘制。另一模式的字段必须保持 0、null 或 false。
 
 共同字段：`width` 默认 1 且有限大于 0；`widthOverLength` 默认 1，其关键帧和倍率有限非负；`colorOverLength` 默认白色，遵循粒子渐变的颜色契约。归一化长度 0 为头、1 为尾。`hdrIntensity` 默认 1 且有限非负，`textureKey` 默认 null，`blendMode` 默认 `Additive`，`textureMode` 为 `Stretch`（默认）或 `Tile`（每格重复一次），`alignment` 为 `View`（默认）或 `Ground`。`softParticleFadeDistance` 默认 0.5，有限非负。Ribbon 在播放地图的 HDR 层绘制；`Vertical3D` 使用粒子相同的显示投影。
+
+### 6. 全屏压暗节点
+
+节点的 `screenDim` 全屏压暗 queue 3152 合成时位于 RimLumen HDR 层下方的场景，属于纯视觉效果，不改变游戏逻辑。
+
+| 字段 | 默认 | 约束与含义 |
+| --- | --- | --- |
+| `strength` | 必填 | 有限数，范围 `[0,1]`，满强度时遮住场景的比例。 |
+| `duration` | `0` | 有限非负秒数，从节点上次启动或重启起算。`0` 时节点活动期间生效；大于 0 时持续到时间达到 `duration`，即使节点已退激活或 `Stop(true)` 已开始排空。 |
+| `strengthOverTime` | 无，按 1 计算 | 按节点上次启动或重启后的秒数采样的 Hermite 标量曲线，端点保持。关键帧时间有限、非负且非递减，值有限非负，切线有限；JSON 曲线的 `multiplier` 有限非负。显式空曲线会被拒绝。 |
+
+单个节点的覆盖率为 `min(1, strength × intensity × strengthOverTime(t))`，`intensity` 是句柄的强度参数；同一地图上可见节点合成为 `1 - Π(1 - a)`，其中 `a` 为各节点覆盖率。仅支持全屏压暗。
+
+压暗作用于 queue 3152 合成时位于 HDR 层下方的内容；之后绘制的原版雾、黑暗遮罩和晚组泛光（第 1～3 组）不受影响。HDR 层效果保留其颜色；自定义 ShaderPack 需要遵循 `scene × (1 - hdr.a) + hdr.rgb` 合成关系才能呈现压暗。
+
+```json
+{ "name": "dim", "screenDim": { "strength": 0.6, "duration": 1.5, "strengthOverTime": [[0, 0], [0.3, 1], [1.5, 0]] } }
+```
+
+```xml
+<li><name>dim</name><screenDim><strength>0.6</strength><duration>1.5</duration>
+  <strengthOverTime><li><time>0</time><value>0</value></li><li><time>0.3</time><value>1</value></li><li><time>1.5</time><value>0</value></li></strengthOverTime>
+</screenDim></li>
+```
 
 ---
 
@@ -1090,9 +1114,9 @@ void main()
 
 `ILumenGpuParticleEngine` 继承帧贡献者，`RegisterGpuParticleEngine` 注册。实例方法在主线程：`CreateInstance` 后以节点索引数组调用 `BindNodeInstances`，再随帧 `UpdateInstance`；`RestartInstance` 重置计划，`EmitBurst` 提交额外粒子，`DestroyInstance` 支持立即释放或等待消散，`IsInstanceAlive` 查询回收状态。ID 属于后端；容量为共享粒子槽数。Core 的 `LumenGpuParticleEngine` 是实现。
 
-`ILumenNodeFeatureBackend` 管理 `LumenNodeFeatureFrame`：其中包含节点世界变换、目标、地图 ID、强度、活动状态、帧时间和 `DepthReferenceZ`。节点声明 `depthMask` 时，`DepthReferenceZ` 是当前帧遮罩参考线的世界 Z（`LumenPlayRequest.DepthReferenceZ` 随 `Follow` 移动后的值）；否则为 null。该帧没有播放原点字段，后端从 `Transform` 读取节点位置。所有实例调用在主线程。`CreateInstance` 在播放时创建非活动实例；进入状态或 Trigger 调用 `RestartInstance`，每帧 `UpdateInstance`，退出状态立即更新为 inactive。淡出停止调用 `DestroyInstance(id, false)` 并等待 `IsInstanceAlive` 为 false；立即停止或释放使用 true。缺少所需后端时播放抛 `InvalidOperationException`。Core 提供扭曲和 Ribbon 后端；兼作帧贡献者的后端先初始化场景，再注册贡献者，确保节点更新先于捕获。
+`ILumenNodeFeatureBackend` 管理 `LumenNodeFeatureFrame`：其中包含节点世界变换、目标、地图 ID、强度、活动状态、帧时间和 `DepthReferenceZ`。节点声明 `depthMask` 时，`DepthReferenceZ` 是当前帧遮罩参考线的世界 Z（`LumenPlayRequest.DepthReferenceZ` 随 `Follow` 移动后的值）；否则为 null。该帧没有播放原点字段，后端从 `Transform` 读取节点位置。所有实例调用在主线程。`CreateInstance` 在播放时创建非活动实例；进入状态或 Trigger 调用 `RestartInstance`，每帧 `UpdateInstance`，退出状态立即更新为 inactive。淡出停止调用 `DestroyInstance(id, false)` 并等待 `IsInstanceAlive` 为 false；立即停止或释放使用 true。缺少所需后端时播放抛 `InvalidOperationException`。Core 提供扭曲、Ribbon 和全屏压暗后端；兼作帧贡献者的后端先初始化场景，再注册贡献者，确保节点更新先于捕获。
 
-`LumenNodeFeature` 是封闭枚举，只有 `Distortion` 和 `Ribbon`；当前不能通过它添加新的节点种类。
+`LumenNodeFeature` 是封闭枚举，只有 `Distortion`、`Ribbon` 和 `ScreenDim`；当前不能通过它添加新的节点种类。
 
 ### 4. 适配器示例
 

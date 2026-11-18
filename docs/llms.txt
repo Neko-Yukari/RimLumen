@@ -31,7 +31,7 @@ Turning vanilla glow enhancement off is pixel-identical only when no RimLumen ef
 - [Project Overview & Build Commands](https://github.com/Neko-Yukari/RimLumen/blob/master/README.md): Bilingual modder/player feature overview and PowerShell build, test, and release packaging commands.
 - [GitHub Repository](https://github.com/Neko-Yukari/RimLumen): Source repository for `RimLumen.Core`, `RimLumen.Adapter.RimUnity`, built-in `1.7/ShaderPacks/*`, and `1.7/Shaders/*`.
 
-- **Modern VFX authoring**: [English sections 5.3–5.5](api.en.md#3-environment-forces-collision-and-sub-emitters) / [中文第五章第 3～5 节](api.md#3-环境力碰撞与子发射器): environment forces, collision, sub-emitters, distortion and ribbons. Screen distortion: [English 6.5](api.en.md#5-screen-distortion-and-third-party-writes) / [中文第六章第 5 节](api.md#5-屏幕扭曲与第三方写入).
+- **Modern VFX authoring**: [English sections 5.3–5.6](api.en.md#3-environment-forces-collision-and-sub-emitters) / [中文第五章第 3～6 节](api.md#3-环境力碰撞与子发射器): environment forces, collision, sub-emitters, distortion and ribbons. Screen dim: [English 5.6](api.en.md#6-screen-dim-nodes) / [中文第五章第 6 节](api.md#6-全屏压暗节点). Screen distortion: [English 6.5](api.en.md#5-screen-distortion-and-third-party-writes) / [中文第六章第 5 节](api.md#5-屏幕扭曲与第三方写入).
 - **Framework and adapter SPI**: [English chapter 10](api.en.md#10-framework-and-adapter-extension-spi) / [中文第十章](api.md#十框架与适配器扩展-spi): registry, providers, service, frame contexts, GPU and node-feature backends.
 
 ## Integration Surfaces
