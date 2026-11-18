@@ -368,7 +368,7 @@ internal static class ShowcaseBenchmarkSession
             {
                 new EffectNodeSpec
                 {
-                    Name = "particles", LocalPosition = new Vector3(0, AltitudeLayer.MoteOverhead.AltitudeFor(), 0),
+                    Name = "particles", LocalPosition = Vector3.Zero,
                     Emitter = new EmitterSpec
                     {
                         Name = id, PreferredTier = LumenParticleTier.L2_GpuCompute, MaxParticles = count, Duration = 120f, Looping = true,

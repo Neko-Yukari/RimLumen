@@ -378,18 +378,18 @@ public static class ShowcaseStage
         out ActiveShowcaseState state,
         List<Thing> spawnedWalls)
     {
-        float yMote = AltitudeLayer.MoteOverhead.AltitudeFor();
-        float yWall = AltitudeLayer.Building.AltitudeFor();
+        // Node heights are cells above the ground (Y = 0), not draw altitudes.
+        const float ground = 0f;
 
         var catalog = LumenSceneBootstrap.Catalog;
         var service = LumenSceneBootstrap.Service;
 
-        catalog.Register(CreateStation1HdrAsset(yMote));
-        catalog.Register(CreateStation2StretchedAsset(yMote));
-        catalog.Register(CreateStation3OrbitAsset(yMote));
-        catalog.Register(CreateStation4MistAsset(StationEffectIds[3], yWall, softFadeDistance: 0f));
-        catalog.Register(CreateStation4MistAsset(StationEffectIds[4], yWall, softFadeDistance: 1.4f));
-        catalog.Register(CreateStation5VortexAsset(yMote));
+        catalog.Register(CreateStation1HdrAsset(ground));
+        catalog.Register(CreateStation2StretchedAsset(ground));
+        catalog.Register(CreateStation3OrbitAsset(ground));
+        catalog.Register(CreateStation4MistAsset(StationEffectIds[3], ground, softFadeDistance: 0f));
+        catalog.Register(CreateStation4MistAsset(StationEffectIds[4], ground, softFadeDistance: 1.4f));
+        catalog.Register(CreateStation5VortexAsset(ground));
 
         var anchor1 = stations[0].AnchorCell;
         var anchor2 = stations[1].AnchorCell;
@@ -468,7 +468,7 @@ public static class ShowcaseStage
         return handles;
     }
 
-    private static EffectAsset CreateStation1HdrAsset(float yMote) => new()
+    private static EffectAsset CreateStation1HdrAsset(float height) => new()
     {
         EffectId = StationEffectIds[0],
         DefaultDuration = 4f,
@@ -477,7 +477,7 @@ public static class ShowcaseStage
             new EffectNodeSpec
             {
                 Name = "hdr_core",
-                LocalPosition = new Vector3(0f, yMote, 0f),
+                LocalPosition = new Vector3(0f, height, 0f),
                 Emitter = new EmitterSpec
                 {
                     Name = "hdr_core",
@@ -514,7 +514,7 @@ public static class ShowcaseStage
         },
     };
 
-    private static EffectAsset CreateStation2StretchedAsset(float yMote) => new()
+    private static EffectAsset CreateStation2StretchedAsset(float height) => new()
     {
         EffectId = StationEffectIds[1],
         DefaultDuration = 1.8f,
@@ -525,7 +525,7 @@ public static class ShowcaseStage
                 Name = "stretched_sparks",
                 // Pitch the cone axis (local +Y) onto screen-up +Z.
                 LocalRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2f),
-                LocalPosition = new Vector3(0f, yMote, -2.5f),
+                LocalPosition = new Vector3(0f, height, -2.5f),
                 Emitter = new EmitterSpec
                 {
                     Name = "stretched_sparks",
@@ -569,7 +569,7 @@ public static class ShowcaseStage
         },
     };
 
-    private static EffectAsset CreateStation3OrbitAsset(float yMote) => new()
+    private static EffectAsset CreateStation3OrbitAsset(float height) => new()
     {
         EffectId = StationEffectIds[2],
         DefaultDuration = 4f,
@@ -578,7 +578,7 @@ public static class ShowcaseStage
             new EffectNodeSpec
             {
                 Name = "arcane_orb",
-                LocalPosition = new Vector3(0f, yMote, 0f),
+                LocalPosition = new Vector3(0f, height, 0f),
                 Emitter = new EmitterSpec
                 {
                     Name = "arcane_orb",
@@ -620,7 +620,7 @@ public static class ShowcaseStage
         },
     };
 
-    private static EffectAsset CreateStation4MistAsset(string effectId, float yWall, float softFadeDistance) => new()
+    private static EffectAsset CreateStation4MistAsset(string effectId, float height, float softFadeDistance) => new()
     {
         EffectId = effectId,
         DefaultDuration = 4f,
@@ -629,7 +629,7 @@ public static class ShowcaseStage
             new EffectNodeSpec
             {
                 Name = "depth_mist",
-                LocalPosition = new Vector3(-0.35f, yWall + 0.15f, 0f),
+                LocalPosition = new Vector3(-0.35f, height + 0.15f, 0f),
                 LocalRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, -0.52f),
                 Emitter = new EmitterSpec
                 {
@@ -664,7 +664,7 @@ public static class ShowcaseStage
         },
     };
 
-    private static EffectAsset CreateStation5VortexAsset(float yMote) => new()
+    private static EffectAsset CreateStation5VortexAsset(float height) => new()
     {
         EffectId = StationEffectIds[5],
         DefaultDuration = 6f,
@@ -673,7 +673,7 @@ public static class ShowcaseStage
             new EffectNodeSpec
             {
                 Name = "gpu_vortex_12k",
-                LocalPosition = new Vector3(0f, yMote, 0f),
+                LocalPosition = new Vector3(0f, height, 0f),
                 Emitter = new EmitterSpec
                 {
                     Name = "gpu_vortex_12k",
