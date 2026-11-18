@@ -35,7 +35,7 @@ internal static class ParticleCollisionMath
                 float enter = 0f, exit = 1f;
                 Vector3 normal = Vector3.Zero;
                 if (Slab(from.X, delta.X, x, x + 1, Vector3.UnitX, ref enter, ref exit, ref normal) &&
-                    Slab(from.Y, delta.Y, 0, WallHeight, Vector3.UnitY, ref enter, ref exit, ref normal) &&
+                    Slab(from.Y, delta.Y, SpacePlaneTransform.GroundY, WallHeight, Vector3.UnitY, ref enter, ref exit, ref normal) &&
                     Slab(from.Z, delta.Z, z, z + 1, Vector3.UnitZ, ref enter, ref exit, ref normal))
                 {
                     Vector3 position = from + delta * enter;

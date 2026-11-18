@@ -22,8 +22,9 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
     private readonly List<L1SubBatch> subBatches = new();
     private ParticleVertex[] vertices = Array.Empty<ParticleVertex>();
     private uint[] indices = Array.Empty<uint>();
-    // Per-ribbon scratch, newest (head, length 0) first: 3D centre, its Vertical3D pivot, its drawn centre.
-    private Vector3[] path = Array.Empty<Vector3>(), pivots = Array.Empty<Vector3>(), drawn = Array.Empty<Vector3>();
+    // Per-ribbon scratch, newest (head, length 0) first: world centre, drawn centre and XZ ground anchor.
+    private Vector3[] path = Array.Empty<Vector3>(), drawn = Array.Empty<Vector3>();
+    private Vector2[] anchors = Array.Empty<Vector2>();
     private int vertexCount, indexCount, nextId;
 
     public LumenNodeFeature Feature => LumenNodeFeature.Ribbon;
@@ -63,7 +64,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
     // Requires: main thread, after this frame's UpdateInstance calls.
     // Ensures: rebuilds Vertices/Indices/SubBatches for the ribbons on context.CurrentMapIndex (-1: every map).
     //   View ribbons face the camera; Vertical3D ribbons draw through CameraBillboardBasis.ProjectVertical3D around
-    //   each centre's play origin, as particles do. Arrays grow only; steady state allocates nothing.
+    //   each centre's XZ ground anchor, as particles do. Arrays grow only; steady state allocates nothing.
     internal void Build(in LumenCaptureContext context)
     {
         vertexCount = indexCount = 0;
@@ -76,15 +77,15 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
         {
             if (context.CurrentMapIndex >= 0 && ribbon.MapIndex >= 0 && ribbon.MapIndex != context.CurrentMapIndex) continue;
             EnsureScratch(ribbon.MaxCentres);
-            int count = ribbon.Collect(path, pivots);
+            int count = ribbon.Collect(path, anchors);
             if (count < 2) continue;
             for (int i = 0; i < count; i++)
             {
                 drawn[i] = path[i];
                 if (!ribbon.Vertical3D) continue;
                 Vector3 unusedVelocity = default;
-                CameraBillboardBasis.ProjectVertical3D(isTopDown2D, yScaleRatio, groundUp, new Vector2(pivots[i].X, pivots[i].Z),
-                    pivots[i].Y, vanillaMoteY, ref drawn[i], ref unusedVelocity);
+                CameraBillboardBasis.ProjectVertical3D(isTopDown2D, yScaleRatio, groundUp, anchors[i],
+                    vanillaMoteY, ref drawn[i], ref unusedVelocity);
             }
             bool ground = ribbon.Spec.Alignment == LumenRibbonAlignment.Ground;
             AppendStrip(ribbon, count, ground ? Vector3.UnitX : cameraRight, ground ? Vector3.UnitZ : cameraUp,
@@ -148,7 +149,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
     {
         if (path.Length >= centres) return;
         path = new Vector3[centres];
-        pivots = new Vector3[centres];
+        anchors = new Vector2[centres];
         drawn = new Vector3[centres];
     }
 
@@ -161,7 +162,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
     private struct TrailPoint
     {
         public Vector3 Position;
-        public Vector3 Pivot;
+        public Vector2 AnchorXZ;
         public float Birth;
     }
 
@@ -187,6 +188,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
             frame = initial;
         }
 
+        private Vector2 CurrentAnchorXZ => new(frame.Origin.X, frame.Origin.Z);
         internal int MapIndex => frame.MapIndex;
         internal float Intensity => frame.Intensity;
         private bool IsTrail => Spec.Mode == LumenRibbonMode.Trail;
@@ -228,7 +230,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
                     start = (start + 1) % points.Length;
                     count--;
                 }
-                points[(start + count++) % points.Length] = new TrailPoint { Position = head, Pivot = next.Origin, Birth = elapsed };
+                points[(start + count++) % points.Length] = new TrailPoint { Position = head, AnchorXZ = CurrentAnchorXZ, Birth = elapsed };
             }
             float cutoff = elapsed - Spec.Lifetime;
             while (count > 1 && At(1).Birth <= cutoff)
@@ -239,15 +241,15 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
             if (count == 1 && At(0).Birth < cutoff) count = 0;
         }
 
-        // Ensures: writes the visible centres head first into path/pivots (deduplicated) and returns their count.
-        internal int Collect(Vector3[] path, Vector3[] pivots)
+        // Ensures: writes the visible centres head first into path/anchors (deduplicated) and returns their count.
+        internal int Collect(Vector3[] path, Vector2[] anchors)
         {
             int n = 0;
             if (IsTrail)
             {
                 // TrailRenderer.cs:63-80: the live head leads; the oldest point is clipped to the Lifetime cutoff.
                 if (count == 0) return 0;
-                if (frame.Active) Push(path, pivots, ref n, frame.Transform.World.Translation, frame.Origin);
+                if (frame.Active) Push(path, anchors, ref n, frame.Transform.World.Translation, CurrentAnchorXZ);
                 float cutoff = elapsed - Spec.Lifetime;
                 for (int i = count - 1; i >= 0; i--)
                 {
@@ -257,9 +259,9 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
                         TrailPoint next = At(1);
                         float fraction = (cutoff - point.Birth) / (next.Birth - point.Birth);
                         point.Position = Vector3.Lerp(point.Position, next.Position, fraction);
-                        point.Pivot = Vector3.Lerp(point.Pivot, next.Pivot, fraction);
+                        point.AnchorXZ = Vector2.Lerp(point.AnchorXZ, next.AnchorXZ, fraction);
                     }
-                    Push(path, pivots, ref n, point.Position, point.Pivot);
+                    Push(path, anchors, ref n, point.Position, point.AnchorXZ);
                 }
                 return n;
             }
@@ -285,18 +287,18 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
                     float radius = ParticleRandom.Next01(ref random) * Spec.NoiseAmplitude;
                     position += (across * MathF.Cos(angle) + normal * MathF.Sin(angle)) * radius;
                 }
-                Push(path, pivots, ref n, position, frame.Origin);
+                Push(path, anchors, ref n, position, CurrentAnchorXZ);
             }
             return n;
         }
 
         private TrailPoint At(int index) => points[(start + index) % points.Length];
 
-        private static void Push(Vector3[] path, Vector3[] pivots, ref int n, Vector3 position, Vector3 pivot)
+        private static void Push(Vector3[] path, Vector2[] anchors, ref int n, Vector3 position, Vector2 anchorXZ)
         {
             if (n > 0 && Vector3.DistanceSquared(path[n - 1], position) <= 1e-12f) return;
             path[n] = position;
-            pivots[n++] = pivot;
+            anchors[n++] = anchorXZ;
         }
     }
 }

@@ -71,12 +71,12 @@ public static class ParticleEngineTests
         Require(p.ShapeRotation == new Vector4(0f, 0f, spec.ShapeRotation.Z, spec.ShapeRotation.W)
             && p.World.M14 == 10f && p.World.M24 == 20f && p.World.M34 == 30f && p.Appearance.W == 1f,
             "Quaternion xyzw and node matrix/size scale must remain independent.");
-        engine.SetInstanceVerticalState(id, true, new Vector3(12f, 3f, 34f));
+        engine.SetInstanceVerticalState(id, true, new Vector2(12f, 34f));
         engine.CaptureMainThread(Frame(0));
         ParticleEmitterFrame row = engine.CapturedFrame!.Emitters[0];
         Require(row.Parameters.ShapePosition == new Vector4(1f, 2f, 3f, 12f) && row.Parameters.ShapeScale == new Vector4(5f, 6f, 7f, 34f)
-            && row.IsVertical3D && row.BaseY == 3f,
-            "Vertical3D play origin must upload as ground anchor ShapePosition.w/ShapeScale.w and floor BaseY.");
+            && row.IsVertical3D,
+            "The Vertical3D ground anchor must upload in ShapePosition.w/ShapeScale.w.");
     }
 
     [LumenFact]

@@ -456,14 +456,13 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         pendingEvents.Enqueue((EventKind.Finished, null));
     }
 
-    // Ensures: the node's L1/L2 emitter knows whether it is Vertical3D and the effect's current play origin, the 3D
-    //          pivot shared by every node (Y: display baseline and KillBelowFloor floor; XZ: ground anchor);
-    //          follows a moving origin every frame.
+    // Every node shares the play origin's current XZ ground anchor, independent of its own transform.
     private void PushVerticalState(int index)
     {
         bool isVertical3D = asset.Nodes[index].SpacePlane == LumenSpacePlane.Vertical3D;
-        if (cpuIds[index] >= 0) owner.Simulator.SetEmitterVerticalState(cpuIds[index], isVertical3D, origin);
-        if (gpuIds[index] >= 0) (engine as LumenGpuParticleEngine)?.SetInstanceVerticalState(gpuIds[index], isVertical3D, origin);
+        Vector2 anchorXZ = new(origin.X, origin.Z);
+        if (cpuIds[index] >= 0) owner.Simulator.SetEmitterVerticalState(cpuIds[index], isVertical3D, anchorXZ);
+        if (gpuIds[index] >= 0) (engine as LumenGpuParticleEngine)?.SetInstanceVerticalState(gpuIds[index], isVertical3D, anchorXZ);
     }
 
     private void RefreshTransforms()

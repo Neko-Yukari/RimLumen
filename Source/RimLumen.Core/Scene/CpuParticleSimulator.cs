@@ -34,7 +34,6 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         public int LiveCount;
         public int PendingBurst;
         public bool IsVertical3D;
-        public float BaseY;
         public Vector2 AnchorXZ;
         public Matrix4x4 InverseWorld;
         public bool WorldInteraction;
@@ -148,15 +147,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         if (emitters.TryGetValue(emitterId, out var emitter)) emitter.Transform = worldTransform;
     }
 
-    // Ensures: marks the emitter as Vertical3D (display remap in BuildBatch) and sets its 3D pivot, the effect's play
-    //          origin: origin.Y is the floor of Vertical3D display and KillBelowFloor, origin.XZ the ground anchor that
-    //          local-space particles use now and world-space particles record at birth. Unknown ids are ignored.
-    internal void SetEmitterVerticalState(int emitterId, bool isVertical3D, Vector3 origin)
+    // The 2D ground anchor follows the play origin's XZ; world-space particles record it at birth.
+    internal void SetEmitterVerticalState(int emitterId, bool isVertical3D, Vector2 anchorXZ)
     {
         if (!emitters.TryGetValue(emitterId, out var emitter)) return;
         emitter.IsVertical3D = isVertical3D;
-        emitter.BaseY = origin.Y;
-        emitter.AnchorXZ = new Vector2(origin.X, origin.Z);
+        emitter.AnchorXZ = anchorXZ;
     }
 
     // Requires: rateMultiplier and intensityMultiplier are finite and >= 0 (validated by the public SetParam boundary).
@@ -289,7 +285,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                     particle.Velocity = world ? velocity : Vector3.TransformNormal(velocity, owner.InverseWorld);
                     if (collision) RecordEvent(owner, particle, LumenSubEmitterTrigger.Collision);
                 }
-                if (owner.Spec.KillBelowFloor && IsDescendingBelow(owner, particle, owner.BaseY))
+                if (owner.Spec.KillBelowFloor && IsDescendingBelowGround(owner, particle))
                 {
                     // L2 clears ActiveEmitter without advancing age: inherit the appearance at contact.
                     RecordEvent(owner, particle, LumenSubEmitterTrigger.Death);
@@ -414,7 +410,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         }
     }
 
-    private static bool IsDescendingBelow(Emitter owner, in CpuParticle particle, float floorY)
+    private static bool IsDescendingBelowGround(Emitter owner, in CpuParticle particle)
     {
         Vector3 position = particle.Position, velocity = particle.Velocity;
         if (!owner.Spec.WorldSpaceSimulation)
@@ -422,7 +418,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             position = Vector3.Transform(position, owner.Transform.World);
             velocity = Vector3.TransformNormal(velocity, owner.Transform.World);
         }
-        return position.Y < floorY && velocity.Y < 0f;
+        return position.Y < SpacePlaneTransform.GroundY && velocity.Y < 0f;
     }
 
     private int GroupOf(EmitterSpec spec)
@@ -513,7 +509,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             }
             if (emitter.IsVertical3D)
                 CameraBillboardBasis.ProjectVertical3D(isTopDown2D, yScaleRatio, groundUp,
-                    spec.WorldSpaceSimulation ? particle.SpawnAnchorXZ : emitter.AnchorXZ, emitter.BaseY, vanillaMoteY,
+                    spec.WorldSpaceSimulation ? particle.SpawnAnchorXZ : emitter.AnchorXZ, vanillaMoteY,
                     ref position, ref velocity);
             Vector3 right = cameraRight, up = cameraUp;
             float halfWidth = particle.Size * 0.5f, halfHeight = halfWidth;

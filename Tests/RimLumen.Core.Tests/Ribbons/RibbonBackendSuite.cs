@@ -155,7 +155,27 @@ public static class RibbonBackendSuite
     }
 
     [LumenFact]
-    public static void Vertical3DRibbonsProjectAroundThePlayOriginLikeParticles()
+    public static void RisingVertical3DTrailProjectsHalfItsRiseAboveFixedGround()
+    {
+        var backend = new LumenRibbonBackend();
+        Vector3 launch = new(3f, 0f, 7f), apex = new(3f, 4f, 7f);
+        int id = backend.CreateInstance(new EffectNodeSpec
+        {
+            Name = "trail", SpacePlane = LumenSpacePlane.Vertical3D, Ribbon = Trail(1f, 0.5f, 8),
+        }, Frame(launch, origin: launch, active: false), false, 1u);
+        backend.RestartInstance(id);
+        backend.UpdateInstance(id, Frame(launch, origin: launch));
+        backend.UpdateInstance(id, Frame(apex, origin: apex));
+        Build(backend, TopDown);
+        Vector3[] centres = Centres(backend);
+        Equal(2, centres.Length);
+        Console.WriteLine($"[GROUND] Trail rise=4, screen length={centres[0].Z - centres[1].Z} cells");
+        Vector(new Vector3(0f, 0f, 2f), centres[0] - centres[1]);
+        Close(7f, centres[1].Z);
+    }
+
+    [LumenFact]
+    public static void Vertical3DBeamProjectsNodeAndEndpointHeights()
     {
         var backend = new LumenRibbonBackend();
         int id = backend.CreateInstance(new EffectNodeSpec
@@ -168,7 +188,7 @@ public static class RibbonBackendSuite
         Build(backend, TopDown);
         Vector3[] centres = Centres(backend);
         float drawnY = MathF.Max(0f, Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead));
-        // Straight-down 2D: height above the origin draws cos(60) = 0.5 cells towards screen-up (+Z).
+        // Straight-down 2D: each cell of world height draws cos(60) = 0.5 cells towards screen-up (+Z).
         Vector(new Vector3(3f, drawnY, 0.5f), centres[0]);
         Vector(new Vector3(3f, drawnY, 1.5f), centres[1]);
         // A beam along screen-up widens along screen-right.

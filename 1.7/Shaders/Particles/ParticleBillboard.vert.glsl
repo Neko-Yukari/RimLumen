@@ -68,20 +68,17 @@ void main()
     vec3 groundUp = groundUpOf(material._LumenCameraUp.xyz);
     if (verticalMode > 0.5)
     {
-        float baseY = material._LumenVertical.y;
-        float dy = center.y - baseY;
         if (verticalMode > 1.5)
         {
-            // Pivot: the play origin; world-space particles keep the one of their birth, so a moving emitter's
-            // trail never drifts.
+            // A world-space particle keeps its birth XZ anchor when the emitter moves.
             vec2 anchor = emitter.SizeCone.w > 0.5 ? lumenUnpackAnchor(particle.SpawnAnchorXZ)
                 : vec2(emitter.ShapePosition.w, emitter.ShapeScale.w);
-            vec3 offset = projectTopDownPitch(vec3(center.x - anchor.x, dy, center.z - anchor.y), groundUp);
-            center = vec3(anchor.x + offset.x, max(baseY, material._LumenVertical.z), anchor.y + offset.z);
+            vec3 offset = projectTopDownPitch(center - vec3(anchor.x, LUMEN_GROUND_Y, anchor.y), groundUp);
+            center = vec3(anchor.x + offset.x, material._LumenVertical.z, anchor.y + offset.z);
             velocity = projectTopDownPitch(velocity, groundUp);
         }
         else
-            center.y = baseY + dy / yScale;
+            center.y /= yScale;
     }
     vec3 right = material._LumenCameraRight.xyz;
     vec3 up = material._LumenCameraUp.xyz;

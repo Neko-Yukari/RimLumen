@@ -337,14 +337,11 @@ GpuParticle integrateParticle(GpuEmitterParams emitter, uint slot)
             }
             if ((sim.pad0 & 1u) != 0u)
             {
-                // KillBelowFloor: pad1 carries the floor height (float bits); expire descending particles below it.
-                float floorY = uintBitsToFloat(sim.pad1);
-                bool worldSpace = emitter.SizeCone.w > 0.5;
-                float worldY = worldSpace ? particle.PositionAndAge.y
+                float worldY = world ? particle.PositionAndAge.y
                     : (emitter.World * vec4(particle.PositionAndAge.xyz, 1.0)).y;
-                float worldVelY = worldSpace ? particle.VelocityAndLifetime.y
+                float worldVelY = world ? particle.VelocityAndLifetime.y
                     : (emitter.World * vec4(particle.VelocityAndLifetime.xyz, 0.0)).y;
-                if (worldY < floorY && worldVelY < 0.0)
+                if (worldY < LUMEN_GROUND_Y && worldVelY < 0.0)
                     particle.ActiveEmitter = 0u;
             }
         }

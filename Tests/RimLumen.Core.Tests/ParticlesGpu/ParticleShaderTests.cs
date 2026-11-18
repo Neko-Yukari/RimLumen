@@ -221,6 +221,17 @@ public static class ParticleShaderTests
     }
 
     [LumenFact]
+    public static void Vertical3DAndKillBelowFloorUseFixedGroundInGpuStages()
+    {
+        string draw = Read("ParticleBillboard.vert.glsl"), sim = Read("ParticleSim.comp.glsl");
+        bool absoluteProjection = draw.Contains("projectTopDownPitch(center - vec3(anchor.x, LUMEN_GROUND_Y, anchor.y), groundUp)", StringComparison.Ordinal)
+            && draw.Contains("center.y /= yScale;", StringComparison.Ordinal);
+        bool zeroFloor = sim.Contains("const float LUMEN_GROUND_Y = 0.0;", StringComparison.Ordinal)
+            && sim.Contains("if (worldY < LUMEN_GROUND_Y && worldVelY < 0.0)", StringComparison.Ordinal);
+        Require(absoluteProjection && zeroFloor, $"L2 fixed-ground formulas: absolute projection={absoluteProjection}, descending below zero={zeroFloor}.");
+    }
+
+    [LumenFact]
     public static void EmitterBufferAllocationDerivesStrideFromUploadedStruct()
     {
         string shader = Read("ParticleTypes.glsl");

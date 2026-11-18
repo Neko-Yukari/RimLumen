@@ -89,7 +89,7 @@ internal struct GpuSimPushConstants
     public uint EmitterIndex;
     public uint FrameSeed;
     public uint Padding0; // bit 0: KillBelowFloor; bits 1+: simulation phase
-    public uint Padding1; // floor height as float bits
+    public uint Padding1; // reserved
 }
 
 internal static class GpuParticleProperties

@@ -279,12 +279,10 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             if (emitterFrame.Parameters.State.X == 0f && emitterFrame.Parameters.Slots.Z == 0f &&
                 emitterFrame.Parameters.State.Z == 0f && !emitterFrame.KillBelowFloor &&
                 emitterFrame.Parameters.Map.Y == 0f && emitterFrame.Parameters.ExplicitCount == 0u) continue;
-            // Padding0 bit 0 = KillBelowFloor, upper bits = simulation phase; Padding1 = floor height bits.
             var push = new GpuSimPushConstants
             {
                 EmitterIndex = (uint)i, FrameSeed = unchecked((uint)snapshot.Context.FrameIndex),
                 Padding0 = emitterFrame.KillBelowFloor ? 1u : 0u,
-                Padding1 = BitConverter.SingleToUInt32Bits(emitterFrame.BaseY),
             };
             int emitterCapacity = (int)emitterFrame.Parameters.Slots.Y;
             if (!ParticleSimulationDispatch.UsesParallelScan(emitterCapacity))
