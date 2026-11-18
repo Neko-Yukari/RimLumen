@@ -89,14 +89,14 @@ internal sealed class LightPoolRenderer : IDisposable
         string fragmentSource = ShaderSourceLoader.ReadShaderSource(AccumulateFile);
         MaterialLayout materialLayout = ShaderMetadataParser.ExtractMaterialLayout(fragmentSource, "RimLumenLightPoolAccumulate.frag.glsl");
         ShaderVertexInputLayout vertexInput = ShaderSourceLoader.CreateVertexInputLayout(VertexFile);
-        bool stageInterfaceBroken = ShaderMetadataParser.ValidateStageInterface(vertexSource, fragmentSource,
+        List<string> stageErrors = ShaderMetadataParser.ValidateStageInterface(vertexSource, fragmentSource,
             VertexFile, "RimLumenLightPoolAccumulate.frag.glsl");
-        if (materialLayout.HasErrors || vertexInput.HasErrors || stageInterfaceBroken)
+        if (materialLayout.HasErrors || vertexInput.HasErrors || stageErrors.Count > 0)
         {
             throw new InvalidOperationException(
                 $"[RimLumen] Light pool shader metadata rejected by Waylith: {VertexFile} + {AccumulateFile} " +
                 $"(material errors: {materialLayout.HasErrors}, vertex input errors: {vertexInput.HasErrors}, " +
-                $"stage interface broken: {stageInterfaceBroken}).");
+                $"stage interface: {string.Join(" ", stageErrors)}).");
         }
         ShaderProgramDefinition definition = CreateDefinition();
         return new Shader("RimLumen.LightPool", VertexFile, definition, keywords: null, materialLayout,

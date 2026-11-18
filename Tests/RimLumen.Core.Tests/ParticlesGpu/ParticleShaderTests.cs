@@ -170,7 +170,7 @@ public static class ParticleShaderTests
             "Procedural coordinates must come from the quad corner, not the animated atlas tile.");
         Require(Read("ParticleBillboard.frag.glsl").Contains("lumenParticleDiscCoverage(vRadialUv)", StringComparison.Ordinal),
             "L2 must also feed its independent quad coordinates, never flipbook UVs, into the shared disc.");
-        Require(!ShaderMetadataParser.ValidateStageInterface(vertex, fragment, "L1.vert", "L1.frag"),
+        Require(ShaderMetadataParser.ValidateStageInterface(vertex, fragment, "L1.vert", "L1.frag").Count == 0,
             "Quad-local coordinates must cross the vertex/fragment interface.");
     }
 
@@ -366,7 +366,7 @@ public static class ParticleShaderTests
         {
             (4, GpuParticleProperties.Texture), (5, GpuParticleProperties.SceneDepth)
         }), "Graphics texture properties/bindings differ from C# binding contract.");
-        Require(!ShaderMetadataParser.ValidateStageInterface(vertex, fragment, "particle.vert", "particle.frag"),
+        Require(ShaderMetadataParser.ValidateStageInterface(vertex, fragment, "particle.vert", "particle.frag").Count == 0,
             "Waylith reports mismatched vertex/fragment varyings.");
         // L2 draws one static quad mesh per instance: the vertex shader reads only the quad corner
         // (its xy is the billboard UV) and gl_InstanceIndex picks the particle.
@@ -399,7 +399,7 @@ public static class ParticleShaderTests
             (1, "_LumenParticleTexture"), (2, "_LumenSceneDepth")
         }), "L1 texture bindings differ from the material contract.");
         Require(layout.StorageBufferSlots.Length == 0, "L1 quads are not instanced and declare no storage buffers.");
-        Require(!ShaderMetadataParser.ValidateStageInterface(vertex, fragment, "L1ParticleQuad.vert", "L1ParticleQuad.frag"),
+        Require(ShaderMetadataParser.ValidateStageInterface(vertex, fragment, "L1ParticleQuad.vert", "L1ParticleQuad.frag").Count == 0,
             "Waylith reports mismatched L1 vertex/fragment varyings.");
         ShaderVertexInputLayout input = ShaderMetadataParser.ExtractVertexInputLayout(vertex, "L1ParticleQuad.vert");
         Require(!input.HasErrors, "Waylith rejected the L1 vertex input layout.");
@@ -429,7 +429,7 @@ public static class ParticleShaderTests
         CheckOverrideSlots(layout, ("_LumenLight", 0));
         Require(layout.TextureSlots.Length == 0 && layout.StorageBufferSlots.Length == 0,
             "Light-pool shader declares only the _LumenLight uniform.");
-        Require(!ShaderMetadataParser.ValidateStageInterface(vertex, fragment, LightPoolRenderer.VertexFile, "RimLumenLightPoolAccumulate.frag.glsl"),
+        Require(ShaderMetadataParser.ValidateStageInterface(vertex, fragment, LightPoolRenderer.VertexFile, "RimLumenLightPoolAccumulate.frag.glsl").Count == 0,
             "Waylith reports mismatched SceneDefault/RimLumenLightPoolAccumulate varyings.");
         Require(fragment.Contains("vec2 d = vUv * 2.0 - 1.0;", StringComparison.Ordinal)
             && fragment.Contains("float q = max(0.0, 1.0 - dot(d, d));", StringComparison.Ordinal)

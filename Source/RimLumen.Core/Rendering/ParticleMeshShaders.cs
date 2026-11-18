@@ -57,14 +57,14 @@ internal sealed class ParticleMeshShaders
         // included by both stages, so that parse already carries the storage buffers the vertex stage reads.
         MaterialLayout materialLayout = ShaderMetadataParser.ExtractMaterialLayout(fragmentSource, StageName(fragmentFile));
         ShaderVertexInputLayout vertexInput = ShaderSourceLoader.CreateVertexInputLayout(vertexFile);
-        bool stageInterfaceBroken = ShaderMetadataParser.ValidateStageInterface(vertexSource, fragmentSource,
+        List<string> stageErrors = ShaderMetadataParser.ValidateStageInterface(vertexSource, fragmentSource,
             StageName(vertexFile), StageName(fragmentFile));
-        if (materialLayout.HasErrors || vertexInput.HasErrors || stageInterfaceBroken)
+        if (materialLayout.HasErrors || vertexInput.HasErrors || stageErrors.Count > 0)
         {
             throw new InvalidOperationException(
                 $"[RimLumen] Particle shader metadata rejected by Waylith: {vertexFile} + {fragmentFile} " +
                 $"(material errors: {materialLayout.HasErrors}, vertex input errors: {vertexInput.HasErrors}, " +
-                $"stage interface broken: {stageInterfaceBroken}).");
+                $"stage interface: {string.Join(" ", stageErrors)}).");
         }
 
         return (materialLayout, vertexInput);
