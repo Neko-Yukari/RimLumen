@@ -53,8 +53,7 @@ internal static class ParticleCollisionFields
         return null; // A removed map has no collidable geometry while its effects drain.
     }
 
-    // Also the light-pool wall source (LightPoolRenderer): bit 0 is the one wall rule both features share.
-    internal static ParticleMapGrid Capture(Map map)
+    private static ParticleMapGrid Capture(Map map)
     {
         if (Fields.TryGetValue(map.uniqueID, out Field? field)) return field.Capture();
         field = new Field(map);

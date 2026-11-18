@@ -28,6 +28,8 @@ internal sealed class RimLumenPipeline : IDisposable
     internal PipelineFrame? Captured;
     internal L1ParticleBatchRenderer L1Renderer { get; private set; } = null!;
     internal LightPoolRenderer LightPool { get; private set; } = null!;
+    internal LightingTakeover Takeover { get; private set; } = null!;
+    private bool takeoverFrame;
     private ulong captureIndex;
     private float gameSeconds;
     private float gameDeltaSeconds;
@@ -76,6 +78,7 @@ internal sealed class RimLumenPipeline : IDisposable
         LumenSceneBootstrap.EnsureInitialized();
         L1Renderer ??= new L1ParticleBatchRenderer(DepthProxy, App.RenderContext?.FramesInFlight ?? 3);
         LightPool ??= new LightPoolRenderer();
+        Takeover ??= new LightingTakeover(LightPool, PoolShadows.LightSum);
         LumenSceneBootstrap.Simulator.HdrRendererAttached = true;
         string[] names = App.FrameRenderer.Features.Select(feature => feature.GetType().Name).ToArray();
         int index = FeatureOrderGuard.ComputePreBackbufferInsertIndex(names);
@@ -114,6 +117,7 @@ internal sealed class RimLumenPipeline : IDisposable
         // FrameRenderer.BeginMainThreadFrame:220-230 runs all early hooks before CaptureFrame:186-192.
         // This is before ComputeRenderFeature drains Enqueue.
         captureIndex = (ulong)timing.FrameNumber;
+        takeoverFrame = false;
         colorBlendSpace = RimLumenRenderHost.CurrentFrameColorBlendSpace;
         mapIndex = -1;
         contributors = Array.Empty<ILumenFrameContributor>();
@@ -124,6 +128,7 @@ internal sealed class RimLumenPipeline : IDisposable
             return;
         }
         MapLightFieldCollector.BeginCapture(App, Find.CurrentMap);
+        takeoverFrame = LightingTakeover.EvaluateFrame();
         // TickManagerUpdate counts completed ticks; its time budget may run fewer than the requested speed.
         TickManager tickManager = Current.Game.tickManager;
         float unscaledDt = MathF.Max(0f, timing.DeltaTime);
@@ -165,6 +170,7 @@ internal sealed class RimLumenPipeline : IDisposable
             if (ReferenceEquals(contributor, LumenSceneBootstrap.Service))
                 LightPool.Stage(captureIndex, LumenSceneBootstrap.Service.Lights);
         }
+        if (takeoverFrame) LightPool.StageVanilla(captureIndex, Find.CurrentMap!);
         bool changed = activeContributorBuffer.Count != activeContributors.Length;
         for (int i = 0; !changed && i < activeContributors.Length; i++)
             changed = !ReferenceEquals(activeContributorBuffer[i], activeContributors[i]);
@@ -311,7 +317,7 @@ internal sealed class RimLumenPipeline : IDisposable
             }
         try
         {
-            LightPool.AppendDraws(scratchDraws, maker, snapshot.PropertyArena, captureIndex);
+            LightPool.AppendDraws(scratchDraws, maker, snapshot.PropertyArena, captureIndex, takeoverFrame);
             MoveScratchDraws(ref lightMesh, in timing);
         }
         finally { ReturnScratchDraws(); }
@@ -332,7 +338,7 @@ internal sealed class RimLumenPipeline : IDisposable
         bool earlyWork = HdrFrameGate.Decide(contributors.Length > 0, routedDrawCount, distortionDrawCount, runOnEmptyFrames)
             != HdrFrameMode.Skip;
         bool lateWork = activePack.BloomMipLevels > 0 && (glowGroups & ~GlowGroupMask.Early) != 0;
-        if (!earlyWork && !lateWork)
+        if (!earlyWork && !lateWork && !takeoverFrame)
         {
             RimLumenRenderHost.SetFrameCapabilities(false, false);
             return null;
@@ -373,7 +379,7 @@ internal sealed class RimLumenPipeline : IDisposable
             in rtParams);
 
         return new PipelineFrame(captureIndex, view, mesh, glowMesh, lightMesh, distortionMesh, contributors, depthParams, mapIndex, renderHdr,
-            hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms, glowGroups, earlyWork, colorBlendSpace);
+            hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms, glowGroups, earlyWork, colorBlendSpace, takeoverFrame);
         }
         finally
         {
@@ -461,8 +467,10 @@ internal sealed class PipelineFrame(
     ShaderPackUniforms uniforms,
     GlowGroupMask glowGroups,
     bool earlyWork,
-    LumenColorBlendSpace colorBlendSpace) : IDisposable
+    LumenColorBlendSpace colorBlendSpace,
+    bool takeover) : IDisposable
 {
+    internal bool Takeover { get; } = takeover;
     internal LumenColorBlendSpace ColorBlendSpace { get; } = colorBlendSpace;
     internal CameraView View { get; } = view;
     internal bool RenderHdr { get; } = renderHdr;

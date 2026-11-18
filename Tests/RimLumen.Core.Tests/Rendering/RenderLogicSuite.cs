@@ -3,6 +3,7 @@ using System.Numerics;
 using RimLumen.Core.Compat;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Lighting;
+using RimLumen.Core.Lighting.Occlusion;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Rendering.Logic;
 using RimLumen.Core.Scene;
@@ -210,16 +211,39 @@ public static class RenderLogicSuite
             previous = current;
         }
 
-        var pool = new VisualPointLight(10.25f, -4.5f, 4f, new Vector3(2f, 0.5f, 0f));
+        var pool = new VisualPointLight(10.25f, -4.5f, 4f, new Vector3(2f, 0.5f, 0f), VisualPointLightKind.Effect);
         Equal(new Vector3(2f, 0.5f, 0f), pool.EvaluateAt(10.25f, -4.5f, Walls()));
         Equal(Vector3.Zero, pool.EvaluateAt(14.25f, -4.5f, Walls()));
     }
 
     [LumenFact]
+    public static void OcclusionWallColumnHasNoBanding()
+    {
+        OcclusionFrame walls = Walls((5, 2), (5, 3), (5, 4), (5, 5), (5, 6), (5, 7));
+        float near = LightTransport.Visibility(walls, new(3.5f, 3.5f), new(5.5f, 3.5f));
+        float far = LightTransport.Visibility(walls, new(3.5f, 3.5f), new(5.5f, 6.5f));
+        Equal(near, far);
+    }
+
+    [LumenFact]
+    public static void OcclusionClosedDoorBlocksLight()
+    {
+        var builder = new OcclusionBuilder(10, 10);
+        builder.StampSolidFootprint(new CellBox(5, 3, 5, 3), 1f);
+        builder.StampSolidFootprint(new CellBox(5, 5, 5, 5), 1f);
+        builder.StampBlocker(new AlphaMask(1, 1, [255]), new MaskPlacement(5.5f, 4.5f, 1f, 1f), 1f, DoorAxis.Z);
+        builder.RecomputeDerived(new CellBox(0, 0, 9, 9));
+        var state = new byte[10 * 10 * 4];
+        state[(4 * 10 + 5) * 4 + 2] = 1;
+        var frame = new OcclusionFrame(builder.Publish(), new DoorStates(10, 10, state));
+        Equal(0f, LightTransport.Visibility(frame, new(3.5f, 4.5f), new(7.5f, 4.5f)));
+    }
+
+    [LumenFact]
     public static void LightPoolIsBlockedByAWallCellAndUnchangedAlongAClearLine()
     {
-        ParticleMapGrid walls = Walls((5, 4));
-        var lamp = new VisualPointLight(3.5f, 4.5f, 6f, new Vector3(1f, 0.5f, 0.25f));
+        OcclusionFrame walls = Walls((5, 4));
+        var lamp = new VisualPointLight(3.5f, 4.5f, 6f, new Vector3(1f, 0.5f, 0.25f), VisualPointLightKind.Effect);
         Equal(Vector3.Zero, VisualPointLight.AccumulateAndCompress([lamp], 7.5f, 4.5f, walls));
         Equal(lamp.Light * VisualPointLight.Falloff(4f, 6f), VisualPointLight.AccumulateAndCompress([lamp], 3.5f, 8.5f, walls));
     }
@@ -227,81 +251,33 @@ public static class RenderLogicSuite
     [LumenFact]
     public static void LightPoolLightsTheWallCellItReachesAndIsNotBlockedByItsOwnCell()
     {
-        ParticleMapGrid walls = Walls((5, 4));
-        var lamp = new VisualPointLight(3.5f, 4.5f, 6f, Vector3.One);
-        Equal(1f, LightOcclusion.Visibility(walls, lamp.X, lamp.Z, 5.2f, 4.5f));
-        Equal(1f, LightOcclusion.Visibility(walls, lamp.X, lamp.Z, 5.9f, 4.5f));
-        Equal(1f, LightOcclusion.Visibility(walls, 5.5f, 4.5f, 7.5f, 4.5f));
-        Equal(1f, LightOcclusion.Visibility(walls, 5.5f, 4.5f, 3.5f, 4.5f));
+        OcclusionFrame walls = Walls((5, 4));
+        Equal(1f, LightTransport.Visibility(walls, new(3.5f, 4.5f), new(5.2f, 4.5f)));
+        Equal(1f, LightTransport.Visibility(walls, new(3.5f, 4.5f), new(5.9f, 4.5f)));
+        Equal(1f, LightTransport.Visibility(walls, new(5.5f, 4.5f), new(7.5f, 4.5f)));
+        Equal(1f, LightTransport.Visibility(walls, new(5.5f, 4.5f), new(3.5f, 4.5f)));
     }
 
-    [LumenFact]
-    public static void LightPoolShadowEdgeBesideAWallCornerIsSoft()
-    {
-        // The hard shadow of cell (5, 4) seen from (3.5, 4.5) ends at z = 5.833 on x = 7.5.
-        ParticleMapGrid walls = Walls((5, 4));
-        float inside = LightOcclusion.Visibility(walls, 3.5f, 4.5f, 7.5f, 5.8f);
-        float nearEdge = LightOcclusion.Visibility(walls, 3.5f, 4.5f, 7.5f, 5.95f);
-        float penumbra = LightOcclusion.Visibility(walls, 3.5f, 4.5f, 7.5f, 6.2f);
-        float clear = LightOcclusion.Visibility(walls, 3.5f, 4.5f, 7.5f, 8.5f);
-        Equal(0f, inside);
-        Require(0f < nearEdge && nearEdge < penumbra && penumbra < 1f,
-            $"Visibility must ramp up beside the corner; got {nearEdge} at z = 5.95 and {penumbra} at z = 6.2.");
-        Equal(1f, clear);
-    }
-
-    [LumenFact]
-    public static void LightPoolSoftEdgeStaysContinuousPastTheLightAndAcrossTheMarchAxisSwitch()
-    {
-        // A corner sliding past the light's depth, a target leaving the light's cell beside a wall corner, and the
-        // march switching from z-major to x-major.
-        ParticleMapGrid besideLight = Walls((3, 3));
-        float beforeLight = LightOcclusion.Visibility(besideLight, 4.125f, 4.0625f, 6.124f, 0.0625f);
-        float pastLight = LightOcclusion.Visibility(besideLight, 4.125f, 4.0625f, 6.126f, 0.0625f);
-        Require(MathF.Abs(beforeLight - pastLight) < 0.01f, $"Visibility jumped from {beforeLight} to {pastLight}.");
-        float inLightCell = LightOcclusion.Visibility(besideLight, 4.125f, 4.0625f, 4.999f, 4.25f);
-        float outOfLightCell = LightOcclusion.Visibility(besideLight, 4.125f, 4.0625f, 5.001f, 4.25f);
-        Require(MathF.Abs(inLightCell - outOfLightCell) < 0.01f, $"Visibility jumped from {inLightCell} to {outOfLightCell}.");
-        float cornerInLightCell = LightOcclusion.Visibility(besideLight, 4.0625f, 4.03125f, 4.0005f, 4.09375f);
-        float cornerOutOfLightCell = LightOcclusion.Visibility(besideLight, 4.0625f, 4.03125f, 3.9995f, 4.09375f);
-        Require(MathF.Abs(cornerInLightCell - cornerOutOfLightCell) < 0.01f,
-            $"Visibility jumped from {cornerInLightCell} to {cornerOutOfLightCell}.");
-        // A wall target just clearing its neighbour wall: their shared corner still shades it.
-        ParticleMapGrid wallRun = Walls((5, 4), (5, 5));
-        float throughNeighbour = LightOcclusion.Visibility(wallRun, 3.5f, 4.5f, 5.5f, 5.165667f);
-        float pastNeighbour = LightOcclusion.Visibility(wallRun, 3.5f, 4.5f, 5.5f, 5.167667f);
-        Require(MathF.Abs(throughNeighbour - pastNeighbour) < 0.01f, $"Visibility jumped from {throughNeighbour} to {pastNeighbour}.");
-        ParticleMapGrid beyondColumn = Walls((5, 3));
-        float zMajor = LightOcclusion.Visibility(beyondColumn, 4.9f, 4.12f, 2.9f, 2.119f);
-        float xMajor = LightOcclusion.Visibility(beyondColumn, 4.9f, 4.12f, 2.9f, 2.121f);
-        Require(MathF.Abs(zMajor - xMajor) < 0.01f, $"Visibility jumped from {zMajor} to {xMajor}.");
-    }
-
-    [LumenFact]
-    public static void LightPoolDoesNotPassBetweenDiagonalWallsTouchingAtACorner()
-    {
-        Equal(0f, LightOcclusion.Visibility(Walls((3, 3), (4, 4)), 3.5f, 4.5f, 4.5f, 3.5f));
-    }
-
-    private static ParticleMapGrid Walls(params (int X, int Z)[] cells)
+    private static OcclusionFrame Walls(params (int X, int Z)[] cells)
     {
         const int size = 10;
-        var bits = new uint[size * size];
-        foreach ((int x, int z) in cells) bits[z * size + x] = 1u;
-        return new ParticleMapGrid(0, size, size, bits);
+        var builder = new OcclusionBuilder(size, size);
+        foreach ((int x, int z) in cells) builder.StampSolidFootprint(new CellBox(x, z, x, z), 1f);
+        builder.RecomputeDerived(new CellBox(0, 0, size - 1, size - 1));
+        return new OcclusionFrame(builder.Publish(), new DoorStates(size, size, new byte[size * size * 4]));
     }
 
     [LumenFact]
     public static void LightPoolsSumLinearlyAndCompressOnceWithinTwiceTheScene()
     {
-        var single = new VisualPointLight(0f, 0f, 4f, new Vector3(0.6f, 0.4f, 0.2f));
+        var single = new VisualPointLight(0f, 0f, 4f, new Vector3(0.6f, 0.4f, 0.2f), VisualPointLightKind.Effect);
         Equal(new Vector3(0.6f, 0.4f, 0.2f), VisualPointLight.AccumulateAndCompress([single], 0f, 0f, Walls()));
 
         // Two overlapping pools: 0.3 + 0.2 = 0.5, not the stacked (1.3 * 1.2) - 1 = 0.56.
         VisualPointLight[] pair =
         [
-            new(0f, 0f, 4f, new Vector3(0.3f, 0.2f, 0.1f)),
-            new(0f, 0f, 6f, new Vector3(0.2f, 0.1f, 0.05f)),
+            new(0f, 0f, 4f, new Vector3(0.3f, 0.2f, 0.1f), VisualPointLightKind.Effect),
+            new(0f, 0f, 6f, new Vector3(0.2f, 0.1f, 0.05f), VisualPointLightKind.Effect),
         ];
         Vector3 summed = VisualPointLight.AccumulateAndCompress(pair, 0f, 0f, Walls());
         Require(Vector3.Distance(summed, new Vector3(0.5f, 0.3f, 0.15f)) < 1e-6f, $"Pools must add linearly; got {summed}.");
@@ -309,7 +285,7 @@ public static class RenderLogicSuite
         // Five warm corridor lamps at GlowGrid's 3.6 scale: stacked multipliers would reach 4.6^5 ~ 2060x on red.
         var warm = new Vector3(1f, 0.8f, 0.5f) * 3.6f;
         var corridor = new VisualPointLight[5];
-        for (int i = 0; i < corridor.Length; i++) corridor[i] = new VisualPointLight(0.4f * i, 0f, 6f, warm);
+        for (int i = 0; i < corridor.Length; i++) corridor[i] = new VisualPointLight(0.4f * i, 0f, 6f, warm, VisualPointLightKind.Effect);
         Vector3 mapped = VisualPointLight.AccumulateAndCompress(corridor, 0.8f, 0f, Walls());
         Require(mapped.X <= 1f && mapped.Y <= 1f && mapped.Z <= 1f && mapped.Z >= 0f,
             $"Compressed pool term must stay in [0, 1] (scene at most 2x); got {mapped}.");

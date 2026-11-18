@@ -13,6 +13,7 @@ namespace RimLumen.Core.Mod;
 public sealed class RimLumenSettings : ModSettings
 {
     public bool EnhanceVanillaAdditiveGlow = true;
+    public bool LightingTakeover;
     public float ParticleDensityScale = 1.0f;
     public bool ExplosionForces = true;
     public float ExplosionForceScale = 1f;
@@ -31,6 +32,7 @@ public sealed class RimLumenSettings : ModSettings
     public override void ExposeData()
     {
         Scribe_Values.Look(ref EnhanceVanillaAdditiveGlow, "enhanceVanillaAdditiveGlow", true);
+        Scribe_Values.Look(ref LightingTakeover, "lightingTakeover", false);
         Scribe_Values.Look(ref ParticleDensityScale, "particleDensityScale", 1.0f);
         Scribe_Values.Look(ref ExplosionForces, "explosionForces", true);
         Scribe_Values.Look(ref ExplosionForceScale, "explosionForceScale", 1f);
@@ -108,6 +110,7 @@ public sealed class RimLumenSettings : ModSettings
     public void ResetAll()
     {
         EnhanceVanillaAdditiveGlow = true;
+        LightingTakeover = false;
         ParticleDensityScale = 1.0f;
         ExplosionForces = true;
         ExplosionForceScale = 1f;
@@ -142,6 +145,7 @@ public sealed class RimLumenMod : Verse.Mod
         IReadOnlyList<ShaderPackEntry> packs = ShaderPackCatalog.GetAvailablePacks();
         ShaderPackEntry activeEntry = ShaderPackCatalog.FindOrDefault(Settings.SelectedShaderPackId, packs);
         bool glowBefore = Settings.EnhanceVanillaAdditiveGlow;
+        bool takeoverBefore = Settings.LightingTakeover;
         float densityBefore = Settings.ParticleDensityScale;
         bool demoBefore = Settings.EnableDemoBuildings;
         bool refractBefore = Settings.DistortionRefractsEffects;
@@ -160,6 +164,9 @@ public sealed class RimLumenMod : Verse.Mod
             "RimLumen_EnhanceAdditiveGlowTooltip".Translate());
         listing.Gap(6f);
 
+        listing.CheckboxLabeled("RimLumen_LightingTakeover".Translate(), ref Settings.LightingTakeover,
+            "RimLumen_LightingTakeoverTip".Translate());
+        listing.Gap(6f);
         listing.Label("RimLumen_ParticleDensity".Translate((int)Mathf.Round(Settings.ParticleDensityScale * 100f)));
         Settings.ParticleDensityScale = listing.Slider(Settings.ParticleDensityScale, 0.10f, 1.00f);
         listing.Gap(6f);
@@ -192,7 +199,7 @@ public sealed class RimLumenMod : Verse.Mod
             "RimLumen_EnableDemoBuildings".Translate(),
             ref Settings.EnableDemoBuildings,
             "RimLumen_EnableDemoBuildingsTooltip".Translate());
-        bool settingsChanged = Settings.EnhanceVanillaAdditiveGlow != glowBefore
+        bool settingsChanged = Settings.EnhanceVanillaAdditiveGlow != glowBefore || Settings.LightingTakeover != takeoverBefore
             || Settings.ParticleDensityScale != densityBefore
             || Settings.EnableDemoBuildings != demoBefore
             || Settings.DistortionRefractsEffects != refractBefore

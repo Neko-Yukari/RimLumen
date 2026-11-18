@@ -62,41 +62,50 @@ internal sealed class LightPoolShadows
         return method;
     }
 
-    private sealed class Kind(string defName, string vertexFile, string fragmentFile, string liftedFile,
-        UnityEngine.Material material, int bindingId)
+    internal sealed class Kind(string defName, string vertexFile, string fragmentFile, string? liftedFile,
+        UnityEngine.Material material, int bindingId, bool takeover = false, string? liftedVertex = null)
     {
         internal readonly string DefName = defName;
+        internal readonly bool IsTakeover = takeover;
         internal readonly UnityEngine.Material Material = material;
         internal Shader Vanilla = null!;
         internal Shader? Lifted;
         internal int MaterialId;
+        internal bool OriginalProgram;
         internal int LightSumSlot;
         internal MaterialBinding? Binding;
         internal bool SkipLogged;
 
-        // Ensures: Vanilla is the registered program; Lifted is set only when that program still reads vanilla's own
-        //          files from Core, otherwise the shadow is logged once and left vanilla.
-        internal void Resolve(string coreShaders)
+        // Ensures: Vanilla is the registered program. When that program still reads vanilla's own files from Core,
+        //          OriginalProgram is set (and Lifted when a lifted file was given) and null is returned; otherwise the
+        //          override's source paths or its precompiled registry key and stages, for the caller to report.
+        internal string? Resolve(string coreShaders)
         {
             if (!ShaderRegistry.TryResolve(DefName, out Shader? vanilla)) throw new InvalidOperationException($"ShaderDef {DefName} is not registered.");
             Vanilla = vanilla;
             MaterialId = Material.engineMaterial.Id;
+            if (Vanilla.PrecompiledStages is { } stages)
+                return $"'{Vanilla.Key}' (precompiled SPIR-V: vertex {stages.Vertex.Length} bytes, fragment {stages.Fragment.Length} bytes)";
             ShaderProgramDefinition program = Vanilla.Program;
             if (program.vertexShaderFileName != vertexFile || program.fragmentShaderFileName != fragmentFile ||
-                !FromCore(vertexFile, coreShaders) || !FromCore(fragmentFile, coreShaders))
+                !(vertexFile == LightPoolRenderer.VertexFile
+                    ? string.Equals(ShaderSourceLoader.ResolveShaderPath(vertexFile), Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "Rendering", "Shaders", vertexFile)), StringComparison.OrdinalIgnoreCase)
+                    : FromCore(vertexFile, coreShaders)) || !FromCore(fragmentFile, coreShaders))
             {
-                SkipOnce($"its program is overridden ({program.vertexShaderFileName} -> " +
-                    $"{ShaderSourceLoader.ResolveShaderPath(program.vertexShaderFileName)}, {program.fragmentShaderFileName} -> " +
-                    $"{ShaderSourceLoader.ResolveShaderPath(program.fragmentShaderFileName)})");
-                return;
+                return $"({program.vertexShaderFileName} -> {ShaderSourceLoader.ResolveShaderPath(program.vertexShaderFileName)}, " +
+                    $"{program.fragmentShaderFileName} -> {ShaderSourceLoader.ResolveShaderPath(program.fragmentShaderFileName)})";
             }
+            OriginalProgram = true;
+            if (liftedFile is null) return null; // Takeover suppresses SunShadow rather than replacing its program.
             var lifted = (ShaderProgramDefinition)CloneProgram.Invoke(program, null)!;
+            if (liftedVertex is not null) lifted.vertexShaderFileName = liftedVertex;
             lifted.fragmentShaderFileName = liftedFile;
-            Shader shader = LightPoolRenderer.CreateShader("RimLumen." + DefName, lifted, Vanilla.PipelineState);
-            if (!LiftedLayoutMatches(shader.MaterialLayout, Vanilla.MaterialLayout))
+            Shader shader = LightPoolRenderer.CreateShader("RimLumen." + (IsTakeover ? "Takeover." : string.Empty) + DefName, lifted, Vanilla.PipelineState);
+            if (!(IsTakeover ? LightingTakeover.LayoutMatches(shader.MaterialLayout, Vanilla.MaterialLayout, DefName == "LightOverlay") : LiftedLayoutMatches(shader.MaterialLayout, Vanilla.MaterialLayout)))
                 throw new InvalidOperationException($"[RimLumen] {liftedFile} no longer matches the material layout of vanilla {fragmentFile}.");
-            LightSumSlot = shader.MaterialLayout.TextureSlots[0].ResourceSlot;
+            if (!IsTakeover) LightSumSlot = shader.MaterialLayout.TextureSlots[0].ResourceSlot;
             Lifted = shader;
+            return null;
         }
 
         // Ensures: one lifted binding per shadow kind, following the vanilla binding's pipeline state.
@@ -118,7 +127,9 @@ internal sealed class LightPoolShadows
         {
             if (SkipLogged) return;
             SkipLogged = true;
-            Log.Warning($"[RimLumen] Light pools do not lift {DefName} shadows: {reason}. Those shadows stay vanilla.");
+            Log.Warning(IsTakeover
+                ? $"[RimLumen] Lighting takeover leaves the {DefName} draw unchanged: {reason}."
+                : $"[RimLumen] Light pools do not lift {DefName} shadows: {reason}. Those shadows stay vanilla.");
         }
 
         // Ensures: reports once when a draw at vanilla's shadow queue multiplies the destination through another
@@ -127,7 +138,7 @@ internal sealed class LightPoolShadows
         internal void ReportForeignShadow(FinalDrawItem draw)
         {
             if (SkipLogged || draw.RenderQueue != Vanilla.DefaultRenderQueue) return;
-            if (draw.Binding.PipelineState.Blend != BlendState.MultiplyDestination) return;
+            if (draw.Binding.PipelineState.Blend != (IsTakeover ? Vanilla.PipelineState.Blend : BlendState.MultiplyDestination)) return;
             SkipOnce($"a draw at queue {draw.RenderQueue} uses shader '{draw.Binding.Shader.Key}'");
         }
 
@@ -155,58 +166,78 @@ internal sealed class LightPoolShadows
     //          pool; persistent originals stay with their source and leave only the frame's PersistentDraws list. All
     //          copies join Draws (returned with the frame) under the original sort key, so the renderer's sort-key
     //          merge of the two lists still draws them where the originals were.
-    internal void Rebind(MeshDrawFrame frame)
+    internal void Rebind(MeshDrawFrame frame) => Rewrite(frame, kinds ??= ResolveKinds(), (draw, kind, _) =>
     {
-        kinds ??= ResolveKinds();
+        MaterialTextureResourceSet<Texture?> resources = draw.Resources;
+        resources.Set(kind.LightSumSlot, LightSum);
+        return CopyDraw(draw, kind, in draw.Uniforms, in resources);
+    });
+
+    // Requires: main thread, MapRenderFeature.CaptureFrame postfix; every kind resolved.
+    // Ensures: each draw of a kind's vanilla material through its original program is passed to replace (with whether
+    //          it is persistent) and leaves its list; a returned copy takes its place, null drops it. Dynamic originals
+    //          return to the pool and their copies keep their position in Draws; persistent originals stay with their
+    //          source and their copies are appended to Draws (returned with the frame) under the original sort key, so
+    //          the renderer's sort-key merge of the two lists still draws them where the originals were. Other draws are
+    //          untouched; foreign programs at a kind's queue and foreign materials are logged once per kind.
+    internal static void Rewrite(MeshDrawFrame frame, Kind[] kinds, Func<FinalDrawItem, Kind, bool, FinalDrawItem?> replace)
+    {
         List<FinalDrawItem> draws = frame.Draws;
-        int dynamicCount = draws.Count;
+        int dynamicCount = draws.Count, kept = 0;
         for (int i = 0; i < dynamicCount; i++)
         {
-            if (Lift(draws[i]) is not { } lifted) continue;
-            FinalDrawItem.Return(draws[i]);
-            draws[i] = lifted;
+            FinalDrawItem item = draws[i];
+            if (Match(kinds, item) is not { } kind) { draws[kept++] = item; continue; }
+            if (replace(item, kind, false) is { } copy) draws[kept++] = copy;
+            FinalDrawItem.Return(item);
         }
+        draws.RemoveRange(kept, dynamicCount - kept);
         List<FinalDrawItem> persistent = frame.PersistentDraws;
-        int kept = 0;
+        kept = 0;
         for (int i = 0; i < persistent.Count; i++)
         {
             FinalDrawItem item = persistent[i];
-            if (Lift(item) is { } lifted) draws.Add(lifted);
-            else persistent[kept++] = item;
+            if (Match(kinds, item) is not { } kind) { persistent[kept++] = item; continue; }
+            if (replace(item, kind, true) is { } copy) draws.Add(copy);
         }
         persistent.RemoveRange(kept, persistent.Count - kept);
     }
 
-    private FinalDrawItem? Lift(FinalDrawItem draw)
+    private static Kind? Match(Kind[] kinds, FinalDrawItem draw)
     {
-        foreach (Kind kind in kinds!)
+        foreach (Kind kind in kinds)
         {
             if (draw.Binding.Shader != kind.Vanilla)
             {
                 kind.ReportForeignShadow(draw);
                 continue;
             }
-            if (kind.Lifted is null) return null;
-            if (draw.Binding.MaterialId != kind.MaterialId)
-            {
-                kind.SkipOnce($"a draw uses material '{draw.Binding.DebugName}' instead of the vanilla shadow material");
-                return null;
-            }
-            MaterialTextureResourceSet<Texture?> resources = draw.Resources;
-            resources.Set(kind.LightSumSlot, LightSum);
-            FinalDrawItem lifted = rent!(draw.Matrix, draw.PassId, draw.Mesh, kind.BindingFor(draw.Binding), hasOverride: true,
-                in draw.Uniforms, in resources, 0, draw.RenderQueue, draw.Instancing, draw.Layer, 0, draw.Storage);
-            setSortKey!(lifted, draw.SortKey);
-            return lifted;
+            if (!kind.OriginalProgram) return null;
+            if (draw.Binding.MaterialId == kind.MaterialId) return kind;
+            kind.SkipOnce($"a draw uses material '{draw.Binding.DebugName}' instead of the vanilla {(kind.IsTakeover ? kind.DefName : "shadow")} material");
+            return null;
         }
         return null;
     }
 
-    private static Kind[] ResolveKinds()
+    internal static FinalDrawItem CopyDraw(FinalDrawItem draw, Kind kind, in MaterialUniformBytes uniforms, in MaterialTextureResourceSet<Texture?> resources)
+    {
+        FinalDrawItem copy = rent!(draw.Matrix, draw.PassId, draw.Mesh, kind.BindingFor(draw.Binding), hasOverride: true,
+            in uniforms, in resources, 0, draw.RenderQueue, draw.Instancing, draw.Layer, 0, draw.Storage);
+        setSortKey!(copy, draw.SortKey);
+        return copy;
+    }
+
+    internal static string CoreShaderRoot()
     {
         ModContentPack core = LoadedModManager.RunningModsListForReading.Find(mod => mod.IsCoreMod)
             ?? throw new InvalidOperationException("The Core content pack is not loaded.");
-        string coreShaders = Path.GetFullPath(Path.Combine(core.RootDir, "Shaders")) + Path.DirectorySeparatorChar;
+        return Path.GetFullPath(Path.Combine(core.RootDir, "Shaders")) + Path.DirectorySeparatorChar;
+    }
+
+    private static Kind[] ResolveKinds()
+    {
+        string coreShaders = CoreShaderRoot();
         Kind[] result =
         [
             new("SunShadow", "SunShadow.vert.glsl", "SunShadow.frag.glsl", "RimLumen/RimLumenSunShadow.frag.glsl",
@@ -214,7 +245,8 @@ internal sealed class LightPoolShadows
             new("SunShadowFade", "SunShadowFade.vert.glsl", "SunShadowFade.frag.glsl",
                 "RimLumen/RimLumenSunShadowFade.frag.glsl", MatBases.SunShadowFade, -2),
         ];
-        foreach (Kind kind in result) kind.Resolve(coreShaders);
+        foreach (Kind kind in result)
+            if (kind.Resolve(coreShaders) is { } overridden) kind.SkipOnce("its program is overridden " + overridden);
         return result;
     }
 }

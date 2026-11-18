@@ -120,7 +120,7 @@ public static class ParticleShaderTests
         string gpu = File.ReadAllText(Path.Combine(root, "ParticlesGpu", "ParticleGpuDrawResources.cs"));
         Require(pipeline.Contains("colorBlendSpace = RimLumenRenderHost.CurrentFrameColorBlendSpace", StringComparison.Ordinal)
             && pipeline.Contains("ColorBlendSpace = colorBlendSpace", StringComparison.Ordinal)
-            && pipeline.Contains("earlyWork, colorBlendSpace)", StringComparison.Ordinal)
+            && pipeline.Contains("earlyWork, colorBlendSpace, takeoverFrame)", StringComparison.Ordinal)
             && chain.Contains("ColorBlendSpace = payload.ColorBlendSpace", StringComparison.Ordinal)
             && gpu.Contains("snapshot.Context.ColorBlendSpace == LumenColorBlendSpace.Linear", StringComparison.Ordinal),
             "Capture, draw context, and GPU properties must carry the same frame latch.");
@@ -427,9 +427,10 @@ public static class ParticleShaderTests
         Require(!layout.HasErrors, "Waylith rejected the light-pool material metadata.");
         Require(layout.UniformSize == 32, $"Light-pool material UBO must be 32 bytes; got {layout.UniformSize}.");
         CheckOverrideSlots(layout, ("_LumenLight", 0), ("_LumenLightAt", 16));
-        Require(layout.TextureSlots.Select(x => (x.Binding, x.PropertyName)).SequenceEqual(new[] { (1, "_LumenOccluders") })
+        Require(layout.TextureSlots.Select(x => (x.Binding, x.PropertyName)).SequenceEqual(new[]
+            { (1, "_LumenOcclusion"), (2, "_LumenOcclusionCoarse"), (3, "_LumenDoorOpen") })
             && layout.StorageBufferSlots.Length == 0,
-            "Light-pool shader declares _LumenLight, _LumenLightAt and the _LumenOccluders wall grid at binding 1.");
+            "Light-pool shader declares the occlusion, coarse and door textures at bindings 1 through 3.");
         Require(ShaderMetadataParser.ValidateStageInterface(vertex, fragment, LightPoolRenderer.VertexFile, "RimLumenLightPoolAccumulate.frag.glsl").Count == 0,
             "Waylith reports mismatched SceneDefault/RimLumenLightPoolAccumulate varyings.");
         Require(fragment.Contains("vec2 d = vUv * 2.0 - 1.0;", StringComparison.Ordinal)
@@ -473,8 +474,21 @@ public static class ParticleShaderTests
 
         string Varyings(string vertex, string lifted) => string.Join(" ", ShaderMetadataParser.ValidateStageInterface(
             File.ReadAllText(Path.Combine(vanillaShaders, vertex)), ShaderSourceLoader.ReadShaderSource(Lifted(lifted)), vertex, lifted));
+        Require(LightingTakeover.LayoutMatches(Layout(Lifted("RimLumenLightTakeover.frag.glsl")), Layout(Path.Combine(vanillaShaders, "LightOverlay.frag.glsl")), true),
+            "Takeover LightOverlay must prefix vanilla uniforms, append exactly two vectors and bind only the four RimLumen textures.");
+        Require(LightingTakeover.LayoutMatches(Layout(Lifted("RimLumenSunShadowFadeTakeover.frag.glsl")), fade, false),
+            "Takeover SunShadowFade must keep vanilla uniforms and bind exactly the three occlusion textures.");
         string shadowErrors = Varyings("SunShadow.vert.glsl", "RimLumenSunShadow.frag.glsl");
         string fadeErrors = Varyings("SunShadowFade.vert.glsl", "RimLumenSunShadowFade.frag.glsl");
+        foreach ((string vert, string frag) in new[]
+        {
+            (Path.Combine(gameRoot, "Rendering", "Shaders", LightPoolRenderer.VertexFile), Lifted("RimLumenLightTakeover.frag.glsl")),
+            (Lifted("RimLumenSunShadowFadeTakeover.vert.glsl"), Lifted("RimLumenSunShadowFadeTakeover.frag.glsl"))
+        })
+        {
+            var errors = ShaderMetadataParser.ValidateStageInterface(ShaderSourceLoader.ReadShaderSource(vert), ShaderSourceLoader.ReadShaderSource(frag), vert, frag);
+            Require(errors.Count == 0, $"{Path.GetFileName(frag)} stage interface: {string.Join(" ", errors)}");
+        }
         Require(shadowErrors.Length == 0 && fadeErrors.Length == 0,
             $"Waylith reports mismatched vanilla-vertex/lifted-fragment varyings: '{shadowErrors}' '{fadeErrors}'.");
     }
@@ -488,7 +502,39 @@ public static class ParticleShaderTests
     }
 
     [LumenFact]
-    public static void RuntimeSlangCompilesAllStagesAndPreservesStorageStrides()
+    public static void PrecompiledShadowWithVanillaNamesIsAnOverride() =>
+        CheckPrecompiledShadow(nameof(PrecompiledShadowWithVanillaNamesIsAnOverride), "SunShadow.frag.glsl");
+
+    [LumenFact]
+    public static void PrecompiledShadowWithoutFragmentSourceIsAnOverride() =>
+        CheckPrecompiledShadow(nameof(PrecompiledShadowWithoutFragmentSourceIsAnOverride), "RimLumenTest.Missing.frag.glsl");
+
+    private static void CheckPrecompiledShadow(string key, string fragmentName) => WithRuntimeSlang(gameRoot =>
+    {
+        string core = Path.GetFullPath(Path.Combine(gameRoot, "Data", "Core", "Shaders"));
+        string map = Path.Combine(core, "Map");
+        ShaderSourceLoader.RegisterShaderSourceDirectory(Path.Combine(gameRoot, "Rendering", "Shaders"));
+        ShaderSourceLoader.RegisterShaderSourceDirectory(map);
+        // Register a different compiled program under this test's own key. Both shader filenames are only metadata.
+        var stages = new PrecompiledShaderStages(
+            CompileFile("SunShadowFade.vert.glsl", RuntimeShaderStage.Vertex, Path.Combine(map, "SunShadowFade.vert.glsl")),
+            CompileFile("SunShadowFade.frag.glsl", RuntimeShaderStage.Fragment, Path.Combine(map, "SunShadowFade.frag.glsl")));
+        var definition = new ShaderProgramDefinition { vertexShaderFileName = "SunShadow.vert.glsl", fragmentShaderFileName = fragmentName };
+        var shader = ShaderRegistry.Register(new Shader(key, key, definition,
+            materialLayout: ShaderSourceLoader.CreateMaterialLayout("SunShadowFade.frag.glsl"),
+            vertexInputLayout: ShaderSourceLoader.CreateVertexInputLayout("SunShadowFade.vert.glsl"), precompiledStages: stages));
+        var material = new UnityEngine.Material(UnityEngine.Shader.FromEngineShader(key, shader));
+        var kind = new LightPoolShadows.Kind(key, "SunShadow.vert.glsl", "SunShadow.frag.glsl", null, material, -1);
+        string? reason = kind.Resolve(core + Path.DirectorySeparatorChar);
+        Require(!kind.OriginalProgram && reason != null && reason.Contains(shader.Key, StringComparison.Ordinal)
+            && reason.Contains("vertex", StringComparison.OrdinalIgnoreCase) && reason.Contains("fragment", StringComparison.OrdinalIgnoreCase),
+            $"Expected a precompiled override naming the registry key and both stages; OriginalProgram={kind.OriginalProgram}, reason={reason ?? "<null>"}.");
+    });
+
+    [LumenFact]
+    public static void RuntimeSlangCompilesAllStagesAndPreservesStorageStrides() => WithRuntimeSlang(_ => CompileAndCheckStorageStrides());
+
+    private static void WithRuntimeSlang(Action<string> check)
     {
         // Brutal.Slang.PInvoke explicitly calls NativeLibrary.Load, then installs its own DllImportResolver.
         // The load-context event handles that explicit load without competing with its resolver or copying locked DLLs.
@@ -513,7 +559,7 @@ public static class ParticleShaderTests
         AssemblyLoadContext.Default.ResolvingUnmanagedDll += ResolveSlang;
         try
         {
-            CompileAndCheckStorageStrides();
+            check(gameRoot);
         }
         finally
         {
@@ -549,6 +595,9 @@ public static class ParticleShaderTests
         CompileFile("RimLumen/RimLumenLightPoolAccumulate.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("RimLumen/RimLumenSunShadow.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("RimLumen/RimLumenSunShadowFade.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("RimLumen/RimLumenLightTakeover.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile("RimLumen/RimLumenSunShadowFadeTakeover.vert.glsl", RuntimeShaderStage.Vertex);
+        CompileFile("RimLumen/RimLumenSunShadowFadeTakeover.frag.glsl", RuntimeShaderStage.Fragment);
         Console.WriteLine("[SPIR-V] compute strides=64,480,48,4,16,32; vertex strides=64,480,32; LocalSize=64,1,1");
     }
 

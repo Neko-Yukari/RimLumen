@@ -65,10 +65,18 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
                 owner.Targets.EnsureLightSum(slot), slot.LightSum!.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat,
                 scene.DepthFormat);
             BeginPass(in frame, clear: true, ref renderPassOpen);
-            lightRenderer.InvalidateCommandBufferBindings();
-            lightRenderer.RecordPass(in frame, payload.LightMesh!, RimLumenRenderHost.LumenRenderPassId);
+            if (payload.LightMesh is { } lights)
+            {
+                lightRenderer.InvalidateCommandBufferBindings();
+                lightRenderer.RecordPass(in frame, lights, RimLumenRenderHost.LumenRenderPassId);
+            }
             EndPass(in frame, ref renderPassOpen);
             slot.LightSum.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
+            if (payload.Takeover)
+            {
+                owner.PoolShadows.LightSum.Bind(slot.LightSum);
+                return; // LightOverlay consumes this sum in the immediately following queue-3100 slice.
+            }
             FrameContext composite = attachment.MakeFrameContext(in ctx);
             BeginPass(in composite, clear: false, ref renderPassOpen);
             lightComposite.SetInput(0, slot.LightSum);

@@ -26,5 +26,9 @@ internal static class ParticleEnvironmentHooks
             new System.Numerics.Vector3(__instance.Position.x + 0.5f, 0f, __instance.Position.z + 0.5f), __instance.radius);
     }
 
-    private static void MapRemoved(Map __instance) => ParticleCollisionFields.Forget(__instance.uniqueID);
+    private static void MapRemoved(Map __instance)
+    {
+        ParticleCollisionFields.Forget(__instance.uniqueID);
+        RimLumen.Core.Lighting.Occlusion.OcclusionField.Forget(__instance.uniqueID);
+    }
 }
