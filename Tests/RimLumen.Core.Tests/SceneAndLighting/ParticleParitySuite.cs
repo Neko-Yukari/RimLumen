@@ -677,10 +677,11 @@ public static class ParticleParitySuite
         Require(sim.Vertices[0].RadialUv == Vector2.Zero && sim.Vertices[1].RadialUv == Vector2.UnitX
             && sim.Vertices[2].RadialUv == Vector2.One && sim.Vertices[3].RadialUv == Vector2.UnitY,
             "All four local corners must remain unchanged when the atlas advances to its bottom row.");
-        Require(System.Runtime.InteropServices.Marshal.SizeOf<ParticleVertex>() == 48
+        Require(System.Runtime.InteropServices.Marshal.SizeOf<ParticleVertex>() == 56
             && System.Runtime.InteropServices.Marshal.OffsetOf<ParticleVertex>(nameof(ParticleVertex.RadialUv)).ToInt32() == 36
-            && System.Runtime.InteropServices.Marshal.OffsetOf<ParticleVertex>(nameof(ParticleVertex.HdrGain)).ToInt32() == 44,
-            "TexCoord1 (radial uv, gain) must occupy offsets 36..47 of the 48-byte vertex.");
+            && System.Runtime.InteropServices.Marshal.OffsetOf<ParticleVertex>(nameof(ParticleVertex.HdrGain)).ToInt32() == 44
+            && System.Runtime.InteropServices.Marshal.OffsetOf<ParticleVertex>(nameof(ParticleVertex.DepthMask)).ToInt32() == 48,
+            "TexCoord1 (radial uv, gain) must occupy offsets 36..47 and TexCoord2 (depth mask) 48..55 of the 56-byte vertex.");
     }
 
     [LumenFact]

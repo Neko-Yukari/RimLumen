@@ -163,7 +163,7 @@ GpuParticle spawnParticle(GpuEmitterParams emitter, uint slot)
     particle.Size = mix(emitter.SizeCone.x, emitter.SizeCone.y, randomUnit(seed)) * sizeScale;
     particle.Seed = seed;
     particle.ActiveEmitter = sim.emitterIndex + 1u;
-    particle.SpawnAnchorXZ = lumenPackAnchor(vec2(emitter.ShapePosition.w, emitter.ShapeScale.w));
+    particle.SpawnAnchorXZ = lumenPackAnchor(lumenNodeGroundXZ(emitter.World));
     return particle;
 }
 
@@ -375,6 +375,8 @@ void consumeEvents(GpuEmitterParams emitter)
                 GpuParticle child = spawnParticle(emitter, slot);
                 child.PositionAndAge.xyz = emitter.SizeCone.w > 0.5 ? ev.PositionAndTrigger.xyz
                     : (emitter.WorldInverse * vec4(ev.PositionAndTrigger.xyz, 1.0)).xyz;
+                // A sub-emitter birth anchors at its event point (read only by world-space particles).
+                child.SpawnAnchorXZ = lumenPackAnchor(ev.PositionAndTrigger.xz);
                 // RimUnity ParticleSystem.SubEmissionEvents.cs:144-155 @45ca90987f7d3721715b45c021cab986ee14c468.
                 if ((link.Inherit & 1u) != 0u) child.StartColor *= ev.Color;
                 if ((link.Inherit & 2u) != 0u) child.Size *= ev.Size.x;

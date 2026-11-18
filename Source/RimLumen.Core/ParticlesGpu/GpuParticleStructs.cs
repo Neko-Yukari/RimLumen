@@ -12,7 +12,7 @@ internal struct GpuParticle
     public float Size;
     public uint Seed;
     public uint ActiveEmitter; // 0 dead; emitter index + 1 while alive
-    public uint SpawnAnchorXZ; // world-space birth ground anchor: int16 X | int16 Z << 16, 1/32 cell units
+    public uint SpawnAnchorXZ; // world-space birth ground anchor (node, or sub-emitter event point): int16 X | int16 Z << 16, 1/32 cell units
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
@@ -28,9 +28,9 @@ internal struct GpuEmitterParams
     public Vector4 Appearance; // stretch, length, HDR intensity, node-world size scale
     public Vector4 Tables; // LUT row, field offset, field count, random seed
     public Vector4 State; // dt, soft fade distance, clear range flag, intensity multiplier
-    public Vector4 ShapePosition; // node-local cells xyz, w play-origin X (Vertical3D ground anchor)
+    public Vector4 ShapePosition; // node-local cells xyz, w LumenDepthMask on (1) or off (0)
     public Vector4 ShapeRotation; // unit quaternion xyzw; rotates position and direction
-    public Vector4 ShapeScale; // dimensionless xyz; affects sampled position only, w play-origin Z (Vertical3D ground anchor)
+    public Vector4 ShapeScale; // dimensionless xyz; affects sampled position only, w LumenDepthMask reference Z
     public Vector4 ShapeOptions; // offset 256: radiusThickness, arc radians, arcSpread, radiusSpread
     public Vector4 ShapeMix; // offset 272: randomDirection, sphericalDirection, randomPosition cells, coneLength cells
     public Vector4 BoxThicknessDonut; // offset 288: boxThickness xyz, donutRadius cells

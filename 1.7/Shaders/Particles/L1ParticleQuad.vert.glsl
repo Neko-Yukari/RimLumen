@@ -7,10 +7,12 @@ layout(location = 0) in vec3 inPosition; // @vertex Position required
 layout(location = 1) in vec2 inUv;       // @vertex TexCoord0 required
 layout(location = 2) in vec4 inColor;    // @vertex Color required
 layout(location = 3) in vec3 inRadialUvGain; // @vertex TexCoord1 required (xy: quad corner, z: radiance gain)
+layout(location = 4) in vec2 inDepthMask; // @vertex TexCoord2 required (x: occlusion lift, 0 = off; y: reference Z)
 layout(location = 0) out vec2 uv;
 layout(location = 1) out vec4 color;
 layout(location = 2) out vec2 radialUv;
 layout(location = 3) out float hdrGain;
+layout(location = 4) out vec2 depthMask; // x: occlusion lift, y: world Z north of the reference
 
 void main()
 {
@@ -19,4 +21,5 @@ void main()
     radialUv = inRadialUvGain.xy;
     hdrGain = inRadialUvGain.z;
     color = inColor;
+    depthMask = vec2(inDepthMask.x, inPosition.z - inDepthMask.y);
 }

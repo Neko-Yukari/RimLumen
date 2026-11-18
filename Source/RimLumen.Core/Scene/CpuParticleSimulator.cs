@@ -34,7 +34,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         public int LiveCount;
         public int PendingBurst;
         public bool IsVertical3D;
-        public Vector2 AnchorXZ;
+        public float? DepthReferenceZ;
         public Matrix4x4 InverseWorld;
         public bool WorldInteraction;
         public float NodeTime;
@@ -149,12 +149,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         if (emitters.TryGetValue(emitterId, out var emitter)) emitter.Transform = worldTransform;
     }
 
-    // The 2D ground anchor follows the play origin's XZ; world-space particles record it at birth.
-    internal void SetEmitterVerticalState(int emitterId, bool isVertical3D, Vector2 anchorXZ)
+    // depthReferenceZ: the node's LumenDepthMask reference this frame; null without a mask.
+    internal void SetEmitterDisplayState(int emitterId, bool isVertical3D, float? depthReferenceZ)
     {
         if (!emitters.TryGetValue(emitterId, out var emitter)) return;
         emitter.IsVertical3D = isVertical3D;
-        emitter.AnchorXZ = anchorXZ;
+        emitter.DepthReferenceZ = depthReferenceZ;
     }
 
     // Requires: rateMultiplier and intensityMultiplier are finite and >= 0 (validated by the public SetParam boundary).
@@ -386,9 +386,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 size *= ParticleAppearanceMath.SizeScale(emitter.Transform.World);
             }
             Vector4 color = spec.StartColor;
+            Vector2 anchorXZ = CameraBillboardBasis.NodeGroundXZ(emitter.Transform.World);
             if (subEvent is { } ev)
             {
                 position = spec.WorldSpaceSimulation ? ev.Position : Vector3.Transform(ev.Position, emitter.InverseWorld);
+                // A sub-emitter birth anchors at its event point (read only by world-space particles).
+                anchorXZ = new Vector2(ev.Position.X, ev.Position.Z);
                 // RimUnity ParticleSystem.SubEmissionEvents.cs:144-155 @45ca90987f7d3721715b45c021cab986ee14c468:
                 // inherited colour/size multiply the child's own birth values.
                 if ((inherit & LumenSubEmitterInherit.Color) != 0) color *= ev.Color;
@@ -397,7 +400,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             particles[particleCount++] = new CpuParticle
             {
                 EmitterId = id, Position = position, Velocity = direction * speed,
-                Lifetime = lifetime, StartSize = size, StartColor = color, SpawnAnchorXZ = emitter.AnchorXZ,
+                Lifetime = lifetime, StartSize = size, StartColor = color, SpawnAnchorXZ = anchorXZ,
             };
             emitter.LiveCount++;
         }
@@ -478,7 +481,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         }
 
         CameraBillboardBasis.Extract(view, out Vector3 cameraRight, out Vector3 cameraUp, out float yScaleRatio);
-        bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(cameraUp, yScaleRatio);
+        bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(cameraRight, cameraUp, yScaleRatio);
         Vector3 groundUp = CameraBillboardBasis.GroundUp(cameraUp);
         float vanillaMoteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
         for (int i = 0; i < particleCount; i++)
@@ -500,10 +503,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 position = Vector3.Transform(position, emitter.Transform.World);
                 velocity = Vector3.TransformNormal(velocity, emitter.Transform.World);
             }
-            if (emitter.IsVertical3D)
-                CameraBillboardBasis.ProjectVertical3D(isTopDown2D, yScaleRatio, groundUp,
-                    spec.WorldSpaceSimulation ? particle.SpawnAnchorXZ : emitter.AnchorXZ, vanillaMoteY,
-                    ref position, ref velocity);
+            CameraBillboardBasis.ProjectToDisplay(emitter.IsVertical3D, isTopDown2D, yScaleRatio, groundUp,
+                spec.WorldSpaceSimulation ? particle.SpawnAnchorXZ : CameraBillboardBasis.NodeGroundXZ(emitter.Transform.World),
+                vanillaMoteY, ref position, ref velocity);
             Vector3 right = cameraRight, up = cameraUp;
             float halfWidth = particle.Size * 0.5f, halfHeight = halfWidth;
             if (spec.BillboardMode == LumenBillboardMode.Horizontal)
@@ -521,6 +523,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                     scaleVelocityY: !emitter.IsVertical3D);
                 halfHeight = (particle.Size * spec.LengthScale + spec.VelocityStretchFactor * velocity.Length()) * 0.5f;
             }
+            if (isTopDown2D)
+            {
+                // Every corner shares the draw layer; the orthographic straight-down view keeps the XZ footprint.
+                right.Y = 0f;
+                up.Y = 0f;
+            }
             right *= halfWidth;
             up *= halfHeight;
             float u0 = (float)(particle.FlipbookFrame % spec.FlipbookTilesX) / spec.FlipbookTilesX;
@@ -531,10 +539,11 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             if (activeMapIndex >= 0 && emitter.MapIndex >= 0 && emitter.MapIndex != activeMapIndex) continue;
             int slot = groupCursors[emitter.Group]++;
             int vertex = slot * 4, index = slot * 6;
-            vertices[vertex] = new(position - right - up, new Vector2(u0, v0), particle.Color, Vector2.Zero, gain);
-            vertices[vertex + 1] = new(position + right - up, new Vector2(u1, v0), particle.Color, Vector2.UnitX, gain);
-            vertices[vertex + 2] = new(position + right + up, new Vector2(u1, v1), particle.Color, Vector2.One, gain);
-            vertices[vertex + 3] = new(position - right + up, new Vector2(u0, v1), particle.Color, Vector2.UnitY, gain);
+            Vector2 mask = CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, emitter.DepthReferenceZ, vanillaMoteY);
+            vertices[vertex] = new(position - right - up, new Vector2(u0, v0), particle.Color, Vector2.Zero, gain, mask);
+            vertices[vertex + 1] = new(position + right - up, new Vector2(u1, v0), particle.Color, Vector2.UnitX, gain, mask);
+            vertices[vertex + 2] = new(position + right + up, new Vector2(u1, v1), particle.Color, Vector2.One, gain, mask);
+            vertices[vertex + 3] = new(position - right + up, new Vector2(u0, v1), particle.Color, Vector2.UnitY, gain, mask);
             indices[index] = (uint)vertex;
             indices[index + 1] = (uint)vertex + 1;
             indices[index + 2] = (uint)vertex + 2;

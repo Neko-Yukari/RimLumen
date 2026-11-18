@@ -217,7 +217,7 @@ public static class DistortionSuite
     private static EffectNodeSpec Node(DistortionSpec spec) => new() { Name = "wave", Distortion = spec };
 
     private static LumenNodeFeatureFrame Frame(bool active, float deltaTime) =>
-        new(new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), null, 7, 1f, active, deltaTime, Vector3.Zero);
+        new(new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), null, 7, 1f, active, deltaTime, null);
 
     private static void CompileFile(string relativePath, RuntimeShaderStage stage)
     {

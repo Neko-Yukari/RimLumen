@@ -17,8 +17,8 @@ public enum LumenNodeFeature : byte
 // Intensity: the handle's "intensity" parameter (finite >= 0). Active: the node belongs to the playing state;
 // false after its state exits and while the handle drains. DeltaTime: seconds elapsed this frame, excluding time
 // before the node's latest restart within the frame. Real-time handles use unscaled seconds; CreateInstance gets 0.
-// Origin: the handle's current play origin (LumenPlayRequest.OriginWorld, then Follow); its XZ is the Vertical3D
-// ground anchor shared with particles. Height is measured from the world ground Y = 0, not from Origin.Y.
+// DepthReferenceZ: this frame's world Z of LumenPlayRequest.DepthReferenceZ (moved with Follow) when the node declares
+// a depthMask; null otherwise.
 public readonly record struct LumenNodeFeatureFrame(
     LumenEmitterTransform Transform,
     Vector3? TargetWorld,
@@ -26,7 +26,7 @@ public readonly record struct LumenNodeFeatureFrame(
     float Intensity,
     bool Active,
     float DeltaTime,
-    Vector3 Origin);
+    float? DepthReferenceZ);
 
 // Implemented by the line that owns a LumenNodeFeature; registered once through
 // LumenHostRegistry.RegisterNodeFeatureBackend from the backend's own [StaticConstructorOnStartup] bootstrap.

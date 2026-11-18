@@ -13,6 +13,16 @@ public enum LumenSpacePlane : byte
     Vertical3D = 3,
 }
 
+// Only under the vanilla straight-down 2D camera; tilted cameras (IsoRim) occlude with real geometry and depth.
+public enum LumenDepthMask : byte
+{
+    None = 0,
+    // The parts of the node's particles and ribbons north of LumenPlayRequest.DepthReferenceZ (world Z greater than
+    // it) are occlusion-tested at the Projectile altitude, just below Pawn, so every pawn-level thing hides them; the
+    // parts at or south of it draw on the mote layer as usual. GroundXZ nodes with an emitter or ribbon only.
+    NorthBehindReference = 1,
+}
+
 public enum LumenBlendMode : byte
 {
     Additive = 0,
@@ -296,6 +306,7 @@ public sealed class EffectNodeSpec
     public required string Name { get; init; }
     public int ParentIndex { get; init; } = -1;
     public LumenSpacePlane SpacePlane { get; init; } = LumenSpacePlane.GroundXZ;
+    public LumenDepthMask DepthMask { get; init; }
     public Vector3 LocalPosition { get; init; }
     public Quaternion LocalRotation { get; init; } = Quaternion.Identity;
     public Vector3 LocalScale { get; init; } = Vector3.One;

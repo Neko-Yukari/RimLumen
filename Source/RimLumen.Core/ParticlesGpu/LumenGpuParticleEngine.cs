@@ -29,7 +29,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         public bool RealTime;
         public int MapIndex = -1;
         public bool IsVertical3D;
-        public Vector2 AnchorXZ;
+        public float? DepthReferenceZ;
         public double DrainRemaining;
         public int PendingBurst;
         public InstanceState State;
@@ -117,12 +117,13 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
     }
 
     // Requires: main thread. Unknown ids are ignored.
-    // Ensures: capture uploads the 2D ground anchor in ShapePosition.w/ShapeScale.w; world-space particles record it at birth.
-    internal void SetInstanceVerticalState(int instanceId, bool isVertical3D, Vector2 anchorXZ)
+    // Ensures: the draw derives the 2D ground anchor from the uploaded World (lumenNodeGroundXZ); world-space particles
+    //          record it at birth. Capture uploads the depth mask in ShapePosition.w (on) and ShapeScale.w (reference Z).
+    internal void SetInstanceDisplayState(int instanceId, bool isVertical3D, float? depthReferenceZ)
     {
         if (!instances.TryGetValue(instanceId, out Instance? instance)) return;
         instance.IsVertical3D = isVertical3D;
-        instance.AnchorXZ = anchorXZ;
+        instance.DepthReferenceZ = depthReferenceZ;
     }
 
     // Requires: main thread, id from this engine; intensityMultiplier/rateMultiplier finite >= 0.
@@ -289,9 +290,9 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 Appearance = new Vector4(spec.VelocityStretchFactor, spec.LengthScale, spec.HdrIntensity, ParticleAppearanceMath.SizeScale(instance.Transform.World)),
                 Tables = new Vector4(row, fieldOffset, fields.Count - fieldOffset, instance.Id & 0x00ffffff),
                 State = new Vector4(hostDt, spec.SoftParticleFadeDistance, 0, instance.Intensity),
-                ShapePosition = new Vector4(spec.ShapePosition, instance.AnchorXZ.X),
+                ShapePosition = new Vector4(spec.ShapePosition, instance.DepthReferenceZ.HasValue ? 1f : 0f),
                 ShapeRotation = new Vector4(spec.ShapeRotation.X, spec.ShapeRotation.Y, spec.ShapeRotation.Z, spec.ShapeRotation.W),
-                ShapeScale = new Vector4(spec.ShapeScale, instance.AnchorXZ.Y),
+                ShapeScale = new Vector4(spec.ShapeScale, instance.DepthReferenceZ.GetValueOrDefault()),
                 ShapeOptions = new Vector4(spec.RadiusThickness, spec.ArcDegrees * (MathF.PI / 180f), spec.ArcSpread, spec.RadiusSpread),
                 ShapeMix = new Vector4(spec.RandomDirectionAmount, spec.SphericalDirectionAmount, spec.RandomPositionAmount, spec.ConeLength),
                 BoxThicknessDonut = new Vector4(spec.BoxThickness, spec.DonutRadius),
