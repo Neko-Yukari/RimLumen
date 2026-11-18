@@ -1,24 +1,6 @@
 #version 450
 #include "../../Shaders/RimLumen/RimLumenColorSpace.glsl"
-layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
-{
-    mat4 InvViewProjection;
-    vec4 ScreenAndMapSize;
-    float GameSeconds;
-    float RealSeconds;
-    float SkyGlow;
-    float ZoomRootSize;
-    float HasHdrDraws;
-    float HasSceneDepth;
-    float HasMapLightField;
-    float IsPaused;
-    float DepthValid;
-    float GameDeltaSeconds;
-    float RealDeltaSeconds;
-    float ColorBlendSpace;
-    vec4 BloomParams;
-    vec4 PackParams[4];
-} ubo;
+#include "../../Shaders/PostFx/RimLumenPackUniforms.glslinc"
 #include "../../Shaders/PostFx/RimLumenDistortion.glslinc"
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
@@ -39,13 +21,14 @@ vec3 sanitizeHdr(vec3 c)
 
 void main()
 {
-    // Atmospheric always writes the graded scene opaquely; the refracted scene is what gets graded, under the
-    // refracted layer and bloom. The fog field is a low-frequency grade and stays at uv.
+    // Atmospheric always writes the graded scene opaquely; the refracted scene is what gets graded, under the layer
+    // and bloom at the layer UV. The fog field is a low-frequency grade and stays at uv.
     vec2 sceneUv = lumenRefractedUv(distortionImage, uv);
+    vec2 layerUv = lumenLayerUv(uv, sceneUv);
     vec4 scene = texture(sceneImage, sceneUv);
-    vec4 hdr = texture(hdrImage, sceneUv);
+    vec4 hdr = texture(hdrImage, layerUv);
     hdr.rgb = sanitizeHdr(hdr.rgb);
-    vec3 bloom = texture(bloomImage, sceneUv).rgb;
+    vec3 bloom = texture(bloomImage, layerUv).rgb;
     vec4 fogData = texture(fogBlurImage, uv);
 
     float mist = clamp(fogData.r, 0.0, 0.85);

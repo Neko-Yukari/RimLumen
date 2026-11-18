@@ -38,9 +38,20 @@ public static class RimLumenRenderHost
     // Ensures: fixed before input/Update; an Update setting change takes effect on the next frame.
     public static LumenColorBlendSpace CurrentFrameColorBlendSpace => currentFrameColorBlendSpace;
 
+    // Requires: main thread. Requests whether screen distortion also refracts the RimLumen layer, its bloom and pack
+    // layers derived from it (false: only the scene and visual light pools bend). Takes effect at the next latch.
+    public static bool DistortionRefractsEffects { get; set; } = true;
+
+    // Requires: main thread after Install. The frame latch of DistortionRefractsEffects; producers read only this.
+    public static bool CurrentFrameDistortionRefractsEffects { get; private set; } = true;
+
     // Requires: main thread, once at Install and once per PrePollEvents before input and Update.
-    // Ensures: snapshots the request; capture/recording only copy this value until the next latch.
-    internal static void LatchColorBlendSpace() => currentFrameColorBlendSpace = requestedColorBlendSpace;
+    // Ensures: snapshots the requests; capture/recording only copy these values until the next latch.
+    internal static void LatchFrameSettings()
+    {
+        currentFrameColorBlendSpace = requestedColorBlendSpace;
+        CurrentFrameDistortionRefractsEffects = DistortionRefractsEffects;
+    }
 
     // Ensures: finite input silently clamps to [0.1, 1.0]; nonfinite input throws ArgumentOutOfRangeException
     // without replacing the prior value. Simulators read the stored value without re-clamping.

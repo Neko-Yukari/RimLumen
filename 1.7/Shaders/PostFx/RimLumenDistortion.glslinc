@@ -1,9 +1,6 @@
 // Scene UV seen through the `distortion` input: its texel is the summed sample offset of this frame's distortion-pass
 // draws in framebuffer pixels (+x right, +y down). Zero or non-finite offsets return uv itself, so undistorted pixels
 // keep the bit-exact scene paths.
-// Composites sample every screen-aligned input they put over the scene (hdr, bloom, a pack's own layers such as
-// streaks) at this same UV, so the effects bend with the scene behind them. A composite that samples only `scene` here
-// still works; its layer simply stays unrefracted.
 // Requires: the ShaderPackUniforms block `ubo` declared before this include.
 vec2 lumenRefractedUv(sampler2D distortionImage, vec2 uv)
 {
@@ -11,3 +8,15 @@ vec2 lumenRefractedUv(sampler2D distortionImage, vec2 uv)
     if (any(isnan(offsetPixels)) || any(isinf(offsetPixels))) return uv;
     return clamp(uv + offsetPixels * ubo.ScreenAndMapSize.xy, vec2(0.0), vec2(1.0));
 }
+
+#ifdef RIMLUMEN_PACK_UNIFORMS_INCLUDED
+// UV for every screen-aligned input a composite puts over the scene (hdr, bloom, a pack's own layers such as streaks):
+// sceneUv while the player setting "distortion also refracts RimLumen effects" is on, so effects bend with the scene
+// behind them, else uv. Defined only when the block comes from PostFx/RimLumenPackUniforms.glslinc (224 bytes, with
+// LayerFlags). A pack that declares its own 208-byte block or samples only `scene` at sceneUv still compiles and runs;
+// its layer simply stays unrefracted.
+vec2 lumenLayerUv(vec2 uv, vec2 sceneUv)
+{
+    return ubo.LayerFlags.x > 0.5 ? sceneUv : uv;
+}
+#endif

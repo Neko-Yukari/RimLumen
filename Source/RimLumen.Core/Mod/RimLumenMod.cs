@@ -20,6 +20,7 @@ public sealed class RimLumenSettings : ModSettings
     public float CursorForceRadius = 5f;
     public float CursorForceStrength = 4f;
     public LumenColorBlendSpace ColorBlendSpace = LumenColorBlendSpace.Legacy;
+    public bool DistortionRefractsEffects = true;
     public bool EnableDemoBuildings = false;
     public string SelectedShaderPackId = ShaderPackCatalog.DefaultPackId;
     public Dictionary<string, float> PackParamOverrides = new(StringComparer.OrdinalIgnoreCase);
@@ -42,6 +43,7 @@ public sealed class RimLumenSettings : ModSettings
         string blendSpace = ColorBlendSpace.ToString();
         Scribe_Values.Look(ref blendSpace, "colorBlendSpace", nameof(LumenColorBlendSpace.Legacy));
         ColorBlendSpace = Enum.Parse<LumenColorBlendSpace>(blendSpace);
+        Scribe_Values.Look(ref DistortionRefractsEffects, "distortionRefractsEffects", true);
         Scribe_Values.Look(ref EnableDemoBuildings, "enableDemoBuildings", false);
         Scribe_Values.Look(ref SelectedShaderPackId, "selectedShaderPackId", ShaderPackCatalog.DefaultPackId);
         Scribe_Collections.Look(ref PackParamOverrides, "packParamOverrides", LookMode.Value, LookMode.Value);
@@ -64,6 +66,7 @@ public sealed class RimLumenSettings : ModSettings
         RimLumenRenderHost.EnableVanillaAdditiveBloom = EnhanceVanillaAdditiveGlow;
         RimLumenRenderHost.ParticleDensityScale = ParticleDensityScale;
         RimLumenRenderHost.ColorBlendSpace = ColorBlendSpace;
+        RimLumenRenderHost.DistortionRefractsEffects = DistortionRefractsEffects;
         DemoBuildingRegistry.SyncWithSettings(EnableDemoBuildings);
         ParticleEnvironment.ExplosionsEnabled = ExplosionForces;
         ParticleEnvironment.ExplosionForceScale = ExplosionForceScale;
@@ -112,6 +115,7 @@ public sealed class RimLumenSettings : ModSettings
         CursorForceRadius = 5f;
         CursorForceStrength = 4f;
         ColorBlendSpace = LumenColorBlendSpace.Legacy;
+        DistortionRefractsEffects = true;
         EnableDemoBuildings = false;
         SelectedShaderPackId = ShaderPackCatalog.DefaultPackId;
         PackParamOverrides.Clear();
@@ -140,6 +144,7 @@ public sealed class RimLumenMod : Verse.Mod
         bool glowBefore = Settings.EnhanceVanillaAdditiveGlow;
         float densityBefore = Settings.ParticleDensityScale;
         bool demoBefore = Settings.EnableDemoBuildings;
+        bool refractBefore = Settings.DistortionRefractsEffects;
         var worldBefore = (Settings.ExplosionForces, Settings.ExplosionForceScale, Settings.CursorForceMode,
             Settings.CursorForceRadius, Settings.CursorForceStrength);
 
@@ -177,6 +182,11 @@ public sealed class RimLumenMod : Verse.Mod
         listing.Gap(6f);
         DrawColorBlendSpaceSelector(listing);
         listing.Gap(6f);
+        listing.CheckboxLabeled(
+            "RimLumen_DistortionRefractsEffects".Translate(),
+            ref Settings.DistortionRefractsEffects,
+            "RimLumen_DistortionRefractsEffectsTooltip".Translate());
+        listing.Gap(6f);
 
         listing.CheckboxLabeled(
             "RimLumen_EnableDemoBuildings".Translate(),
@@ -185,6 +195,7 @@ public sealed class RimLumenMod : Verse.Mod
         bool settingsChanged = Settings.EnhanceVanillaAdditiveGlow != glowBefore
             || Settings.ParticleDensityScale != densityBefore
             || Settings.EnableDemoBuildings != demoBefore
+            || Settings.DistortionRefractsEffects != refractBefore
             || worldBefore != (Settings.ExplosionForces, Settings.ExplosionForceScale, Settings.CursorForceMode,
                 Settings.CursorForceRadius, Settings.CursorForceStrength);
 

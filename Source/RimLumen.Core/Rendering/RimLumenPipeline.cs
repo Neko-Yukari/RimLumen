@@ -51,8 +51,8 @@ internal sealed class RimLumenPipeline : IDisposable
         MapChain = new RimLumenMapChain(this);
         Distortion = new DistortionPass(app);
         Pre = new RimLumenPreBackbufferFeature(this);
-        RimLumenRenderHost.LatchColorBlendSpace();
-        app.PrePollEvents += LatchColorBlendSpace;
+        RimLumenRenderHost.LatchFrameSettings();
+        app.PrePollEvents += LatchFrameSettings;
         app.BeforeGraphicsShutdown += Shutdown;
         app.OnShutdown += Quiesce;
     }
@@ -341,6 +341,7 @@ internal sealed class RimLumenPipeline : IDisposable
             hasMapLightField,
             isPaused,
             colorBlendSpace == LumenColorBlendSpace.Linear,
+            RimLumenRenderHost.CurrentFrameDistortionRefractsEffects,
             in rtParams);
 
         return new PipelineFrame(captureIndex, mesh, glowMesh, lightMesh, distortionMesh, contributors, depthParams, mapIndex, renderHdr,
@@ -363,7 +364,7 @@ internal sealed class RimLumenPipeline : IDisposable
         Dispose();
     }
 
-    private static void LatchColorBlendSpace(EngineApplication _) => RimLumenRenderHost.LatchColorBlendSpace();
+    private static void LatchFrameSettings(EngineApplication _) => RimLumenRenderHost.LatchFrameSettings();
 
     private void Shutdown(EngineApplication _) => Dispose();
 
@@ -371,7 +372,7 @@ internal sealed class RimLumenPipeline : IDisposable
     {
         if (disposed) return;
         disposed = true;
-        App.PrePollEvents -= LatchColorBlendSpace;
+        App.PrePollEvents -= LatchFrameSettings;
         App.BeforeGraphicsShutdown -= Shutdown;
         App.OnShutdown -= Quiesce;
         LumenSceneBootstrap.Simulator.HdrRendererAttached = false;
