@@ -53,6 +53,8 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private bool stateEntryPending;
     private bool stopRequested;
     private Vector3 origin;
+    // LumenPlayRequest.DepthReferenceZ - OriginWorld.Z: the depth-mask reference rides the origin (and Follow).
+    private readonly float? depthReferenceOffsetZ;
     private float rotation;
     private float playbackTime;
     private Matrix4x4 rootWorld;
@@ -91,6 +93,8 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             EffectNodeSpec node = asset.Nodes[i];
             if (node.Ribbon is { EndAtTarget: true } && request.TargetWorld is null)
                 throw new ArgumentException($"Effect '{asset.EffectId}' node {i} '{node.Name}': ribbon endAtTarget needs LumenPlayRequest.TargetWorld.", nameof(request));
+            if (node.DepthMask != LumenDepthMask.None && request.DepthReferenceZ is null)
+                throw new ArgumentException($"Effect '{asset.EffectId}' node {i} '{node.Name}': depthMask needs LumenPlayRequest.DepthReferenceZ.", nameof(request));
             for (int f = 0; f < FeatureCount; f++)
             {
                 var feature = (LumenNodeFeature)f;
@@ -100,6 +104,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             }
         }
         origin = request.OriginWorld;
+        depthReferenceOffsetZ = request.DepthReferenceZ - request.OriginWorld.Z;
         rotation = request.TargetWorld is Vector3 target
             ? SpacePlaneTransform.ComputeFacingDegrees(origin, target) : request.RotationDegrees;
         // A throwing backend call (e.g. an L2 slot that no longer fits) must not leak the emitters
@@ -126,7 +131,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                 {
                     cpuIds[i] = owner.Simulator.AcquireEmitter(spec, NodeTransform(i), nodeSeed, emitting: initialNodes[i], rateMultiplier: 1f, realTime: request.RealTime, mapIndex: request.MapIndex);
                 }
-                PushVerticalState(i);
+                PushDisplayState(i);
             }
             owner.Simulator.BindNodeInstances(cpuIds, engine, gpuIds);
             EnterState(initial);
@@ -282,12 +287,12 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             float intensity = parameters["intensity"];
             for (int i = 0; i < asset.Nodes.Length; i++)
             {
-                PushVerticalState(i);
                 bool emitting = state == PlaybackState.Playing && nodeActive[i];
                 if (cpuIds[i] >= 0)
                 {
                     owner.Simulator.SetEmitterTransform(cpuIds[i], NodeTransform(i));
                     owner.Simulator.SetEmitterParams(cpuIds[i], emitting, parameters["rate"], intensity);
+                    if (asset.Nodes[i].DepthMask != LumenDepthMask.None) PushDisplayState(i);
                     if (nodeFrameDelta[i] != deltaTime) owner.Simulator.SetEmitterFrameDelta(cpuIds[i], nodeFrameDelta[i]);
                 }
                 if (gpuIds[i] >= 0)
@@ -296,6 +301,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                     else
                     {
                         engine!.UpdateInstance(gpuIds[i], NodeTransform(i), emitting, intensity, parameters["rate"]);
+                        if (asset.Nodes[i].DepthMask != LumenDepthMask.None) PushDisplayState(i);
                         if (nodeFrameDelta[i] != deltaTime) (engine as LumenGpuParticleEngine)?.SetInstanceFrameDelta(gpuIds[i], nodeFrameDelta[i]);
                     }
                 }
@@ -462,14 +468,18 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         pendingEvents.Enqueue((EventKind.Finished, null));
     }
 
-    // Every node shares the play origin's current XZ ground anchor, independent of its own transform.
-    private void PushVerticalState(int index)
+    // Pushed at creation, and every frame for a depth-masked node so its reference follows the origin. Each backend
+    // derives the 2D ground anchor from the node's world transform.
+    private void PushDisplayState(int index)
     {
         bool isVertical3D = asset.Nodes[index].SpacePlane == LumenSpacePlane.Vertical3D;
-        Vector2 anchorXZ = new(origin.X, origin.Z);
-        if (cpuIds[index] >= 0) owner.Simulator.SetEmitterVerticalState(cpuIds[index], isVertical3D, anchorXZ);
-        if (gpuIds[index] >= 0) (engine as LumenGpuParticleEngine)?.SetInstanceVerticalState(gpuIds[index], isVertical3D, anchorXZ);
+        float? depthReferenceZ = DepthReferenceZ(index);
+        if (cpuIds[index] >= 0) owner.Simulator.SetEmitterDisplayState(cpuIds[index], isVertical3D, depthReferenceZ);
+        if (gpuIds[index] >= 0) (engine as LumenGpuParticleEngine)?.SetInstanceDisplayState(gpuIds[index], isVertical3D, depthReferenceZ);
     }
+
+    private float? DepthReferenceZ(int index) => asset.Nodes[index].DepthMask == LumenDepthMask.None
+        ? null : origin.Z + depthReferenceOffsetZ!.Value;
 
     private void RefreshTransforms()
     {
@@ -487,7 +497,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private LumenEmitterTransform NodeTransform(int index) => new(nodeWorldMatrices[index], nodeWorldRotations[index]);
 
     private LumenNodeFeatureFrame FeatureFrame(int index, bool active, float deltaTime) =>
-        new(NodeTransform(index), request.TargetWorld, request.MapIndex, parameters["intensity"], active, deltaTime, origin);
+        new(NodeTransform(index), request.TargetWorld, request.MapIndex, parameters["intensity"], active, deltaTime, DepthReferenceZ(index));
 
     private static readonly int FeatureCount = Enum.GetValues<LumenNodeFeature>().Length;
 

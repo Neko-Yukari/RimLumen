@@ -52,6 +52,7 @@ public sealed partial class LumenEffectDef : Def
                 Name = nodeName,
                 ParentIndex = node.parentIndex,
                 SpacePlane = node.spacePlane,
+                DepthMask = node.depthMask,
                 LocalPosition = new Vector3(
                     node.localPosition.x,
                     node.localPosition.y + node.heightOffset,
@@ -310,6 +311,7 @@ public sealed class LumenNodeXml
     public string? name;
     public int parentIndex = -1;
     public LumenSpacePlane spacePlane = LumenSpacePlane.GroundXZ;
+    public LumenDepthMask depthMask = LumenDepthMask.None;
     public UnityEngine.Vector3 localPosition;
     public float localYawDegrees;
     public float localScale = 1f;
@@ -523,6 +525,10 @@ internal static partial class LumenAssetRules
 
             ValidateRotation(node.LocalRotation, $"{path} ('{node.Name}').localRotation");
             ValidateEnum(node.SpacePlane, $"{path} ('{node.Name}').spacePlane");
+            ValidateEnum(node.DepthMask, $"{path} ('{node.Name}').depthMask");
+            if (node.DepthMask != LumenDepthMask.None
+                && (node.SpacePlane != LumenSpacePlane.GroundXZ || (node.Emitter is null && node.Ribbon is null)))
+                throw new InvalidDataException($"{path} ('{node.Name}').depthMask: only a GroundXZ node with an emitter or ribbon takes a depth mask.");
 
             if (node.Emitter is { } emitter)
             {
@@ -900,7 +906,7 @@ public static partial class LumenJsonAssetLoader
 
     private static readonly string[] NodeProperties =
     {
-        "name", "parentIndex", "spacePlane", "localPosition", "localRotation", "localYawDegrees",
+        "name", "parentIndex", "spacePlane", "depthMask", "localPosition", "localRotation", "localYawDegrees",
         "localScale", "emitter", "pointLight", "distortion", "ribbon",
     };
 
@@ -963,6 +969,7 @@ public static partial class LumenJsonAssetLoader
             Name = name,
             ParentIndex = scope.Int("parentIndex", -1),
             SpacePlane = scope.Enum("spacePlane", LumenSpacePlane.GroundXZ),
+            DepthMask = scope.Enum("depthMask", LumenDepthMask.None),
             LocalPosition = scope.Vector3("localPosition", Vector3.Zero),
             LocalRotation = rotation,
             LocalScale = scope.Vector3("localScale", Vector3.One),

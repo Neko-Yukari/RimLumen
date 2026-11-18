@@ -12,7 +12,7 @@ struct GpuParticle
     float Size;
     uint Seed;
     uint ActiveEmitter; // 0 dead; emitter index + 1 while alive
-    uint SpawnAnchorXZ; // world-space birth ground anchor, lumenPackAnchor
+    uint SpawnAnchorXZ; // world-space birth ground anchor (node, or sub-emitter event point), lumenPackAnchor
 };
 
 struct GpuEmitterParams
@@ -30,9 +30,9 @@ struct GpuEmitterParams
     vec4 Appearance;
     vec4 Tables;
     vec4 State;
-    vec4 ShapePosition; // w: play-origin X (Vertical3D ground anchor)
+    vec4 ShapePosition; // w: LumenDepthMask on (1) or off (0)
     vec4 ShapeRotation;
-    vec4 ShapeScale; // w: play-origin Z (Vertical3D ground anchor)
+    vec4 ShapeScale; // w: LumenDepthMask reference Z
     vec4 ShapeOptions; // 256: radiusThickness, arc radians, arcSpread, radiusSpread
     vec4 ShapeMix; // 272: randomDirection, sphericalDirection, randomPosition, coneLength
     vec4 BoxThicknessDonut; // 288: boxThickness xyz, donutRadius
@@ -91,6 +91,12 @@ vec3 lumenDirection(vec3 value, vec3 fallback)
 {
     float squaredLength = dot(value, value);
     return squaredLength > 1e-12 ? value * inversesqrt(squaredLength) : fallback;
+}
+
+// A node's ground anchor: the XZ of its world translation. Mirrors CameraBillboardBasis.NodeGroundXZ.
+vec2 lumenNodeGroundXZ(mat4 world)
+{
+    return (world * vec4(0.0, 0.0, 0.0, 1.0)).xz;
 }
 
 // Ground anchor as two int16 in 1/32 cell units (range [-1024, 1024) cells), X low and Z high. Kept as uint so no

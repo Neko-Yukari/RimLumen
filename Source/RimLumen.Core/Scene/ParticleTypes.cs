@@ -6,6 +6,7 @@ namespace RimLumen.Core.Scene;
 /// One billboard corner submitted to the HDR pass. <see cref="Color"/> is the straight authored colour;
 /// <see cref="HdrGain"/> (<c>HdrIntensity</c> times the runtime intensity multiplier) multiplies RGB only after
 /// the shader's colour-space conversion. RadialUv and HdrGain are contiguous: they upload as one float3 attribute.
+/// <see cref="DepthMask"/> is CameraBillboardBasis.DepthMaskAttribute: (occlusion lift, reference Z), zero when off.
 /// </summary>
 public readonly struct ParticleVertex
 {
@@ -14,14 +15,16 @@ public readonly struct ParticleVertex
     public readonly Vector4 Color;
     public readonly Vector2 RadialUv;
     public readonly float HdrGain;
+    public readonly Vector2 DepthMask;
 
-    public ParticleVertex(Vector3 position, Vector2 uv, Vector4 color, Vector2 radialUv, float hdrGain)
+    public ParticleVertex(Vector3 position, Vector2 uv, Vector4 color, Vector2 radialUv, float hdrGain, Vector2 depthMask)
     {
         Position = position;
         Uv = uv;
         Color = color;
         RadialUv = radialUv;
         HdrGain = hdrGain;
+        DepthMask = depthMask;
     }
 }
 
@@ -43,7 +46,8 @@ public struct CpuParticle
     public float Size;
     public Vector4 Color;
     public int FlipbookFrame;
-    // Vertical3D: the emitter's play-origin ground position (X, Z) when this world-space particle was born.
+    // Vertical3D world-space particles: the node's ground position (X, Z) at birth, or the event point for a
+    // sub-emitter birth.
     internal Vector2 SpawnAnchorXZ;
 }
 

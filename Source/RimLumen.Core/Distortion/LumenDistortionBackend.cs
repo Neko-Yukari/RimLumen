@@ -101,8 +101,8 @@ public sealed class LumenDistortionBackend : ILumenNodeFeatureBackend, ILumenFra
     // Ensures: one additive quad per visible instance of context.CurrentMapIndex, in this frame's draw submission.
     public void CaptureMainThread(in LumenCaptureContext context)
     {
-        CameraBillboardBasis.Extract(context.ViewMatrix, out _, out Vector3 up, out float yScaleRatio);
-        bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(up, yScaleRatio);
+        CameraBillboardBasis.Extract(context.ViewMatrix, out Vector3 right, out Vector3 up, out float yScaleRatio);
+        bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(right, up, yScaleRatio);
         Vector3 groundUp = CameraBillboardBasis.GroundUp(up);
         float moteY = Altitudes.AltitudeFor(AltitudeLayer.MoteOverhead);
         foreach (Instance instance in instances.Values)
@@ -123,21 +123,14 @@ public sealed class LumenDistortionBackend : ILumenNodeFeatureBackend, ILumenFra
         Vector3 center = world.Translation;
         Vector3 axisX = new(diameter, 0f, 0f);
         Vector3 axisZ = new(0f, 0f, diameter);
-        if (instance.Node.SpacePlane == LumenSpacePlane.Vertical3D)
+        bool vertical3D = instance.Node.SpacePlane == LumenSpacePlane.Vertical3D;
+        Vector3 velocity = Vector3.Zero;
+        CameraBillboardBasis.ProjectToDisplay(vertical3D, isTopDown2D, yScaleRatio, groundUp,
+            CameraBillboardBasis.NodeGroundXZ(world), moteY, ref center, ref velocity);
+        if (vertical3D && isTopDown2D)
         {
-            Vector3 origin = instance.Frame.Origin;
-            Vector3 velocity = Vector3.Zero;
-            CameraBillboardBasis.ProjectVertical3D(isTopDown2D, yScaleRatio, groundUp, new Vector2(origin.X, origin.Z),
-                moteY, ref center, ref velocity);
-            if (isTopDown2D)
-            {
-                axisX = CameraBillboardBasis.ProjectTopDownPitch(axisX, groundUp);
-                axisZ = CameraBillboardBasis.ProjectTopDownPitch(axisZ, groundUp);
-            }
-        }
-        else
-        {
-            center.Y = moteY;
+            axisX = CameraBillboardBasis.ProjectTopDownPitch(axisX, groundUp);
+            axisZ = CameraBillboardBasis.ProjectTopDownPitch(axisZ, groundUp);
         }
         Span<DrawProperty> properties = MeshDrawSubmission.ActiveArena.Allocate(3, out DrawPropertyRange range);
         properties[0] = DrawProperty.Vector(RingRadiiId, frame.RingRadii / spec.Radius);
