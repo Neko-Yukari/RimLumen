@@ -71,6 +71,7 @@ public static class ShaderPackManifest
         [JsonPropertyName("runOnEmptyFrames")] public bool RunOnEmptyFrames { get; set; }
         [JsonPropertyName("requiresSceneDepth")] public bool RequiresSceneDepth { get; set; }
         [JsonPropertyName("requiresMapLightField")] public bool RequiresMapLightField { get; set; }
+        [JsonPropertyName("objectShadows")] public bool ObjectShadows { get; set; } = true;
         [JsonPropertyName("bloomMipLevels")] public int? BloomMipLevels { get; set; }
         [JsonPropertyName("compositeShader")] public string? CompositeShader { get; set; }
         [JsonPropertyName("bloomPrefilterShader")] public string? BloomPrefilterShader { get; set; }
@@ -223,6 +224,7 @@ public static class ShaderPackManifest
             RunOnEmptyFrames = dto.RunOnEmptyFrames,
             RequiresSceneDepth = dto.RequiresSceneDepth,
             RequiresMapLightField = dto.RequiresMapLightField,
+            ObjectShadows = dto.ObjectShadows,
             BloomMipLevels = dto.BloomMipLevels ?? 5,
             Targets = targets,
             Passes = passes,

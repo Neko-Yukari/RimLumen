@@ -158,53 +158,6 @@ public static class OcclusionSuite
     }
 
     [LumenFact]
-    public static void HeightStampRaisesGreenAndItsFlagUnderTheSpriteAndLeavesR()
-    {
-        var builder = new OcclusionBuilder(3, 1);
-        var footprint = new CellBox(0, 0, 1, 0);
-        builder.Cover(Full, new MaskPlacement(0.5f, 0.5f, 1f, 1f), 0.5f);
-        builder.Wall(new CellBox(1, 0, 1, 0), 1.5f);
-        builder.Height(Full, new MaskPlacement(1.5f, 0.5f, 1f, 1f), 0.5f, fade: true);
-        builder.RecomputeDerived(footprint);
-        OcclusionMap before = builder.Publish();
-
-        builder.Height(Full, OcclusionStamps.Over(footprint), 1f, fade: false);
-        OcclusionMap after = builder.Publish();
-        for (int i = 0; i < after.Texels.Length; i += 4)
-        {
-            int x = i / 4 % after.TexelWidth;
-            byte expectedGreen = x < 4 ? (byte)128 : x < 8 ? (byte)191 : (byte)0;
-            Equal(expectedGreen, after.Texels[i + 1]);
-            Equal(before.Texels[i], after.Texels[i]);
-            Require(after.Texels[i + 2] >= before.Texels[i + 2], $"Texel {x}: B fell from {before.Texels[i + 2]} to {after.Texels[i + 2]}.");
-            Equal((byte)(before.Texels[i + 3] | (x < 8 ? OcclusionLayout.FlagPointHeight : 0)), after.Texels[i + 3]);
-        }
-    }
-
-    [LumenFact]
-    public static void MatureTreeHeightFootprintIsItsCoverFootprint()
-    {
-        // TreeBase at growth 1 (Plants_Bases.xml:70-129): a 2 x 2 canopy (visualSizeRange 2.0) printed at the south clamp,
-        // shadowData height 0.35 * 2, fillPercent 0.25. Its G covers exactly the texels its cover would, and no R.
-        var canopy = new Pattern(8, 8, Enumerable.Range(0, 64)
-            .Select(i => (i % 8 - 3.5f) * (i % 8 - 3.5f) + (i / 8 - 3.5f) * (i / 8 - 3.5f) <= 12f ? (byte)255 : (byte)0).ToArray());
-        var at = new MaskPlacement(5.5f, 6f, 2f, 2f);
-        var tree = new OcclusionBuilder(12, 12);
-        tree.StampOccluder([new SpritePiece(OcclusionStamps.Fit(canopy, at), at)], new Occluder(MathF.Floor(255f * 0.7f) / 255f, Fade: true, Cover: 0.25f));
-        var cover = new OcclusionBuilder(12, 12);
-        cover.Cover(canopy, at, 0.25f);
-        OcclusionMap height = Publish(tree), reference = Publish(cover);
-        int stamped = 0;
-        for (int i = 0; i < height.Texels.Length; i += 4)
-        {
-            Require((height.Texels[i + 1] > 0) == (reference.Texels[i] > 0) && height.Texels[i] == 0,
-                $"Texel ({i / 4 % height.TexelWidth}, {i / 4 / height.TexelWidth}): G {height.Texels[i + 1]}, R {height.Texels[i]}, cover R {reference.Texels[i]}.");
-            if (height.Texels[i + 1] > 0) stamped++;
-        }
-        Require(stamped > 0, "The canopy stamped no texel.");
-    }
-
-    [LumenFact]
     public static void IncrementalUpdateMatchesFullRebuildWhenArtOverhangsTwoCells()
     {
         // A one-cell tree whose canopy reaches two cells out, and a wall two cells east of it that is then removed.

@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
+using RimLumen.Core.Lighting.Casters;
 using RimWorld;
 using UnityEngine;
 using Verse;
+using Vector2 = System.Numerics.Vector2;
 
 namespace RimLumen.Core.Lighting.Occlusion;
 
@@ -19,6 +22,7 @@ internal static class OcclusionField
         internal readonly OcclusionBuilder Builder;
         internal readonly HashSet<Building_Door> Doors = new();
         internal readonly HashSet<int> Dirty = new();
+        internal readonly CasterChunks Casters;
         private readonly bool sunDisabled;
         private readonly StampLedger<Thing> ledger = new();
         internal OcclusionMap Snapshot;
@@ -32,6 +36,7 @@ internal static class OcclusionField
             Snapshot = null!;
             DoorSnapshot = new DoorStates(map.Size.x, map.Size.z, new byte[map.Size.x * map.Size.z * 4]);
             sunDisabled = map.info.disableSunShadows || map.Biome.disableShadows;
+            Casters = new CasterChunks(map.Size.x, map.Size.z);
             ledger.BuildAll(map.listerThings.AllThings, this, Builder);
             Builder.RecomputeDerived(new CellBox(0, 0, map.Size.x - 1, map.Size.z - 1));
             Snapshot = Builder.Publish();
@@ -47,7 +52,7 @@ internal static class OcclusionField
 
         public bool IsAlive(Thing thing) => thing.Spawned && thing.Map == Map;
 
-        public CellBox? Stamp(Thing thing, OcclusionBuilder builder) => OcclusionField.Stamp(thing, builder, Doors, sunDisabled);
+        public CellBox? Stamp(Thing thing, OcclusionBuilder builder) => OcclusionField.Stamp(thing, builder, Doors, Casters, sunDisabled);
 
         internal OcclusionFrame Capture()
         {
@@ -63,10 +68,12 @@ internal static class OcclusionField
                 Dirty.Clear();
                 // Every spawned door is rewritten into a cleared copy, so a despawned or moved door leaves no stale cell.
                 Doors.RemoveWhere(door => !IsAlive(door));
+                Casters.RemoveWhere(thing => !IsAlive(thing));
                 dirtyDoorCells = new byte[DoorSnapshot.Cells.Length];
                 changed = ledger.Update(cells, this, Builder);
             }
             if (changed) Snapshot = Builder.Publish();
+            Casters.Rebuild(AltitudeLayer.Shadows.AltitudeFor());
             UpdateDoors();
             return new OcclusionFrame(Snapshot, DoorSnapshot);
         }
@@ -103,6 +110,8 @@ internal static class OcclusionField
     private static readonly Dictionary<int, Field> Fields = new();
     private static readonly Dictionary<MapDrawer, Field> Drawers = new();
     private static readonly HashSet<ThingDef> Warned = new();
+    // Silhouette.Of per cached sprite mask (OcclusionMasks); weak, so the solid fallback masks of unreadable textures go.
+    private static readonly ConditionalWeakTable<AlphaMask, Vector2[][]> Outlines = new();
     private static Func<Building_Door, float> openPct = null!;
     private static Func<Building_Door, bool> stuckOpen = null!;
     private static Func<Building_Door, bool> canDrawMovers = null!;
@@ -138,12 +147,13 @@ internal static class OcclusionField
             field.Dirty.UnionWith(MeshDirtyCells.Of(loc.x, loc.z, regenAdjacentCells, field.Map.Size.x, field.Map.Size.z));
     }
 
-    // Requires: main thread, once per capture (LightPoolRenderer.AppendDraws).
+    // Requires: main thread, once per capture, before the frame's MeshDrawSubmission snapshot (LightPoolRenderer.Prepare).
     // Ensures: the map's frame: first call builds the whole map; later calls restamp overlapping ledger entries
     //          and recompute derived data, publishing a new OcclusionMap only when something changed, and republish
     //          DoorStates only when a door's quantised OpenPct changed. Unchanged frames return the same instances,
-    //          so callers can skip uploads by reference.
-    internal static OcclusionFrame Capture(Map map)
+    //          so callers can skip uploads by reference. casters: the map's object-shadow casters, their changed chunk
+    //          meshes rebuilt.
+    internal static OcclusionFrame Capture(Map map, out CasterChunks casters)
     {
         if (!Fields.TryGetValue(map.uniqueID, out Field? field))
         {
@@ -151,23 +161,28 @@ internal static class OcclusionField
             Fields.Add(map.uniqueID, field);
             Drawers.Add(map.mapDrawer, field);
         }
+        casters = field.Casters;
         return field.Capture();
     }
 
-    // Requires: main thread. Ensures: drops the map's builder, dirty set and registered doors.
+    // Requires: main thread. Ensures: drops the map's builder, dirty set, registered doors and caster meshes.
     internal static void Forget(int mapId)
     {
-        if (Fields.Remove(mapId, out Field? field)) Drawers.Remove(field.Map.mapDrawer);
+        if (!Fields.Remove(mapId, out Field? field)) return;
+        Drawers.Remove(field.Map.mapDrawer);
+        field.Casters.Dispose();
     }
 
     // IOcclusionSource.Stamp of Field. A blockLight thing stamps its occupied cells (OcclusionBuilder.StampBlocker); any
-    // other thing's sprite is the footprint of every channel (OcclusionBuilder.StampOccluder). The def only picks the
-    // values. Height is vanilla's: staticSunShadowHeight for edifices, which vanilla prints only
+    // other thing with a height becomes an object-shadow caster of its sprite silhouette and stamps nothing (a cover
+    // value it also has is ignored), and one with only a cover stamps its sprite's cover (OcclusionBuilder.StampCover).
+    // The def only picks the values. Height is vanilla's: staticSunShadowHeight for edifices, which vanilla prints only
     // on maps with sun shadows (SectionLayer_SunShadows, Section.cs:46-50), else the shadowData height, which
     // Printer_Shadow prints on every map (Printer_Shadow.cs:26-28) except for RealtimeOnly things it never prints into
     // the map mesh (ACS:83086), whose shadow is the dynamic SunShadowFade.
-    private static CellBox? Stamp(Thing thing, OcclusionBuilder builder, HashSet<Building_Door> doors, bool sunDisabled)
+    private static CellBox? Stamp(Thing thing, OcclusionBuilder builder, HashSet<Building_Door> doors, CasterChunks casters, bool sunDisabled)
     {
+        casters.Remove(thing);
         ThingDef def = thing.def;
         if (def.category != ThingCategory.Building && def.category != ThingCategory.Plant && def.category != ThingCategory.Item) return null;
         bool blocker = def.blockLight;
@@ -196,14 +211,19 @@ internal static class OcclusionField
         }
         float cover = def.Fillage != FillCategory.None ? def.fillPercent : 0f;
         if (height == 0f && cover == 0f) return null;
+        CellRect occupied = thing.OccupiedRect();
         if (!OcclusionMasks.TryGet(thing, out SpritePiece[] sprite))
         {
             if (height == 0f) return null;
             if (Warned.Add(def)) Log.Warning($"[RimLumen] Cannot read occlusion texture for {def.defName}; using solid footprint.");
-            CellRect rect = thing.OccupiedRect();
-            sprite = [new SpritePiece(AlphaMask.Opaque(rect.Width * OcclusionLayout.TexelsPerCell, rect.Height * OcclusionLayout.TexelsPerCell), new MaskPlacement((rect.minX + rect.maxX + 1) * 0.5f,
-                (rect.minZ + rect.maxZ + 1) * 0.5f, rect.maxX - rect.minX + 1, rect.maxZ - rect.minZ + 1))];
+            sprite = [new SpritePiece(AlphaMask.Opaque(occupied.Width * OcclusionLayout.TexelsPerCell, occupied.Height * OcclusionLayout.TexelsPerCell),
+                new MaskPlacement((occupied.minX + occupied.maxX + 1) * 0.5f, (occupied.minZ + occupied.maxZ + 1) * 0.5f, occupied.Width, occupied.Height))];
         }
-        return builder.StampOccluder(sprite, new Occluder(height, fade, cover));
+        if (height == 0f) return builder.StampCover(sprite, cover);
+        var loops = new List<Vector2[]>();
+        foreach (SpritePiece piece in sprite)
+            loops.AddRange(Silhouette.Place(Outlines.GetValue(piece.Mask, Silhouette.Of), piece.At));
+        casters.Set(thing, new Caster(loops.ToArray(), height, fade, new CellBox(occupied.minX, occupied.minZ, occupied.maxX, occupied.maxZ)));
+        return null;
     }
 }

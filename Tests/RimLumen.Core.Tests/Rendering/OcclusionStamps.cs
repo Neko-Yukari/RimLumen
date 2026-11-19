@@ -1,4 +1,5 @@
 using System;
+using RimLumen.Core.Lighting.Casters;
 using RimLumen.Core.Lighting.Occlusion;
 
 namespace RimLumen.Core.Tests.Rendering;
@@ -6,7 +7,7 @@ namespace RimLumen.Core.Tests.Rendering;
 // Sprite art for tests: Width x Height alpha values, column 0 west, row 0 south, stretched over a placement.
 internal sealed record Pattern(int Width, int Height, byte[] Alpha);
 
-// The Occluder values OcclusionField.Stamp derives from a def, for sprites given directly as a pattern and placement.
+// The stamps and casters OcclusionField.Stamp derives from a def, for sprites given directly as a pattern and placement.
 internal static class OcclusionStamps
 {
     internal static readonly Pattern Opaque = new(1, 1, [255]);
@@ -31,12 +32,13 @@ internal static class OcclusionStamps
     internal static CellBox? Blocker(this OcclusionBuilder builder, CellBox cells, float height, DoorAxis? door, bool fade = false) =>
         builder.StampBlocker(cells, door, height, fade);
 
-    // A non-blockLight height thing: fade for a shadowData height, hard for a staticSunShadowHeight.
-    internal static CellBox? Height(this OcclusionBuilder builder, Pattern art, MaskPlacement at, float height, bool fade) =>
-        builder.StampOccluder([new SpritePiece(Fit(art, at), at)], new Occluder(height, fade, Cover: 0f));
+    // A non-blockLight height thing over its occupied cells rect: fade for a shadowData height, hard for a
+    // staticSunShadowHeight.
+    internal static Caster Caster(Pattern art, MaskPlacement at, float height, bool fade, CellBox rect) =>
+        new(Silhouette.Place(Silhouette.Of(Fit(art, at)), at), height, fade, rect);
 
     internal static CellBox? Cover(this OcclusionBuilder builder, Pattern art, MaskPlacement at, float fillPercent) =>
-        builder.StampOccluder([new SpritePiece(Fit(art, at), at)], new Occluder(0f, Fade: false, fillPercent));
+        builder.StampCover([new SpritePiece(Fit(art, at), at)], fillPercent);
 
     internal static MaskPlacement Over(CellBox cells) => new((cells.MinX + cells.MaxX + 1) * 0.5f, (cells.MinZ + cells.MaxZ + 1) * 0.5f,
         cells.MaxX - cells.MinX + 1, cells.MaxZ - cells.MinZ + 1);

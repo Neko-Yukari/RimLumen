@@ -25,10 +25,12 @@ public sealed class RimLumenSettings : ModSettings
     public bool EnableDemoBuildings = false;
     public string SelectedShaderPackId = ShaderPackCatalog.DefaultPackId;
     public Dictionary<string, float> PackParamOverrides = new(StringComparer.OrdinalIgnoreCase);
+    // Pack id -> the player's object-shadows choice; a pack without an entry uses its pack.json objectShadows.
+    public Dictionary<string, bool> ObjectShadowOverrides = new(StringComparer.OrdinalIgnoreCase);
 
     private string? appliedPackId;
 
-    // Ensures: persists base settings, SelectedShaderPackId and per-pack PackParamOverrides.
+    // Ensures: persists base settings, SelectedShaderPackId and per-pack PackParamOverrides and ObjectShadowOverrides.
     public override void ExposeData()
     {
         Scribe_Values.Look(ref EnhanceVanillaAdditiveGlow, "enhanceVanillaAdditiveGlow", true);
@@ -49,12 +51,16 @@ public sealed class RimLumenSettings : ModSettings
         Scribe_Values.Look(ref EnableDemoBuildings, "enableDemoBuildings", false);
         Scribe_Values.Look(ref SelectedShaderPackId, "selectedShaderPackId", ShaderPackCatalog.DefaultPackId);
         Scribe_Collections.Look(ref PackParamOverrides, "packParamOverrides", LookMode.Value, LookMode.Value);
+        Scribe_Collections.Look(ref ObjectShadowOverrides, "objectShadowOverrides", LookMode.Value, LookMode.Value);
 
         if (string.IsNullOrWhiteSpace(SelectedShaderPackId))
             SelectedShaderPackId = ShaderPackCatalog.DefaultPackId;
         PackParamOverrides = PackParamOverrides is null
             ? new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, float>(PackParamOverrides, StringComparer.OrdinalIgnoreCase);
+        ObjectShadowOverrides = ObjectShadowOverrides is null
+            ? new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, bool>(ObjectShadowOverrides, StringComparer.OrdinalIgnoreCase);
         ParticleDensityScale = Mathf.Clamp(ParticleDensityScale, 0.1f, 1.0f);
 
         // Startup loads settings on the async PlayDataLoader thread before Install; RimLumenMod's ctor defers that first apply.
@@ -98,10 +104,15 @@ public sealed class RimLumenSettings : ModSettings
         }
 
         ShaderPackCatalog.ApplyOptionsToRuntime(entry, PackParamOverrides, RimLumenRenderHost.ShaderPackParams);
+        RimLumenRenderHost.SetObjectShadows(entry.Spec, ObjectShadowsFor(entry));
     }
+
+    internal bool ObjectShadowsFor(ShaderPackEntry entry) =>
+        ObjectShadowOverrides.TryGetValue(entry.Id, out bool on) ? on : entry.Spec.ObjectShadows;
 
     public void ResetPackOverrides(string packId)
     {
+        ObjectShadowOverrides.Remove(packId);
         string prefix = packId + ":";
         foreach (string key in PackParamOverrides.Keys.Where(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList())
             PackParamOverrides.Remove(key);
@@ -122,6 +133,7 @@ public sealed class RimLumenSettings : ModSettings
         EnableDemoBuildings = false;
         SelectedShaderPackId = ShaderPackCatalog.DefaultPackId;
         PackParamOverrides.Clear();
+        ObjectShadowOverrides.Clear();
         ApplyToRuntime(forceReloadPack: true);
     }
 }
@@ -218,6 +230,13 @@ public sealed class RimLumenMod : Verse.Mod
         DrawActionRow(listing, activeEntry);
         listing.Gap(6f);
         DrawPackSummary(listing, activeEntry);
+        bool objectShadows = Settings.ObjectShadowsFor(activeEntry);
+        listing.CheckboxLabeled("RimLumen_ObjectShadows".Translate(), ref objectShadows, "RimLumen_ObjectShadowsTip".Translate());
+        if (objectShadows != Settings.ObjectShadowsFor(activeEntry))
+        {
+            Settings.ObjectShadowOverrides[activeEntry.Id] = objectShadows;
+            settingsChanged = true;
+        }
 
         string? runtimeError = RimLumenRenderHost.LastShaderPackError;
         if (!string.IsNullOrWhiteSpace(runtimeError))

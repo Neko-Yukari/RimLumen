@@ -32,8 +32,11 @@ internal sealed class LightPoolShadows
     // Texture and appended-uniform contracts checked by LayoutMatches (LightPoolRenderer.BindOcclusion fills slots 0-2).
     internal const string LightSumTexture = "_LumenLightSum";
     internal static readonly string[] OcclusionTextures = ["_LumenOcclusion", "_LumenOcclusionCoarse", "_LumenDoorOpen"];
-    internal static readonly string[] ShadeTextures = [.. OcclusionTextures, LightSumTexture];
-    internal static readonly string[] ShadeUniforms = ["_LumenCastVect", "_LumenSunShadowColor"];
+    internal const string ObjectShadowTexture = "_LumenObjectShadow", SunChannelUniform = "_LumenSunChannel";
+    internal static readonly string[] ShadeTextures = [.. OcclusionTextures, LightSumTexture, ObjectShadowTexture];
+    internal static readonly string[] ShadeUniforms = ["_LumenCastVect", "_LumenSunShadowColor", SunChannelUniform];
+    internal static readonly string[] FadeTextures = [.. OcclusionTextures, ObjectShadowTexture];
+    internal static readonly string[] FadeUniforms = [SunChannelUniform];
 
     // Requires: main thread, install time (RimLumenMapHooks.Arm), before any capture.
     // Ensures: binds the two Waylith members this file reaches; throws when either was renamed or changed signature,
@@ -66,9 +69,10 @@ internal sealed class LightPoolShadows
         return method;
     }
 
-    // liftedTextures: the lifted program's textures in binding order (LayoutMatches); empty when liftedFile is null.
+    // liftedTextures: the lifted program's textures in binding order, liftedUniforms the vectors it appends to vanilla's
+    // block (LayoutMatches); empty when liftedFile is null.
     internal sealed class Kind(string defName, string vertexFile, string fragmentFile, string? liftedFile, string[] liftedTextures,
-        UnityEngine.Material material, int bindingId, bool takeover = false, string? liftedVertex = null)
+        UnityEngine.Material material, int bindingId, bool takeover = false, string? liftedVertex = null, string[]? liftedUniforms = null)
     {
         internal readonly string DefName = defName;
         internal readonly bool IsTakeover = takeover;
@@ -105,7 +109,7 @@ internal sealed class LightPoolShadows
             if (liftedVertex is not null) lifted.vertexShaderFileName = liftedVertex;
             lifted.fragmentShaderFileName = liftedFile;
             Shader shader = LightPoolRenderer.CreateShader("RimLumen." + (IsTakeover ? "Takeover." : string.Empty) + DefName, lifted, Vanilla.PipelineState);
-            if (!LayoutMatches(shader.MaterialLayout, Vanilla.MaterialLayout, liftedTextures))
+            if (!LayoutMatches(shader.MaterialLayout, Vanilla.MaterialLayout, liftedTextures, liftedUniforms ?? []))
                 throw new InvalidOperationException($"[RimLumen] {liftedFile} no longer matches the material layout of vanilla {fragmentFile}.");
             Lifted = shader;
             return null;
