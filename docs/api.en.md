@@ -639,10 +639,10 @@ Classification reads def fields only, never names, so modded buildings written t
 
 | Kind | Test | Effect on pools |
 | --- | --- | --- |
-| Walls, smoothed walls, natural rock, doors, coolers and similar | `def.blockLight` | Infinitely high blocker. The shape comes from sprite alpha; texels with alpha ≥ 0.5 are solid |
+| Walls, smoothed walls, natural rock, doors, coolers and similar | `def.blockLight` | Infinitely high blocker. The shape is the sprite's alpha ≥ 0.5 outline; a texel whose centre lies inside it is solid |
 | Cover (sandbags, barricades, low walls, some plants and items) | not `blockLight`, `Fillage == Partial`, category Building, Plant or Item, and no height (see the next row) | Partial transmission set by `fillPercent` |
 | Things with `Fillage == Full` but no `blockLight` | as above | Treated as cover with `fillPercent ≈ 1`: almost opaque, but without the wall rules |
-| Things with a height (columns, sculptures, furniture, plants, sarcophagi) | not `blockLight`, and a building with `staticSunShadowHeight > 0` or a thing with `graphicData.shadowData` (not `RealtimeOnly`) | Cast a geometric height shadow instead of `fillPercent` partial transmission, at the height of their vanilla sun shadow |
+| Things with a height (columns, sculptures, furniture, plants, sarcophagi) | not `blockLight`, and a building with `staticSunShadowHeight > 0` or a thing with `graphicData.shadowData` (not `RealtimeOnly`) | Cast a geometric height shadow instead of `fillPercent` partial transmission, at the height of their vanilla sun shadow, shaped by the sprite's alpha ≥ 0.5 outline |
 
 Pawns, animals, motes and projectiles are not in the map. Roofs never block, and neither do positions outside the map. A `blockLight` thing whose sprite pixels cannot be read is stamped solid over `def.size`, with one warning per def; cover with an unreadable sprite does not occlude.
 
@@ -651,7 +651,7 @@ Pawns, animals, motes and projectiles are not in the map. Roofs never block, and
 - Wall outlines come from the sprite, so linked-wall corners and gaps show in the lighting.
 - A lamp embedded in a wall is not blocked by the solid run it sits in.
 - A one-cell-wide wall column takes one brightness along its whole length, the brightness of its lit face. The alternating per-cell banding is gone.
-- Wall cores deeper than about 0.75 cell receive no light, so the far row of a two-cell-thick wall and mountain interiors stay dark.
+- Wall cores at least 0.875 cell (3.5 texels) from the nearest wall edge receive no light, so the far row of a two-cell-thick wall, mountain interiors and concave mountain corners stay dark.
 - A closed door blocks all light. An open door lets light through only the gap its leaves clear: the opening half-width is `0.45 × openness` for ordinary doors and `0.35 × openness` for multi-tile doors (in door widths). A multi-tile door that is `StuckOpen` draws no leaves and counts as fully open.
 - Door state is polled every frame and only updates a small door-state texture, so opening and closing doors never rebuilds the whole occlusion map.
 
@@ -676,7 +676,7 @@ Things with a height cast shadows away from each light, for effect pools and van
 
 **Smooth edges**
 
-Every step bilinearly interpolates the surrounding 2×2 texels instead of reading a single texel. A ray grazing a wall corner falls from fully visible to fully blocked continuously over one texel (0.25 cell), and cover edges are soft too.
+Each texel of the occlusion map stores its signed distance to the sprite outline. Every step bilinearly interpolates the distances of the surrounding 2×2 texels, so shadow edges sit at sub-texel positions: occlusion starts on the outline and reaches full blocking within 1/8 texel (about 0.03 cell) inside it. Sun shadows and point lights follow the same rule. Cover bilinearly interpolates the opacity of the surrounding 2×2 texels, so its edges are soft.
 
 **When the map updates**
 
@@ -715,7 +715,7 @@ It is evaluated once per frame. The frame runs as if the setting were off when a
 - **Vanilla glowers**: lamps, campfires and every other vanilla `GlowGrid` light each become a light pool bounded by the occlusion map. Falloff follows vanilla: `lerp(1 − d′/R, 1/d′², 0.4)` with `d′ = 1 + distance`.
 - **Effect pools become additive**: effect pools are added into the lighting term instead of `scene × (1 + L)`. At night they are noticeably brighter than with the setting off; this is intended.
 - **Sun shadows**: vanilla's static sun shadows (`SunShadow`) and the shadows printed into the map mesh (persistent `SunShadowFade`) are no longer drawn; the occlusion map reproduces them. Direction, length and colour come from vanilla's cast vector and shadow colour, so weather, eclipses and night-time moon shadows still apply.
-  - Buildings cast with their `staticSunShadowHeight` and sprite shape; furniture, trees and other things with `shadowData` cast vanilla's box and fade along its height.
+  - Buildings cast with their `staticSunShadowHeight`; furniture, trees and other things with `shadowData` cast at the height of vanilla's box and fade along it. Every shadow takes its shape from the sprite outline instead of vanilla's `shadowData` box, so a tree canopy casts a full canopy shadow.
   - Sun shadows are drawn at vanilla `SunShadow`'s ground altitude, so scene depth keeps them off walls, statues and other sprites, as in vanilla.
   - Indoors, natural rock tops and non-rendered terrain get no sun shadow; vanilla's stencil bit 4 decides.
   - On maps with sun shadows disabled (`disableSunShadows` or the biome's `disableShadows`), only static building shadows go away; `shadowData` shadows stay, as in vanilla.
@@ -747,7 +747,8 @@ Each pixel is darkened once: where both shadows are `c`, the result is `c`, not 
 
 - Vanilla glow floods around wall corners by path distance; takeover pools use straight line of sight, so light shapes near corners differ from vanilla. `GlowGrid` values are unaffected.
 - Vanilla `VisualGlowAt` is 0 on vacuum terrain; takeover pools do not reproduce this (Odyssey space maps).
-- When a ray that has just left one wall grazes another wall by less than one texel (0.25 cell), that graze has no soft edge. A ray that actually crosses the other wall is still fully blocked.
+- When a ray that has just left one wall grazes another wall by less than 1/8 texel (about 0.03 cell), that graze has no soft edge. A ray that actually crosses the other wall is still fully blocked.
+- Where a wall meets a thing with a height (such as a table against the wall), the boundary between them may sit up to 0.39 texel (about 0.1 cell) inside the occupied texel.
 
 ## 8. Optional `Chezhou.RimUnity` Bridge
 
