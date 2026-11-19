@@ -28,6 +28,7 @@ internal static class ParticleEnvironmentHooks
 
     private static void MapRemoved(Map __instance)
     {
+        RimLumen.Core.Scene.LumenSceneBootstrap.Service.ReleaseMap(__instance.uniqueID);
         ParticleCollisionFields.Forget(__instance.uniqueID);
         RimLumen.Core.Lighting.Occlusion.OcclusionField.Forget(__instance.uniqueID);
     }

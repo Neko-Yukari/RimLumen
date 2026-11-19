@@ -131,6 +131,12 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
         }
     }
 
+    internal void ReleaseMap(int mapIndex)
+    {
+        foreach (var handle in handles)
+            if (handle.MapIndex == mapIndex) handle.Dispose();
+    }
+
     internal bool ShouldWarnUnknownEffect(string effectId, LumenAssetResolution resolution)
         => resolution == LumenAssetResolution.NotFound && warnedUnknownEffects.Add(effectId);
 

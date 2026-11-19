@@ -144,6 +144,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     }
 
     public string EffectId => asset.EffectId;
+    internal int MapIndex => request.MapIndex;
 
     // Ensures: true when the play request asked for real-time (unscaled) simulation: the handle and its L1
     //          emitters keep advancing while the game is paused or running at another speed.

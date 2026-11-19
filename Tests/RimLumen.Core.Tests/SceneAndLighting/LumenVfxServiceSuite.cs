@@ -177,6 +177,41 @@ public static class LumenVfxServiceSuite
     }
 
     [LumenFact]
+    public static void ReleaseMapImmediatelyRemovesOnlyItsEffects()
+    {
+        var asset = new EffectAsset
+        {
+            EffectId = "map.release", Nodes = new[]
+            {
+                new EffectNodeSpec { Name = "cpu", Emitter = VfxTestData.Emitter(tier: LumenParticleTier.L1_NativeCpu) },
+                new EffectNodeSpec { Name = "gpu", Emitter = VfxTestData.Emitter() },
+            },
+        };
+        var service = VfxTestData.Service(asset);
+        var gpu = new SpyGpuEngine();
+        service.GpuEngineProvider = () => gpu;
+        var mapA = new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7101 };
+        var mapB = mapA with { MapIndex = 7102 };
+        using var first = service.Play(mapA);
+        using var survivor = service.Play(mapB);
+        using var last = service.Play(mapA);
+        VfxTestData.Step(service, 0.25f, mapA.MapIndex);
+        VfxAssert.Equal(3, service.Simulator.LiveParticleCount);
+
+        service.ReleaseMap(mapA.MapIndex);
+
+        VfxAssert.Equal(1, service.LiveHandleCount);
+        VfxAssert.Check(!first.IsAlive && !last.IsAlive && survivor.IsAlive, "Only map B's handle survives");
+        VfxAssert.Equal(1, service.Simulator.ActiveEmitterCount);
+        VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(0, service.Simulator.Vertices.Length);
+        VfxAssert.Check(!gpu.IsInstanceAlive(0) && gpu.IsInstanceAlive(1) && !gpu.IsInstanceAlive(2),
+            "Only map B's GPU instance survives");
+        VfxTestData.Step(service, 0f, mapB.MapIndex);
+        VfxAssert.Equal(4, service.Simulator.Vertices.Length);
+    }
+
+    [LumenFact]
     public static void ReplacementGpuEngineReceivesDisplayStateThroughInterface()
     {
         var asset = new EffectAsset
