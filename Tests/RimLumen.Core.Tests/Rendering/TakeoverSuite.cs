@@ -40,17 +40,17 @@ public static class TakeoverSuite
     }
 
     [LumenFact]
-    public static void SplitKeepsTheShadowTipOfACellAlignedWall()
+    public static void WallShadowTipIsCastFromWhereTheRayEntersTheOutline()
     {
-        // Pre-split values (bilinear G) at the noon tip of a unit-height wall whose south edge is z = 30: the coverage
-        // split moves only the ramp at the footprint edge, so a tip cast from the wall's interior height is unchanged.
+        // Noon tip of a unit-height wall whose south edge is z = 30: the ray reaches full edge EdgeRamp inside the
+        // outline, at z = 30 + EdgeRamp / 4, so ground z sees height t = (that z - z) / 1.5 there and visibility
+        // 1 - clamp((h - t) / HeightBand, 0, 1). One step per texel alone put it at the texel centre z = 30.125.
         var builder = new OcclusionBuilder(40, 40);
         builder.Wall(new CellBox(5, 30, 5, 30));
         OcclusionFrame frame = Frame(builder, 40);
-        Equal(1f, SunTransport.Visibility(frame, new(5.5f, 28.6f), Noon));
-        Near(0.5686f, SunTransport.Visibility(frame, new(5.5f, 28.7f), Noon), 1e-4f);
-        Near(0.1419f, SunTransport.Visibility(frame, new(5.5f, 28.78f), Noon), 1e-4f);
-        Equal(0f, SunTransport.Visibility(frame, new(5.5f, 28.9f), Noon));
+        float h = 128f / 255f * OcclusionLayout.MaxSunHeight, entry = 30f + OcclusionLayout.EdgeRamp / OcclusionLayout.TexelsPerCell;
+        foreach (float z in new[] { 28.5f, 28.6f, 28.7f, 28.78f, 28.9f })
+            Near(1f - Math.Clamp((h - (entry - z) / 1.5f) / SunTransport.HeightBand, 0f, 1f), SunTransport.Visibility(frame, new(5.5f, z), Noon), 1e-4f);
     }
 
     [LumenFact]
@@ -111,12 +111,13 @@ public static class TakeoverSuite
     [LumenFact]
     public static void ShadowDataBoxFadesAsOneMinusTOverH()
     {
-        // 3 x 3 box, height 1, sampled 0.75 cells south of its south edge at noon. The first fine step inside the box
-        // is the texel centre z = 4.125, reached at t = 0.875 / 1.5; the fade leaves 1 - (1 - t / h) = t / h lit.
+        // 3 x 3 box, height 1, sampled 0.75 cells south of its south edge z = 4 at noon. The shadow peaks where the ray
+        // reaches full edge, EdgeRamp inside the outline, at t = (0.75 + EdgeRamp / 4) / 1.5; the fade leaves
+        // 1 - (1 - t / h) = t / h lit.
         var faded = new OcclusionBuilder(12, 12);
         faded.Height(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 5.5f, 3f, 3f), 1f, fade: true);
         float vis = SunTransport.Visibility(Frame(faded, 12), new(5.5f, 3.25f), Noon);
-        float expected = (0.875f / 1.5f) / (128f / 255f * OcclusionLayout.MaxSunHeight);
+        float expected = ((0.75f + OcclusionLayout.EdgeRamp / OcclusionLayout.TexelsPerCell) / 1.5f) / (128f / 255f * OcclusionLayout.MaxSunHeight);
         Require(MathF.Abs(vis - expected) < 1e-4f, $"Faded box: expected {expected}; got {vis}.");
 
         var hard = new OcclusionBuilder(12, 12);
@@ -216,6 +217,41 @@ public static class TakeoverSuite
         Require(behind < 0.75f, $"Ground behind the Column: expected a shadow; visibility {behind}.");
         Equal(1f, PoolVisibility(torch, column, 5.5f, 11.0f));
         Equal(1f, PoolVisibility(torch, column, 7.0f, 6.0f));
+    }
+
+    [LumenFact]
+    public static void ColumnNorthFaceShadowFadesLikeItsBody()
+    {
+        // A torch south-west of the Column casts north-east across the sprite's north face (z = 6.325), whose edge
+        // texels carry no fade flag of their own. A fade occluder shades at most 1 - t / h, so a ground point keeps at
+        // least rise * (its distance to the sprite, less one texel) / h lit, densely sampled and as marched.
+        var torch = new VisualPointLight(3.5f, VisualPointLight.VanillaHeight, 3.5f, 10f, new Vector3(0.5f), VisualPointLightKind.Vanilla);
+        OcclusionFrame column = Column();
+        float h = MathF.Floor(255f * 0.5f) / 255f;
+        foreach (Vector2 target in AcrossShadow(torch, 1.0f, 2.0f))
+        {
+            float dx = MathF.Max(0f, MathF.Abs(target.X - 5.5f) - 0.25f), dz = MathF.Max(0f, MathF.Max(5.075f - target.Y, target.Y - 6.325f));
+            float rise = torch.Y / Vector2.Distance(target, new Vector2(torch.X, torch.Z));
+            float bound = rise * MathF.Max(0f, MathF.Sqrt(dx * dx + dz * dz) - 0.25f) / h;
+            float dense = DensePointVisibility(torch, column, target), march = SunTransport.PointVisibility(column, new Vector2(torch.X, torch.Z), torch.Y, target);
+            Require(dense >= bound && march >= bound, $"Column shadow at {target}: dense {dense}, march {march}; expected both at least {bound}.");
+        }
+    }
+
+    [LumenFact]
+    public static void ColumnShadowSideMarchesLikeADenseMarch()
+    {
+        // Across the Column's diagonal shadow, including both shadow sides where rays graze the sprite outline, the
+        // march (one fine step per texel crossed plus the outline entry) stays within 0.05 of the same march sampled
+        // every 0.005 cell. Targets on the sprite itself are left out: there the own-footprint skip decides the first step.
+        var torch = new VisualPointLight(3.5f, VisualPointLight.VanillaHeight, 3.5f, 10f, new Vector3(0.5f), VisualPointLightKind.Vanilla);
+        OcclusionFrame column = Column();
+        foreach (Vector2 target in AcrossShadow(torch, 0.6f, 1.0f, 1.5f, 2.0f))
+        {
+            if (target.X >= 5.25f && target.X <= 5.75f && target.Y >= 5.075f && target.Y <= 6.325f) continue;
+            float dense = DensePointVisibility(torch, column, target), march = SunTransport.PointVisibility(column, new Vector2(torch.X, torch.Z), torch.Y, target);
+            Require(MathF.Abs(march - dense) <= 0.05f, $"Column shadow at {target}: march {march}, dense {dense}.");
+        }
     }
 
     [LumenFact]
@@ -351,6 +387,31 @@ public static class TakeoverSuite
         var builder = new OcclusionBuilder(16, 16);
         builder.Height(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 5.7f, 0.5f, 1.25f), MathF.Floor(255f * 0.5f) / 255f, fade: true);
         return Frame(builder, 16);
+    }
+
+    // Ground points every 0.05 cell on lines across the Column's shadow from light, each line `past` cells beyond the
+    // sprite centre and 1.6 cells long.
+    private static System.Collections.Generic.IEnumerable<Vector2> AcrossShadow(VisualPointLight light, params float[] pasts)
+    {
+        var centre = new Vector2(5.5f, 5.7f);
+        Vector2 along = Vector2.Normalize(centre - new Vector2(light.X, light.Z)), across = new(-along.Y, along.X);
+        foreach (float past in pasts)
+            for (int i = -16; i <= 16; i++)
+                yield return centre + along * past + across * (i * 0.05f);
+    }
+
+    // SunTransport.PointVisibility with the height march sampled every 0.005 cell instead of per texel crossed.
+    private static float DensePointVisibility(VisualPointLight light, OcclusionFrame frame, Vector2 target)
+    {
+        var at = new Vector2(light.X, light.Z);
+        float length = Vector2.Distance(at, target);
+        Vector2 direction = (at - target) / length;
+        float skipBefore = LightTransport.RunLength(frame, target, direction, length, true);
+        float skipFrom = length - LightTransport.RunLength(frame, at, -direction, length, true);
+        float shadow = skipBefore == 0f ? SunTransport.Shadow(frame.Map, target, 0f, true, out _) : 0f;
+        for (float a = 0.0025f; a < length; a += 0.005f)
+            if (a >= skipBefore && a < skipFrom) shadow = MathF.Max(shadow, SunTransport.Shadow(frame.Map, target + direction * a, a * light.Y / length, true, out _));
+        return 1f - shadow;
     }
 
     // The pool's occlusion factor at (x, z): its value on frame over its value on an empty map (no projection clamp at 0.5).

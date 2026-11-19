@@ -46,6 +46,28 @@ bool lumenRunTexel(ivec2 p, bool height)
     return v.g != 0.0 && (int(round(v.a * 255.0)) & 4) != 0;
 }
 
+// GridWalk.Enter: the cell of spacing size holding start; a start on a cell edge belongs to the cell ahead.
+ivec2 lumenGridEnter(vec2 start, vec2 direction, float size)
+{
+    vec2 g = start / size;
+    ivec2 cell = ivec2(floor(g));
+    if (direction.x < 0.0 && g.x == float(cell.x)) cell.x--;
+    if (direction.y < 0.0 && g.y == float(cell.y)) cell.y--;
+    return cell;
+}
+
+// GridWalk.Leave: the distance where the ray leaves cell, at most limit; cell steps into the next cell on every axis
+// whose edge it reaches by then.
+float lumenGridLeave(vec2 start, vec2 direction, float size, float limit, inout ivec2 cell)
+{
+    float tx = direction.x > 0.0 ? (float(cell.x + 1) * size - start.x) / direction.x : direction.x < 0.0 ? (float(cell.x) * size - start.x) / direction.x : 1e30;
+    float tz = direction.y > 0.0 ? (float(cell.y + 1) * size - start.y) / direction.y : direction.y < 0.0 ? (float(cell.y) * size - start.y) / direction.y : 1e30;
+    float end = min(limit, min(tx, tz));
+    if (tx <= end) cell.x += direction.x > 0.0 ? 1 : -1;
+    if (tz <= end) cell.y += direction.y > 0.0 ? 1 : -1;
+    return end;
+}
+
 // LightTransport.RunLength: the contiguous run of solid (height: FlagPointHeight G > 0) texels from start along direction, at
 // most limit. Solid starts in start's own texel; height starts in the first texel along direction.
 float lumenRunLength(vec2 start, vec2 direction, float limit, bool height)
@@ -53,35 +75,28 @@ float lumenRunLength(vec2 start, vec2 direction, float limit, bool height)
     bool deep;
     if (!height && !lumenSolid(start, deep)) return 0.0;
     float distance = 0.0;
-    vec2 texel = start * 4.0;
-    ivec2 cell = ivec2(floor(texel));
-    if (direction.x < 0.0 && texel.x == float(cell.x)) cell.x--;
-    if (direction.y < 0.0 && texel.y == float(cell.y)) cell.y--;
-    while (distance < limit)
-    {
-        if (!lumenRunTexel(cell, height)) break;
-        float tx = direction.x > 0.0 ? ((float(cell.x) + 1.0) * 0.25 - start.x) / direction.x : direction.x < 0.0 ? (float(cell.x) * 0.25 - start.x) / direction.x : 1e30;
-        float tz = direction.y > 0.0 ? ((float(cell.y) + 1.0) * 0.25 - start.y) / direction.y : direction.y < 0.0 ? (float(cell.y) * 0.25 - start.y) / direction.y : 1e30;
-        distance = min(limit, min(tx, tz));
-        if (tx <= distance) cell.x += direction.x > 0.0 ? 1 : -1;
-        if (tz <= distance) cell.y += direction.y > 0.0 ? 1 : -1;
-    }
+    ivec2 cell = lumenGridEnter(start, direction, 0.25);
+    while (distance < limit && lumenRunTexel(cell, height))
+        distance = lumenGridLeave(start, direction, 0.25, limit, cell);
     return distance;
 }
 
-// TexelSplit.Of: x = edge, clamp(bilerp(d) / EdgeRamp 0.125, 0, 1) with d = -DistanceBand on texels inside another term's
-// footprint (d > 0, not occupied); y = bilerp(occupied); z = bilerp(occupied ? value : 0); w = bilerp(occupied ? 0 :
-// value). Texels in gather order 00, 10, 01, 11. Shared by the point-light and sun paths (design 1.8).
+// TexelSplit.Of: x = distance, bilerp(d) with d = -DistanceBand on texels inside another term's footprint (d > 0, not
+// occupied), and lumenEdge(split) = clamp(x / EdgeRamp 0.125, 0, 1); y = bilerp(occupied); z = bilerp(occupied ?
+// value : 0); w = bilerp(occupied ? 0 : value). Texels in gather order 00, 10, 01, 11. Shared by the point-light and sun paths (design 1.8).
 vec4 lumenTexelSplit(vec4 values, vec4 occupied, vec4 distances, vec2 f)
 {
     vec4 inside = values * occupied;
     vec4 outside = values - inside;
     vec4 gated = mix(distances, vec4(-4.0), vec4(lessThan(occupied, vec4(0.5))) * vec4(greaterThan(distances, vec4(0.0))));
-    return vec4(clamp(mix(mix(gated.x, gated.y, f.x), mix(gated.z, gated.w, f.x), f.y) / 0.125, 0.0, 1.0),
+    return vec4(mix(mix(gated.x, gated.y, f.x), mix(gated.z, gated.w, f.x), f.y),
         mix(mix(occupied.x, occupied.y, f.x), mix(occupied.z, occupied.w, f.x), f.y),
         mix(mix(inside.x, inside.y, f.x), mix(inside.z, inside.w, f.x), f.y),
         mix(mix(outside.x, outside.y, f.x), mix(outside.z, outside.w, f.x), f.y));
 }
+
+// TexelSplit.Edge.
+float lumenEdge(vec4 split) { return clamp(split.x / 0.125, 0.0, 1.0); }
 
 // LightTransport.Distance of the four gathered texels: decoded B, -DistanceBand outside the map.
 vec4 lumenGatherDistances(vec2 gatherUv, ivec2 points[4], ivec2 size)
@@ -127,7 +142,7 @@ void lumenSample(vec2 p, bool doors, out float solid, out float cover)
         opacities[i] = opacity;
     }
     vec4 split = lumenTexelSplit(opacities, vec4(equal(opacities, vec4(1.0))), lumenGatherDistances(gatherUv, points, size), f);
-    solid = split.x;
+    solid = lumenEdge(split);
     cover = split.w;
 }
 
@@ -147,14 +162,11 @@ float lightVisibility(vec2 light, vec2 target, out float cover)
     bool exitBand = false;
     float solidVisibility = 1.0, pendingSolid = 1.0, coverVisibility = 1.0, distance = 0.0;
     ivec2 mapSize = textureSize(_LumenOcclusionCoarse, 0);
-    ivec2 cell = ivec2(floor(target));
-    if (direction.x < 0.0 && target.x == float(cell.x)) cell.x--;
-    if (direction.y < 0.0 && target.y == float(cell.y)) cell.y--;
+    ivec2 next = lumenGridEnter(target, direction, 1.0);
     while (distance < len)
     {
-        float nextX = direction.x > 0.0 ? (float(cell.x + 1) - target.x) / direction.x : direction.x < 0.0 ? (float(cell.x) - target.x) / direction.x : 1e30;
-        float nextZ = direction.y > 0.0 ? (float(cell.y + 1) - target.y) / direction.y : direction.y < 0.0 ? (float(cell.y) - target.y) / direction.y : 1e30;
-        float end = min(len, min(nextX, nextZ));
+        ivec2 cell = next;
+        float end = lumenGridLeave(target, direction, 1.0, len, next);
         bool inside = lumenInside(cell, mapSize);
         vec4 coarse = inside ? texelFetch(_LumenOcclusionCoarse, cell, 0) : vec4(0.0);
         if (!inside || coarse.r == 0.0)
@@ -164,8 +176,6 @@ float lightVisibility(vec2 light, vec2 target, out float cover)
             solidVisibility = min(solidVisibility, pendingSolid);
             pendingSolid = 1.0;
             distance = end;
-            if (nextX <= end) cell.x += direction.x > 0.0 ? 1 : -1;
-            if (nextZ <= end) cell.y += direction.y > 0.0 ? 1 : -1;
             continue;
         }
         bool doors = coarse.b != 0.0;
@@ -212,16 +222,15 @@ float lightVisibility(vec2 light, vec2 target, out float cover)
             if (solidVisibility * coverVisibility < 1.0 / 255.0) return 0.0;
         }
         distance = end;
-        if (nextX <= end) cell.x += direction.x > 0.0 ? 1 : -1;
-        if (nextZ <= end) cell.y += direction.y > 0.0 ? 1 : -1;
     }
     cover = coverVisibility;
     return min(solidVisibility, lightRun > 0.0 ? 1.0 : pendingSolid);
 }
 
 // Sun path (SunTransport.Shadow): split G height at q against height t, the edge ramp inside the footprint, faded by
-// 1 - t / h on FlagSunFade texels. point: texels without FlagPointHeight (4) read G = 0.
-float lumenSunShadow(vec2 q, float t, bool point)
+// 1 - f * t / h with f the FlagSunFade (128) share of the occupied texels. point: texels without FlagPointHeight (4)
+// read G = 0. distance: the split's distance (texels, positive inside).
+float lumenSunShadow(vec2 q, float t, bool point, out float distance)
 {
     ivec2 size = textureSize(_LumenOcclusion, 0);
     vec2 uv = q * 4.0 - 0.5;
@@ -229,21 +238,40 @@ float lumenSunShadow(vec2 q, float t, bool point)
     vec2 f = fract(uv);
     vec2 gatherUv = q * 4.0 / vec2(size);
     vec4 heights = textureGather(_LumenOcclusion, gatherUv, 1).wzxy;
-    if (point)
+    vec4 flags = textureGather(_LumenOcclusion, gatherUv, 3).wzxy;
+    vec4 fades;
+    for (int i = 0; i < 4; i++)
     {
-        vec4 flags = textureGather(_LumenOcclusion, gatherUv, 3).wzxy;
-        for (int i = 0; i < 4; i++) if ((int(round(flags[i] * 255.0)) & 4) == 0) heights[i] = 0.0;
+        int bits = int(round(flags[i] * 255.0));
+        if (point && (bits & 4) == 0) heights[i] = 0.0;
+        fades[i] = (bits & 128) != 0 ? 1.0 : 0.0;
     }
     ivec2 points[4] = ivec2[4](base, base + ivec2(1, 0), base + ivec2(0, 1), base + ivec2(1, 1));
     for (int i = 0; i < 4; i++) if (!lumenInside(points[i], size)) heights[i] = 0.0;
-    vec4 split = lumenTexelSplit(heights, vec4(greaterThan(heights, vec4(0.0))), lumenGatherDistances(gatherUv, points, size), f);
-    float edge = split.x;
+    vec4 occupied = vec4(greaterThan(heights, vec4(0.0)));
+    vec4 split = lumenTexelSplit(heights, occupied, lumenGatherDistances(gatherUv, points, size), f);
+    distance = split.x;
+    float edge = lumenEdge(split);
     if (edge <= 0.0) return 0.0;
     float h = split.z / split.y * 2.0;
-    float s = clamp((h - t) / 0.125, 0.0, 1.0) * edge;
-    ivec2 nearest = ivec2(floor(q * 4.0));
-    if (s > 0.0 && lumenInside(nearest, size) && (int(round(texelFetch(_LumenOcclusion, nearest, 0).a * 255.0)) & 128) != 0)
-        s *= 1.0 - t / h;
+    fades *= occupied;
+    float fade = mix(mix(fades.x, fades.y, f.x), mix(fades.z, fades.w, f.x), f.y) / split.y;
+    return clamp((h - t) / 0.125, 0.0, 1.0) * edge * (1.0 - fade * t / h);
+}
+
+// SunTransport.Step: the shadow at a and, where the split distance crossed the ramp top since the step right before
+// (last >= 0, the t = 0 step at p included), also where it reaches the ramp top, placed linearly between the two.
+float lumenHeightStep(vec2 p, vec2 direction, float rise, bool point, float a, inout float last, inout float lastDistance)
+{
+    float d, unused;
+    float s = lumenSunShadow(p + direction * a, a * rise, point, d);
+    if (last >= 0.0 && lastDistance < 0.125 && d > 0.125)
+    {
+        float c = last + (a - last) * (0.125 - lastDistance) / (d - lastDistance);
+        s = max(s, lumenSunShadow(p + direction * c, c * rise, point, unused));
+    }
+    last = a;
+    lastDistance = d;
     return s;
 }
 
@@ -255,30 +283,34 @@ float lumenHeightVisibility(vec2 p, vec2 direction, float rise, float reach, flo
     ivec2 cell = ivec2(floor(p));
     if (!lumenInside(cell, mapSize)) return 1.0;
     vec4 here = texelFetch(_LumenOcclusionCoarse, cell, 0);
-    float shadow = skipBefore == 0.0 && (point ? here.a : here.g) != 0.0 ? lumenSunShadow(p, 0.0, point) : 0.0;
-    float distance = 0.0;
-    if (direction.x < 0.0 && p.x == float(cell.x)) cell.x--;
-    if (direction.y < 0.0 && p.y == float(cell.y)) cell.y--;
+    float shadow = 0.0, distance = 0.0, last = -1.0, lastDistance = 0.0;
+    if (skipBefore == 0.0 && (point ? here.a : here.g) != 0.0)
+    {
+        shadow = lumenSunShadow(p, 0.0, point, lastDistance);
+        last = 0.0;
+    }
+    ivec2 next = lumenGridEnter(p, direction, 1.0);
     while (distance < reach && shadow < 1.0)
     {
-        float nextX = direction.x > 0.0 ? (float(cell.x + 1) - p.x) / direction.x : direction.x < 0.0 ? (float(cell.x) - p.x) / direction.x : 1e30;
-        float nextZ = direction.y > 0.0 ? (float(cell.y + 1) - p.y) / direction.y : direction.y < 0.0 ? (float(cell.y) - p.y) / direction.y : 1e30;
-        float end = min(reach, min(nextX, nextZ));
+        cell = next;
+        float end = lumenGridLeave(p, direction, 1.0, reach, next);
         vec4 coarse = lumenInside(cell, mapSize) ? texelFetch(_LumenOcclusionCoarse, cell, 0) : vec4(0.0);
         if ((point ? coarse.a : coarse.g) != 0.0)
         {
-            int steps = int(ceil((end - distance) * 4.0));
-            float ds = (end - distance) / float(steps);
-            for (int step = 0; step < steps; step++)
+            // One fine step per texel crossed, at the middle of the ray's run through it (plus lumenHeightStep's outline
+            // entry), starting in this cell's texels.
+            ivec2 texel = clamp(ivec2(floor((p + direction * distance) * 4.0)), cell * 4, cell * 4 + 3);
+            for (float a = distance; a < end;)
             {
-                float at = distance + (float(step) + 0.5) * ds;
-                if (at < skipBefore || at >= skipFrom) continue;
-                shadow = max(shadow, lumenSunShadow(p + direction * at, at * rise, point));
+                float b = lumenGridLeave(p, direction, 0.25, end, texel);
+                float at = (a + b) * 0.5;
+                if (at >= skipBefore && at < skipFrom) shadow = max(shadow, lumenHeightStep(p, direction, rise, point, at, last, lastDistance));
+                else last = -1.0;
+                a = b;
             }
         }
+        else last = -1.0;
         distance = end;
-        if (nextX <= end) cell.x += direction.x > 0.0 ? 1 : -1;
-        if (nextZ <= end) cell.y += direction.y > 0.0 ? 1 : -1;
     }
     return 1.0 - shadow;
 }

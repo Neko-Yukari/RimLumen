@@ -48,21 +48,24 @@ internal static class OcclusionLayout
 // Design 1.8 split of one 2 x 2 gather, shared by the point-light and sun paths (lumenTexelSplit in
 // RimLumenOcclusion.glsl). Texels in order 00, 10, 01, 11; occupied is 1 or 0 per texel; distances the decoded B;
 // (fx, fz) the bilinear fraction. One edge rule for every texel: a texel inside another term's footprint (d > 0, not
-// occupied) reads d = -DistanceBand, then Edge = clamp(bilerp(d) / EdgeRamp, 0, 1), so the edge starts on the footprint
-// boundary. Coverage = bilerp(occupied), Inside = bilerp(occupied ? value : 0), Outside = bilerp(occupied ? 0 : value).
-internal readonly record struct TexelSplit(float Edge, float Coverage, float Inside, float Outside)
+// occupied) reads d = -DistanceBand, then Distance = bilerp(d) and Edge = clamp(Distance / EdgeRamp, 0, 1), so the edge
+// starts on the footprint boundary. Coverage = bilerp(occupied), Inside = bilerp(occupied ? value : 0), Outside =
+// bilerp(occupied ? 0 : value).
+internal readonly record struct TexelSplit(float Distance, float Coverage, float Inside, float Outside)
 {
+    internal float Edge => Math.Clamp(Distance / OcclusionLayout.EdgeRamp, 0f, 1f);
+
     internal static TexelSplit Of(Vector4 values, Vector4 occupied, Vector4 distances, float fx, float fz)
     {
         Vector4 inside = values * occupied;
         var gated = new Vector4(Gate(distances.X, occupied.X), Gate(distances.Y, occupied.Y), Gate(distances.Z, occupied.Z), Gate(distances.W, occupied.W));
-        return new(Math.Clamp(Bilerp(gated, fx, fz) / OcclusionLayout.EdgeRamp, 0f, 1f), Bilerp(occupied, fx, fz),
+        return new(Bilerp(gated, fx, fz), Bilerp(occupied, fx, fz),
             Bilerp(inside, fx, fz), Bilerp(values - inside, fx, fz));
     }
 
     private static float Gate(float d, float occupied) => occupied == 0f && d > 0f ? -OcclusionLayout.DistanceBand : d;
 
-    private static float Bilerp(Vector4 v, float fx, float fz) => (v.X * (1 - fx) + v.Y * fx) * (1 - fz) + (v.Z * (1 - fx) + v.W * fx) * fz;
+    internal static float Bilerp(Vector4 v, float fx, float fz) => (v.X * (1 - fx) + v.Y * fx) * (1 - fz) + (v.Z * (1 - fx) + v.W * fx) * fz;
 }
 
 // Inclusive cell rectangle; the offline tests cannot load Verse.CellRect.
