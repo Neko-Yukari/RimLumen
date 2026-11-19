@@ -48,41 +48,87 @@ public static class OcclusionSuite
     }
 
     [LumenFact]
-    public static void ConcaveRockCornerTexelIsWallCore()
+    public static void RockCellTouchingTheRoomOnlyAtACornerStaysDark()
     {
-        // Rock around room cells [5, 8]^2. Texel (17, 17) lies (2.5, 2.5) texels from the room's corner (20, 20): Euclidean
-        // depth 3.54 >= DeepCore. The old chamfer depth was 3, so the room light reached it.
+        // Rock around room cells [5, 8]^2, lamp in the room. Rock cell (4, 4) meets the room only at its corner (5, 5): it
+        // has no face toward the room, so every texel of it stays dark. A wall-core depth rule lit the texels within 3.5
+        // texels of that corner, the bright notch at every concave corner of a mined-out room.
         OcclusionFrame room = Room();
-        Equal(0f, Transmission(room, new(6.5f, 6.5f), new(17.5f / 4f, 17.5f / 4f)));
+        foreach (Vector2 target in CellTexels(4, 4))
+            Equal(0f, Transmission(room, new(6.5f, 6.5f), target));
     }
 
     [LumenFact]
-    public static void ConcaveRockCornerShallowTexelsStayLit()
+    public static void FirstRockLayerFacingTheLampIsLitAcrossTheWholeCell()
     {
-        // Texels (17, 18) and (18, 17): depth 2.92, not wall core.
+        // Rock cell (6, 4) faces the room across its north edge z = 5: all its texels, down to the row 3.5 texels deep,
+        // take the light of the ground just north of that edge. The rock behind it, cell (6, 3), stays dark.
         OcclusionFrame room = Room();
-        Equal(1f, Transmission(room, new(6.5f, 6.5f), new(17.5f / 4f, 18.5f / 4f)));
-        Equal(1f, Transmission(room, new(6.5f, 6.5f), new(18.5f / 4f, 17.5f / 4f)));
+        var lamp = new Vector2(6.5f, 6.5f);
+        foreach (Vector2 target in CellTexels(6, 4))
+            Equal(Transmission(room, lamp, new(target.X, 5.125f)), Transmission(room, lamp, target));
+        Equal(1f, Transmission(room, lamp, new(6.5f, 4.03f)));
+        foreach (Vector2 target in CellTexels(6, 3))
+            Equal(0f, Transmission(room, lamp, target));
     }
 
     [LumenFact]
-    public static void ConvexBlockCornerKeepsItsWallCore()
+    public static void WallEndPointingAtTheLampLightsOnlyItsNearCell()
     {
-        // A 3 x 3-cell block [4, 6]^2: inside its convex corner (16, 16) only texel (19, 19), chamfer depth 4, is wall
-        // core, as before the distance field.
+        // Wall cells (8, 4) and (8, 5), lamp due north within their x span. Only (8, 5)'s north edge faces the lamp; (8, 4)
+        // lies behind it, and its east and west edges do not face a lamp between their lines.
+        var builder = new OcclusionBuilder(12, 12);
+        builder.Wall(new CellBox(8, 4, 8, 5));
+        OcclusionFrame frame = Frame(builder);
+        var lamp = new Vector2(8.5f, 11.5f);
+        foreach (Vector2 target in CellTexels(8, 4))
+            Equal(0f, Transmission(frame, lamp, target));
+        Equal(1f, Transmission(frame, lamp, new(8.5f, 5.875f)));
+    }
+
+    [LumenFact]
+    public static void ConvexBlockCornerCellIsLitFromEitherFace()
+    {
+        // A 3 x 3-cell block [4, 6]^2 lit from the south-west: its corner cell (4, 4) faces the lamps across its west and
+        // south edges and is lit whole; the centre cell (5, 5) has no free face and stays dark.
         var builder = new OcclusionBuilder(12, 12);
         builder.Wall(new CellBox(4, 4, 6, 6));
         OcclusionFrame block = Frame(builder);
         foreach (Vector2 light in new Vector2[] { new(2.5f, 2.5f), new(2.5f, 4.6f), new(4.6f, 2.2f) })
-            foreach ((int x, int z) in new[] { (16, 16), (17, 17), (18, 18), (19, 19), (17, 16), (18, 16), (16, 18) })
-                Equal((x, z) == (19, 19) ? 0f : 1f, Transmission(block, light, new((x + 0.5f) / 4f, (z + 0.5f) / 4f)));
+        {
+            foreach (Vector2 target in CellTexels(4, 4))
+                Equal(1f, Transmission(block, light, target));
+            foreach (Vector2 target in CellTexels(5, 5))
+                Equal(0f, Transmission(block, light, target));
+        }
+    }
+
+    [LumenFact]
+    public static void DoorInAWallPassesLightOnlyWhenOpenAndItsLeafFacesTheLamp()
+    {
+        // East-west wall z = 5 with a door at (5, 5), leaves sliding along x; lamp north of it, ground target south.
+        var builder = new OcclusionBuilder(12, 12);
+        builder.Wall(new CellBox(2, 5, 4, 5));
+        builder.Wall(new CellBox(6, 5, 8, 5));
+        builder.Blocker(new CellBox(5, 5, 5, 5), 1f, DoorAxis.X);
+        OcclusionMap map = Publish(builder);
+        var closed = new byte[12 * 12 * 4];
+        closed[(5 * 12 + 5) * 4 + 2] = 1;
+        byte[] open = (byte[])closed.Clone();
+        open[(5 * 12 + 5) * 4] = 255;
+        var lamp = new Vector2(5.5f, 7.5f);
+        OcclusionFrame shut = new(map, new DoorStates(12, 12, closed)), clear = new(map, new DoorStates(12, 12, open));
+        Equal(0f, Transmission(shut, lamp, new(5.5f, 2.5f)));
+        Equal(1f, Transmission(clear, lamp, new(5.5f, 2.5f)));
+        foreach (Vector2 target in CellTexels(5, 5))
+            Equal(1f, Transmission(shut, lamp, target));
     }
 
     [LumenFact]
     public static void DoorOpeningAffectsNeighbourCellGather()
     {
         var builder = new OcclusionBuilder(12, 12);
-        builder.Blocker(Full, new MaskPlacement(5.5f, 5.5f, 1f, 1f), 1f, DoorAxis.Z);
+        builder.Blocker(new CellBox(5, 5, 5, 5), 1f, DoorAxis.Z);
         OcclusionMap map = Publish(builder);
         var closed = new byte[12 * 12 * 4];
         int i = (5 * 12 + 5) * 4;
@@ -93,18 +139,6 @@ public static class OcclusionSuite
         float dark = Transmission(new OcclusionFrame(map, new DoorStates(12, 12, closed)), new(3.5f, 5.01f), new(7.5f, 5.01f));
         float clear = Transmission(new OcclusionFrame(map, new DoorStates(12, 12, open)), new(3.5f, 5.01f), new(7.5f, 5.01f));
         Require(dark < 1f && clear == 1f, $"Door-edge gather should respect state; got closed={dark}, open={clear}.");
-    }
-
-    [LumenFact]
-    public static void DiagonalConnectedWallTargetsShareVisibility()
-    {
-        var builder = new OcclusionBuilder(12, 12);
-        builder.Wall(new CellBox(5, 4, 5, 4));
-        builder.Wall(new CellBox(6, 5, 6, 5));
-        OcclusionFrame frame = Frame(builder);
-        float a = Transmission(frame, new(3.5f, 2.5f), new(5.5f, 4.5f));
-        float b = Transmission(frame, new(3.5f, 2.5f), new(6.5f, 5.5f));
-        Equal(a, b);
     }
 
     [LumenFact]
@@ -124,7 +158,7 @@ public static class OcclusionSuite
     }
 
     [LumenFact]
-    public static void HeightStampRaisesOnlyGreenAndItsFlagUnderTheSprite()
+    public static void HeightStampRaisesGreenAndItsFlagUnderTheSpriteAndLeavesR()
     {
         var builder = new OcclusionBuilder(3, 1);
         var footprint = new CellBox(0, 0, 1, 0);
@@ -142,7 +176,7 @@ public static class OcclusionSuite
             byte expectedGreen = x < 4 ? (byte)128 : x < 8 ? (byte)191 : (byte)0;
             Equal(expectedGreen, after.Texels[i + 1]);
             Equal(before.Texels[i], after.Texels[i]);
-            Equal(before.Texels[i + 2], after.Texels[i + 2]);
+            Require(after.Texels[i + 2] >= before.Texels[i + 2], $"Texel {x}: B fell from {before.Texels[i + 2]} to {after.Texels[i + 2]}.");
             Equal((byte)(before.Texels[i + 3] | (x < 8 ? OcclusionLayout.FlagPointHeight : 0)), after.Texels[i + 3]);
         }
     }
@@ -156,7 +190,7 @@ public static class OcclusionSuite
             .Select(i => (i % 8 - 3.5f) * (i % 8 - 3.5f) + (i / 8 - 3.5f) * (i / 8 - 3.5f) <= 12f ? (byte)255 : (byte)0).ToArray());
         var at = new MaskPlacement(5.5f, 6f, 2f, 2f);
         var tree = new OcclusionBuilder(12, 12);
-        tree.StampOccluder([new SpritePiece(OcclusionStamps.Fit(canopy, at), at)], new Occluder(false, null, MathF.Floor(255f * 0.7f) / 255f, Fade: true, Cover: 0.25f));
+        tree.StampOccluder([new SpritePiece(OcclusionStamps.Fit(canopy, at), at)], new Occluder(MathF.Floor(255f * 0.7f) / 255f, Fade: true, Cover: 0.25f));
         var cover = new OcclusionBuilder(12, 12);
         cover.Cover(canopy, at, 0.25f);
         OcclusionMap height = Publish(tree), reference = Publish(cover);
@@ -219,7 +253,8 @@ public static class OcclusionSuite
     [LumenFact]
     public static void SpawningLinkedNeighbourRestampsAdjacentLinkedArt()
     {
-        // Like Graphic_Linked, a linked wall's art depends on its neighbour: alone it covers its west half, joined the whole cell.
+        // Like Graphic_Linked, a linked cover thing's art (sandbags) depends on its neighbour: alone it covers its west half,
+        // joined the whole cell.
         var west = new FakeThing(new CellBox(5, 5, 5, 5), new MaskPlacement(5.5f, 5.5f, 1f, 1f), Solid: true, Linked: true);
         var east = new FakeThing(new CellBox(6, 5, 6, 5), new MaskPlacement(6.5f, 5.5f, 1f, 1f), Solid: true, Linked: true);
         var map = new FakeMap(west);
@@ -250,9 +285,9 @@ public static class OcclusionSuite
         public IEnumerable<FakeThing> OccupantsOf(CellBox box) => Alive.Where(thing => thing.Occupied.Overlaps(box));
         public bool IsAlive(FakeThing thing) => Alive.Contains(thing);
         public CellBox? Stamp(FakeThing thing, OcclusionBuilder builder) =>
-            thing.Linked ? builder.Blocker(Alive.Any(other => other.Linked && other.Occupied.MinZ == thing.Occupied.MinZ &&
-                    other.Occupied.MinX == thing.Occupied.MaxX + 1) ? Full : WestHalf, thing.Art, 1f, null)
-            : thing.Solid ? builder.Blocker(Full, thing.Art, 1f, null) : builder.Cover(Full, thing.Art, 0.5f);
+            thing.Linked ? builder.Cover(Alive.Any(other => other.Linked && other.Occupied.MinZ == thing.Occupied.MinZ &&
+                    other.Occupied.MinX == thing.Occupied.MaxX + 1) ? Full : WestHalf, thing.Art, 0.5f)
+            : thing.Solid ? builder.Blocker(thing.Occupied, 1f, null) : builder.Cover(Full, thing.Art, 0.5f);
     }
 
     private static OcclusionMap Publish(OcclusionBuilder builder)
@@ -267,6 +302,10 @@ public static class OcclusionSuite
         foreach (CellBox rock in new[] { new CellBox(0, 0, 11, 4), new CellBox(0, 9, 11, 11), new CellBox(0, 5, 4, 8), new CellBox(9, 5, 11, 8) }) builder.Wall(rock);
         return Frame(builder);
     }
+
+    // The centres of the 16 texels of cell (x, z).
+    private static IEnumerable<Vector2> CellTexels(int x, int z) =>
+        from j in Enumerable.Range(0, 4) from i in Enumerable.Range(0, 4) select new Vector2(x + (i + 0.5f) / 4f, z + (j + 0.5f) / 4f);
 
     private static OcclusionFrame Frame(OcclusionBuilder builder) => new(Publish(builder), new DoorStates(12, 12, new byte[12 * 12 * 4]));
     private static float Transmission(OcclusionFrame frame, Vector2 light, Vector2 target) => LightTransport.Visibility(frame, light, target, out float cover) * cover;

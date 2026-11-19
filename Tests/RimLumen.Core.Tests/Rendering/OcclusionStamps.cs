@@ -24,19 +24,19 @@ internal static class OcclusionStamps
         return new AlphaMask(width, height, fine);
     }
 
-    // A blockLight thing over whole cells (a wall, rock, or the Q3 footprint), with its staticSunShadowHeight.
+    // A blockLight thing (a wall, rock, door) over its occupied cells, with its staticSunShadowHeight.
     internal static CellBox? Wall(this OcclusionBuilder builder, CellBox cells, float height = 1f) =>
-        builder.Blocker(Opaque, Over(cells), height, null);
+        builder.StampBlocker(cells, null, height, fade: false);
 
-    internal static CellBox? Blocker(this OcclusionBuilder builder, Pattern art, MaskPlacement at, float height, DoorAxis? door, bool fade = false) =>
-        builder.StampOccluder([new SpritePiece(Fit(art, at), at)], new Occluder(true, door, height, fade, Cover: 0f));
+    internal static CellBox? Blocker(this OcclusionBuilder builder, CellBox cells, float height, DoorAxis? door, bool fade = false) =>
+        builder.StampBlocker(cells, door, height, fade);
 
     // A non-blockLight height thing: fade for a shadowData height, hard for a staticSunShadowHeight.
     internal static CellBox? Height(this OcclusionBuilder builder, Pattern art, MaskPlacement at, float height, bool fade) =>
-        builder.StampOccluder([new SpritePiece(Fit(art, at), at)], new Occluder(false, null, height, fade, Cover: 0f));
+        builder.StampOccluder([new SpritePiece(Fit(art, at), at)], new Occluder(height, fade, Cover: 0f));
 
     internal static CellBox? Cover(this OcclusionBuilder builder, Pattern art, MaskPlacement at, float fillPercent) =>
-        builder.StampOccluder([new SpritePiece(Fit(art, at), at)], new Occluder(false, null, 0f, Fade: false, fillPercent));
+        builder.StampOccluder([new SpritePiece(Fit(art, at), at)], new Occluder(0f, Fade: false, fillPercent));
 
     internal static MaskPlacement Over(CellBox cells) => new((cells.MinX + cells.MaxX + 1) * 0.5f, (cells.MinZ + cells.MaxZ + 1) * 0.5f,
         cells.MaxX - cells.MinX + 1, cells.MaxZ - cells.MinZ + 1);

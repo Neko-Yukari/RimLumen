@@ -24,23 +24,18 @@ float lumenDoorOpacity(ivec2 p, float value, int flags)
 // OcclusionLayout.DecodeDistance: B as the signed distance in texels, positive inside.
 float lumenDecodeDistance(float b) { return (b * 255.0 - 128.0) / 32.0; }
 
-// deep: a wall-core texel (d >= DeepCore 3.5, never a door).
-bool lumenSolidTexel(ivec2 p, out bool deep)
+bool lumenSolidTexel(ivec2 p)
 {
-    deep = false;
     if (!lumenInside(p, textureSize(_LumenOcclusion, 0))) return false;
     vec4 v = texelFetch(_LumenOcclusion, p, 0);
-    int flags = int(round(v.a * 255.0));
-    deep = (flags & 1) == 0 && lumenDecodeDistance(v.b) >= 3.5;
-    return lumenDoorOpacity(p, v.r, flags) == 1.0;
+    return lumenDoorOpacity(p, v.r, int(round(v.a * 255.0))) == 1.0;
 }
 
-bool lumenSolid(vec2 p, out bool deep) { return lumenSolidTexel(ivec2(floor(p * 4.0)), deep); }
+bool lumenSolid(vec2 p) { return lumenSolidTexel(ivec2(floor(p * 4.0))); }
 
 bool lumenRunTexel(ivec2 p, bool height)
 {
-    bool deep;
-    if (!height) return lumenSolidTexel(p, deep);
+    if (!height) return lumenSolidTexel(p);
     if (!lumenInside(p, textureSize(_LumenOcclusion, 0))) return false;
     vec4 v = texelFetch(_LumenOcclusion, p, 0);
     return v.g != 0.0 && (int(round(v.a * 255.0)) & 4) != 0;
@@ -72,8 +67,7 @@ float lumenGridLeave(vec2 start, vec2 direction, float size, float limit, inout 
 // most limit. Solid starts in start's own texel; height starts in the first texel along direction.
 float lumenRunLength(vec2 start, vec2 direction, float limit, bool height)
 {
-    bool deep;
-    if (!height && !lumenSolid(start, deep)) return 0.0;
+    if (!height && !lumenSolid(start)) return 0.0;
     float distance = 0.0;
     ivec2 cell = lumenGridEnter(start, direction, 0.25);
     while (distance < limit && lumenRunTexel(cell, height))
@@ -146,8 +140,8 @@ void lumenSample(vec2 p, bool doors, out float solid, out float cover)
     cover = split.w;
 }
 
-// LightTransport.Visibility: returns the solid term, cover receives the cover term.
-float lightVisibility(vec2 light, vec2 target, out float cover)
+// LightTransport.Transport: returns the solid term, cover receives the cover term. Requires: target not on a solid texel.
+float lumenTransport(vec2 light, vec2 target, out float cover)
 {
     cover = 1.0;
     vec2 delta = light - target;
@@ -156,10 +150,6 @@ float lightVisibility(vec2 light, vec2 target, out float cover)
     cover = 0.0;
     vec2 direction = delta / len;
     float lightRun = lumenRunLength(light, -direction, len, false);
-    bool deepTarget;
-    bool skipTarget = lumenSolid(target, deepTarget);
-    if (skipTarget && deepTarget) return 0.0;
-    bool exitBand = false;
     float solidVisibility = 1.0, pendingSolid = 1.0, coverVisibility = 1.0, distance = 0.0;
     ivec2 mapSize = textureSize(_LumenOcclusionCoarse, 0);
     ivec2 next = lumenGridEnter(target, direction, 1.0);
@@ -171,8 +161,6 @@ float lightVisibility(vec2 light, vec2 target, out float cover)
         vec4 coarse = inside ? texelFetch(_LumenOcclusionCoarse, cell, 0) : vec4(0.0);
         if (!inside || coarse.r == 0.0)
         {
-            skipTarget = false;
-            exitBand = false;
             solidVisibility = min(solidVisibility, pendingSolid);
             pendingSolid = 1.0;
             distance = end;
@@ -185,19 +173,7 @@ float lightVisibility(vec2 light, vec2 target, out float cover)
         {
             float at = distance + (float(step) + 0.5) * ds;
             vec2 p = target + direction * at;
-            bool deep = false;
-            bool isSolid = (skipTarget || exitBand || lightRun > 0.0) && lumenSolid(p, deep);
-            if (skipTarget)
-            {
-                if (isSolid)
-                {
-                    if (deep) return 0.0;
-                    continue;
-                }
-                skipTarget = false;
-                exitBand = true;
-            }
-            if (exitBand && isSolid) return 0.0;
+            bool isSolid = lightRun > 0.0 && lumenSolid(p);
             if (at >= len - lightRun)
             {
                 pendingSolid = 1.0;
@@ -205,11 +181,7 @@ float lightVisibility(vec2 light, vec2 target, out float cover)
             }
             float s, o;
             lumenSample(p, doors, s, o);
-            if (exitBand)
-            {
-                if (s == 0.0) exitBand = false;
-            }
-            else if (lightRun > 0.0 && !isSolid && s > 0.0)
+            if (lightRun > 0.0 && !isSolid && s > 0.0)
             {
                 pendingSolid = min(pendingSolid, 1.0 - s);
             }
@@ -225,6 +197,29 @@ float lightVisibility(vec2 light, vec2 target, out float cover)
     }
     cover = coverVisibility;
     return min(solidVisibility, lightRun > 0.0 ? 1.0 : pendingSolid);
+}
+
+void lumenFace(vec2 light, vec2 face, inout float best, inout float bestCover)
+{
+    if (lumenSolid(face)) return;
+    float cover;
+    float solid = lumenTransport(light, face, cover);
+    if (solid * cover <= best * bestCover) return;
+    best = solid;
+    bestCover = cover;
+}
+
+// LightTransport.Visibility: returns the solid term, cover receives the cover term. A target on a solid texel takes the
+// better of the points half a texel outside its cell's light-facing free edges, level with it; 0 without one.
+float lightVisibility(vec2 light, vec2 target, out float cover)
+{
+    if (!lumenSolid(target)) return lumenTransport(light, target, cover);
+    vec2 cell = floor(target);
+    float best = 0.0;
+    cover = 0.0;
+    if (light.x > cell.x + 1.0 || light.x < cell.x) lumenFace(light, vec2(light.x > cell.x ? cell.x + 1.125 : cell.x - 0.125, target.y), best, cover);
+    if (light.y > cell.y + 1.0 || light.y < cell.y) lumenFace(light, vec2(target.x, light.y > cell.y ? cell.y + 1.125 : cell.y - 0.125), best, cover);
+    return best;
 }
 
 // Sun path (SunTransport.Shadow): split G height at q against height t, the edge ramp inside the footprint, faded by

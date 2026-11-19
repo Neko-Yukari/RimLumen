@@ -9,8 +9,7 @@ namespace RimLumen.Core.Lighting.Occlusion;
 internal sealed class OcclusionBuilder
 {
     private readonly int width, height, texelWidth, texelHeight;
-    // distance: per texel, the encoded maximum of every stamp's d (design 1.8); RecomputeDerived derives B from it.
-    private readonly byte[] texels, coarse, distance;
+    private readonly byte[] texels, coarse;
     // StampOccluder's d of every texel each piece reaches, in piece and row order; reused across stamps.
     private float[] reached = new float[256];
 
@@ -21,10 +20,9 @@ internal sealed class OcclusionBuilder
         texelWidth = width * OcclusionLayout.TexelsPerCell; texelHeight = height * OcclusionLayout.TexelsPerCell;
         texels = new byte[texelWidth * texelHeight * OcclusionLayout.Channels];
         coarse = new byte[width * height * OcclusionLayout.Channels];
-        distance = new byte[texelWidth * texelHeight];
     }
 
-    // Ensures: R, G, B, A and the stamped distance of every texel inside box are 0.
+    // Ensures: R, G, B and A of every texel inside box are 0.
     internal void ClearCells(CellBox box)
     {
         int count = (box.MaxX - box.MinX + 1) * OcclusionLayout.TexelsPerCell;
@@ -32,29 +30,52 @@ internal sealed class OcclusionBuilder
         {
             int first = z * texelWidth + box.MinX * OcclusionLayout.TexelsPerCell;
             Array.Clear(texels, first * OcclusionLayout.Channels, count * OcclusionLayout.Channels);
-            Array.Clear(distance, first, count);
         }
     }
 
-    // One thing (design 1.2): its sprite is the only footprint of every channel. Requires: sprite non-empty.
+    // One blockLight thing (design 1.2, 2026-11-19): its occupied cells, never its sprite.
+    // Ensures: every texel within DistanceBand of cells takes B = max(B, d), d the signed distance of its centre to the
+    //          cells' rectangle; the texels of cells get R = Solid, G = max(G, sunHeight encoded), FlagSunFade when fade, and
+    //          for a door FlagDoor, plus FlagDoorAxisZ when the leaves slide along z (DoorGap resolves the opening at
+    //          sample time). Returns the cells of the texels it wrote.
+    internal CellBox StampBlocker(CellBox cells, DoorAxis? door, float sunHeight, bool fade)
+    {
+        const int t = OcclusionLayout.TexelsPerCell, band = OcclusionLayout.DistanceBand;
+        int left = cells.MinX * t, bottom = cells.MinZ * t, right = (cells.MaxX + 1) * t, top = (cells.MaxZ + 1) * t;
+        byte encodedHeight = EncodeHeight(sunHeight);
+        byte flags = (byte)((fade ? OcclusionLayout.FlagSunFade : 0) | (door.HasValue ? OcclusionLayout.FlagDoor : 0)
+            | (door == DoorAxis.Z ? OcclusionLayout.FlagDoorAxisZ : 0));
+        for (int z = Math.Max(0, bottom - band); z < Math.Min(texelHeight, top + band); z++)
+            for (int x = Math.Max(0, left - band); x < Math.Min(texelWidth, right + band); x++)
+            {
+                float outX = MathF.Max(left - (x + 0.5f), x + 0.5f - right), outZ = MathF.Max(bottom - (z + 0.5f), z + 0.5f - top);
+                float d = outX < 0f && outZ < 0f ? -MathF.Max(outX, outZ) : -MathF.Sqrt(Square(MathF.Max(outX, 0f)) + Square(MathF.Max(outZ, 0f)));
+                int index = (z * texelWidth + x) * OcclusionLayout.Channels;
+                texels[index + 2] = Math.Max(texels[index + 2], OcclusionLayout.EncodeDistance(d));
+                if (d <= 0f) continue;
+                texels[index] = OcclusionLayout.Solid;
+                texels[index + 1] = Math.Max(texels[index + 1], encodedHeight);
+                texels[index + 3] |= flags;
+            }
+        return cells.Expanded(1, width, height);
+    }
+
+    private static float Square(float v) => v * v;
+
+    // One non-blockLight thing (design 1.2): its sprite is the only footprint of every channel. Requires: sprite non-empty.
     // Ensures: d = the signed distance of a texel centre to the sprite's alpha >= 0.5 edge (AlphaMask.Distance).
-    //          1. Blocker or Height > 0, when some texel of the sprite has d > 0: every texel within DistanceBand of a
-    //             piece takes the maximum of its stamped distance and d; texels with d > 0 get G = max(G, Height
-    //             encoded), FlagSunFade when Fade, and either R = Solid (blocker; with Door also FlagDoor, and
-    //             FlagDoorAxisZ when the leaves slide along z; the opening is resolved by DoorGap at sample time) or
-    //             FlagPointHeight (non-blocker height occluder).
-    //          2. A non-blocker with no such texel stamps its cover instead: every texel under a piece gets
-    //             R = max(R, min(MaxCover, round(alpha * Cover))) unless R == Solid. Cover 0 stamps nothing.
-    //          B is derived later (RecomputeDerived). Returns the cells of the texels it wrote; null when none.
+    //          1. Height > 0, when some texel of the sprite has d > 0: every texel within DistanceBand of a piece takes
+    //             B = max(B, d); texels with d > 0 get G = max(G, Height encoded), FlagPointHeight, and FlagSunFade
+    //             when Fade.
+    //          2. Otherwise the thing stamps its cover: every texel under a piece gets R = max(R, min(MaxCover,
+    //             round(alpha * Cover))) unless R == Solid. Cover 0 stamps nothing.
+    //          Returns the cells of the texels it wrote; null when none.
     internal CellBox? StampOccluder(IReadOnlyList<SpritePiece> sprite, Occluder occluder)
     {
-        if ((occluder.Blocker || occluder.Height > 0f) && Reached(sprite))
+        if (occluder.Height > 0f && Reached(sprite))
         {
             byte height = EncodeHeight(occluder.Height);
-            byte flags = (byte)((occluder.Fade ? OcclusionLayout.FlagSunFade : 0)
-                | (!occluder.Blocker ? OcclusionLayout.FlagPointHeight : 0)
-                | (occluder.Door.HasValue ? OcclusionLayout.FlagDoor : 0)
-                | (occluder.Door == DoorAxis.Z ? OcclusionLayout.FlagDoorAxisZ : 0));
+            byte flags = (byte)((occluder.Fade ? OcclusionLayout.FlagSunFade : 0) | OcclusionLayout.FlagPointHeight);
             int next = 0, writtenMinX = int.MaxValue, writtenMinZ = int.MaxValue, writtenMaxX = -1, writtenMaxZ = -1;
             foreach (SpritePiece piece in sprite)
             {
@@ -65,12 +86,11 @@ internal sealed class OcclusionBuilder
                         float d = reached[next++];
                         byte encoded = OcclusionLayout.EncodeDistance(d);
                         if (encoded == 0) continue;
-                        int k = z * texelWidth + x, index = k * OcclusionLayout.Channels;
-                        distance[k] = Math.Max(distance[k], encoded);
+                        int index = (z * texelWidth + x) * OcclusionLayout.Channels;
+                        texels[index + 2] = Math.Max(texels[index + 2], encoded);
                         writtenMinX = Math.Min(writtenMinX, x); writtenMaxX = Math.Max(writtenMaxX, x);
                         writtenMinZ = Math.Min(writtenMinZ, z); writtenMaxZ = Math.Max(writtenMaxZ, z);
                         if (d <= 0f) continue;
-                        if (occluder.Blocker) texels[index] = OcclusionLayout.Solid;
                         texels[index + 1] = Math.Max(texels[index + 1], height);
                         texels[index + 3] |= flags;
                     }
@@ -78,7 +98,7 @@ internal sealed class OcclusionBuilder
             return new CellBox(writtenMinX / OcclusionLayout.TexelsPerCell, writtenMinZ / OcclusionLayout.TexelsPerCell,
                 writtenMaxX / OcclusionLayout.TexelsPerCell, writtenMaxZ / OcclusionLayout.TexelsPerCell);
         }
-        if (occluder.Blocker || occluder.Cover == 0f) return null;
+        if (occluder.Cover == 0f) return null;
         CellBox? covered = null;
         foreach (SpritePiece piece in sprite)
             covered = covered.Union(Stamp(piece.Mask, piece.At, (index, alpha) =>
@@ -161,47 +181,10 @@ internal sealed class OcclusionBuilder
 
     private static byte EncodeHeight(float height) => (byte)Math.Clamp((int)MathF.Round(height * 127.5f), 0, byte.MaxValue);
 
-    // Ensures: 1. B of every texel of box grown by DistanceBand texels is recomputed: a core texel (solid, not door) holds
-    //             the exact distance from its centre to the nearest boundary segment of the core region, saturated at
-    //             MaxDistance; every other texel holds its stamped distance. A boundary segment is the side of a core
-    //             texel facing a non-core texel or the map edge, at the stamped edge inside the texel when that
-    //             neighbour lies outside every footprint (stamped d <= 0), else on the texel side.
-    //          2. The coarse texels of box grown by 1 cell are recomputed from the main texels.
-    //          The result depends only on the texels, never on box, so incremental updates equal a full rebuild.
+    // Ensures: the coarse texels of box grown by 1 cell are recomputed from the main texels. The result depends only on
+    //          the texels, never on box, so incremental updates equal a full rebuild.
     internal void RecomputeDerived(CellBox box)
     {
-        const int reach = OcclusionLayout.DistanceBand;
-        int minX = Math.Max(0, box.MinX * OcclusionLayout.TexelsPerCell - reach);
-        int minZ = Math.Max(0, box.MinZ * OcclusionLayout.TexelsPerCell - reach);
-        int maxX = Math.Min(texelWidth - 1, (box.MaxX + 1) * OcclusionLayout.TexelsPerCell - 1 + reach);
-        int maxZ = Math.Min(texelHeight - 1, (box.MaxZ + 1) * OcclusionLayout.TexelsPerCell - 1 + reach);
-        // Segments within MaxDistance of a texel belong to core texels at most reach texels away along each axis.
-        int originX = Math.Max(0, minX - reach), originZ = Math.Max(0, minZ - reach);
-        int windowWidth = Math.Min(texelWidth - 1, maxX + reach) - originX + 1;
-        int windowHeight = Math.Min(texelHeight - 1, maxZ + reach) - originZ + 1;
-        var sides = new byte[windowWidth * windowHeight];
-        var seeds = new int[(windowWidth + 1) * (windowHeight + 1)];
-        for (int z = 0; z < windowHeight; z++)
-            for (int x = 0; x < windowWidth; x++)
-            {
-                int worldX = x + originX, worldZ = z + originZ, p = z * windowWidth + x;
-                if (Core(worldX, worldZ))
-                    for (int side = 0; side < 4; side++)
-                    {
-                        int qx = worldX + SideX[side], qz = worldZ + SideZ[side];
-                        if (qx < 0 || qz < 0 || qx >= texelWidth || qz >= texelHeight || !Core(qx, qz)) sides[p] |= (byte)(1 << side);
-                    }
-                seeds[(z + 1) * (windowWidth + 1) + x + 1] = (sides[p] != 0 ? 1 : 0) + seeds[z * (windowWidth + 1) + x + 1]
-                    + seeds[(z + 1) * (windowWidth + 1) + x] - seeds[z * (windowWidth + 1) + x];
-            }
-        for (int worldZ = minZ; worldZ <= maxZ; worldZ++)
-            for (int worldX = minX; worldX <= maxX; worldX++)
-            {
-                int k = worldZ * texelWidth + worldX;
-                texels[k * OcclusionLayout.Channels + 2] = Core(worldX, worldZ)
-                    ? OcclusionLayout.EncodeDistance(CoreDistance(worldX, worldZ, originX, originZ, windowWidth, windowHeight, sides, seeds))
-                    : distance[k];
-            }
         CellBox area = box.Expanded(1, width, height);
         for (int z = area.MinZ; z <= area.MaxZ; z++)
             for (int x = area.MinX; x <= area.MaxX; x++)
@@ -220,47 +203,6 @@ internal sealed class OcclusionBuilder
                             coarse[c + 3] = Math.Max(coarse[c + 3], texels[i + 1]);
                     }
             }
-    }
-
-    // Sides in order west, east, south, north.
-    private static readonly int[] SideX = [-1, 1, 0, 0], SideZ = [0, 0, -1, 1];
-
-    private bool Core(int x, int z)
-    {
-        int i = (z * texelWidth + x) * OcclusionLayout.Channels;
-        return texels[i] == OcclusionLayout.Solid && (texels[i + 3] & OcclusionLayout.FlagDoor) == 0;
-    }
-
-    private float CoreDistance(int worldX, int worldZ, int originX, int originZ, int windowWidth, int windowHeight, byte[] sides, int[] seeds)
-    {
-        const int reach = OcclusionLayout.DistanceBand;
-        int x0 = Math.Max(0, worldX - reach - originX), z0 = Math.Max(0, worldZ - reach - originZ);
-        int x1 = Math.Min(windowWidth - 1, worldX + reach - originX), z1 = Math.Min(windowHeight - 1, worldZ + reach - originZ);
-        int stride = windowWidth + 1;
-        if (seeds[(z1 + 1) * stride + x1 + 1] - seeds[z0 * stride + x1 + 1] - seeds[(z1 + 1) * stride + x0] + seeds[z0 * stride + x0] == 0)
-            return OcclusionLayout.MaxDistance;
-        float best = OcclusionLayout.MaxDistance;
-        for (int z = z0; z <= z1; z++)
-            for (int x = x0; x <= x1; x++)
-            {
-                byte bits = sides[z * windowWidth + x];
-                if (bits == 0) continue;
-                int px = x + originX, pz = z + originZ;
-                // p is solid, so d(p) > 0; a neighbour outside every footprint has d <= 0, so d(p) <= 1.
-                float inset = OcclusionLayout.DecodeDistance(distance[pz * texelWidth + px]);
-                for (int side = 0; side < 4; side++)
-                {
-                    if ((bits & (1 << side)) == 0) continue;
-                    int qx = px + SideX[side], qz = pz + SideZ[side];
-                    float offset = qx < 0 || qz < 0 || qx >= texelWidth || qz >= texelHeight
-                        || OcclusionLayout.DecodeDistance(distance[qz * texelWidth + qx]) > 0f ? 0.5f : inset;
-                    // Segment across the side at offset from p's centre; along: distance to it, across: past its half length.
-                    float along = MathF.Abs((SideX[side] != 0 ? px - worldX : pz - worldZ) + (SideX[side] + SideZ[side]) * offset);
-                    float across = Math.Max(0f, MathF.Abs(SideX[side] != 0 ? pz - worldZ : px - worldX) - 0.5f);
-                    best = MathF.Min(best, MathF.Sqrt(along * along + across * across));
-                }
-            }
-        return best;
     }
 
     // Ensures: a new snapshot holding copies of the current arrays; later edits do not reach it.

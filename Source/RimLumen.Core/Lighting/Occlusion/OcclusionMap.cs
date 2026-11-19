@@ -14,16 +14,13 @@ internal static class OcclusionLayout
     internal const byte Solid = 255;
     internal const byte MaxCover = 254;
 
-    // Main texture B (design 1.8): signed distance d in texels from the texel centre to the nearest footprint edge,
-    // positive inside, stored round(DistanceZero + DistanceScale * d); 0 (unstamped) reads d = -DistanceBand. Solid
-    // non-door texels hold the distance to the edge of the solid region they belong to, saturated at MaxDistance.
+    // Main texture B (design 1.8): the maximum over every stamp of d, the signed distance in texels from the texel centre
+    // to that stamp's footprint edge (a thing's sprite outline, a blocker's occupied cells), positive inside, stored
+    // round(DistanceZero + DistanceScale * d); 0 (unstamped) reads d = -DistanceBand.
     internal const int DistanceBand = 4;
     internal const float DistanceZero = 128f, DistanceScale = 32f;
-    internal const float MaxDistance = (255f - DistanceZero) / DistanceScale;
     // Every 2 x 2 gather's edge rises from 0 to 1 over this many texels inside the footprint.
     internal const float EdgeRamp = 0.125f;
-    // A solid non-door texel at least this deep is wall core: a target inside it stays dark (design 1.7).
-    internal const float DeepCore = 3.5f;
     // Fine alpha samples per texel along each axis (AlphaMask.Distance).
     internal const int MaskSamples = 8;
 
@@ -182,10 +179,10 @@ internal sealed class AlphaMask
 // One drawn mesh of a thing: most things draw one, a plant one per printed mesh (Plant.Print).
 internal readonly record struct SpritePiece(AlphaMask Mask, MaskPlacement At);
 
-// What a thing stamps (design 1.2), resolved once by the host from its def. Blocker: def.blockLight; Door: the leaf axis
-// of a door; Height: sun height (staticSunShadowHeight, or the shadowData height), 0 = none; Fade: the height is a
-// shadowData height (FlagSunFade); Cover: fillPercent of a non-blocker with Fillage != None, else 0.
-internal readonly record struct Occluder(bool Blocker, DoorAxis? Door, float Height, bool Fade, float Cover);
+// What a non-blockLight thing stamps from its sprite (design 1.2), resolved once by the host from its def. Height: sun
+// height (staticSunShadowHeight, or the shadowData height), 0 = none; Fade: the height is a shadowData height
+// (FlagSunFade); Cover: fillPercent when Fillage != None, else 0.
+internal readonly record struct Occluder(float Height, bool Fade, float Cover);
 
 // Immutable snapshot published by OcclusionBuilder.Publish; an in-flight GPU frame never observes a later edit.
 // Texels: RGBA8, (Width * 4) x (Height * 4), row-major from world (0, 0); texel (tx, tz) covers world

@@ -76,6 +76,23 @@ public static class ShaderPackTests
         });
     }
 
+    [LumenFact]
+    public static void AtmosphericValidatesCompilesAndReadsNoDepth()
+    {
+        // Vanilla Cutout sprites write depth, so a depth test in Atmospheric fired on every wall, rock and plant pixel.
+        string packsRoot = Path.Combine(RepoRoot(), "1.7", "ShaderPacks");
+        ShaderPackEntry entry = ShaderPackCatalog.ScanRoots([(packsRoot, "built-in")]).Single(p => p.Id == "atmospheric");
+        IReadOnlyList<ShaderPackGraphValidator.PlannedPass> passes = ShaderPackGraphValidator.ExecutionPlan.Compile(entry.Spec).Passes;
+        Require(!entry.Spec.RequiresSceneDepth, "Atmospheric must not request scene depth.");
+        Require(passes.All(pass => pass.Inputs.All(input => input.Kind != ShaderPackGraphValidator.InputKind.Depth)),
+            "No Atmospheric pass may declare a depth input.");
+        WithSlangLoaded(() =>
+        {
+            foreach (ShaderPackGraphValidator.PlannedPass pass in passes)
+                CompileInstructions("Atmospheric/" + Path.GetFileName(pass.FragmentShaderPath));
+        });
+    }
+
     private static List<uint[]> CompileInstructions(string relativePath)
     {
         string path = Path.Combine(RepoRoot(), "1.7", "ShaderPacks", relativePath);

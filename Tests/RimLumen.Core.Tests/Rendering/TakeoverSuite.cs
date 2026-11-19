@@ -282,7 +282,8 @@ public static class TakeoverSuite
     public static void PointLightWallShadowIsTheSolidShadowAlone()
     {
         // A wall is solid and carries G = 1. Solid and height are both opaque blockers and combine by the darker term,
-        // so the wall's height shadow never darkens its solid penumbra a second time (product 0.2089 at this edge).
+        // so the wall's height shadow never darkens its solid penumbra a second time. The wall stamps the exact distance to
+        // its cell rectangle; this point lies on the 0.125-texel ramp of its east edge.
         var builder = new OcclusionBuilder(32, 32);
         builder.Wall(new CellBox(16, 20, 16, 20));
         OcclusionFrame wall = Frame(builder, 32);
@@ -290,7 +291,7 @@ public static class TakeoverSuite
         flat.Wall(new CellBox(16, 20, 16, 20), 0f);
         OcclusionFrame withoutHeight = Frame(flat, 32);
         var torch = new VisualPointLight(16.5f, VisualPointLight.VanillaHeight, 16.5f, 10f, new Vector3(0.5f), VisualPointLightKind.Vanilla);
-        Near(0.4571f, PoolVisibility(torch, wall, 17.46f, 24f), 1e-4f);
+        Near(0.3005f, PoolVisibility(torch, wall, 17.46f, 24f), 1e-4f);
         // For point lights a blockLight texel is governed only by the solid term: the same wall with and without G.
         foreach (Vector2 at in new Vector2[] { new(16.5f, 16.5f), new(13.2f, 17.7f), new(19.9f, 18.1f), new(16.5f, 23.5f) })
         {
@@ -330,7 +331,7 @@ public static class TakeoverSuite
         OcclusionFrame FadedBlocker(float height)
         {
             var builder = new OcclusionBuilder(12, 12);
-            builder.Blocker(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 5.5f, 1f, 1f), height, null, fade: true);
+            builder.Blocker(new CellBox(5, 5, 5, 5), height, null, fade: true);
             return Frame(builder, 12);
         }
         // A blockLight thing with a shadowData height (Ship_ComputerCore) carries it on its solid texels: no point-light height.
@@ -342,7 +343,7 @@ public static class TakeoverSuite
     {
         // A door is blockLight and carries G = 1 for the sun; for a point light only its gap decides (fully open: 230).
         var builder = new OcclusionBuilder(12, 12);
-        builder.Blocker(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 5.5f, 1f, 1f), 1f, DoorAxis.Z);
+        builder.Blocker(new CellBox(5, 5, 5, 5), 1f, DoorAxis.Z);
         builder.RecomputeDerived(new CellBox(0, 0, 11, 11));
         var state = new byte[12 * 12 * 4];
         state[(5 * 12 + 5) * 4] = 230;
