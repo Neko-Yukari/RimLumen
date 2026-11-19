@@ -6,6 +6,7 @@
   "runOnEmptyFrames": true,
   "requiresSceneDepth": false,
   "requiresMapLightField": true,
+  "objectShadows": true,
   "bloomMipLevels": 7,
   "targets": [
     { "name": "fogField", "format": "R16G16B16A16SFloat", "scale": 0.5, "filter": "Linear", "persistent": false },

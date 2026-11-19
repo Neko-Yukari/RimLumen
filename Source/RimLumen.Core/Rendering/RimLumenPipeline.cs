@@ -44,6 +44,7 @@ internal sealed class RimLumenPipeline : IDisposable
     private readonly List<ILumenFrameContributor> activeContributorBuffer = new();
     // Main-thread scratch ownership for appenders; moved into a rented MeshDrawFrame only when non-empty.
     private readonly List<FinalDrawItem> scratchDraws = new();
+    private readonly List<FinalDrawItem> scratchShadows = new();
     internal readonly RimLumenMapChain MapChain;
     private bool disposed;
 
@@ -187,6 +188,7 @@ internal sealed class RimLumenPipeline : IDisposable
                 LightPool.Stage(captureIndex, LumenSceneBootstrap.Service.Lights);
         }
         if (takeoverFrame) LightPool.StageVanilla(captureIndex, map);
+        LightPool.Prepare(captureIndex, map, takeoverFrame, RimLumenRenderHost.ObjectShadows);
         bool changed = activeContributorBuffer.Count != activeContributors.Length;
         for (int i = 0; !changed && i < activeContributors.Length; i++)
             changed = !ReferenceEquals(activeContributorBuffer[i], activeContributors[i]);
@@ -201,10 +203,10 @@ internal sealed class RimLumenPipeline : IDisposable
         if (RenderableMap() == null || Current.CameraDriver?.MyCamera == null)
             return null;
         MeshDrawSubmissionSnapshot snapshot = MeshDrawSubmission.CaptureFlushedSnapshot(App.GraphicsDevice!);
-        MeshDrawFrame? mesh = null, glowMesh = null, lightMesh = null, distortionMesh = null;
+        MeshDrawFrame? mesh = null, glowMesh = null, lightMesh = null, shadowMesh = null, distortionMesh = null;
         try
         {
-            Captured = CaptureFrame(in timing, snapshot, ref mesh, ref glowMesh, ref lightMesh, ref distortionMesh);
+            Captured = CaptureFrame(in timing, snapshot, ref mesh, ref glowMesh, ref lightMesh, ref shadowMesh, ref distortionMesh);
             return Captured;
         }
         finally
@@ -214,13 +216,14 @@ internal sealed class RimLumenPipeline : IDisposable
                 mesh?.Dispose();
                 glowMesh?.Dispose();
                 lightMesh?.Dispose();
+                shadowMesh?.Dispose();
                 distortionMesh?.Dispose();
             }
         }
     }
 
     private PipelineFrame? CaptureFrame(in FrameTiming timing, MeshDrawSubmissionSnapshot snapshot,
-        ref MeshDrawFrame? mesh, ref MeshDrawFrame? glowMesh, ref MeshDrawFrame? lightMesh,
+        ref MeshDrawFrame? mesh, ref MeshDrawFrame? glowMesh, ref MeshDrawFrame? lightMesh, ref MeshDrawFrame? shadowMesh,
         ref MeshDrawFrame? distortionMesh)
     {
         try
@@ -331,12 +334,24 @@ internal sealed class RimLumenPipeline : IDisposable
                 }
                 finally { ReturnScratchDraws(); }
             }
+        int lightRounds;
         try
         {
-            LightPool.AppendDraws(scratchDraws, maker, snapshot.PropertyArena, captureIndex, takeoverFrame);
+            lightRounds = LightPool.AppendDraws(scratchDraws, scratchShadows, maker, snapshot.PropertyArena, captureIndex, takeoverFrame);
             MoveScratchDraws(ref lightMesh, in timing);
+            if (scratchShadows.Count > 0)
+            {
+                shadowMesh ??= NewFrame(in timing);
+                shadowMesh.Draws.AddRange(scratchShadows);
+                scratchShadows.Clear();
+            }
         }
-        finally { ReturnScratchDraws(); }
+        finally
+        {
+            ReturnScratchDraws();
+            foreach (FinalDrawItem draw in scratchShadows) FinalDrawItem.Return(draw);
+            scratchShadows.Clear();
+        }
 
         ShaderPackSpec activePack = RimLumenRenderHost.ActiveShaderPack;
         bool runOnEmptyFrames = activePack.RunOnEmptyFrames;
@@ -394,8 +409,9 @@ internal sealed class RimLumenPipeline : IDisposable
             RimLumenRenderHost.CurrentFrameDistortionRefractsEffects,
             in rtParams);
 
-        return new PipelineFrame(captureIndex, view, mesh, glowMesh, lightMesh, distortionMesh, contributors, depthParams, mapIndex, renderHdr,
-            hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms, glowGroups, earlyWork, colorBlendSpace, takeoverFrame);
+        return new PipelineFrame(captureIndex, view, mesh, glowMesh, lightMesh, shadowMesh, lightRounds, distortionMesh, contributors, depthParams,
+            mapIndex, renderHdr, hasHdrDraws, hasSceneDepth, activePack.BloomMipLevels, uniforms, glowGroups,
+            earlyWork, colorBlendSpace, takeoverFrame);
         }
         finally
         {
@@ -472,6 +488,8 @@ internal sealed class PipelineFrame(
     MeshDrawFrame? mesh,
     MeshDrawFrame? glowMesh,
     MeshDrawFrame? lightMesh,
+    MeshDrawFrame? shadowMesh,
+    int lightRounds,
     MeshDrawFrame? distortionMesh,
     ILumenFrameContributor[] contributors,
     Vector4 depthParams,
@@ -500,6 +518,10 @@ internal sealed class PipelineFrame(
     internal MeshDrawFrame? GlowMesh { get; } = glowMesh;
     internal MeshDrawFrame? LightMesh { get; } = lightMesh;
     internal bool HasLightPools => LightMesh is not null;
+    // Object-shadow casters (LightPoolRenderer.AppendDraws), round r at queue LightPoolRenderer.RenderQueue + r; null
+    // without any.
+    internal MeshDrawFrame? ShadowMesh { get; } = shadowMesh;
+    internal int LightRounds { get; } = lightRounds;
     internal MeshDrawFrame? DistortionMesh { get; } = distortionMesh;
     internal bool HasGlowDraws => (GlowGroupsCaptured & GlowGroupMask.Early) != 0;
     internal GlowGroupMask GlowGroupsCaptured { get; } = glowGroups;
@@ -512,6 +534,7 @@ internal sealed class PipelineFrame(
         Mesh?.Dispose();
         GlowMesh?.Dispose();
         LightMesh?.Dispose();
+        ShadowMesh?.Dispose();
         DistortionMesh?.Dispose();
     }
 }

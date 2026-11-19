@@ -54,6 +54,8 @@ public sealed class ShaderPackSpec
     public bool RunOnEmptyFrames { get; init; }
     public bool RequiresSceneDepth { get; init; }
     public bool RequiresMapLightField { get; init; }
+    // pack.json objectShadows (default true): things cast per-light and takeover-sun silhouette shadows.
+    public bool ObjectShadows { get; init; } = true;
     public int BloomMipLevels { get; init; } = 5;
     public IReadOnlyList<ShaderPackTargetSpec> Targets { get; init; } = Array.Empty<ShaderPackTargetSpec>();
     public IReadOnlyList<ShaderPackPassSpec> Passes { get; init; } = Array.Empty<ShaderPackPassSpec>();

@@ -3,8 +3,8 @@ using System.Numerics;
 
 namespace RimLumen.Core.Lighting.Occlusion;
 
-// Reference of lumenHeightVisibility and its sun and point-light entries in RimLumenOcclusion.glsl, line for line
-// (design 1.8 and 3.4).
+// Reference of lumenSunVisibility in RimLumenOcclusion.glsl, line for line (design 1.8 and 3.4): the takeover sun
+// shadow of blockLight things, whose G is the only height in the map. Things cast theirs through ObjectShadow.
 internal static class SunTransport
 {
     // Width of the soft height comparison, in height units (design 1.8).
@@ -22,43 +22,15 @@ internal static class SunTransport
     internal static float Visibility(in OcclusionFrame frame, Vector2 p, Vector2 castXZ)
     {
         float length = castXZ.Length();
-        return HeightVisibility(frame, p, -castXZ / length, 1f / length, length * OcclusionLayout.MaxSunHeight, 0f, float.PositiveInfinity, false);
-    }
-
-    // Point light at ground position light and height (>= 0) over ground point target.
-    // Ensures: in [0, 1]; 1 when target == light. The ray rises height / D per cell over the D cells to the light and is
-    //          marched until it passes MaxSunHeight or reaches the light; height <= h shadows unboundedly. The target's
-    //          and the light's own contiguous height footprints (LightTransport.RunLength) are skipped without loss.
-    //          blockLight things are governed only by LightTransport's solid and gap term: G counts only on
-    //          FlagPointHeight texels (non-blockLight height occluders), and the coarse gate is coarse A.
-    internal static float PointVisibility(in OcclusionFrame frame, Vector2 light, float height, Vector2 target)
-    {
-        Vector2 delta = light - target;
-        float length = delta.Length();
-        if (length == 0f) return 1f;
-        Vector2 direction = delta / length;
-        float reach = height > OcclusionLayout.MaxSunHeight ? length * OcclusionLayout.MaxSunHeight / height : length;
-        return HeightVisibility(frame, target, direction, height / length, reach,
-            LightTransport.RunLength(frame, target, direction, length, true),
-            length - LightTransport.RunLength(frame, light, -direction, length, true), true);
-    }
-
-    // The one height march (design 1.8): 1 - max of shadow(t) at q = p + direction * a, t = a * rise, a in [0, reach),
-    // skipping a < skipBefore and a >= skipFrom. The two sun/point differences: the sun skips nothing, so p's own
-    // footprint counts at t = 0 (an occluder's top is shaded; the sun shade draws at ground height and is depth-rejected
-    // off sprites), while a point light skips the target's and the light's own footprints, because pools are evaluated
-    // per ground pixel and applied over sprites; and a point light reads G only on FlagPointHeight texels (PointVisibility).
-    private static float HeightVisibility(in OcclusionFrame frame, Vector2 p, Vector2 direction, float rise, float reach,
-        float skipBefore, float skipFrom, bool point)
-    {
+        Vector2 direction = -castXZ / length;
+        float rise = 1f / length, reach = length * OcclusionLayout.MaxSunHeight;
         OcclusionMap map = frame.Map;
         int cellX = (int)MathF.Floor(p.X), cellZ = (int)MathF.Floor(p.Y);
         if (!Inside(map, cellX, cellZ)) return 1f;
-        int channel = point ? 3 : 1;
         float shadow = 0f, distance = 0f, last = -1f, lastDistance = 0f;
-        if (skipBefore == 0f && map.Coarse[(cellZ * map.Width + cellX) * OcclusionLayout.Channels + channel] != 0)
+        if (map.Coarse[(cellZ * map.Width + cellX) * OcclusionLayout.Channels + 1] != 0)
         {
-            shadow = Shadow(map, p, 0f, point, out lastDistance);
+            shadow = Shadow(map, p, 0f, out lastDistance);
             last = 0f;
         }
         (cellX, cellZ) = GridWalk.Enter(p, direction, 1f);
@@ -66,7 +38,7 @@ internal static class SunTransport
         {
             int x = cellX, z = cellZ;
             float end = GridWalk.Leave(p, direction, 1f, reach, ref cellX, ref cellZ);
-            if (Inside(map, x, z) && map.Coarse[(z * map.Width + x) * OcclusionLayout.Channels + channel] != 0)
+            if (Inside(map, x, z) && map.Coarse[(z * map.Width + x) * OcclusionLayout.Channels + 1] != 0)
             {
                 // One fine step per texel crossed, at the middle of the ray's run through it (plus Step's outline entry).
                 // The texel walk starts in this cell's texels, whichever side of the cell edge the entry point rounds to.
@@ -76,9 +48,7 @@ internal static class SunTransport
                 for (float a = distance; a < end;)
                 {
                     float b = GridWalk.Leave(p, direction, 1f / OcclusionLayout.TexelsPerCell, end, ref tx, ref tz);
-                    float at = (a + b) * 0.5f;
-                    if (at >= skipBefore && at < skipFrom) shadow = MathF.Max(shadow, Step(map, p, direction, rise, point, at, ref last, ref lastDistance));
-                    else last = -1f;
+                    shadow = MathF.Max(shadow, Step(map, p, direction, rise, (a + b) * 0.5f, ref last, ref lastDistance));
                     a = b;
                 }
             }
@@ -92,13 +62,13 @@ internal static class SunTransport
     // step at last (last >= 0: the step right before this one, the t = 0 step at p included), also the shadow where it
     // reaches the ramp top, placed linearly between the two. The shadow peaks where the ray enters an outline,
     // which one step per texel would otherwise quantise to the texel.
-    private static float Step(OcclusionMap map, Vector2 p, Vector2 direction, float rise, bool point, float a, ref float last, ref float lastDistance)
+    private static float Step(OcclusionMap map, Vector2 p, Vector2 direction, float rise, float a, ref float last, ref float lastDistance)
     {
-        float s = Shadow(map, p + direction * a, a * rise, point, out float d);
+        float s = Shadow(map, p + direction * a, a * rise, out float d);
         if (last >= 0f && lastDistance < OcclusionLayout.EdgeRamp && d > OcclusionLayout.EdgeRamp)
         {
             float c = last + (a - last) * (OcclusionLayout.EdgeRamp - lastDistance) / (d - lastDistance);
-            s = MathF.Max(s, Shadow(map, p + direction * c, c * rise, point, out _));
+            s = MathF.Max(s, Shadow(map, p + direction * c, c * rise, out _));
         }
         last = a;
         lastDistance = d;
@@ -107,12 +77,12 @@ internal static class SunTransport
 
     private static bool Inside(OcclusionMap map, int x, int z) => x >= 0 && z >= 0 && x < map.Width && z < map.Height;
 
-    // point: texels without FlagPointHeight read G = 0. distance: the split's Distance (texels, positive inside).
-    internal static float Shadow(OcclusionMap map, Vector2 q, float t, bool point, out float distance)
+    // distance: the split's Distance (texels, positive inside).
+    private static float Shadow(OcclusionMap map, Vector2 q, float t, out float distance)
     {
         Vector2 uv = q * OcclusionLayout.TexelsPerCell - new Vector2(0.5f);
         int x = (int)MathF.Floor(uv.X), z = (int)MathF.Floor(uv.Y);
-        var g = new Vector4(Height(map, x, z, point), Height(map, x + 1, z, point), Height(map, x, z + 1, point), Height(map, x + 1, z + 1, point));
+        var g = new Vector4(Height(map, x, z), Height(map, x + 1, z), Height(map, x, z + 1), Height(map, x + 1, z + 1));
         var occupied = new Vector4(g.X > 0f ? 1f : 0f, g.Y > 0f ? 1f : 0f, g.Z > 0f ? 1f : 0f, g.W > 0f ? 1f : 0f);
         var distances = new Vector4(LightTransport.Distance(map, x, z), LightTransport.Distance(map, x + 1, z),
             LightTransport.Distance(map, x, z + 1), LightTransport.Distance(map, x + 1, z + 1));
@@ -126,9 +96,8 @@ internal static class SunTransport
         return Math.Clamp((h - t) / HeightBand, 0f, 1f) * edge * (1f - fade * t / h);
     }
 
-    private static float Height(OcclusionMap map, int x, int z, bool point) =>
-        point && (Flags(map, x, z) & OcclusionLayout.FlagPointHeight) == 0 ? 0f
-            : x < 0 || z < 0 || x >= map.TexelWidth || z >= map.TexelHeight ? 0f : map.Texels[(z * map.TexelWidth + x) * OcclusionLayout.Channels + 1];
+    private static float Height(OcclusionMap map, int x, int z) =>
+        x < 0 || z < 0 || x >= map.TexelWidth || z >= map.TexelHeight ? 0f : map.Texels[(z * map.TexelWidth + x) * OcclusionLayout.Channels + 1];
 
     private static float Fade(OcclusionMap map, int x, int z) => (Flags(map, x, z) & OcclusionLayout.FlagSunFade) != 0 ? 1f : 0f;
 

@@ -10,8 +10,6 @@ internal sealed class OcclusionBuilder
 {
     private readonly int width, height, texelWidth, texelHeight;
     private readonly byte[] texels, coarse;
-    // StampOccluder's d of every texel each piece reaches, in piece and row order; reused across stamps.
-    private float[] reached = new float[256];
 
     // Requires: width, height > 0 (map size in cells).
     internal OcclusionBuilder(int width, int height)
@@ -62,102 +60,16 @@ internal sealed class OcclusionBuilder
 
     private static float Square(float v) => v * v;
 
-    // One non-blockLight thing (design 1.2): its sprite is the only footprint of every channel. Requires: sprite non-empty.
-    // Ensures: d = the signed distance of a texel centre to the sprite's alpha >= 0.5 edge (AlphaMask.Distance).
-    //          1. Height > 0, when some texel of the sprite has d > 0: every texel within DistanceBand of a piece takes
-    //             B = max(B, d); texels with d > 0 get G = max(G, Height encoded), FlagPointHeight, and FlagSunFade
-    //             when Fade.
-    //          2. Otherwise the thing stamps its cover: every texel under a piece gets R = max(R, min(MaxCover,
-    //             round(alpha * Cover))) unless R == Solid. Cover 0 stamps nothing.
-    //          Returns the cells of the texels it wrote; null when none.
-    internal CellBox? StampOccluder(IReadOnlyList<SpritePiece> sprite, Occluder occluder)
+    // One non-blockLight cover thing without a height (design 1.2; a height thing is an ObjectShadow caster instead).
+    // Requires: sprite non-empty, cover > 0. Ensures: every texel under a piece gets R = max(R, min(MaxCover,
+    //          round(alpha * cover))) unless R == Solid. Returns the cells of the texels it wrote; null when none.
+    internal CellBox? StampCover(IReadOnlyList<SpritePiece> sprite, float cover)
     {
-        if (occluder.Height > 0f && Reached(sprite))
-        {
-            byte height = EncodeHeight(occluder.Height);
-            byte flags = (byte)((occluder.Fade ? OcclusionLayout.FlagSunFade : 0) | OcclusionLayout.FlagPointHeight);
-            int next = 0, writtenMinX = int.MaxValue, writtenMinZ = int.MaxValue, writtenMaxX = -1, writtenMaxZ = -1;
-            foreach (SpritePiece piece in sprite)
-            {
-                (int minX, int minZ, int maxX, int maxZ) = Reach(piece.At);
-                for (int z = minZ; z <= maxZ; z++)
-                    for (int x = minX; x <= maxX; x++)
-                    {
-                        float d = reached[next++];
-                        byte encoded = OcclusionLayout.EncodeDistance(d);
-                        if (encoded == 0) continue;
-                        int index = (z * texelWidth + x) * OcclusionLayout.Channels;
-                        texels[index + 2] = Math.Max(texels[index + 2], encoded);
-                        writtenMinX = Math.Min(writtenMinX, x); writtenMaxX = Math.Max(writtenMaxX, x);
-                        writtenMinZ = Math.Min(writtenMinZ, z); writtenMaxZ = Math.Max(writtenMaxZ, z);
-                        if (d <= 0f) continue;
-                        texels[index + 1] = Math.Max(texels[index + 1], height);
-                        texels[index + 3] |= flags;
-                    }
-            }
-            return new CellBox(writtenMinX / OcclusionLayout.TexelsPerCell, writtenMinZ / OcclusionLayout.TexelsPerCell,
-                writtenMaxX / OcclusionLayout.TexelsPerCell, writtenMaxZ / OcclusionLayout.TexelsPerCell);
-        }
-        if (occluder.Cover == 0f) return null;
         CellBox? covered = null;
         foreach (SpritePiece piece in sprite)
             covered = covered.Union(Stamp(piece.Mask, piece.At, (index, alpha) =>
-                texels[index] = Math.Max(texels[index], (byte)Math.Min(OcclusionLayout.MaxCover, (int)MathF.Round(alpha * occluder.Cover)))));
+                texels[index] = Math.Max(texels[index], (byte)Math.Min(OcclusionLayout.MaxCover, (int)MathF.Round(alpha * cover)))));
         return covered;
-    }
-
-    // Ensures: reached holds d of every texel each piece reaches; true when some d > 0. d at the centre of texel (x, z) is
-    //          AlphaMask.Distance sampled bilinearly, scaled from mask texels to map texels by the mean of the two axes'
-    //          stretch. Requires: masks built at 4 texels per drawn cell, so the stretch differs from 1 only by rounding.
-    private bool Reached(IReadOnlyList<SpritePiece> sprite)
-    {
-        const int s = OcclusionLayout.MaskSamples;
-        int next = 0;
-        bool inside = false;
-        foreach (SpritePiece piece in sprite)
-        {
-            AlphaMask mask = piece.Mask;
-            MaskPlacement at = piece.At;
-            (int minX, int minZ, int maxX, int maxZ) = Reach(at);
-            int count = (maxX - minX + 1) * (maxZ - minZ + 1);
-            if (next + count > reached.Length) Array.Resize(ref reached, Math.Max(reached.Length * 2, next + count));
-            // Fine sample coordinate u = u0 + x * du of texel x's centre, likewise v.
-            float stretchX = mask.Width / (at.SizeX * OcclusionLayout.TexelsPerCell), stretchZ = mask.Height / (at.SizeZ * OcclusionLayout.TexelsPerCell);
-            float du = stretchX * s, dv = stretchZ * s;
-            float u0 = (0.5f - (at.CenterX - at.SizeX * 0.5f) * OcclusionLayout.TexelsPerCell) * du + OcclusionLayout.DistanceBand * s - 0.5f;
-            float v0 = (0.5f - (at.CenterZ - at.SizeZ * 0.5f) * OcclusionLayout.TexelsPerCell) * dv + OcclusionLayout.DistanceBand * s - 0.5f;
-            float scale = 1f / MathF.Sqrt(stretchX * stretchZ);
-            int w = mask.DistanceWidth, h = mask.DistanceHeight;
-            float[] f = mask.Distance;
-            for (int z = minZ; z <= maxZ; z++)
-            {
-                float v = Math.Clamp(v0 + z * dv, 0f, h - 1);
-                int j = Math.Min((int)v, h - 2);
-                float fz = v - j;
-                for (int x = minX; x <= maxX; x++)
-                {
-                    float u = Math.Clamp(u0 + x * du, 0f, w - 1);
-                    int i = Math.Min((int)u, w - 2);
-                    float fx = u - i;
-                    int a = j * w + i;
-                    float d = ((f[a] * (1 - fx) + f[a + 1] * fx) * (1 - fz) + (f[a + w] * (1 - fx) + f[a + w + 1] * fx) * fz) * scale;
-                    reached[next++] = d;
-                    inside |= d > 0f;
-                }
-            }
-        }
-        return inside;
-    }
-
-    // The texels whose centre lies within DistanceBand texels of at, clipped to the map.
-    private (int MinX, int MinZ, int MaxX, int MaxZ) Reach(MaskPlacement at)
-    {
-        float left = (at.CenterX - at.SizeX * 0.5f) * OcclusionLayout.TexelsPerCell - OcclusionLayout.DistanceBand;
-        float bottom = (at.CenterZ - at.SizeZ * 0.5f) * OcclusionLayout.TexelsPerCell - OcclusionLayout.DistanceBand;
-        float right = (at.CenterX + at.SizeX * 0.5f) * OcclusionLayout.TexelsPerCell + OcclusionLayout.DistanceBand;
-        float top = (at.CenterZ + at.SizeZ * 0.5f) * OcclusionLayout.TexelsPerCell + OcclusionLayout.DistanceBand;
-        return (Math.Max(0, (int)MathF.Ceiling(left - 0.5f)), Math.Max(0, (int)MathF.Ceiling(bottom - 0.5f)),
-            Math.Min(texelWidth - 1, (int)MathF.Floor(right - 0.5f)), Math.Min(texelHeight - 1, (int)MathF.Floor(top - 0.5f)));
     }
 
     private CellBox? Stamp(AlphaMask mask, MaskPlacement at, Action<int, byte> apply)
@@ -199,8 +111,6 @@ internal sealed class OcclusionBuilder
                         coarse[c + 1] = Math.Max(coarse[c + 1], texels[i + 1]);
                         if ((texels[i + 3] & OcclusionLayout.FlagDoor) != 0)
                             coarse[c + 2] = OcclusionLayout.CoarseDoor;
-                        if ((texels[i + 3] & OcclusionLayout.FlagPointHeight) != 0)
-                            coarse[c + 3] = Math.Max(coarse[c + 3], texels[i + 1]);
                     }
             }
     }

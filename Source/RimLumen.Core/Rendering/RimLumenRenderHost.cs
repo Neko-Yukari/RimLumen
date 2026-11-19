@@ -75,6 +75,17 @@ public static class RimLumenRenderHost
 
     public static bool IsMapLightFieldActive => ActiveShaderPack.RequiresMapLightField && !FailSafeTripped;
 
+    // The player's objectShadows choice and the pack it was made for (RimLumenSettings.ApplyToRuntime).
+    private static (ShaderPackSpec Pack, bool On) objectShadowsChoice = (ShaderPackSpec.Default, true);
+
+    internal static void SetObjectShadows(ShaderPackSpec pack, bool on) => objectShadowsChoice = (pack, on);
+
+    // Requires: main thread; capture reads it once per frame. Ensures: the player's choice while its pack is active,
+    // else the active pack's own objectShadows (the built-in default after a failed pack reverts).
+    internal static bool ObjectShadows => ReferenceEquals(objectShadowsChoice.Pack, ActiveShaderPack)
+        ? objectShadowsChoice.On
+        : ActiveShaderPack.ObjectShadows;
+
     internal static bool IsDefaultShaderPack(ShaderPackSpec spec) => ReferenceEquals(spec, ShaderPackSpec.Default);
 
     // A custom pack is data, not RimLumen itself: its failures revert the pack instead of detaching the pipeline.

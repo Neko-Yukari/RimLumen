@@ -4,6 +4,8 @@
   <RimLumen_EnhanceAdditiveGlowTooltip>开启后，火焰、爆炸、能量护盾等加色发光特效会自动获得 HDR 泛光。\n关闭后，在未开启全屏光影包时回到零像素差的纯框架模式（与未安装 RimLumen 时画面逐像素一致）。</RimLumen_EnhanceAdditiveGlowTooltip>
   <RimLumen_LightingTakeover>接管地图照明与日影</RimLumen_LightingTakeover>
   <RimLumen_LightingTakeoverTip>改变地图的照明画面，不改变游戏逻辑使用的光照值。进入 IsoRim 的 3D 视图后自动关闭；与 RimIris 不兼容。</RimLumen_LightingTakeoverTip>
+  <RimLumen_ObjectShadows>物件投射光源阴影</RimLumen_ObjectShadows>
+  <RimLumen_ObjectShadowsTip>柱子、家具、植物等物件按自身轮廓背向每个光源投下阴影；接管地图光照时也投下日光阴影。墙、岩石和门的阴影不受影响。每个着色器包分别保存。</RimLumen_ObjectShadowsTip>
   <RimLumen_ParticleDensity>全局粒子密度倍率：{0}%</RimLumen_ParticleDensity>
   <RimLumen_ExplosionForces>爆炸推动粒子（仅视觉效果）</RimLumen_ExplosionForces>
   <RimLumen_ExplosionForceScale>爆炸粒子推力：{0} 倍</RimLumen_ExplosionForceScale>

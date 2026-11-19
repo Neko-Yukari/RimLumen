@@ -158,13 +158,13 @@ public static class EffectInstanceHandleSuite
         VfxTestData.Step(service, 0.25f, currentMapIndex: 7);
         // A 0.5-high faded box between the light and the ground behind it: the pool stays non-negative.
         var builder = new RimLumen.Core.Lighting.Occlusion.OcclusionBuilder(16, 16);
-        RimLumen.Core.Tests.Rendering.OcclusionStamps.Height(builder, RimLumen.Core.Tests.Rendering.OcclusionStamps.Opaque,
-            new RimLumen.Core.Lighting.Occlusion.MaskPlacement(5.5f, 5.27f, 0.3f, 0.3f), 0.5f, fade: true);
-        builder.RecomputeDerived(new RimLumen.Core.Lighting.Occlusion.CellBox(0, 0, 15, 15));
+        RimLumen.Core.Lighting.Casters.Caster box = RimLumen.Core.Tests.Rendering.OcclusionStamps.Caster(RimLumen.Core.Tests.Rendering.OcclusionStamps.Opaque,
+            new RimLumen.Core.Lighting.Occlusion.MaskPlacement(5.5f, 5.27f, 0.3f, 0.3f), 0.5f, fade: true,
+            new RimLumen.Core.Lighting.Occlusion.CellBox(5, 5, 5, 5));
         var frame = new RimLumen.Core.Lighting.Occlusion.OcclusionFrame(builder.Publish(), new RimLumen.Core.Lighting.Occlusion.DoorStates(16, 16, new byte[16 * 16 * 4]));
         for (float z = 5.5f; z <= 8f; z += 0.25f)
         {
-            Vector3 pool = service.Lights[0].EvaluateAt(5.5f, z, frame);
+            Vector3 pool = service.Lights[0].EvaluateAt(5.5f, z, frame, [box]);
             VfxAssert.Check(pool.X >= 0f && pool.Y >= 0f && pool.Z >= 0f, $"Pool at z = {z} must not be negative; got {pool}.");
         }
     }

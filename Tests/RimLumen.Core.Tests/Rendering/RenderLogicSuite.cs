@@ -212,8 +212,8 @@ public static class RenderLogicSuite
         }
 
         var pool = new VisualPointLight(10.25f, 0f, -4.5f, 4f, new Vector3(2f, 0.5f, 0f), VisualPointLightKind.Effect);
-        Equal(new Vector3(2f, 0.5f, 0f), pool.EvaluateAt(10.25f, -4.5f, Walls()));
-        Equal(Vector3.Zero, pool.EvaluateAt(14.25f, -4.5f, Walls()));
+        Equal(new Vector3(2f, 0.5f, 0f), pool.EvaluateAt(10.25f, -4.5f, Walls(), []));
+        Equal(Vector3.Zero, pool.EvaluateAt(14.25f, -4.5f, Walls(), []));
     }
 
     [LumenFact]
@@ -244,8 +244,8 @@ public static class RenderLogicSuite
     {
         OcclusionFrame walls = Walls((5, 4));
         var lamp = new VisualPointLight(3.5f, 0f, 4.5f, 6f, new Vector3(1f, 0.5f, 0.25f), VisualPointLightKind.Effect);
-        Equal(Vector3.Zero, VisualPointLight.AccumulateAndCompress([lamp], 7.5f, 4.5f, walls));
-        Equal(lamp.Light * VisualPointLight.Falloff(4f, 6f), VisualPointLight.AccumulateAndCompress([lamp], 3.5f, 8.5f, walls));
+        Equal(Vector3.Zero, VisualPointLight.AccumulateAndCompress([lamp], 7.5f, 4.5f, walls, []));
+        Equal(lamp.Light * VisualPointLight.Falloff(4f, 6f), VisualPointLight.AccumulateAndCompress([lamp], 3.5f, 8.5f, walls, []));
     }
 
     [LumenFact]
@@ -273,7 +273,7 @@ public static class RenderLogicSuite
     public static void LightPoolsSumLinearlyAndCompressOnceWithinTwiceTheScene()
     {
         var single = new VisualPointLight(0f, 0f, 0f, 4f, new Vector3(0.6f, 0.4f, 0.2f), VisualPointLightKind.Effect);
-        Equal(new Vector3(0.6f, 0.4f, 0.2f), VisualPointLight.AccumulateAndCompress([single], 0f, 0f, Walls()));
+        Equal(new Vector3(0.6f, 0.4f, 0.2f), VisualPointLight.AccumulateAndCompress([single], 0f, 0f, Walls(), []));
 
         // Two overlapping pools: 0.3 + 0.2 = 0.5, not the stacked (1.3 * 1.2) - 1 = 0.56.
         VisualPointLight[] pair =
@@ -281,14 +281,14 @@ public static class RenderLogicSuite
             new(0f, 0f, 0f, 4f, new Vector3(0.3f, 0.2f, 0.1f), VisualPointLightKind.Effect),
             new(0f, 0f, 0f, 6f, new Vector3(0.2f, 0.1f, 0.05f), VisualPointLightKind.Effect),
         ];
-        Vector3 summed = VisualPointLight.AccumulateAndCompress(pair, 0f, 0f, Walls());
+        Vector3 summed = VisualPointLight.AccumulateAndCompress(pair, 0f, 0f, Walls(), []);
         Require(Vector3.Distance(summed, new Vector3(0.5f, 0.3f, 0.15f)) < 1e-6f, $"Pools must add linearly; got {summed}.");
 
         // Five warm corridor lamps at GlowGrid's 3.6 scale: stacked multipliers would reach 4.6^5 ~ 2060x on red.
         var warm = new Vector3(1f, 0.8f, 0.5f) * 3.6f;
         var corridor = new VisualPointLight[5];
         for (int i = 0; i < corridor.Length; i++) corridor[i] = new VisualPointLight(0.4f * i, 0f, 0f, 6f, warm, VisualPointLightKind.Effect);
-        Vector3 mapped = VisualPointLight.AccumulateAndCompress(corridor, 0.8f, 0f, Walls());
+        Vector3 mapped = VisualPointLight.AccumulateAndCompress(corridor, 0.8f, 0f, Walls(), []);
         Require(mapped.X <= 1f && mapped.Y <= 1f && mapped.Z <= 1f && mapped.Z >= 0f,
             $"Compressed pool term must stay in [0, 1] (scene at most 2x); got {mapped}.");
         Require(mapped.X > mapped.Y && mapped.Y > mapped.Z,

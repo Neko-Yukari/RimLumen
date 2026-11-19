@@ -6,6 +6,7 @@
   "runOnEmptyFrames": false,
   "requiresSceneDepth": false,
   "requiresMapLightField": false,
+  "objectShadows": true,
   "bloomMipLevels": 3,
   "compositeShader": "Composite.frag.glsl",
   "options": [

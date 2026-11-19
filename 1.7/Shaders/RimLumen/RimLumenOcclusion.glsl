@@ -33,14 +33,6 @@ bool lumenSolidTexel(ivec2 p)
 
 bool lumenSolid(vec2 p) { return lumenSolidTexel(ivec2(floor(p * 4.0))); }
 
-bool lumenRunTexel(ivec2 p, bool height)
-{
-    if (!height) return lumenSolidTexel(p);
-    if (!lumenInside(p, textureSize(_LumenOcclusion, 0))) return false;
-    vec4 v = texelFetch(_LumenOcclusion, p, 0);
-    return v.g != 0.0 && (int(round(v.a * 255.0)) & 4) != 0;
-}
-
 // GridWalk.Enter: the cell of spacing size holding start; a start on a cell edge belongs to the cell ahead.
 ivec2 lumenGridEnter(vec2 start, vec2 direction, float size)
 {
@@ -63,14 +55,14 @@ float lumenGridLeave(vec2 start, vec2 direction, float size, float limit, inout 
     return end;
 }
 
-// LightTransport.RunLength: the contiguous run of solid (height: FlagPointHeight G > 0) texels from start along direction, at
-// most limit. Solid starts in start's own texel; height starts in the first texel along direction.
-float lumenRunLength(vec2 start, vec2 direction, float limit, bool height)
+// LightTransport.RunLength: the contiguous run of solid texels from start along direction, at most limit; 0 when start's
+// own texel is not solid.
+float lumenRunLength(vec2 start, vec2 direction, float limit)
 {
-    if (!height && !lumenSolid(start)) return 0.0;
+    if (!lumenSolid(start)) return 0.0;
     float distance = 0.0;
     ivec2 cell = lumenGridEnter(start, direction, 0.25);
-    while (distance < limit && lumenRunTexel(cell, height))
+    while (distance < limit && lumenSolidTexel(cell))
         distance = lumenGridLeave(start, direction, 0.25, limit, cell);
     return distance;
 }
@@ -149,7 +141,7 @@ float lumenTransport(vec2 light, vec2 target, out float cover)
     if (len == 0.0) return 1.0;
     cover = 0.0;
     vec2 direction = delta / len;
-    float lightRun = lumenRunLength(light, -direction, len, false);
+    float lightRun = lumenRunLength(light, -direction, len);
     float solidVisibility = 1.0, pendingSolid = 1.0, coverVisibility = 1.0, distance = 0.0;
     ivec2 mapSize = textureSize(_LumenOcclusionCoarse, 0);
     ivec2 next = lumenGridEnter(target, direction, 1.0);
@@ -223,9 +215,9 @@ float lightVisibility(vec2 light, vec2 target, out float cover)
 }
 
 // Sun path (SunTransport.Shadow): split G height at q against height t, the edge ramp inside the footprint, faded by
-// 1 - f * t / h with f the FlagSunFade (128) share of the occupied texels. point: texels without FlagPointHeight (4)
-// read G = 0. distance: the split's distance (texels, positive inside).
-float lumenSunShadow(vec2 q, float t, bool point, out float distance)
+// 1 - f * t / h with f the FlagSunFade (128) share of the occupied texels. distance: the split's distance (texels,
+// positive inside).
+float lumenSunShadow(vec2 q, float t, out float distance)
 {
     ivec2 size = textureSize(_LumenOcclusion, 0);
     vec2 uv = q * 4.0 - 0.5;
@@ -237,9 +229,7 @@ float lumenSunShadow(vec2 q, float t, bool point, out float distance)
     vec4 fades;
     for (int i = 0; i < 4; i++)
     {
-        int bits = int(round(flags[i] * 255.0));
-        if (point && (bits & 4) == 0) heights[i] = 0.0;
-        fades[i] = (bits & 128) != 0 ? 1.0 : 0.0;
+        fades[i] = (int(round(flags[i] * 255.0)) & 128) != 0 ? 1.0 : 0.0;
     }
     ivec2 points[4] = ivec2[4](base, base + ivec2(1, 0), base + ivec2(0, 1), base + ivec2(1, 1));
     for (int i = 0; i < 4; i++) if (!lumenInside(points[i], size)) heights[i] = 0.0;
@@ -256,32 +246,33 @@ float lumenSunShadow(vec2 q, float t, bool point, out float distance)
 
 // SunTransport.Step: the shadow at a and, where the split distance crossed the ramp top since the step right before
 // (last >= 0, the t = 0 step at p included), also where it reaches the ramp top, placed linearly between the two.
-float lumenHeightStep(vec2 p, vec2 direction, float rise, bool point, float a, inout float last, inout float lastDistance)
+float lumenHeightStep(vec2 p, vec2 direction, float rise, float a, inout float last, inout float lastDistance)
 {
     float d, unused;
-    float s = lumenSunShadow(p + direction * a, a * rise, point, d);
+    float s = lumenSunShadow(p + direction * a, a * rise, d);
     if (last >= 0.0 && lastDistance < 0.125 && d > 0.125)
     {
         float c = last + (a - last) * (0.125 - lastDistance) / (d - lastDistance);
-        s = max(s, lumenSunShadow(p + direction * c, c * rise, point, unused));
+        s = max(s, lumenSunShadow(p + direction * c, c * rise, unused));
     }
     last = a;
     lastDistance = d;
     return s;
 }
 
-// SunTransport.HeightVisibility: the one height march; the sun skips nothing and reads every G (coarse G), a point light
-// skips both own footprints and reads G only on FlagPointHeight texels (coarse A).
-float lumenHeightVisibility(vec2 p, vec2 direction, float rise, float reach, float skipBefore, float skipFrom, bool point)
+// SunTransport.Visibility: the blockLight height march; castXZ is vanilla _CastVect.xz (|castXZ| > 0). 1 outside the map.
+float lumenSunVisibility(vec2 p, vec2 castXZ)
 {
+    float len = length(castXZ);
+    vec2 direction = -castXZ / len;
+    float rise = 1.0 / len, reach = len * 2.0;
     ivec2 mapSize = textureSize(_LumenOcclusionCoarse, 0);
     ivec2 cell = ivec2(floor(p));
     if (!lumenInside(cell, mapSize)) return 1.0;
-    vec4 here = texelFetch(_LumenOcclusionCoarse, cell, 0);
     float shadow = 0.0, distance = 0.0, last = -1.0, lastDistance = 0.0;
-    if (skipBefore == 0.0 && (point ? here.a : here.g) != 0.0)
+    if (texelFetch(_LumenOcclusionCoarse, cell, 0).g != 0.0)
     {
-        shadow = lumenSunShadow(p, 0.0, point, lastDistance);
+        shadow = lumenSunShadow(p, 0.0, lastDistance);
         last = 0.0;
     }
     ivec2 next = lumenGridEnter(p, direction, 1.0);
@@ -290,7 +281,7 @@ float lumenHeightVisibility(vec2 p, vec2 direction, float rise, float reach, flo
         cell = next;
         float end = lumenGridLeave(p, direction, 1.0, reach, next);
         vec4 coarse = lumenInside(cell, mapSize) ? texelFetch(_LumenOcclusionCoarse, cell, 0) : vec4(0.0);
-        if ((point ? coarse.a : coarse.g) != 0.0)
+        if (coarse.g != 0.0)
         {
             // One fine step per texel crossed, at the middle of the ray's run through it (plus lumenHeightStep's outline
             // entry), starting in this cell's texels.
@@ -298,9 +289,7 @@ float lumenHeightVisibility(vec2 p, vec2 direction, float rise, float reach, flo
             for (float a = distance; a < end;)
             {
                 float b = lumenGridLeave(p, direction, 0.25, end, texel);
-                float at = (a + b) * 0.5;
-                if (at >= skipBefore && at < skipFrom) shadow = max(shadow, lumenHeightStep(p, direction, rise, point, at, last, lastDistance));
-                else last = -1.0;
+                shadow = max(shadow, lumenHeightStep(p, direction, rise, (a + b) * 0.5, last, lastDistance));
                 a = b;
             }
         }
@@ -310,21 +299,10 @@ float lumenHeightVisibility(vec2 p, vec2 direction, float rise, float reach, flo
     return 1.0 - shadow;
 }
 
-// SunTransport.Visibility: castXZ is vanilla _CastVect.xz (|castXZ| > 0). 1 outside the map.
-float lumenSunVisibility(vec2 p, vec2 castXZ)
+// ObjectShadow mask term at this screen texel: the mask of the light's round dotted with its ShadowSlot.Selector. A
+// cleared mask slot resolves to Waylith's black fallback; texels outside its extent read no shadow.
+float lumenObjectShadow(sampler2D mask, vec4 selector)
 {
-    float len = length(castXZ);
-    return lumenHeightVisibility(p, -castXZ / len, 1.0 / len, len * 2.0, 0.0, 1e30, false);
-}
-
-// SunTransport.PointVisibility: light at ground position light and height (>= 0) over ground point target.
-float lumenPointVisibility(vec2 light, float height, vec2 target)
-{
-    vec2 delta = light - target;
-    float len = length(delta);
-    if (len == 0.0) return 1.0;
-    vec2 direction = delta / len;
-    float reach = height > 2.0 ? len * 2.0 / height : len;
-    return lumenHeightVisibility(target, direction, height / len, reach,
-        lumenRunLength(target, direction, len, true), len - lumenRunLength(light, -direction, len, true), true);
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    return all(lessThan(texel, textureSize(mask, 0))) ? dot(texelFetch(mask, texel, 0), selector) : 0.0;
 }

@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
+using RimLumen.Core.Lighting.Casters;
 using RimLumen.Core.Lighting.Occlusion;
 
 namespace RimLumen.Core.Lighting;
@@ -44,9 +46,9 @@ internal readonly record struct VisualPointLight(float X, float Y, float Z, floa
     }
 
     // Ensures: Effect: Light * Falloff * visibility. Vanilla: ProjectVanilla(Light * VanillaFalloff) * visibility.
-    //          visibility = cover * min(solid, height shadow from Y): solid and height are opaque blockers and combine by
-    //          the darker term, cover alone multiplies. Kind selects only the falloff.
-    internal Vector3 EvaluateAt(float worldX, float worldZ, OcclusionFrame walls)
+    //          visibility = cover * min(solid, 1 - object shadow m): solid and the casters' mask are opaque blockers and
+    //          combine by the darker term, cover alone multiplies. Kind selects only the falloff.
+    internal Vector3 EvaluateAt(float worldX, float worldZ, OcclusionFrame walls, IReadOnlyList<Caster> casters)
     {
         float dx = worldX - X;
         float dz = worldZ - Z;
@@ -55,16 +57,16 @@ internal readonly record struct VisualPointLight(float X, float Y, float Z, floa
         var at = new Vector2(X, Z);
         var target = new Vector2(worldX, worldZ);
         float solid = LightTransport.Visibility(walls, at, target, out float cover);
-        return light * (MathF.Min(solid, SunTransport.PointVisibility(walls, at, Y, target)) * cover);
+        return light * (MathF.Min(solid, 1f - ObjectShadow.PointMask(new Vector4(at, Y, Radius), casters, target)) * cover);
     }
 
     // The scene multiplier term at one ground point: overlapping pools add linearly (RimLumenLightPoolAccumulate),
     // then RimLumenLightPool.frag.glsl compresses the sum once, so the scene becomes scene * (1 + result).
     internal static Vector3 AccumulateAndCompress(ReadOnlySpan<VisualPointLight> lights, float worldX, float worldZ,
-        OcclusionFrame walls)
+        OcclusionFrame walls, IReadOnlyList<Caster> casters)
     {
         Vector3 sum = Vector3.Zero;
-        foreach (VisualPointLight light in lights) sum += light.EvaluateAt(worldX, worldZ, walls);
+        foreach (VisualPointLight light in lights) sum += light.EvaluateAt(worldX, worldZ, walls, casters);
         return CompressHighlights(sum);
     }
 

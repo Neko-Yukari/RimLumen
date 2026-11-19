@@ -14,28 +14,26 @@ internal static class OcclusionLayout
     internal const byte Solid = 255;
     internal const byte MaxCover = 254;
 
-    // Main texture B (design 1.8): the maximum over every stamp of d, the signed distance in texels from the texel centre
-    // to that stamp's footprint edge (a thing's sprite outline, a blocker's occupied cells), positive inside, stored
-    // round(DistanceZero + DistanceScale * d); 0 (unstamped) reads d = -DistanceBand.
+    // Main texture B (design 1.8): the maximum over every blocker stamp of d, the signed distance in texels from the texel
+    // centre to the blocker's occupied cells, positive inside, stored round(DistanceZero + DistanceScale * d); 0
+    // (unstamped) reads d = -DistanceBand.
     internal const int DistanceBand = 4;
     internal const float DistanceZero = 128f, DistanceScale = 32f;
     // Every 2 x 2 gather's edge rises from 0 to 1 over this many texels inside the footprint.
     internal const float EdgeRamp = 0.125f;
-    // Fine alpha samples per texel along each axis (AlphaMask.Distance).
+    // Fine alpha samples per texel along each axis (AlphaMask.Fine).
     internal const int MaskSamples = 8;
 
     // Main texture A flags.
     internal const byte FlagDoor = 1;
     internal const byte FlagDoorAxisZ = 2; // set: the door's leaves slide along world z
-    // G was written by a non-blockLight height occluder. Point lights read G only here: blockLight texels are governed
-    // by the solid and door-gap term alone. The sun reads G everywhere.
-    internal const byte FlagPointHeight = 4;
-    internal const byte FlagSunFade = 128; // shadowData box: sun shadow fades as 1 - t/h
+    internal const byte FlagSunFade = 128; // shadowData height: sun shadow fades as 1 - t/h
 
     // Coarse texture B flags.
     internal const byte CoarseDoor = 1;
 
-    // Main texture G encodes sun height h in [0, MaxSunHeight] as round(h / MaxSunHeight * 255).
+    // Main texture G encodes a blocker's sun height h in [0, MaxSunHeight] as round(h / MaxSunHeight * 255); only the sun
+    // reads it. Things cast their height through ObjectShadow instead.
     internal const float MaxSunHeight = 2f;
 
     internal static byte EncodeDistance(float d) => (byte)Math.Clamp((int)MathF.Round(DistanceZero + DistanceScale * d), 0, byte.MaxValue);
@@ -79,16 +77,12 @@ internal readonly record struct MaskPlacement(float CenterX, float CenterZ, floa
 
 // A sprite's alpha (design 1.3), built once per cached sprite from its fine alpha: MaskSamples x MaskSamples box-filtered
 // samples per texel of the drawn size, column 0 the west edge, row 0 the south edge, Fine[row * Width * MaskSamples + col].
-// Alpha: Width x Height texels (4 per drawn cell), each the mean of its fine samples; cover reads it.
-// Distance: the signed distance, in mask texels, from each fine sample centre to the edge of fine alpha >= 128 (positive
-//           inside), over the mask grown by DistanceBand texels on every side, clamped to +-DistanceBand; B reads it.
+// Alpha: Width x Height texels (4 per drawn cell), each the mean of its fine samples; cover reads it. Silhouette.Of
+// outlines Fine.
 internal sealed class AlphaMask
 {
     internal readonly int Width, Height;
     internal readonly byte[] Fine, Alpha;
-    internal readonly float[] Distance;
-    internal int DistanceWidth => (Width + 2 * OcclusionLayout.DistanceBand) * OcclusionLayout.MaskSamples;
-    internal int DistanceHeight => (Height + 2 * OcclusionLayout.DistanceBand) * OcclusionLayout.MaskSamples;
 
     // Requires: width, height > 0; fine.Length == width * height * MaskSamples^2.
     internal AlphaMask(int width, int height, byte[] fine)
@@ -104,17 +98,6 @@ internal sealed class AlphaMask
                     for (int fx = 0; fx < s; fx++) sum += fine[(z * s + fz) * width * s + x * s + fx];
                 Alpha[z * width + x] = (byte)MathF.Round(sum / (float)(s * s));
             }
-        int pad = OcclusionLayout.DistanceBand * s, w = DistanceWidth, h = DistanceHeight;
-        var inside = new bool[w * h];
-        for (int z = 0; z < height * s; z++)
-            for (int x = 0; x < width * s; x++) inside[(z + pad) * w + x + pad] = fine[z * width * s + x] >= 128;
-        float[] toInside = SquaredDistance(inside, w, h, true), toOutside = SquaredDistance(inside, w, h, false);
-        Distance = new float[w * h];
-        for (int i = 0; i < Distance.Length; i++)
-        {
-            float d = inside[i] ? MathF.Sqrt(toOutside[i]) - 0.5f : 0.5f - MathF.Sqrt(toInside[i]);
-            Distance[i] = Math.Clamp(d / s, -OcclusionLayout.DistanceBand, OcclusionLayout.DistanceBand);
-        }
     }
 
     // Ensures: a mask opaque over width x height texels.
@@ -124,72 +107,16 @@ internal sealed class AlphaMask
         Array.Fill(fine, byte.MaxValue);
         return new AlphaMask(width, height, fine);
     }
-
-    // Exact squared Euclidean distance from every sample centre to the nearest sample whose inside flag equals target
-    // (Felzenszwalb and Huttenlocher, columns then rows); 1e20 when there is none.
-    private static float[] SquaredDistance(bool[] inside, int w, int h, bool target)
-    {
-        const float far = 1e20f;
-        var grid = new float[w * h];
-        for (int i = 0; i < grid.Length; i++) grid[i] = inside[i] == target ? 0f : far;
-        int n = Math.Max(w, h);
-        var f = new float[n];
-        var d = new float[n];
-        var v = new int[n];
-        var b = new float[n + 1];
-        for (int x = 0; x < w; x++)
-        {
-            for (int z = 0; z < h; z++) f[z] = grid[z * w + x];
-            Transform(f, d, v, b, h);
-            for (int z = 0; z < h; z++) grid[z * w + x] = d[z];
-        }
-        for (int z = 0; z < h; z++)
-        {
-            Array.Copy(grid, z * w, f, 0, w);
-            Transform(f, d, v, b, w);
-            Array.Copy(d, 0, grid, z * w, w);
-        }
-        return grid;
-    }
-
-    private static void Transform(float[] f, float[] d, int[] v, float[] b, int n)
-    {
-        int k = 0;
-        v[0] = 0; b[0] = float.NegativeInfinity; b[1] = float.PositiveInfinity;
-        for (int q = 1; q < n; q++)
-        {
-            float s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2f * q - 2f * v[k]);
-            while (s <= b[k])
-            {
-                k--;
-                s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2f * q - 2f * v[k]);
-            }
-            k++;
-            v[k] = q; b[k] = s; b[k + 1] = float.PositiveInfinity;
-        }
-        k = 0;
-        for (int q = 0; q < n; q++)
-        {
-            while (b[k + 1] < q) k++;
-            d[q] = (q - v[k]) * (q - v[k]) + f[v[k]];
-        }
-    }
 }
 
 // One drawn mesh of a thing: most things draw one, a plant one per printed mesh (Plant.Print).
 internal readonly record struct SpritePiece(AlphaMask Mask, MaskPlacement At);
 
-// What a non-blockLight thing stamps from its sprite (design 1.2), resolved once by the host from its def. Height: sun
-// height (staticSunShadowHeight, or the shadowData height), 0 = none; Fade: the height is a shadowData height
-// (FlagSunFade); Cover: fillPercent when Fillage != None, else 0.
-internal readonly record struct Occluder(float Height, bool Fade, float Cover);
-
 // Immutable snapshot published by OcclusionBuilder.Publish; an in-flight GPU frame never observes a later edit.
 // Texels: RGBA8, (Width * 4) x (Height * 4), row-major from world (0, 0); texel (tx, tz) covers world
 //         [tx / 4, (tx + 1) / 4) x [tz / 4, (tz + 1) / 4). Coarse: RGBA8, Width x Height, R and G = max over the cell's
 //         3 x 3 neighbourhood of the main R and G, B = CoarseDoor when any cell of that 3 x 3 neighbourhood holds door
-//         texels (so a fine step whose 2 x 2 gather can reach a door texel knows to read A and DoorStates), A = max over
-//         the same neighbourhood of G on FlagPointHeight texels (the point-light coarse height).
+//         texels (so a fine step whose 2 x 2 gather can reach a door texel knows to read A and DoorStates), A = 0.
 internal sealed record OcclusionMap(int Width, int Height, byte[] Texels, byte[] Coarse)
 {
     internal int TexelWidth => Width * OcclusionLayout.TexelsPerCell;

@@ -140,7 +140,14 @@ internal static class RimLumenMapHooks
             current = new RecordScope(ctx, payload, (SceneColorTargets)sceneTargets.GetValue(__instance)!,
                 (MeshBatchRenderer)mapRenderer.GetValue(__instance)!);
             // The lifted shadows read no pool unless this record's queue-3101 pass rebinds the light sum.
-            if (payload.Takeover || payload.HasLightPools) RimLumenRenderHost.Pipeline!.PoolShadows.LightSum.Clear();
+            // Likewise the pools and the takeover sun read no object shadow unless it draws this record's masks.
+            if (payload.Takeover || payload.HasLightPools)
+            {
+                RimLumenPipeline pipeline = RimLumenRenderHost.Pipeline!;
+                pipeline.PoolShadows.LightSum.Clear();
+                pipeline.LightPool.FirstMask.Clear();
+                pipeline.LightPool.LaterMask.Clear();
+            }
         }
         catch (Exception ex) { RimLumenRenderHost.Pipeline!.TripRenderFailSafe(ex); }
     }

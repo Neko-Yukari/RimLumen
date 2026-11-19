@@ -425,12 +425,12 @@ public static class ParticleShaderTests
 
         MaterialLayout layout = ShaderMetadataParser.ExtractMaterialLayout(fragment, "RimLumenLightPoolAccumulate.frag.glsl");
         Require(!layout.HasErrors, "Waylith rejected the light-pool material metadata.");
-        Require(layout.UniformSize == 32, $"Light-pool material UBO must be 32 bytes; got {layout.UniformSize}.");
-        CheckOverrideSlots(layout, ("_LumenLight", 0), ("_LumenLightAt", 16));
+        Require(layout.UniformSize == 48, $"Light-pool material UBO must be 48 bytes; got {layout.UniformSize}.");
+        CheckOverrideSlots(layout, ("_LumenLight", 0), ("_LumenLightAt", 16), ("_LumenShadowChannel", 32));
         Require(layout.TextureSlots.Select(x => (x.Binding, x.PropertyName)).SequenceEqual(new[]
-            { (1, "_LumenOcclusion"), (2, "_LumenOcclusionCoarse"), (3, "_LumenDoorOpen") })
+            { (1, "_LumenOcclusion"), (2, "_LumenOcclusionCoarse"), (3, "_LumenDoorOpen"), (4, "_LumenObjectShadow") })
             && layout.StorageBufferSlots.Length == 0,
-            "Light-pool shader declares the occlusion, coarse and door textures at bindings 1 through 3.");
+            "Light-pool shader declares the occlusion, coarse and door textures and the object-shadow mask at bindings 1 through 4.");
         Require(ShaderMetadataParser.ValidateStageInterface(vertex, fragment, LightPoolRenderer.VertexFile, "RimLumenLightPoolAccumulate.frag.glsl").Count == 0,
             "Waylith reports mismatched SceneDefault/RimLumenLightPoolAccumulate varyings.");
         Require(fragment.Contains("vec2 d = vUv * 2.0 - 1.0;", StringComparison.Ordinal)
@@ -447,6 +447,19 @@ public static class ParticleShaderTests
             && composite.Contains("return compressHighlights(sum);", StringComparison.Ordinal)
             && composite.Contains("vec4(lumenLightPoolTerm(lightSum, ivec2(gl_FragCoord.xy)), 0.0)", StringComparison.Ordinal),
             "Light-pool composite must apply the linear sum once, identity up to 1 and compressed above.");
+    }
+
+    [LumenFact]
+    public static void ObjectShadowCasterShaderMatchesItsMaterialAndVaryings()
+    {
+        string vertex = ShaderSourceLoader.ReadShaderSource(Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", LightPoolRenderer.CasterVertexFile)));
+        string fragment = ShaderSourceLoader.ReadShaderSource(Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", LightPoolRenderer.CasterFragmentFile)));
+        MaterialLayout layout = ShaderMetadataParser.ExtractMaterialLayout(fragment, "RimLumenObjectShadow.frag.glsl");
+        Require(!layout.HasErrors && layout.UniformSize == 48 && layout.TextureSlots.Length == 0,
+            $"Caster material must be three vectors and no texture; got {layout.UniformSize} bytes.");
+        CheckOverrideSlots(layout, ("_LumenCasterLight", 0), ("_LumenCasterSun", 16), ("_LumenCasterChannel", 32));
+        Require(ShaderMetadataParser.ValidateStageInterface(vertex, fragment, LightPoolRenderer.CasterVertexFile, "RimLumenObjectShadow.frag.glsl").Count == 0,
+            "Waylith reports mismatched RimLumenObjectShadow varyings.");
     }
 
     [LumenFact]
@@ -480,9 +493,9 @@ public static class ParticleShaderTests
         Require(LightPoolShadows.LayoutMatches(Layout(Lifted("RimLumenLightTakeover.frag.glsl")), overlay, lightSum),
             "Takeover LightOverlay must keep vanilla uniforms and bind only the light sum.");
         Require(LightPoolShadows.LayoutMatches(Layout(Lifted("RimLumenSunShadowTakeover.frag.glsl")), overlay, LightPoolShadows.ShadeTextures, LightPoolShadows.ShadeUniforms),
-            "Takeover sun shade must prefix vanilla LightOverlay uniforms, append exactly two vectors and bind only the four RimLumen textures.");
-        Require(LightPoolShadows.LayoutMatches(Layout(Lifted("RimLumenSunShadowFadeTakeover.frag.glsl")), fade, LightPoolShadows.OcclusionTextures),
-            "Takeover SunShadowFade must keep vanilla uniforms and bind exactly the three occlusion textures.");
+            "Takeover sun shade must prefix vanilla LightOverlay uniforms, append exactly three vectors and bind only the five RimLumen textures.");
+        Require(LightPoolShadows.LayoutMatches(Layout(Lifted("RimLumenSunShadowFadeTakeover.frag.glsl")), fade, LightPoolShadows.FadeTextures, LightPoolShadows.FadeUniforms),
+            "Takeover SunShadowFade must keep vanilla uniforms, append the sun channel and bind the occlusion textures and the object-shadow mask.");
         string shadowErrors = Varyings("SunShadow.vert.glsl", "RimLumenSunShadow.frag.glsl");
         string fadeErrors = Varyings("SunShadowFade.vert.glsl", "RimLumenSunShadowFade.frag.glsl");
         foreach ((string vert, string frag) in new[]
@@ -605,6 +618,8 @@ public static class ParticleShaderTests
         CompileFile("RimLumen/RimLumenSunShadowTakeover.frag.glsl", RuntimeShaderStage.Fragment);
         CompileFile("RimLumen/RimLumenSunShadowFadeTakeover.vert.glsl", RuntimeShaderStage.Vertex);
         CompileFile("RimLumen/RimLumenSunShadowFadeTakeover.frag.glsl", RuntimeShaderStage.Fragment);
+        CompileFile(LightPoolRenderer.CasterVertexFile, RuntimeShaderStage.Vertex);
+        CompileFile(LightPoolRenderer.CasterFragmentFile, RuntimeShaderStage.Fragment);
         Console.WriteLine("[SPIR-V] compute strides=64,480,48,4,16,32; vertex strides=64,480,32; LocalSize=64,1,1");
     }
 

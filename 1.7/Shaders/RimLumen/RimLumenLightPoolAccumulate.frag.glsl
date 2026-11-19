@@ -10,16 +10,19 @@ layout(location = 0) out vec4 outColor;
 
 layout(set = 2, binding = 0) uniform MaterialUniforms
 {
-    vec4 _LumenLight; // rgb: ColorRgb * effective intensity (>= 0, unclamped); a: light height Y in cells (>= 0)
+    vec4 _LumenLight; // rgb: ColorRgb * effective intensity (>= 0, unclamped); a: 0
     vec4 _LumenLightAt; // xy: light centre in world cells (X, Z); z: Kind (0 effect, 1 vanilla); w: radius
+    vec4 _LumenShadowChannel; // ShadowSlot.Selector of the light's object-shadow channel; 0 without object shadows
 } uMaterial;
 
 #include "RimLumenOcclusion.glsl"
+// The object-shadow mask of this draw's round (LightPoolRenderer).
+layout(set = 2, binding = 4) uniform sampler2D _LumenObjectShadow; // @default = black
 
 void main()
 {
     // Kind selects only the falloff (VisualPointLight.EvaluateAt); both kinds share one visibility query:
-    // cover * min(solid, height shadow).
+    // cover * min(solid, 1 - object shadow).
     float falloff;
     vec3 rgb;
     if (uMaterial._LumenLightAt.z == 1.0)
@@ -43,7 +46,7 @@ void main()
     {
         float cover;
         float solid = lightVisibility(uMaterial._LumenLightAt.xy, vWorldPos.xz, cover);
-        visibility = min(solid, lumenPointVisibility(uMaterial._LumenLightAt.xy, uMaterial._LumenLight.a, vWorldPos.xz)) * cover;
+        visibility = min(solid, 1.0 - lumenObjectShadow(_LumenObjectShadow, uMaterial._LumenShadowChannel)) * cover;
     }
     outColor = vec4(rgb * visibility, 0.0);
 }

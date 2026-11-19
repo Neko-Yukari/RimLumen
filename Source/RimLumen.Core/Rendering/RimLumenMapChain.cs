@@ -19,6 +19,7 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
     private readonly MeshBatchRenderer glowRenderer = new(owner.App.GraphicsDevice!, owner.App.RenderContext!);
     private readonly OffscreenPostEffectPass depthCopy = new("RimLumenDepthCopy", "PostFx/RimLumenDepthCopy.frag.glsl", new[] { 0 });
     private readonly MeshBatchRenderer lightRenderer = new(owner.App.GraphicsDevice!, owner.App.RenderContext!);
+    private readonly MeshBatchRenderer shadowRenderer = new(owner.App.GraphicsDevice!, owner.App.RenderContext!);
     // scene * (1 + compress(sum)): DstColor, One on colour; Zero, One keeps destination alpha.
     private readonly PostEffectPass lightComposite = new("RimLumenLightPoolComposite", LightPoolRenderer.CompositeFile, new[] { 0 },
         new BlendState(true, BlendFactor.DstColor, BlendFactor.One, BlendOp.Add, BlendFactor.Zero, BlendFactor.One, BlendOp.Add));
@@ -49,7 +50,9 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
 
     // Requires: the queue-3101 split of a frame with light pools; no render pass open.
     // Ensures: the pools are summed linearly into the slot's LightSum, then one full-screen pass multiplies the scene
-    //          by (1 + compress(sum)); scene alpha and depth are untouched.
+    //          by (1 + compress(sum)); scene alpha and depth are untouched. With casters, round by round: the round's
+    //          mask is cleared, takes the round's casters and is bound, then the round's pools add to the sum.
+    //          Without, every pool goes in one pass.
     internal void RecordLightPools(in FrameContext ctx, PipelineFrame payload, SceneColorTargets targets)
     {
         try
@@ -61,32 +64,63 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
             HdrTargets.Slot slot = owner.Targets.Ensure(ctx.SubmissionFrameIndex, scene, payload.BloomMipLevels);
             ctx.CommandBuffer.BeginDebugLabel("RimLumen/LightPools\0"u8, new float4(1f, 0.5f, 0f, 1f));
             labelOpen = true;
-            var frame = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer, owner.Targets.RenderPass,
-                owner.Targets.EnsureLightSum(slot), slot.LightSum!.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat,
-                scene.DepthFormat);
-            BeginPass(in frame, clear: true, ref renderPassOpen);
-            if (payload.LightMesh is { } lights)
+            VkFramebuffer sumFramebuffer = owner.Targets.EnsureLightSum(slot);
+            RenderTexture lightSum = slot.LightSum!;
+            if (payload.ShadowMesh is not { } casters)
             {
-                lightRenderer.InvalidateCommandBufferBindings();
-                lightRenderer.RecordPass(in frame, lights, RimLumenRenderHost.LumenRenderPassId);
+                RecordPools(in ctx, payload, slot, scene, sumFramebuffer, int.MinValue, int.MaxValue, clear: true);
             }
-            EndPass(in frame, ref renderPassOpen);
-            slot.LightSum.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
+            else
+            {
+                for (int round = 0; round < payload.LightRounds; round++)
+                {
+                    int queue = LightPoolRenderer.RenderQueue + round;
+                    bool first = round == 0;
+                    var mask = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer, owner.Targets.MaskRenderPass,
+                        owner.Targets.EnsureMask(slot, first), lightSum.Extent, VkSampleCountFlags._1Bit, VkFormat.R8G8B8A8UNorm,
+                        scene.DepthFormat);
+                    BeginPass(in mask, clear: true, ref renderPassOpen);
+                    shadowRenderer.InvalidateCommandBufferBindings();
+                    shadowRenderer.RecordPass(in mask, casters, RimLumenRenderHost.LumenRenderPassId, queueMin: queue, queueMax: queue + 1);
+                    EndPass(in mask, ref renderPassOpen);
+                    RenderTexture target = first ? owner.Targets.FirstMask! : owner.Targets.LaterMask!;
+                    target.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
+                    (first ? owner.LightPool.FirstMask : owner.LightPool.LaterMask).Bind(target);
+                    RecordPools(in ctx, payload, slot, scene, sumFramebuffer, queue, queue + 1, clear: first);
+                }
+            }
+            lightSum.Color.SetMipLayout(0, VkImageLayout.ShaderReadOnlyOptimal);
             if (payload.Takeover)
             {
-                owner.PoolShadows.LightSum.Bind(slot.LightSum);
+                owner.PoolShadows.LightSum.Bind(lightSum);
                 return; // The takeover LightOverlay (3100) and sun shade (3170) read this sum.
             }
             FrameContext composite = attachment.MakeFrameContext(in ctx);
             BeginPass(in composite, clear: false, ref renderPassOpen);
-            lightComposite.SetInput(0, slot.LightSum);
+            lightComposite.SetInput(0, lightSum);
             lightComposite.RecordInline(in composite, composite.RenderPass, composite.SampleCount);
             EndPass(in composite, ref renderPassOpen);
             // Only now do this frame's lifted sun shadows (3170/3175) see the pools; until here they read no pool.
-            owner.PoolShadows.LightSum.Bind(slot.LightSum);
+            owner.PoolShadows.LightSum.Bind(lightSum);
         }
         catch (Exception ex) { owner.TripRenderFailSafe(ex); }
         finally { CloseOpenScopes(in ctx); }
+    }
+
+    // The pools at queues [queueMin, queueMax) into the slot's LightSum, cleared first when clear.
+    private void RecordPools(in FrameContext ctx, PipelineFrame payload, HdrTargets.Slot slot, RenderTexture scene,
+        VkFramebuffer sumFramebuffer, int queueMin, int queueMax, bool clear)
+    {
+        var frame = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer,
+            clear ? owner.Targets.RenderPass : owner.Targets.LoadRenderPass, sumFramebuffer, slot.LightSum!.Extent,
+            VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat, scene.DepthFormat);
+        BeginPass(in frame, clear, ref renderPassOpen);
+        if (payload.LightMesh is { } lights)
+        {
+            lightRenderer.InvalidateCommandBufferBindings();
+            lightRenderer.RecordPass(in frame, lights, RimLumenRenderHost.LumenRenderPassId, queueMin: queueMin, queueMax: queueMax);
+        }
+        EndPass(in frame, ref renderPassOpen);
     }
 
     private void CloseOpenScopes(in FrameContext ctx)
@@ -237,6 +271,9 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         renderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         glowRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
         lightRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
+        shadowRenderer.OnRenderContextRebuilt(owner.App.RenderContext!);
+        owner.LightPool.FirstMask.Clear();
+        owner.LightPool.LaterMask.Clear();
         distortionPass?.OnRenderTargetRebuilt();
         depthCopy.Invalidate();
         lightComposite.Invalidate();
@@ -249,6 +286,7 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         renderer.Dispose();
         glowRenderer.Dispose();
         lightRenderer.Dispose();
+        shadowRenderer.Dispose();
         depthCopy.Dispose();
         lightComposite.Dispose();
         distortionPass?.Dispose();

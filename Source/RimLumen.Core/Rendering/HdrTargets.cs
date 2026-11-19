@@ -20,6 +20,8 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         // Linear sum of the frame's light pools; allocated on the first frame that has any.
         internal RenderTexture? LightSum;
         internal VkFramebuffer LightSumFramebuffer;
+        // HdrTargets.FirstMask and LaterMask over this slot's scene depth.
+        internal VkFramebuffer FirstMaskFramebuffer, LaterMaskFramebuffer;
         internal RenderTexture[] Down = Array.Empty<RenderTexture>();
         internal RenderTexture[] Up = Array.Empty<RenderTexture>();
         internal VkFramebuffer Framebuffer;
@@ -31,6 +33,13 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
     private readonly DeviceEx device = app.Device;
     internal Slot[] Slots { get; private set; } = Array.Empty<Slot>();
     internal VkRenderPass RenderPass { get; private set; }
+    // RenderPass loading its colour instead of clearing it: the light sum's later object-shadow rounds.
+    internal VkRenderPass LoadRenderPass { get; private set; }
+    internal VkRenderPass MaskRenderPass { get; private set; }
+    // The object-shadow masks of round 0 and of every later round (LightPoolRenderer), shared by every slot: the one
+    // graphics queue runs submissions in order and each pass's external dependency waits for earlier shader reads.
+    // Allocated on the first frame with casters.
+    internal RenderTexture? FirstMask, LaterMask;
     private VkFormat depthFormat;
     private VkFormat sceneFormat;
     private int width;
@@ -49,7 +58,9 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
             depthFormat = scene.DepthFormat;
             sceneFormat = scene.ColorFormat;
             bloomMipLevels = mipLevels;
-            RenderPass = CreateRenderPass(depthFormat);
+            RenderPass = CreateRenderPass(depthFormat, VkFormat.R16G16B16A16SFloat, load: false);
+            LoadRenderPass = CreateRenderPass(depthFormat, VkFormat.R16G16B16A16SFloat, load: true);
+            MaskRenderPass = CreateRenderPass(depthFormat, VkFormat.R8G8B8A8UNorm, load: false);
             MipSize[] sizes = bloomMipLevels > 0 ? BloomMipChain.Compute(width, height, bloomMipLevels, 8) : Array.Empty<MipSize>();
             Slots = new Slot[app.RenderContext!.FramesInFlight];
             try
@@ -102,12 +113,26 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         return slot.LightSumFramebuffer;
     }
 
-    private unsafe VkFramebuffer CreateFramebuffer(RenderTexture color, VkImageView sceneDepth)
+    // Requires: as EnsureLightSum. Ensures: the full-size RGBA8 mask of round 0 (first) or of the later rounds and its
+    //           framebuffer over the slot's scene depth.
+    internal VkFramebuffer EnsureMask(Slot slot, bool first)
+    {
+        ref RenderTexture? mask = ref first ? ref FirstMask : ref LaterMask;
+        mask ??= Make(width, height, VkFormat.R8G8B8A8UNorm, first ? "RimLumen.ObjectShadow.First" : "RimLumen.ObjectShadow.Later");
+        ref VkFramebuffer framebuffer = ref first ? ref slot.FirstMaskFramebuffer : ref slot.LaterMaskFramebuffer;
+        if (framebuffer.IsNull()) framebuffer = CreateFramebuffer(mask, slot.SceneDepth, MaskRenderPass);
+        return framebuffer;
+    }
+
+    private unsafe VkFramebuffer CreateFramebuffer(RenderTexture color, VkImageView sceneDepth) =>
+        CreateFramebuffer(color, sceneDepth, RenderPass);
+
+    private unsafe VkFramebuffer CreateFramebuffer(RenderTexture color, VkImageView sceneDepth, VkRenderPass pass)
     {
         VkImageView* views = stackalloc VkImageView[2] { color.ColorView, sceneDepth };
         return device.CreateFramebuffer(new VkFramebufferCreateInfo
         {
-            RenderPass = RenderPass, AttachmentCount = 2, Attachments = views,
+            RenderPass = pass, AttachmentCount = 2, Attachments = views,
             Width = width, Height = height, Layers = 1
         }, device.VkAllocator);
     }
@@ -117,14 +142,20 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         if (!slot.Framebuffer.IsNull()) device.DestroyFramebuffer(slot.Framebuffer, device.VkAllocator);
         if (!slot.GlowFramebuffer.IsNull()) device.DestroyFramebuffer(slot.GlowFramebuffer, device.VkAllocator);
         if (!slot.LightSumFramebuffer.IsNull()) device.DestroyFramebuffer(slot.LightSumFramebuffer, device.VkAllocator);
+        if (!slot.FirstMaskFramebuffer.IsNull()) device.DestroyFramebuffer(slot.FirstMaskFramebuffer, device.VkAllocator);
+        if (!slot.LaterMaskFramebuffer.IsNull()) device.DestroyFramebuffer(slot.LaterMaskFramebuffer, device.VkAllocator);
         slot.Framebuffer = default;
         slot.GlowFramebuffer = default;
         slot.LightSumFramebuffer = default;
+        slot.FirstMaskFramebuffer = default;
+        slot.LaterMaskFramebuffer = default;
     }
 
-    private static RenderTexture Make(int width, int height, string name)
+    private static RenderTexture Make(int width, int height, string name) => Make(width, height, VkFormat.R16G16B16A16SFloat, name);
+
+    private static RenderTexture Make(int width, int height, VkFormat format, string name)
     {
-        RenderTexture result = new(width, height, VkFormat.R16G16B16A16SFloat, name: name);
+        RenderTexture result = new(width, height, format, name: name);
         try
         {
             result.Create();
@@ -155,15 +186,17 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         }
     }
 
-    private unsafe VkRenderPass CreateRenderPass(VkFormat depth)
+    // load: the colour keeps its ShaderReadOnlyOptimal contents instead of being cleared. Passes differing only in load
+    // are compatible, so they share framebuffers.
+    private unsafe VkRenderPass CreateRenderPass(VkFormat depth, VkFormat colorFormat, bool load)
     {
         VkAttachmentDescription* attachments = stackalloc VkAttachmentDescription[2];
         attachments[0] = new VkAttachmentDescription
         {
-            Format = VkFormat.R16G16B16A16SFloat, Samples = VkSampleCountFlags._1Bit,
-            LoadOp = VkAttachmentLoadOp.Clear, StoreOp = VkAttachmentStoreOp.Store,
+            Format = colorFormat, Samples = VkSampleCountFlags._1Bit,
+            LoadOp = load ? VkAttachmentLoadOp.Load : VkAttachmentLoadOp.Clear, StoreOp = VkAttachmentStoreOp.Store,
             StencilLoadOp = VkAttachmentLoadOp.DontCare, StencilStoreOp = VkAttachmentStoreOp.DontCare,
-            InitialLayout = VkImageLayout.Undefined, FinalLayout = VkImageLayout.ShaderReadOnlyOptimal
+            InitialLayout = load ? VkImageLayout.ShaderReadOnlyOptimal : VkImageLayout.Undefined, FinalLayout = VkImageLayout.ShaderReadOnlyOptimal
         };
         // None exists in Brutal but the host requests Vulkan 1.2 (GraphicsDevice.cs:197),
         // and does not enable EXT/KHR_load_store_op_none. Preserve Store and synchronize its write.
@@ -188,7 +221,7 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
             SrcStageMask = VkPipelineStageFlags.ColorAttachmentOutputBit | VkPipelineStageFlags.EarlyFragmentTestsBit | VkPipelineStageFlags.LateFragmentTestsBit | VkPipelineStageFlags.FragmentShaderBit,
             DstStageMask = VkPipelineStageFlags.ColorAttachmentOutputBit | VkPipelineStageFlags.EarlyFragmentTestsBit | VkPipelineStageFlags.LateFragmentTestsBit | VkPipelineStageFlags.FragmentShaderBit,
             SrcAccessMask = VkAccessFlags.ColorAttachmentWriteBit | VkAccessFlags.DepthStencilAttachmentWriteBit | VkAccessFlags.ShaderReadBit,
-            DstAccessMask = VkAccessFlags.ColorAttachmentWriteBit | VkAccessFlags.DepthStencilAttachmentReadBit | VkAccessFlags.ShaderReadBit
+            DstAccessMask = VkAccessFlags.ColorAttachmentReadBit | VkAccessFlags.ColorAttachmentWriteBit | VkAccessFlags.DepthStencilAttachmentReadBit | VkAccessFlags.ShaderReadBit
         };
         dependencies[1] = new VkSubpassDependency
         {
@@ -220,7 +253,12 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
             foreach (RenderTexture? texture in slot.Up) texture?.Dispose();
         }
         Slots = Array.Empty<Slot>();
+        FirstMask?.Dispose();
+        LaterMask?.Dispose();
+        FirstMask = LaterMask = null;
         if (!RenderPass.IsNull()) device.DestroyRenderPass(RenderPass, device.VkAllocator);
-        RenderPass = default;
+        if (!LoadRenderPass.IsNull()) device.DestroyRenderPass(LoadRenderPass, device.VkAllocator);
+        if (!MaskRenderPass.IsNull()) device.DestroyRenderPass(MaskRenderPass, device.VkAllocator);
+        RenderPass = LoadRenderPass = MaskRenderPass = default;
     }
 }

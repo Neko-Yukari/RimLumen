@@ -84,7 +84,7 @@ internal static class LightTransport
         if (length == 0f) return 1f;
         cover = 0f;
         Vector2 direction = delta / length;
-        float lightRun = RunLength(frame, light, -direction, length, false);
+        float lightRun = RunLength(frame, light, -direction, length);
         float solidVisibility = 1f, pendingSolid = 1f, coverVisibility = 1f, distance = 0f;
         (int cellX, int cellZ) = GridWalk.Enter(target, direction, 1f);
         while (distance < length)
@@ -132,26 +132,17 @@ internal static class LightTransport
         return MathF.Min(solidVisibility, lightRun > 0f ? 1f : pendingSolid);
     }
 
-    // Length of the contiguous run of solid texels (height: FlagPointHeight texels with G > 0, the point-light height
-    // texels of SunTransport.PointVisibility) from start along direction, at most limit;
-    // 0 when start's own texel is not solid (solid), or when the first texel along direction carries no height (height:
-    // a start on a texel edge belongs to the texel ahead, because shadowData boxes are rasterised at texel centres and a
-    // glower at its cell centre, a texel corner, would miss the box it stands in). The light-end skip of Visibility and
-    // both footprint skips of SunTransport.PointVisibility.
-    internal static float RunLength(in OcclusionFrame frame, Vector2 start, Vector2 direction, float limit, bool height)
+    // Length of the contiguous run of solid texels from start along direction, at most limit; 0 when start's own texel is
+    // not solid. The light-end skip of Visibility.
+    private static float RunLength(in OcclusionFrame frame, Vector2 start, Vector2 direction, float limit)
     {
-        if (!height && !Solid(frame, start)) return 0f;
+        if (!Solid(frame, start)) return 0f;
         float distance = 0f;
         (int x, int z) = GridWalk.Enter(start, direction, 0.25f);
-        while (distance < limit && RunTexel(frame, x, z, height))
+        while (distance < limit && SolidTexel(frame, x, z))
             distance = GridWalk.Leave(start, direction, 0.25f, limit, ref x, ref z);
         return distance;
     }
-
-    private static bool RunTexel(in OcclusionFrame frame, int x, int z, bool height) => height
-        ? x >= 0 && z >= 0 && x < frame.Map.TexelWidth && z < frame.Map.TexelHeight && frame.Map.Texels[(z * frame.Map.TexelWidth + x) * 4 + 1] != 0
-            && (frame.Map.Texels[(z * frame.Map.TexelWidth + x) * 4 + 3] & OcclusionLayout.FlagPointHeight) != 0
-        : SolidTexel(frame, x, z);
 
     private static bool Solid(in OcclusionFrame frame, Vector2 position) =>
         SolidTexel(frame, (int)MathF.Floor(position.X * 4f), (int)MathF.Floor(position.Y * 4f));

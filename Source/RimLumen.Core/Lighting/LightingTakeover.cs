@@ -87,6 +87,9 @@ internal sealed class LightingTakeover(LightPoolRenderer pools, BorrowedRenderTe
         var color = MatBases.SunShadow.color;
         var castValue = MaterialUniformValue.FromVector(MaterialUniformType.Vector4, new Vector4(cast.x, cast.y, cast.z, cast.w));
         var colorValue = MaterialUniformValue.FromVector(MaterialUniformType.Vector4, new Vector4(color.r, color.g, color.b, color.a));
+        // Object shadows of the sun: round 0's mask channel (LightPoolRenderer), zero on frames without them.
+        var channelValue = MaterialUniformValue.FromVector(MaterialUniformType.Vector4, pools.FrameSunChannel);
+        int fadeChannelOffset = sunShadowFade.Vanilla.MaterialLayout.UniformSize;
         // SectionLayer_LightingOverlay prints at LightingOverlay; SectionLayer_SunShadows prints at Shadows.
         float lower = AltitudeLayer.Shadows.AltitudeFor() - AltitudeLayer.LightingOverlay.AltitudeFor();
         LightPoolShadows.Rewrite(frame, kinds, (item, kind, persistent) =>
@@ -95,15 +98,20 @@ internal sealed class LightingTakeover(LightPoolRenderer pools, BorrowedRenderTe
             if (kind == sunShadowFade && !persistent)
             {
                 pools.BindOcclusion(ref resources);
-                return LightPoolShadows.CopyDraw(item, kind, in item.Uniforms, in resources);
+                resources.Set(3, pools.FirstMask);
+                MaterialUniformBytes fadeUniforms = item.Uniforms;
+                fadeUniforms.Write(fadeChannelOffset, channelValue);
+                return LightPoolShadows.CopyDraw(item, kind, in fadeUniforms, in resources);
             }
             if (kind != lightOverlay) return null;
             MaterialUniformBytes uniforms = item.Uniforms;
             uniforms.Write(16, castValue);
             uniforms.Write(32, colorValue);
+            uniforms.Write(48, channelValue);
             MaterialTextureResourceSet<Texture?> shadeResources = resources;
             pools.BindOcclusion(ref shadeResources);
             shadeResources.Set(3, lightSum);
+            shadeResources.Set(4, pools.FirstMask);
             shades.Add(LightPoolShadows.MoveDraw(item, ShadeBinding(item.Binding), shade.DefaultRenderQueue, lower, in uniforms, in shadeResources));
             resources.Set(0, lightSum);
             return LightPoolShadows.CopyDraw(item, kind, in item.Uniforms, in resources);
@@ -122,7 +130,8 @@ internal sealed class LightingTakeover(LightPoolRenderer pools, BorrowedRenderTe
             [LightPoolShadows.LightSumTexture], MatBases.LightOverlay, -3, takeover: true);
         sunShadow = new("SunShadow", "SunShadow.vert.glsl", "SunShadow.frag.glsl", null, [], MatBases.SunShadow, -4, takeover: true);
         sunShadowFade = new("SunShadowFade", "SunShadowFade.vert.glsl", "SunShadowFade.frag.glsl", "RimLumen/RimLumenSunShadowFadeTakeover.frag.glsl",
-            LightPoolShadows.OcclusionTextures, MatBases.SunShadowFade, -5, takeover: true, liftedVertex: "RimLumen/RimLumenSunShadowFadeTakeover.vert.glsl");
+            LightPoolShadows.FadeTextures, MatBases.SunShadowFade, -5, takeover: true, liftedVertex: "RimLumen/RimLumenSunShadowFadeTakeover.vert.glsl",
+            liftedUniforms: LightPoolShadows.FadeUniforms);
         kinds = [lightOverlay, sunShadow, sunShadowFade];
         string core = LightPoolShadows.CoreShaderRoot();
         var overridden = new List<string>();
