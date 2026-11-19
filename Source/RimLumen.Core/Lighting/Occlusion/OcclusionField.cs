@@ -160,8 +160,9 @@ internal static class OcclusionField
         if (Fields.Remove(mapId, out Field? field)) Drawers.Remove(field.Map.mapDrawer);
     }
 
-    // IOcclusionSource.Stamp of Field. The sprite is the footprint of every channel (OcclusionBuilder.StampOccluder);
-    // the def only picks the values. Height is vanilla's: staticSunShadowHeight for edifices, which vanilla prints only
+    // IOcclusionSource.Stamp of Field. A blockLight thing stamps its occupied cells (OcclusionBuilder.StampBlocker); any
+    // other thing's sprite is the footprint of every channel (OcclusionBuilder.StampOccluder). The def only picks the
+    // values. Height is vanilla's: staticSunShadowHeight for edifices, which vanilla prints only
     // on maps with sun shadows (SectionLayer_SunShadows, Section.cs:46-50), else the shadowData height, which
     // Printer_Shadow prints on every map (Printer_Shadow.cs:26-28) except for RealtimeOnly things it never prints into
     // the map mesh (ACS:83086), whose shadow is the dynamic SunShadowFade.
@@ -182,18 +183,27 @@ internal static class OcclusionField
             height = MathF.Floor(MathF.Min(255f * shadow.volume.y * scale, 255f)) / 255f;
             fade = true;
         }
-        float cover = !blocker && def.Fillage != FillCategory.None ? def.fillPercent : 0f;
-        if (!blocker && height == 0f && cover == 0f) return null;
-        if (thing is Building_Door door) doors.Add(door);
+        if (blocker)
+        {
+            DoorAxis? axis = null;
+            if (thing is Building_Door door)
+            {
+                doors.Add(door);
+                axis = door.Rotation.IsHorizontal ? DoorAxis.Z : DoorAxis.X;
+            }
+            CellRect rect = thing.OccupiedRect();
+            return builder.StampBlocker(new CellBox(rect.minX, rect.minZ, rect.maxX, rect.maxZ), axis, height, fade);
+        }
+        float cover = def.Fillage != FillCategory.None ? def.fillPercent : 0f;
+        if (height == 0f && cover == 0f) return null;
         if (!OcclusionMasks.TryGet(thing, out SpritePiece[] sprite))
         {
-            if (!blocker && height == 0f) return null;
+            if (height == 0f) return null;
             if (Warned.Add(def)) Log.Warning($"[RimLumen] Cannot read occlusion texture for {def.defName}; using solid footprint.");
             CellRect rect = thing.OccupiedRect();
             sprite = [new SpritePiece(AlphaMask.Opaque(rect.Width * OcclusionLayout.TexelsPerCell, rect.Height * OcclusionLayout.TexelsPerCell), new MaskPlacement((rect.minX + rect.maxX + 1) * 0.5f,
                 (rect.minZ + rect.maxZ + 1) * 0.5f, rect.maxX - rect.minX + 1, rect.maxZ - rect.minZ + 1))];
         }
-        DoorAxis? axis = thing is Building_Door ? (thing.Rotation.IsHorizontal ? DoorAxis.Z : DoorAxis.X) : null;
-        return builder.StampOccluder(sprite, new Occluder(blocker, axis, height, fade, cover));
+        return builder.StampOccluder(sprite, new Occluder(height, fade, cover));
     }
 }

@@ -3,7 +3,6 @@
 
 layout(set = 0, binding = 0) uniform sampler2D sceneImage;
 layout(set = 0, binding = 1) uniform sampler2D bloomImage;
-layout(set = 0, binding = 2) uniform sampler2D depthImage;
 layout(set = 0, binding = 3) uniform sampler2D mapLightField;
 layout(set = 0, binding = 4) uniform sampler2D lightSum;
 layout(location = 0) in vec2 uv;
@@ -15,36 +14,54 @@ vec3 unproject(vec2 ndc, float z)
     return p.xyz / p.w;
 }
 
-float hash21(vec2 p)
+// A unit gradient per lattice point, its angle from the PCG2D integer hash (Jarzynski and Olano 2020). The drift grows
+// with GameSeconds (TicksGame / 60) for the whole game; an integer hash keeps distinct values at any lattice point, where
+// a float fract hash collapses once the drifted lattice passes ~1e4. Known limit: the float lattice coordinate itself
+// steps by 1/32 cell past 2^18 cells of drift (about 6 game years at the top drift speed, 27 at the default).
+vec2 lumenGradient(vec2 i)
 {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
+    uvec2 v = uvec2(ivec2(i)) * 1664525u + 1013904223u;
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    v ^= v >> 16u;
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    v ^= v >> 16u;
+    float a = float(v.x) * (6.2831853 / 4294967296.0);
+    return vec2(cos(a), sin(a));
 }
 
-float valueNoise(vec2 p)
+// Gradient noise: a unit gradient per lattice point, quintic fade. Value noise put one flat value
+// per lattice square and read as soft axis-aligned rectangles several cells wide.
+float gradientNoise(vec2 p)
 {
     vec2 i = floor(p);
     vec2 f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    float a = hash21(i);
-    float b = hash21(i + vec2(1.0, 0.0));
-    float c = hash21(i + vec2(0.0, 1.0));
-    float d = hash21(i + vec2(1.0, 1.0));
+    vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float a = dot(lumenGradient(i), f);
+    float b = dot(lumenGradient(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0));
+    float c = dot(lumenGradient(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0));
+    float d = dot(lumenGradient(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0));
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
+// 36.87 degrees: no noise lattice lines up with the map axes.
+const mat2 rotate = mat2(0.8, 0.6, -0.6, 0.8);
+
+// Each octave is rotated, so no octave's lattice lines up with the map axes. 0.49 + v matches the old field's mean, so
+// the wisp thresholds below keep their coverage.
 float fbm(vec2 p)
 {
     float v = 0.0;
     float amp = 0.55;
     for (int i = 0; i < 3; i++)
     {
-        v += amp * valueNoise(p);
+        p = rotate * p;
+        v += amp * gradientNoise(p);
         p = p * 2.03 + vec2(17.1, 31.7);
         amp *= 0.5;
     }
-    return v;
+    return 0.49 + v;
 }
 
 void main()
@@ -87,18 +104,17 @@ void main()
 
     float darkness = nightFactor * outdoorFactor * (1.0 - litProtect) * (1.0 - fogOfWar) * max(0.0, ubo.PackParams[0][0]);
 
-    float drift = ubo.GameSeconds * max(0.0, ubo.PackParams[0][2]);
-    vec2 wind = vec2(drift * 0.22, drift * 0.09);
-    float n1 = fbm(world.xz * 0.085 - wind);
-    float n2 = fbm(world.xz * 0.042 + wind * 0.6 + vec2(4.2, 9.1));
+    // Wind: both layers drift along one heading (the old wind direction), drift speed x 0.5 cells per game second for
+    // the fine layer, 0.7 of that for the coarse one, through one 50-cell domain warp carried at 0.4 of it.
+    const vec2 heading = vec2(0.9255, 0.3786);
+    float drift = ubo.GameSeconds * max(0.0, ubo.PackParams[0][2]) * 0.5;
+    vec2 carried = rotate * ((world.xz - heading * drift * 0.4) * 0.02);
+    vec2 ground = world.xz + 4.0 * vec2(gradientNoise(carried), gradientNoise(carried + vec2(5.2, 1.3)));
+    float n1 = fbm((ground - heading * drift) * 0.085);
+    float n2 = fbm((ground - heading * drift * 0.7) * 0.042 + vec2(4.2, 9.1));
     float wisp = smoothstep(0.28, 0.85, n1 * 0.65 + n2 * 0.35);
 
-    // Subtle attenuation on 3D walls when scene depth is present (IsoRim).
-    float depth = texture(depthImage, uv).r;
-    float is3DGeom = ubo.DepthValid * step(0.0001, min(depth, 1.0 - depth));
-    float mistHeightMask = mix(1.0, 0.55, is3DGeom);
-
-    float mist = wisp * outdoorFactor * (1.0 - fogOfWar) * (0.35 + 0.65 * nightFactor) * mistHeightMask * max(0.0, ubo.PackParams[0][1]);
+    float mist = wisp * outdoorFactor * (1.0 - fogOfWar) * (0.35 + 0.65 * nightFactor) * max(0.0, ubo.PackParams[0][1]);
     float litMist = clamp(artificialGroundGlow * 1.4 + dot(texture(bloomImage, uv).rgb, vec3(0.333)), 0.0, 1.0);
 
     outColor = vec4(mist, litMist, darkness, 1.0);

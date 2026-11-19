@@ -45,15 +45,38 @@ internal static class LightTransport
 {
     // Transmittance of the segment target -> light through the occlusion map (design 1.6-1.8 and 2), returned as the
     // solid term with the cover term in cover; the caller multiplies cover and combines solid with other opaque terms.
-    // Ensures: both in [0, 1]; 1 when target == light; both 0 when the segment is blocked. Smoothed per 1.8: solid as min(1 - s_i)
-    //          with s_i the TexelSplit edge of the solid texels, cover as prod (1 - o_i)^(ds_i), both from the 2 x 2 texels
-    //          around each step. Wall-body rule per 1.7: a target on a solid texel first skips its own contiguous solid
-    //          run without loss, and is 0 if that run reaches a wall-core texel (d >= DeepCore; never a door). The exit band right after
-    //          that run (from the first step whose nearest texel is not solid until the first step whose 2 x 2 solid
-    //          fraction s is 0) ignores s but still accumulates cover; a nearest texel turning solid again inside the band
-    //          gives 0. The light's own solid run and its exit band never count s either. Positions outside the map are transparent. Door texels take DoorGap with the
-    //          frame's DoorStates. Independent of step length for cover.
+    // Ensures: both in [0, 1]; 1 when target == light off a solid texel. Wall-body rule per 1.7 (2026-11-19): a target on a solid texel
+    //          lies in a blockLight cell and takes the value of the point half a texel outside the cell, level with the
+    //          target, across each cell edge that faces the light (the light lies beyond its line) and whose texel
+    //          outside is not solid, the one with the larger solid * cover; 0 without such an edge. So only the first
+    //          solid layer is lit, each cell as the ground just in front of its free face, and the cells behind it stay dark.
     internal static float Visibility(in OcclusionFrame frame, Vector2 light, Vector2 target, out float cover)
+    {
+        if (!Solid(frame, target)) return Transport(frame, light, target, out cover);
+        float cellX = MathF.Floor(target.X), cellZ = MathF.Floor(target.Y), best = 0f;
+        cover = 0f;
+        if (light.X > cellX + 1f || light.X < cellX)
+            Face(frame, light, new Vector2(light.X > cellX ? cellX + 1.125f : cellX - 0.125f, target.Y), ref best, ref cover);
+        if (light.Y > cellZ + 1f || light.Y < cellZ)
+            Face(frame, light, new Vector2(target.X, light.Y > cellZ ? cellZ + 1.125f : cellZ - 0.125f), ref best, ref cover);
+        return best;
+    }
+
+    private static void Face(in OcclusionFrame frame, Vector2 light, Vector2 face, ref float best, ref float bestCover)
+    {
+        if (Solid(frame, face)) return;
+        float solid = Transport(frame, light, face, out float cover);
+        if (solid * cover <= best * bestCover) return;
+        best = solid;
+        bestCover = cover;
+    }
+
+    // Ensures: both in [0, 1]; 1 when target == light; both 0 when the segment is blocked. Smoothed per 1.8: solid as
+    //          min(1 - s_i) with s_i the TexelSplit edge of the solid texels, cover as prod (1 - o_i)^(ds_i), both from
+    //          the 2 x 2 texels around each step. The light's own solid run and its exit band never count s. Positions
+    //          outside the map are transparent. Door texels take DoorGap with the frame's DoorStates. Independent of
+    //          step length for cover. Requires: target not on a solid texel.
+    private static float Transport(in OcclusionFrame frame, Vector2 light, Vector2 target, out float cover)
     {
         cover = 1f;
         Vector2 delta = light - target;
@@ -62,9 +85,6 @@ internal static class LightTransport
         cover = 0f;
         Vector2 direction = delta / length;
         float lightRun = RunLength(frame, light, -direction, length, false);
-        bool skipTarget = Solid(frame, target, out bool deepTarget);
-        if (skipTarget && deepTarget) return 0f;
-        bool exitBand = false;
         float solidVisibility = 1f, pendingSolid = 1f, coverVisibility = 1f, distance = 0f;
         (int cellX, int cellZ) = GridWalk.Enter(target, direction, 1f);
         while (distance < length)
@@ -75,8 +95,6 @@ internal static class LightTransport
             int coarseIndex = inside ? (z * frame.Map.Width + x) * 4 : 0;
             if (!inside || frame.Map.Coarse[coarseIndex] == 0)
             {
-                skipTarget = false;
-                exitBand = false;
                 solidVisibility = MathF.Min(solidVisibility, pendingSolid);
                 pendingSolid = 1f;
                 distance = end;
@@ -89,30 +107,14 @@ internal static class LightTransport
             {
                 float at = distance + (step + 0.5f) * ds;
                 Vector2 p = target + direction * at;
-                bool deep = false;
-                bool solid = (skipTarget || exitBand || lightRun > 0f) && Solid(frame, p, out deep);
-                if (skipTarget)
-                {
-                    if (solid)
-                    {
-                        if (deep) return 0f;
-                        continue;
-                    }
-                    skipTarget = false;
-                    exitBand = true;
-                }
-                if (exitBand && solid) return 0f;
+                bool solid = lightRun > 0f && Solid(frame, p);
                 if (at >= length - lightRun)
                 {
                     pendingSolid = 1f;
                     continue;
                 }
                 Sample(frame, p, doors, out float s, out float o);
-                if (exitBand)
-                {
-                    if (s == 0f) exitBand = false;
-                }
-                else if (lightRun > 0f && !solid && s > 0f)
+                if (lightRun > 0f && !solid && s > 0f)
                 {
                     pendingSolid = MathF.Min(pendingSolid, 1f - s);
                 }
@@ -138,7 +140,7 @@ internal static class LightTransport
     // both footprint skips of SunTransport.PointVisibility.
     internal static float RunLength(in OcclusionFrame frame, Vector2 start, Vector2 direction, float limit, bool height)
     {
-        if (!height && !Solid(frame, start, out _)) return 0f;
+        if (!height && !Solid(frame, start)) return 0f;
         float distance = 0f;
         (int x, int z) = GridWalk.Enter(start, direction, 0.25f);
         while (distance < limit && RunTexel(frame, x, z, height))
@@ -149,19 +151,16 @@ internal static class LightTransport
     private static bool RunTexel(in OcclusionFrame frame, int x, int z, bool height) => height
         ? x >= 0 && z >= 0 && x < frame.Map.TexelWidth && z < frame.Map.TexelHeight && frame.Map.Texels[(z * frame.Map.TexelWidth + x) * 4 + 1] != 0
             && (frame.Map.Texels[(z * frame.Map.TexelWidth + x) * 4 + 3] & OcclusionLayout.FlagPointHeight) != 0
-        : SolidTexel(frame, x, z, out _);
+        : SolidTexel(frame, x, z);
 
-    private static bool Solid(in OcclusionFrame frame, Vector2 position, out bool deep) =>
-        SolidTexel(frame, (int)MathF.Floor(position.X * 4f), (int)MathF.Floor(position.Y * 4f), out deep);
+    private static bool Solid(in OcclusionFrame frame, Vector2 position) =>
+        SolidTexel(frame, (int)MathF.Floor(position.X * 4f), (int)MathF.Floor(position.Y * 4f));
 
-    private static bool SolidTexel(in OcclusionFrame frame, int x, int z, out bool deep)
+    private static bool SolidTexel(in OcclusionFrame frame, int x, int z)
     {
-        deep = false;
         if (x < 0 || z < 0 || x >= frame.Map.TexelWidth || z >= frame.Map.TexelHeight) return false;
         int i = (z * frame.Map.TexelWidth + x) * 4;
-        byte flags = frame.Map.Texels[i + 3];
-        deep = (flags & OcclusionLayout.FlagDoor) == 0 && OcclusionLayout.DecodeDistance(frame.Map.Texels[i + 2]) >= OcclusionLayout.DeepCore;
-        return Opacity(frame, x, z, frame.Map.Texels[i], flags) == 1f;
+        return Opacity(frame, x, z, frame.Map.Texels[i], frame.Map.Texels[i + 3]) == 1f;
     }
 
     private static float Opacity(in OcclusionFrame frame, int x, int z, byte value, byte flags)

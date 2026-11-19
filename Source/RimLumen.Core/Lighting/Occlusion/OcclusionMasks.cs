@@ -9,12 +9,12 @@ namespace RimLumen.Core.Lighting.Occlusion;
 
 // Host boundary: sprite alpha masks (design 1.3). Resolves a thing's material and UV sub-rectangle, decodes the
 // texture's mip 0 once through Texture2D.TryGetCpuMip0 and caches the box-filtered mask by (texture, UV rect, flip), and
-// each rotated or door-transformed mask by (source mask, transform), so a mask's distance field is built once.
+// each rotated mask by (source mask, transform), so a mask's distance field is built once. blockLight things never
+// come here: they stamp their occupied cells.
 internal static class OcclusionMasks
 {
     private readonly record struct Key(Waylith.Rendering.Texture2D Texture, Vector2 Offset, Vector2 Scale, bool Flip, int Width, int Height);
-    // Transform: the rotation in degrees and the drawn size for drawRotated graphics; for doors the rotation index, plus 4
-    // for a multi-tile door, and size 0.
+    // Transform: the rotation in degrees, with the drawn size, of a drawRotated graphic.
     private readonly record struct TransformKey(AlphaMask Source, float Transform, float SizeX, float SizeZ);
     private static readonly Dictionary<Key, AlphaMask> Masks = new();
     private static readonly Dictionary<TransformKey, AlphaMask> Transformed = new();
@@ -28,13 +28,13 @@ internal static class OcclusionMasks
         linkedMaterial = method.CreateDelegate<Func<Graphic_Linked, Thing, IntVec3, Material>>();
     }
 
-    // Requires: main thread; thing spawned on a map.
+    // Requires: main thread; thing spawned on a map, not blockLight.
     // Ensures: the pieces the thing is drawn with right now, each the mask of its material (Graphic_Linked:
     //          LinkedDrawMatFrom for its cell; flips per Graphic.EastFlipped/WestFlipped) resampled to 4 texels per drawn
     //          cell and placed as vanilla prints it: Graphic.Print at TrueCenter + DrawOffset with the rotated drawSize
-    //          (ACS:151943-151971); a door over its def.size; a plant as Plant.Print (ACS:600415-600519). Returns false
-    //          when a texture has no readable CPU pixels; the caller then applies the Q3 rule (solid def.size footprint
-    //          for blockLight and height things, one warning per def; cover: skipped).
+    //          (ACS:151943-151971); a plant as Plant.Print (ACS:600415-600519). Returns false when a texture has no
+    //          readable CPU pixels; the caller then applies the Q3 rule (solid def.size footprint for height things, one
+    //          warning per def; cover: skipped).
     internal static bool TryGet(Thing thing, out SpritePiece[] pieces)
     {
         if (thing is Plant plant) return TryGetPlant(plant, out pieces);
@@ -42,14 +42,13 @@ internal static class OcclusionMasks
         Graphic graphic = thing.Graphic;
         Rot4 rotation = thing.Rotation;
         Material material = graphic is Graphic_Linked linked ? linkedMaterial(linked, thing, thing.Position) : graphic.MatAt(rotation, thing);
-        Vector2 size = thing is RimWorld.Building_Door ? new Vector2(thing.def.size.x, thing.def.size.z) : graphic.drawSize;
-        if (thing is not RimWorld.Building_Door && rotation.IsHorizontal && !graphic.ShouldDrawRotated) size = new Vector2(size.y, size.x);
+        Vector2 size = graphic.drawSize;
+        if (rotation.IsHorizontal && !graphic.ShouldDrawRotated) size = new Vector2(size.y, size.x);
         bool flip = (rotation == Rot4.West && graphic.WestFlipped || rotation == Rot4.East && graphic.EastFlipped) && !graphic.ShouldDrawRotated;
         if (!TryMask(material, flip, size, out AlphaMask mask)) return false;
         Vector3 center = thing.TrueCenter() + graphic.DrawOffset(rotation);
         var placement = new MaskPlacement(center.x, center.z, size.x, size.y);
-        if (thing is RimWorld.Building_Door door) TransformDoor(door, ref mask, ref placement);
-        else if (graphic.ShouldDrawRotated) TransformRotated(graphic, rotation, ref mask, ref placement);
+        if (graphic.ShouldDrawRotated) TransformRotated(graphic, rotation, ref mask, ref placement);
         pieces = [new SpritePiece(mask, placement)];
         return true;
     }
@@ -167,39 +166,6 @@ internal static class OcclusionMasks
                     alpha[z * fineWidth + x] = mask.Fine[(int)(v * sourceHeight) * sourceWidth + (int)(u * sourceWidth)];
             }
         mask = new AlphaMask(width, height, alpha);
-        Transformed.Add(key, mask);
-    }
-
-    private static void TransformDoor(RimWorld.Building_Door door, ref AlphaMask mask, ref MaskPlacement placement)
-    {
-        bool horizontal = door.Rotation.IsHorizontal;
-        if (horizontal) placement = placement with { SizeX = placement.SizeZ, SizeZ = placement.SizeX };
-        var key = new TransformKey(mask, door.Rotation.AsInt + (door is RimWorld.Building_MultiTileDoor ? 4 : 0), 0f, 0f);
-        if (Transformed.TryGetValue(key, out AlphaMask? cached)) { mask = cached; return; }
-        const int s = OcclusionLayout.MaskSamples;
-        int sourceWidth = mask.Width * s, sourceHeight = mask.Height * s;
-        int fineWidth = horizontal ? sourceHeight : sourceWidth;
-        int fineHeight = horizontal ? sourceWidth : sourceHeight;
-        byte[] alpha = new byte[fineWidth * fineHeight];
-        for (int z = 0; z < fineHeight; z++)
-            for (int x = 0; x < fineWidth; x++)
-            {
-                float u = (x + 0.5f) / fineWidth, v = (z + 0.5f) / fineHeight;
-                (float lu, float lv) = door.Rotation.AsInt switch
-                {
-                    0 => (u, v), 1 => (1f - v, u), 2 => (1f - u, 1f - v), _ => (v, 1f - u)
-                };
-                int row = (int)(lv * sourceHeight);
-                int col = (int)(lu * sourceWidth);
-                int opposite = sourceWidth - 1 - col;
-                if (door is RimWorld.Building_MultiTileDoor)
-                {
-                    col = lu < 0.5f ? (int)(lu * 2f * sourceWidth) : (int)((1f - lu) * 2f * sourceWidth);
-                    alpha[z * fineWidth + x] = mask.Fine[row * sourceWidth + col];
-                }
-                else alpha[z * fineWidth + x] = Math.Max(mask.Fine[row * sourceWidth + col], mask.Fine[row * sourceWidth + opposite]);
-            }
-        mask = new AlphaMask(horizontal ? mask.Height : mask.Width, horizontal ? mask.Width : mask.Height, alpha);
         Transformed.Add(key, mask);
     }
 }

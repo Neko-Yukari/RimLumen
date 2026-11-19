@@ -231,7 +231,7 @@ public static class RenderLogicSuite
         var builder = new OcclusionBuilder(10, 10);
         builder.Wall(new CellBox(5, 3, 5, 3));
         builder.Wall(new CellBox(5, 5, 5, 5));
-        builder.Blocker(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 4.5f, 1f, 1f), 1f, DoorAxis.Z);
+        builder.Blocker(new CellBox(5, 4, 5, 4), 1f, DoorAxis.Z);
         builder.RecomputeDerived(new CellBox(0, 0, 9, 9));
         var state = new byte[10 * 10 * 4];
         state[(4 * 10 + 5) * 4 + 2] = 1;
