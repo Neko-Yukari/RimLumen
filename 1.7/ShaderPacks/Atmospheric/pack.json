@@ -21,7 +21,8 @@
         { "binding": 0, "source": "scene" },
         { "binding": 1, "source": "bloom" },
         { "binding": 2, "source": "depth" },
-        { "binding": 3, "source": "mapLightField" }
+        { "binding": 3, "source": "mapLightField" },
+        { "binding": 4, "source": "lightSum" }
       ]
     },
     {

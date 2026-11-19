@@ -11,11 +11,15 @@ internal enum VisualPointLightKind : byte
     Vanilla,
 }
 
-// One frame's light pool: centre (X, Z) is the node's world position projected to the ground, Radius is
-// PointLightSpec.GlowRadius in cells (> 0), Light is ColorRgb * effective intensity (every component >= 0, max > 0).
-// Vanilla pools: centre is the glower's cell centre, Radius its glowRadius, Light glowColor.rgb / 255 (design 3.5).
-internal readonly record struct VisualPointLight(float X, float Z, float Radius, Vector3 Light, VisualPointLightKind Kind)
+// One frame's light pool: (X, Y, Z) is the node's world position, Y its height above the ground in cells (>= 0); Radius
+// is PointLightSpec.GlowRadius in cells (> 0), Light is ColorRgb * effective intensity (every component >= 0, max > 0).
+// Vanilla pools: centre is the glower's cell centre at VanillaHeight, Radius its glowRadius, Light glowColor.rgb / 255
+// (design 3.5).
+internal readonly record struct VisualPointLight(float X, float Y, float Z, float Radius, Vector3 Light, VisualPointLightKind Kind)
 {
+    // CompGlower has no height; one cell, the top of a vanilla wall (Wall staticSunShadowHeight 1.0).
+    internal const float VanillaHeight = 1f;
+
     // Vanilla glow attenuation (design 2; Verse.Glow.ComputeGlowGridsJob.cs:171-189) on straight-line distance:
     // d' = 1 + distance; lerp(1 - d'/R, 1/d'^2, 0.4) while d' <= R, else 0. Requires: distance >= 0, radius > 0.
     internal static float VanillaFalloff(float distance, float radius)
@@ -40,13 +44,18 @@ internal readonly record struct VisualPointLight(float X, float Z, float Radius,
     }
 
     // Ensures: Effect: Light * Falloff * visibility. Vanilla: ProjectVanilla(Light * VanillaFalloff) * visibility.
+    //          visibility = cover * min(solid, height shadow from Y): solid and height are opaque blockers and combine by
+    //          the darker term, cover alone multiplies. Kind selects only the falloff.
     internal Vector3 EvaluateAt(float worldX, float worldZ, OcclusionFrame walls)
     {
         float dx = worldX - X;
         float dz = worldZ - Z;
         float distance = MathF.Sqrt(dx * dx + dz * dz);
         Vector3 light = Kind == VisualPointLightKind.Effect ? Light * Falloff(distance, Radius) : ProjectVanilla(Light * VanillaFalloff(distance, Radius));
-        return light * LightTransport.Visibility(walls, new Vector2(X, Z), new Vector2(worldX, worldZ));
+        var at = new Vector2(X, Z);
+        var target = new Vector2(worldX, worldZ);
+        float solid = LightTransport.Visibility(walls, at, target, out float cover);
+        return light * (MathF.Min(solid, SunTransport.PointVisibility(walls, at, Y, target)) * cover);
     }
 
     // The scene multiplier term at one ground point: overlapping pools add linearly (RimLumenLightPoolAccumulate),

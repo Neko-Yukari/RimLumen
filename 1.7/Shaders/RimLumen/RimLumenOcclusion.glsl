@@ -33,10 +33,21 @@ bool lumenSolidTexel(ivec2 p, out int depth)
 
 bool lumenSolid(vec2 p, out int depth) { return lumenSolidTexel(ivec2(floor(p * 4.0)), depth); }
 
-float lumenSolidRunLength(vec2 start, vec2 direction, float limit)
+bool lumenRunTexel(ivec2 p, bool height)
 {
     int depth;
-    if (!lumenSolid(start, depth)) return 0.0;
+    if (!height) return lumenSolidTexel(p, depth);
+    if (!lumenInside(p, textureSize(_LumenOcclusion, 0))) return false;
+    vec4 v = texelFetch(_LumenOcclusion, p, 0);
+    return v.g != 0.0 && (int(round(v.a * 255.0)) & 4) != 0;
+}
+
+// LightTransport.RunLength: the contiguous run of solid (height: FlagPointHeight G > 0) texels from start along direction, at
+// most limit. Solid starts in start's own texel; height starts in the first texel along direction.
+float lumenRunLength(vec2 start, vec2 direction, float limit, bool height)
+{
+    int depth;
+    if (!height && !lumenSolid(start, depth)) return 0.0;
     float distance = 0.0;
     vec2 texel = start * 4.0;
     ivec2 cell = ivec2(floor(texel));
@@ -44,7 +55,7 @@ float lumenSolidRunLength(vec2 start, vec2 direction, float limit)
     if (direction.y < 0.0 && texel.y == float(cell.y)) cell.y--;
     while (distance < limit)
     {
-        if (!lumenSolidTexel(cell, depth)) break;
+        if (!lumenRunTexel(cell, height)) break;
         float tx = direction.x > 0.0 ? ((float(cell.x) + 1.0) * 0.25 - start.x) / direction.x : direction.x < 0.0 ? (float(cell.x) * 0.25 - start.x) / direction.x : 1e30;
         float tz = direction.y > 0.0 ? ((float(cell.y) + 1.0) * 0.25 - start.y) / direction.y : direction.y < 0.0 ? (float(cell.y) * 0.25 - start.y) / direction.y : 1e30;
         distance = min(limit, min(tx, tz));
@@ -104,13 +115,16 @@ void lumenSample(vec2 p, bool doors, out float solid, out float cover)
     cover = split.z;
 }
 
-float lightVisibility(vec2 light, vec2 target)
+// LightTransport.Visibility: returns the solid term, cover receives the cover term.
+float lightVisibility(vec2 light, vec2 target, out float cover)
 {
+    cover = 1.0;
     vec2 delta = light - target;
     float len = length(delta);
     if (len == 0.0) return 1.0;
+    cover = 0.0;
     vec2 direction = delta / len;
-    float lightRun = lumenSolidRunLength(light, -direction, len);
+    float lightRun = lumenRunLength(light, -direction, len, false);
     int initialDepth;
     bool skipTarget = lumenSolid(target, initialDepth);
     if (skipTarget && initialDepth > 3) return 0.0;
@@ -185,18 +199,24 @@ float lightVisibility(vec2 light, vec2 target)
         if (nextX <= end) cell.x += direction.x > 0.0 ? 1 : -1;
         if (nextZ <= end) cell.y += direction.y > 0.0 ? 1 : -1;
     }
-    return min(solidVisibility, lightRun > 0.0 ? 1.0 : pendingSolid) * coverVisibility;
+    cover = coverVisibility;
+    return min(solidVisibility, lightRun > 0.0 ? 1.0 : pendingSolid);
 }
 
 // Sun path (SunTransport.Shadow): split G height at q against height t, the edge ramp inside the footprint, faded by
-// 1 - t / h on FlagSunFade texels.
-float lumenSunShadow(vec2 q, float t)
+// 1 - t / h on FlagSunFade texels. point: texels without FlagPointHeight (4) read G = 0.
+float lumenSunShadow(vec2 q, float t, bool point)
 {
     ivec2 size = textureSize(_LumenOcclusion, 0);
     vec2 uv = q * 4.0 - 0.5;
     ivec2 base = ivec2(floor(uv));
     vec2 f = fract(uv);
     vec4 heights = textureGather(_LumenOcclusion, q * 4.0 / vec2(size), 1).wzxy;
+    if (point)
+    {
+        vec4 flags = textureGather(_LumenOcclusion, q * 4.0 / vec2(size), 3).wzxy;
+        for (int i = 0; i < 4; i++) if ((int(round(flags[i] * 255.0)) & 4) == 0) heights[i] = 0.0;
+    }
     ivec2 points[4] = ivec2[4](base, base + ivec2(1, 0), base + ivec2(0, 1), base + ivec2(1, 1));
     for (int i = 0; i < 4; i++) if (!lumenInside(points[i], size)) heights[i] = 0.0;
     vec3 split = lumenTexelSplit(heights, vec4(greaterThan(heights, vec4(0.0))), f);
@@ -210,17 +230,15 @@ float lumenSunShadow(vec2 q, float t)
     return s;
 }
 
-// SunTransport.Visibility: castXZ is vanilla _CastVect.xz (|castXZ| > 0). 1 outside the map.
-float lumenSunVisibility(vec2 p, vec2 castXZ)
+// SunTransport.HeightVisibility: the one height march; the sun skips nothing and reads every G (coarse G), a point light
+// skips both own footprints and reads G only on FlagPointHeight texels (coarse A).
+float lumenHeightVisibility(vec2 p, vec2 direction, float rise, float reach, float skipBefore, float skipFrom, bool point)
 {
     ivec2 mapSize = textureSize(_LumenOcclusionCoarse, 0);
     ivec2 cell = ivec2(floor(p));
     if (!lumenInside(cell, mapSize)) return 1.0;
     vec4 here = texelFetch(_LumenOcclusionCoarse, cell, 0);
-    float len = length(castXZ);
-    vec2 direction = -castXZ / len;
-    float reach = len * 2.0;
-    float shadow = here.g != 0.0 ? lumenSunShadow(p, 0.0) : 0.0;
+    float shadow = skipBefore == 0.0 && (point ? here.a : here.g) != 0.0 ? lumenSunShadow(p, 0.0, point) : 0.0;
     float distance = 0.0;
     if (direction.x < 0.0 && p.x == float(cell.x)) cell.x--;
     if (direction.y < 0.0 && p.y == float(cell.y)) cell.y--;
@@ -229,14 +247,16 @@ float lumenSunVisibility(vec2 p, vec2 castXZ)
         float nextX = direction.x > 0.0 ? (float(cell.x + 1) - p.x) / direction.x : direction.x < 0.0 ? (float(cell.x) - p.x) / direction.x : 1e30;
         float nextZ = direction.y > 0.0 ? (float(cell.y + 1) - p.y) / direction.y : direction.y < 0.0 ? (float(cell.y) - p.y) / direction.y : 1e30;
         float end = min(reach, min(nextX, nextZ));
-        if (lumenInside(cell, mapSize) && texelFetch(_LumenOcclusionCoarse, cell, 0).g != 0.0)
+        vec4 coarse = lumenInside(cell, mapSize) ? texelFetch(_LumenOcclusionCoarse, cell, 0) : vec4(0.0);
+        if ((point ? coarse.a : coarse.g) != 0.0)
         {
             int steps = int(ceil((end - distance) * 4.0));
             float ds = (end - distance) / float(steps);
             for (int step = 0; step < steps; step++)
             {
                 float at = distance + (float(step) + 0.5) * ds;
-                shadow = max(shadow, lumenSunShadow(p + direction * at, at / len));
+                if (at < skipBefore || at >= skipFrom) continue;
+                shadow = max(shadow, lumenSunShadow(p + direction * at, at * rise, point));
             }
         }
         distance = end;
@@ -244,4 +264,23 @@ float lumenSunVisibility(vec2 p, vec2 castXZ)
         if (nextZ <= end) cell.y += direction.y > 0.0 ? 1 : -1;
     }
     return 1.0 - shadow;
+}
+
+// SunTransport.Visibility: castXZ is vanilla _CastVect.xz (|castXZ| > 0). 1 outside the map.
+float lumenSunVisibility(vec2 p, vec2 castXZ)
+{
+    float len = length(castXZ);
+    return lumenHeightVisibility(p, -castXZ / len, 1.0 / len, len * 2.0, 0.0, 1e30, false);
+}
+
+// SunTransport.PointVisibility: light at ground position light and height (>= 0) over ground point target.
+float lumenPointVisibility(vec2 light, float height, vec2 target)
+{
+    vec2 delta = light - target;
+    float len = length(delta);
+    if (len == 0.0) return 1.0;
+    vec2 direction = delta / len;
+    float reach = height > 2.0 ? len * 2.0 / height : len;
+    return lumenHeightVisibility(target, direction, height / len, reach,
+        lumenRunLength(target, direction, len, true), len - lumenRunLength(light, -direction, len, true), true);
 }

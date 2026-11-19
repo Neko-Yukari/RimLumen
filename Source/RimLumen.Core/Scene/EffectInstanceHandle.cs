@@ -550,7 +550,8 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
 
     // Requires: main thread, after this frame's Advance.
     // Ensures: when the handle plays on currentMapIndex, appends one light pool per node light that is on with a
-    //          positive radius and a positive colour, centred on the node's world position projected to the ground.
+    //          positive radius and a positive colour, at the node's world position (Y = height above the ground; a light
+    //          below the ground sits on the ground, Y = 0).
     internal void CollectLights(int currentMapIndex, List<VisualPointLight> into)
     {
         if (request.MapIndex != currentMapIndex) return;
@@ -561,7 +562,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             Vector3 rgb = lightRgb[i];
             if (radius <= 0f || MathF.Max(rgb.X, MathF.Max(rgb.Y, rgb.Z)) <= 0f) continue;
             Vector3 world = nodeWorldMatrices[i].Translation;
-            into.Add(new VisualPointLight(world.X, world.Z, radius, rgb, VisualPointLightKind.Effect));
+            into.Add(new VisualPointLight(world.X, MathF.Max(0f, world.Y), world.Z, radius, rgb, VisualPointLightKind.Effect));
         }
     }
 

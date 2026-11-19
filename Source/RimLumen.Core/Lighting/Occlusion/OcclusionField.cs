@@ -172,43 +172,16 @@ internal static class OcclusionField
         if (def.category != ThingCategory.Building && def.category != ThingCategory.Plant && def.category != ThingCategory.Item) return null;
         CellBox? touched = null;
         bool blocker = def.blockLight;
-        bool cover = !blocker && def.Fillage != FillCategory.None;
         float staticHeight = sunDisabled ? 0f : def.staticSunShadowHeight;
         ShadowData? shadow = def.drawerType == DrawerType.RealtimeOnly ? null : def.graphicData?.shadowData;
-        if (!blocker && def.IsEdifice() && staticHeight > 0f)
+        bool heightFootprint = !blocker && def.IsEdifice() && staticHeight > 0f;
+        if (heightFootprint)
         {
             CellBox footprint = Box(thing.OccupiedRect());
             builder.StampSunFootprint(footprint, staticHeight);
             touched = footprint;
         }
-        if (blocker || cover)
-        {
-            if (thing is Building_Door door) doors.Add(door);
-            if (OcclusionMasks.TryGet(thing, out AlphaMask mask, out MaskPlacement placement))
-            {
-                touched = touched.Union(blocker
-                    ? builder.StampBlocker(mask, placement, staticHeight,
-                        thing is Building_Door ? (thing.Rotation.IsHorizontal ? DoorAxis.Z : DoorAxis.X) : null)
-                    : builder.StampCover(mask, placement, def.fillPercent));
-            }
-            else if (blocker)
-            {
-                if (Warned.Add(def)) Log.Warning($"[RimLumen] Cannot read occlusion texture for {def.defName}; using solid footprint.");
-                CellRect rect = thing.OccupiedRect();
-                if (thing is Building_Door)
-                {
-                    var at = new MaskPlacement((rect.minX + rect.maxX + 1) * 0.5f, (rect.minZ + rect.maxZ + 1) * 0.5f,
-                        rect.maxX - rect.minX + 1, rect.maxZ - rect.minZ + 1);
-                    touched = touched.Union(builder.StampBlocker(new AlphaMask(1, 1, [255]), at, staticHeight,
-                        thing.Rotation.IsHorizontal ? DoorAxis.Z : DoorAxis.X));
-                }
-                else
-                {
-                    builder.StampSolidFootprint(Box(rect), staticHeight);
-                    touched = touched.Union(Box(rect));
-                }
-            }
-        }
+        CellBox? sunBox = null;
         if (shadow is not null)
         {
             float scale = 1f;
@@ -241,7 +214,40 @@ internal static class OcclusionField
             if (thing is not Plant && thing.Rotation.IsHorizontal) (x, z) = (z, x);
             // Printer_Shadow.PrintShadow encodes the extrusion as vertex alpha (byte)min(255 * y, 255), so vanilla caps it at 1.
             float height = MathF.Floor(MathF.Min(255f * shadow.volume.y * scale, 255f)) / 255f;
-            touched = touched.Union(builder.StampSunBox(new MaskPlacement(center.x, center.z, x, z), height));
+            sunBox = builder.StampSunBox(new MaskPlacement(center.x, center.z, x, z), height, blocker);
+            touched = touched.Union(sunBox);
+        }
+        // A thing that stamped a height (G) is a height occluder only and stamps no fillPercent cover, so one thing never
+        // darkens a texel through both terms (design 2; narrows the cover rule to things without height). A shadowData
+        // box narrower than the texel grid writes no G and keeps its cover.
+        bool cover = !blocker && def.Fillage != FillCategory.None && !heightFootprint && sunBox is null;
+        if (blocker || cover)
+        {
+            if (thing is Building_Door door) doors.Add(door);
+            if (OcclusionMasks.TryGet(thing, out AlphaMask mask, out MaskPlacement placement))
+            {
+                touched = touched.Union(blocker
+                    ? builder.StampBlocker(mask, placement, staticHeight,
+                        thing is Building_Door ? (thing.Rotation.IsHorizontal ? DoorAxis.Z : DoorAxis.X) : null)
+                    : builder.StampCover(mask, placement, def.fillPercent));
+            }
+            else if (blocker)
+            {
+                if (Warned.Add(def)) Log.Warning($"[RimLumen] Cannot read occlusion texture for {def.defName}; using solid footprint.");
+                CellRect rect = thing.OccupiedRect();
+                if (thing is Building_Door)
+                {
+                    var at = new MaskPlacement((rect.minX + rect.maxX + 1) * 0.5f, (rect.minZ + rect.maxZ + 1) * 0.5f,
+                        rect.maxX - rect.minX + 1, rect.maxZ - rect.minZ + 1);
+                    touched = touched.Union(builder.StampBlocker(new AlphaMask(1, 1, [255]), at, staticHeight,
+                        thing.Rotation.IsHorizontal ? DoorAxis.Z : DoorAxis.X));
+                }
+                else
+                {
+                    builder.StampSolidFootprint(Box(rect), staticHeight);
+                    touched = touched.Union(Box(rect));
+                }
+            }
         }
         return touched;
     }

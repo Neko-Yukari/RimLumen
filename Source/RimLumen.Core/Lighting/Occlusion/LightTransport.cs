@@ -16,8 +16,9 @@ internal static class DoorGap
 // Reference of RimLumenOcclusion.glsl, line for line; the offline tests call this instead of the shader.
 internal static class LightTransport
 {
-    // Transmittance of the segment target -> light through the occlusion map (design 1.6-1.8 and 2).
-    // Ensures: in [0, 1]; 1 when target == light. Smoothed per 1.8: solid as min(1 - s_i), cover as
+    // Transmittance of the segment target -> light through the occlusion map (design 1.6-1.8 and 2), returned as the
+    // solid term with the cover term in cover; the caller multiplies cover and combines solid with other opaque terms.
+    // Ensures: both in [0, 1]; 1 when target == light; both 0 when the segment is blocked. Smoothed per 1.8: solid as min(1 - s_i), cover as
     //          prod (1 - o_i)^(ds_i), both bilinear from the 2 x 2 texels around each step. Wall-body rule per 1.7:
     //          a target on a solid texel first skips its own contiguous solid run without loss, and is 0 if that run
     //          reaches a texel with wall-core depth > WallCoreDepth; door texels count as depth 0. The exit band right after
@@ -25,13 +26,15 @@ internal static class LightTransport
     //          fraction s is 0) ignores s but still accumulates cover; a nearest texel turning solid again inside the band
     //          gives 0. The light's own solid run and its exit band never count s either. Positions outside the map are transparent. Door texels take DoorGap with the
     //          frame's DoorStates. Independent of step length for cover.
-    internal static float Visibility(in OcclusionFrame frame, Vector2 light, Vector2 target)
+    internal static float Visibility(in OcclusionFrame frame, Vector2 light, Vector2 target, out float cover)
     {
+        cover = 1f;
         Vector2 delta = light - target;
         float length = delta.Length();
         if (length == 0f) return 1f;
+        cover = 0f;
         Vector2 direction = delta / length;
-        float lightRun = SolidRunLength(frame, light, -direction, length);
+        float lightRun = RunLength(frame, light, -direction, length, false);
         bool skipTarget = Solid(frame, target, out int initialDepth);
         if (skipTarget && initialDepth > OcclusionLayout.WallCoreDepth) return 0f;
         bool exitBand = false;
@@ -103,12 +106,19 @@ internal static class LightTransport
             if (nextX <= end) cellX += direction.X > 0f ? 1 : -1;
             if (nextZ <= end) cellZ += direction.Y > 0f ? 1 : -1;
         }
-        return MathF.Min(solidVisibility, lightRun > 0f ? 1f : pendingSolid) * coverVisibility;
+        cover = coverVisibility;
+        return MathF.Min(solidVisibility, lightRun > 0f ? 1f : pendingSolid);
     }
 
-    private static float SolidRunLength(in OcclusionFrame frame, Vector2 start, Vector2 direction, float limit)
+    // Length of the contiguous run of solid texels (height: FlagPointHeight texels with G > 0, the point-light height
+    // texels of SunTransport.PointVisibility) from start along direction, at most limit;
+    // 0 when start's own texel is not solid (solid), or when the first texel along direction carries no height (height:
+    // a start on a texel edge belongs to the texel ahead, because shadowData boxes are rasterised at texel centres and a
+    // glower at its cell centre, a texel corner, would miss the box it stands in). The light-end skip of Visibility and
+    // both footprint skips of SunTransport.PointVisibility.
+    internal static float RunLength(in OcclusionFrame frame, Vector2 start, Vector2 direction, float limit, bool height)
     {
-        if (!Solid(frame, start, out _)) return 0f;
+        if (!height && !Solid(frame, start, out _)) return 0f;
         float distance = 0f;
         Vector2 texel = start * 4f;
         int x = (int)MathF.Floor(texel.X), z = (int)MathF.Floor(texel.Y);
@@ -116,7 +126,7 @@ internal static class LightTransport
         if (direction.Y < 0f && texel.Y == z) z--;
         while (distance < limit)
         {
-            if (!SolidTexel(frame, x, z, out _)) break;
+            if (!RunTexel(frame, x, z, height)) break;
             float tx = direction.X > 0f ? ((x + 1) * 0.25f - start.X) / direction.X : direction.X < 0f ? (x * 0.25f - start.X) / direction.X : float.PositiveInfinity;
             float tz = direction.Y > 0f ? ((z + 1) * 0.25f - start.Y) / direction.Y : direction.Y < 0f ? (z * 0.25f - start.Y) / direction.Y : float.PositiveInfinity;
             distance = MathF.Min(limit, MathF.Min(tx, tz));
@@ -125,6 +135,11 @@ internal static class LightTransport
         }
         return distance;
     }
+
+    private static bool RunTexel(in OcclusionFrame frame, int x, int z, bool height) => height
+        ? x >= 0 && z >= 0 && x < frame.Map.TexelWidth && z < frame.Map.TexelHeight && frame.Map.Texels[(z * frame.Map.TexelWidth + x) * 4 + 1] != 0
+            && (frame.Map.Texels[(z * frame.Map.TexelWidth + x) * 4 + 3] & OcclusionLayout.FlagPointHeight) != 0
+        : SolidTexel(frame, x, z, out _);
 
     private static bool Solid(in OcclusionFrame frame, Vector2 position, out int depth) =>
         SolidTexel(frame, (int)MathF.Floor(position.X * 4f), (int)MathF.Floor(position.Y * 4f), out depth);

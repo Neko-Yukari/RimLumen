@@ -66,7 +66,7 @@ internal sealed class LightingTakeover(LightPoolRenderer pools, BorrowedRenderTe
         {
             GlowLight light = mapLights[i];
             ColorInt c = light.glowColor;
-            into.Add(new VisualPointLight(light.position.x + 0.5f, light.position.z + 0.5f, light.glowRadius,
+            into.Add(new VisualPointLight(light.position.x + 0.5f, VisualPointLight.VanillaHeight, light.position.z + 0.5f, light.glowRadius,
                 new Vector3(c.r, c.g, c.b) / 255f, VisualPointLightKind.Vanilla));
         }
     }

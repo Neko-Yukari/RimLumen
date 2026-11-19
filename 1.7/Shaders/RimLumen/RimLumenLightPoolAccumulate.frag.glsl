@@ -10,7 +10,7 @@ layout(location = 0) out vec4 outColor;
 
 layout(set = 2, binding = 0) uniform MaterialUniforms
 {
-    vec4 _LumenLight; // rgb: ColorRgb * effective intensity (>= 0, unclamped); a unused
+    vec4 _LumenLight; // rgb: ColorRgb * effective intensity (>= 0, unclamped); a: light height Y in cells (>= 0)
     vec4 _LumenLightAt; // xy: light centre in world cells (X, Z); z: Kind (0 effect, 1 vanilla); w: radius
 } uMaterial;
 
@@ -18,7 +18,8 @@ layout(set = 2, binding = 0) uniform MaterialUniforms
 
 void main()
 {
-    // Kind selects only the falloff (VisualPointLight.EvaluateAt); both kinds share one visibility query.
+    // Kind selects only the falloff (VisualPointLight.EvaluateAt); both kinds share one visibility query:
+    // cover * min(solid, height shadow).
     float falloff;
     vec3 rgb;
     if (uMaterial._LumenLightAt.z == 1.0)
@@ -37,6 +38,12 @@ void main()
         falloff = q * q;
         rgb = uMaterial._LumenLight.rgb * falloff;
     }
-    float visibility = falloff > 0.0 ? lightVisibility(uMaterial._LumenLightAt.xy, vWorldPos.xz) : 0.0;
+    float visibility = 0.0;
+    if (falloff > 0.0)
+    {
+        float cover;
+        float solid = lightVisibility(uMaterial._LumenLightAt.xy, vWorldPos.xz, cover);
+        visibility = min(solid, lumenPointVisibility(uMaterial._LumenLightAt.xy, uMaterial._LumenLight.a, vWorldPos.xz)) * cover;
+    }
     outColor = vec4(rgb * visibility, 0.0);
 }

@@ -211,7 +211,7 @@ public static class RenderLogicSuite
             previous = current;
         }
 
-        var pool = new VisualPointLight(10.25f, -4.5f, 4f, new Vector3(2f, 0.5f, 0f), VisualPointLightKind.Effect);
+        var pool = new VisualPointLight(10.25f, 0f, -4.5f, 4f, new Vector3(2f, 0.5f, 0f), VisualPointLightKind.Effect);
         Equal(new Vector3(2f, 0.5f, 0f), pool.EvaluateAt(10.25f, -4.5f, Walls()));
         Equal(Vector3.Zero, pool.EvaluateAt(14.25f, -4.5f, Walls()));
     }
@@ -220,8 +220,8 @@ public static class RenderLogicSuite
     public static void OcclusionWallColumnHasNoBanding()
     {
         OcclusionFrame walls = Walls((5, 2), (5, 3), (5, 4), (5, 5), (5, 6), (5, 7));
-        float near = LightTransport.Visibility(walls, new(3.5f, 3.5f), new(5.5f, 3.5f));
-        float far = LightTransport.Visibility(walls, new(3.5f, 3.5f), new(5.5f, 6.5f));
+        float near = Transmission(walls, new(3.5f, 3.5f), new(5.5f, 3.5f));
+        float far = Transmission(walls, new(3.5f, 3.5f), new(5.5f, 6.5f));
         Equal(near, far);
     }
 
@@ -236,14 +236,14 @@ public static class RenderLogicSuite
         var state = new byte[10 * 10 * 4];
         state[(4 * 10 + 5) * 4 + 2] = 1;
         var frame = new OcclusionFrame(builder.Publish(), new DoorStates(10, 10, state));
-        Equal(0f, LightTransport.Visibility(frame, new(3.5f, 4.5f), new(7.5f, 4.5f)));
+        Equal(0f, Transmission(frame, new(3.5f, 4.5f), new(7.5f, 4.5f)));
     }
 
     [LumenFact]
     public static void LightPoolIsBlockedByAWallCellAndUnchangedAlongAClearLine()
     {
         OcclusionFrame walls = Walls((5, 4));
-        var lamp = new VisualPointLight(3.5f, 4.5f, 6f, new Vector3(1f, 0.5f, 0.25f), VisualPointLightKind.Effect);
+        var lamp = new VisualPointLight(3.5f, 0f, 4.5f, 6f, new Vector3(1f, 0.5f, 0.25f), VisualPointLightKind.Effect);
         Equal(Vector3.Zero, VisualPointLight.AccumulateAndCompress([lamp], 7.5f, 4.5f, walls));
         Equal(lamp.Light * VisualPointLight.Falloff(4f, 6f), VisualPointLight.AccumulateAndCompress([lamp], 3.5f, 8.5f, walls));
     }
@@ -252,11 +252,13 @@ public static class RenderLogicSuite
     public static void LightPoolLightsTheWallCellItReachesAndIsNotBlockedByItsOwnCell()
     {
         OcclusionFrame walls = Walls((5, 4));
-        Equal(1f, LightTransport.Visibility(walls, new(3.5f, 4.5f), new(5.2f, 4.5f)));
-        Equal(1f, LightTransport.Visibility(walls, new(3.5f, 4.5f), new(5.9f, 4.5f)));
-        Equal(1f, LightTransport.Visibility(walls, new(5.5f, 4.5f), new(7.5f, 4.5f)));
-        Equal(1f, LightTransport.Visibility(walls, new(5.5f, 4.5f), new(3.5f, 4.5f)));
+        Equal(1f, Transmission(walls, new(3.5f, 4.5f), new(5.2f, 4.5f)));
+        Equal(1f, Transmission(walls, new(3.5f, 4.5f), new(5.9f, 4.5f)));
+        Equal(1f, Transmission(walls, new(5.5f, 4.5f), new(7.5f, 4.5f)));
+        Equal(1f, Transmission(walls, new(5.5f, 4.5f), new(3.5f, 4.5f)));
     }
+
+    private static float Transmission(OcclusionFrame frame, Vector2 light, Vector2 target) => LightTransport.Visibility(frame, light, target, out float cover) * cover;
 
     private static OcclusionFrame Walls(params (int X, int Z)[] cells)
     {
@@ -270,14 +272,14 @@ public static class RenderLogicSuite
     [LumenFact]
     public static void LightPoolsSumLinearlyAndCompressOnceWithinTwiceTheScene()
     {
-        var single = new VisualPointLight(0f, 0f, 4f, new Vector3(0.6f, 0.4f, 0.2f), VisualPointLightKind.Effect);
+        var single = new VisualPointLight(0f, 0f, 0f, 4f, new Vector3(0.6f, 0.4f, 0.2f), VisualPointLightKind.Effect);
         Equal(new Vector3(0.6f, 0.4f, 0.2f), VisualPointLight.AccumulateAndCompress([single], 0f, 0f, Walls()));
 
         // Two overlapping pools: 0.3 + 0.2 = 0.5, not the stacked (1.3 * 1.2) - 1 = 0.56.
         VisualPointLight[] pair =
         [
-            new(0f, 0f, 4f, new Vector3(0.3f, 0.2f, 0.1f), VisualPointLightKind.Effect),
-            new(0f, 0f, 6f, new Vector3(0.2f, 0.1f, 0.05f), VisualPointLightKind.Effect),
+            new(0f, 0f, 0f, 4f, new Vector3(0.3f, 0.2f, 0.1f), VisualPointLightKind.Effect),
+            new(0f, 0f, 0f, 6f, new Vector3(0.2f, 0.1f, 0.05f), VisualPointLightKind.Effect),
         ];
         Vector3 summed = VisualPointLight.AccumulateAndCompress(pair, 0f, 0f, Walls());
         Require(Vector3.Distance(summed, new Vector3(0.5f, 0.3f, 0.15f)) < 1e-6f, $"Pools must add linearly; got {summed}.");
@@ -285,7 +287,7 @@ public static class RenderLogicSuite
         // Five warm corridor lamps at GlowGrid's 3.6 scale: stacked multipliers would reach 4.6^5 ~ 2060x on red.
         var warm = new Vector3(1f, 0.8f, 0.5f) * 3.6f;
         var corridor = new VisualPointLight[5];
-        for (int i = 0; i < corridor.Length; i++) corridor[i] = new VisualPointLight(0.4f * i, 0f, 6f, warm, VisualPointLightKind.Effect);
+        for (int i = 0; i < corridor.Length; i++) corridor[i] = new VisualPointLight(0.4f * i, 0f, 0f, 6f, warm, VisualPointLightKind.Effect);
         Vector3 mapped = VisualPointLight.AccumulateAndCompress(corridor, 0.8f, 0f, Walls());
         Require(mapped.X <= 1f && mapped.Y <= 1f && mapped.Z <= 1f && mapped.Z >= 0f,
             $"Compressed pool term must stay in [0, 1] (scene at most 2x); got {mapped}.");

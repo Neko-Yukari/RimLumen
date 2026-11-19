@@ -79,7 +79,7 @@ internal sealed class LightPoolRenderer : IDisposable
         {
             VisualPointLight light = staged[i];
             Span<DrawProperty> properties = arena.Allocate(2, out DrawPropertyRange range);
-            properties[0] = DrawProperty.Vector(LightPropertyId, new Vector4(light.Light, 0f));
+            properties[0] = DrawProperty.Vector(LightPropertyId, new Vector4(light.Light, light.Y));
             properties[1] = DrawProperty.Vector(LightAtPropertyId, new Vector4(light.X, light.Z, (byte)light.Kind, light.Radius));
             float diameter = 2f * light.Radius;
             Matrix4x4 matrix = UnityEngine.Matrix4x4.ToNumerics(UnityEngine.Matrix4x4.TRS(

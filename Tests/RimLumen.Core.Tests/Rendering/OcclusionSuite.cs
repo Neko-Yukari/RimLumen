@@ -18,7 +18,7 @@ public static class OcclusionSuite
         var builder = new OcclusionBuilder(12, 12);
         builder.StampSolidFootprint(new CellBox(5, 1, 6, 10), 1f);
         OcclusionFrame frame = Frame(builder);
-        Equal(0f, LightTransport.Visibility(frame, new(3.5f, 5.5f), new(6.0f, 5.5f)));
+        Equal(0f, Transmission(frame, new(3.5f, 5.5f), new(6.0f, 5.5f)));
     }
 
     [LumenFact]
@@ -27,8 +27,8 @@ public static class OcclusionSuite
         var builder = new OcclusionBuilder(12, 12);
         builder.StampCover(Full, new MaskPlacement(5.5f, 5.5f, 1f, 1f), 0.5f);
         OcclusionFrame frame = Frame(builder);
-        float value = LightTransport.Visibility(frame, new(3.5f, 5.5f), new(7.5f, 5.5f));
-        float shifted = LightTransport.Visibility(frame, new(3.8f, 5.5f), new(7.1f, 5.5f));
+        float value = Transmission(frame, new(3.5f, 5.5f), new(7.5f, 5.5f));
+        float shifted = Transmission(frame, new(3.8f, 5.5f), new(7.1f, 5.5f));
         Require(MathF.Abs(value - (1f - 128f / 255f)) < 0.002f && MathF.Abs(value - shifted) < 0.002f,
             $"Expected one-cell cover transmittance independent of endpoints; got {value}, {shifted}.");
     }
@@ -39,9 +39,9 @@ public static class OcclusionSuite
         var builder = new OcclusionBuilder(12, 12);
         builder.StampSolidFootprint(new CellBox(5, 4, 5, 4), 1f);
         OcclusionFrame frame = Frame(builder);
-        float inside = LightTransport.Visibility(frame, new(3.5f, 4.875f), new(7.5f, 4.875f));
-        float edge = LightTransport.Visibility(frame, new(3.5f, 5f), new(7.5f, 5f));
-        float outside = LightTransport.Visibility(frame, new(3.5f, 5.125f), new(7.5f, 5.125f));
+        float inside = Transmission(frame, new(3.5f, 4.875f), new(7.5f, 4.875f));
+        float edge = Transmission(frame, new(3.5f, 5f), new(7.5f, 5f));
+        float outside = Transmission(frame, new(3.5f, 5.125f), new(7.5f, 5.125f));
         Require(inside == 0f && edge > inside && edge < outside && outside == 1f, $"Expected smooth wall edge; got {inside}, {edge}, {outside}.");
     }
 
@@ -56,8 +56,8 @@ public static class OcclusionSuite
         closed[i + 2] = 1;
         byte[] open = (byte[])closed.Clone();
         open[i] = 255;
-        float dark = LightTransport.Visibility(new OcclusionFrame(map, new DoorStates(12, 12, closed)), new(3.5f, 4.95f), new(7.5f, 4.95f));
-        float clear = LightTransport.Visibility(new OcclusionFrame(map, new DoorStates(12, 12, open)), new(3.5f, 4.95f), new(7.5f, 4.95f));
+        float dark = Transmission(new OcclusionFrame(map, new DoorStates(12, 12, closed)), new(3.5f, 4.95f), new(7.5f, 4.95f));
+        float clear = Transmission(new OcclusionFrame(map, new DoorStates(12, 12, open)), new(3.5f, 4.95f), new(7.5f, 4.95f));
         Require(dark < 1f && clear == 1f, $"Door-edge gather should respect state; got closed={dark}, open={clear}.");
     }
 
@@ -68,8 +68,8 @@ public static class OcclusionSuite
         builder.StampSolidFootprint(new CellBox(5, 4, 5, 4), 1f);
         builder.StampSolidFootprint(new CellBox(6, 5, 6, 5), 1f);
         OcclusionFrame frame = Frame(builder);
-        float a = LightTransport.Visibility(frame, new(3.5f, 2.5f), new(5.5f, 4.5f));
-        float b = LightTransport.Visibility(frame, new(3.5f, 2.5f), new(6.5f, 5.5f));
+        float a = Transmission(frame, new(3.5f, 2.5f), new(5.5f, 4.5f));
+        float b = Transmission(frame, new(3.5f, 2.5f), new(6.5f, 5.5f));
         Equal(a, b);
     }
 
@@ -96,7 +96,7 @@ public static class OcclusionSuite
         var footprint = new CellBox(0, 0, 1, 0);
         builder.StampCover(Full, new MaskPlacement(0.5f, 0.5f, 1f, 1f), 0.5f);
         builder.StampSolidFootprint(new CellBox(1, 0, 1, 0), 1.5f);
-        builder.StampSunBox(new MaskPlacement(1.5f, 0.5f, 1f, 1f), 0.5f);
+        builder.StampSunBox(new MaskPlacement(1.5f, 0.5f, 1f, 1f), 0.5f, blocker: false);
         builder.RecomputeDerived(footprint);
         OcclusionMap before = builder.Publish();
 
@@ -109,7 +109,7 @@ public static class OcclusionSuite
             Equal(expectedGreen, after.Texels[i + 1]);
             Equal(before.Texels[i], after.Texels[i]);
             Equal(before.Texels[i + 2], after.Texels[i + 2]);
-            Equal(before.Texels[i + 3], after.Texels[i + 3]);
+            Equal((byte)(before.Texels[i + 3] | (x < 8 ? OcclusionLayout.FlagPointHeight : 0)), after.Texels[i + 3]);
         }
     }
 
@@ -205,6 +205,7 @@ public static class OcclusionSuite
     }
 
     private static OcclusionFrame Frame(OcclusionBuilder builder) => new(Publish(builder), new DoorStates(12, 12, new byte[12 * 12 * 4]));
+    private static float Transmission(OcclusionFrame frame, Vector2 light, Vector2 target) => LightTransport.Visibility(frame, light, target, out float cover) * cover;
     private static void Equal(float expected, float actual) => Require(expected == actual, $"Expected {expected}; got {actual}.");
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
 }
