@@ -13,6 +13,33 @@ internal static class DoorGap
     internal static float Opacity(float u, float halfGap, float closedOpacity) => MathF.Abs(u) < halfGap ? 0f : closedOpacity;
 }
 
+// The one grid walk of every march (lumenGridEnter and lumenGridLeave in RimLumenOcclusion.glsl): the cells of spacing size
+// crossed by start + direction * a, a >= 0.
+internal static class GridWalk
+{
+    // The cell holding start; a start on a cell edge belongs to the cell ahead along direction.
+    internal static (int X, int Z) Enter(Vector2 start, Vector2 direction, float size)
+    {
+        Vector2 g = start / size;
+        int x = (int)MathF.Floor(g.X), z = (int)MathF.Floor(g.Y);
+        if (direction.X < 0f && g.X == x) x--;
+        if (direction.Y < 0f && g.Y == z) z--;
+        return (x, z);
+    }
+
+    // Ensures: the distance where the ray leaves cell (x, z), at most limit; (x, z) steps into the next cell on every
+    //          axis whose edge it reaches by then.
+    internal static float Leave(Vector2 start, Vector2 direction, float size, float limit, ref int x, ref int z)
+    {
+        float tx = direction.X > 0f ? ((x + 1) * size - start.X) / direction.X : direction.X < 0f ? (x * size - start.X) / direction.X : float.PositiveInfinity;
+        float tz = direction.Y > 0f ? ((z + 1) * size - start.Y) / direction.Y : direction.Y < 0f ? (z * size - start.Y) / direction.Y : float.PositiveInfinity;
+        float end = MathF.Min(limit, MathF.Min(tx, tz));
+        if (tx <= end) x += direction.X > 0f ? 1 : -1;
+        if (tz <= end) z += direction.Y > 0f ? 1 : -1;
+        return end;
+    }
+}
+
 // Reference of RimLumenOcclusion.glsl, line for line; the offline tests call this instead of the shader.
 internal static class LightTransport
 {
@@ -39,16 +66,13 @@ internal static class LightTransport
         if (skipTarget && deepTarget) return 0f;
         bool exitBand = false;
         float solidVisibility = 1f, pendingSolid = 1f, coverVisibility = 1f, distance = 0f;
-        int cellX = (int)MathF.Floor(target.X), cellZ = (int)MathF.Floor(target.Y);
-        if (direction.X < 0f && target.X == cellX) cellX--;
-        if (direction.Y < 0f && target.Y == cellZ) cellZ--;
+        (int cellX, int cellZ) = GridWalk.Enter(target, direction, 1f);
         while (distance < length)
         {
-            float nextX = direction.X > 0f ? (cellX + 1 - target.X) / direction.X : direction.X < 0f ? (cellX - target.X) / direction.X : float.PositiveInfinity;
-            float nextZ = direction.Y > 0f ? (cellZ + 1 - target.Y) / direction.Y : direction.Y < 0f ? (cellZ - target.Y) / direction.Y : float.PositiveInfinity;
-            float end = MathF.Min(length, MathF.Min(nextX, nextZ));
-            bool inside = cellX >= 0 && cellZ >= 0 && cellX < frame.Map.Width && cellZ < frame.Map.Height;
-            int coarseIndex = inside ? (cellZ * frame.Map.Width + cellX) * 4 : 0;
+            int x = cellX, z = cellZ;
+            float end = GridWalk.Leave(target, direction, 1f, length, ref cellX, ref cellZ);
+            bool inside = x >= 0 && z >= 0 && x < frame.Map.Width && z < frame.Map.Height;
+            int coarseIndex = inside ? (z * frame.Map.Width + x) * 4 : 0;
             if (!inside || frame.Map.Coarse[coarseIndex] == 0)
             {
                 skipTarget = false;
@@ -56,8 +80,6 @@ internal static class LightTransport
                 solidVisibility = MathF.Min(solidVisibility, pendingSolid);
                 pendingSolid = 1f;
                 distance = end;
-                if (nextX <= end) cellX += direction.X > 0f ? 1 : -1;
-                if (nextZ <= end) cellZ += direction.Y > 0f ? 1 : -1;
                 continue;
             }
             bool doors = frame.Map.Coarse[coarseIndex + 2] != 0;
@@ -103,8 +125,6 @@ internal static class LightTransport
                 if (solidVisibility * coverVisibility < 1f / 255f) return 0f;
             }
             distance = end;
-            if (nextX <= end) cellX += direction.X > 0f ? 1 : -1;
-            if (nextZ <= end) cellZ += direction.Y > 0f ? 1 : -1;
         }
         cover = coverVisibility;
         return MathF.Min(solidVisibility, lightRun > 0f ? 1f : pendingSolid);
@@ -120,19 +140,9 @@ internal static class LightTransport
     {
         if (!height && !Solid(frame, start, out _)) return 0f;
         float distance = 0f;
-        Vector2 texel = start * 4f;
-        int x = (int)MathF.Floor(texel.X), z = (int)MathF.Floor(texel.Y);
-        if (direction.X < 0f && texel.X == x) x--;
-        if (direction.Y < 0f && texel.Y == z) z--;
-        while (distance < limit)
-        {
-            if (!RunTexel(frame, x, z, height)) break;
-            float tx = direction.X > 0f ? ((x + 1) * 0.25f - start.X) / direction.X : direction.X < 0f ? (x * 0.25f - start.X) / direction.X : float.PositiveInfinity;
-            float tz = direction.Y > 0f ? ((z + 1) * 0.25f - start.Y) / direction.Y : direction.Y < 0f ? (z * 0.25f - start.Y) / direction.Y : float.PositiveInfinity;
-            distance = MathF.Min(limit, MathF.Min(tx, tz));
-            if (tx <= distance) x += direction.X > 0f ? 1 : -1;
-            if (tz <= distance) z += direction.Y > 0f ? 1 : -1;
-        }
+        (int x, int z) = GridWalk.Enter(start, direction, 0.25f);
+        while (distance < limit && RunTexel(frame, x, z, height))
+            distance = GridWalk.Leave(start, direction, 0.25f, limit, ref x, ref z);
         return distance;
     }
 
