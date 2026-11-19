@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using System.Xml.Linq;
 using RimLumen.Core.Lighting;
+using RimLumen.Core.Mod;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Rendering.Logic;
 using UnityStubs.Rendering;
@@ -55,13 +56,31 @@ public static class ShaderPackTests
         });
     }
 
-    private static void CheckCompiledPackParams(string relativePath)
+    [LumenFact]
+    public static void AtmosphericFogPassSamplesLightSumAtItsManifestBinding()
+    {
+        string packsRoot = Path.Combine(RepoRoot(), "1.7", "ShaderPacks");
+        ShaderPackEntry entry = ShaderPackCatalog.ScanRoots([(packsRoot, "built-in")]).Single(p => p.Id == "atmospheric");
+        ShaderPackGraphValidator.PlannedPass fog = ShaderPackGraphValidator.ExecutionPlan.Compile(entry.Spec).Passes[0];
+        Equal("FogPass.frag.glsl", Path.GetFileName(fog.FragmentShaderPath));
+        uint binding = (uint)fog.Inputs.Single(input => input.Kind == ShaderPackGraphValidator.InputKind.LightSum).Binding;
+        WithSlangLoaded(() =>
+        {
+            List<uint[]> instructions = CompileInstructions("Atmospheric/FogPass.frag.glsl");
+            // OpDecorate Binding / DescriptorSet 0 -> OpVariable -> OpTypePointer -> OpTypeSampledImage.
+            uint variable = instructions.Single(x => x[0] == 71 && x[2] == 33 && x[3] == binding &&
+                instructions.Any(set => set[0] == 71 && set[1] == x[1] && set[2] == 34 && set[3] == 0))[1];
+            uint pointer = instructions.Single(x => x[0] == 59 && x[2] == variable)[1];
+            uint pointee = instructions.Single(x => x[0] == 32 && x[1] == pointer)[3];
+            Require(instructions.Any(x => x[0] == 27 && x[1] == pointee), $"binding {binding} must be a combined image sampler.");
+        });
+    }
+
+    private static List<uint[]> CompileInstructions(string relativePath)
     {
         string path = Path.Combine(RepoRoot(), "1.7", "ShaderPacks", relativePath);
-        string source = ShaderSourceLoader.ReadShaderSource(path);
-        Require(Regex.IsMatch(source, @"\bvec4\s+PackParams\s*\[\s*4\s*\]\s*;"), $"{relativePath}: missing vec4 PackParams[4].");
-        Require(!Regex.IsMatch(source, @"\bPackParam[0-3]\b"), $"{relativePath}: old GLSL vector alias remains.");
-        byte[] spirv = RuntimeShaderCompiler.Compile(source, path, "main", RuntimeShaderLanguage.Glsl, RuntimeShaderStage.Fragment);
+        byte[] spirv = RuntimeShaderCompiler.Compile(ShaderSourceLoader.ReadShaderSource(path), path, "main",
+            RuntimeShaderLanguage.Glsl, RuntimeShaderStage.Fragment);
         uint[] words = MemoryMarshal.Cast<byte, uint>(spirv).ToArray();
         var instructions = new List<uint[]>();
         for (int offset = 5; offset < words.Length;)
@@ -72,6 +91,16 @@ public static class ShaderPackTests
             instructions.Add(instruction);
             offset += count;
         }
+        return instructions;
+    }
+
+    private static void CheckCompiledPackParams(string relativePath)
+    {
+        string path = Path.Combine(RepoRoot(), "1.7", "ShaderPacks", relativePath);
+        string source = ShaderSourceLoader.ReadShaderSource(path);
+        Require(Regex.IsMatch(source, @"\bvec4\s+PackParams\s*\[\s*4\s*\]\s*;"), $"{relativePath}: missing vec4 PackParams[4].");
+        Require(!Regex.IsMatch(source, @"\bPackParam[0-3]\b"), $"{relativePath}: old GLSL vector alias remains.");
+        List<uint[]> instructions = CompileInstructions(relativePath);
         // Follow set=0/binding=5 through OpVariable/OpTypePointer to its actual compiled block and its last two members.
         uint uniform = instructions.Single(x => x[0] == 71 && x[2] == 33 && x[3] == 5 &&
             instructions.Any(set => set[0] == 71 && set[1] == x[1] && set[2] == 34 && set[3] == 0))[1];
@@ -262,7 +291,7 @@ public static class ShaderPackTests
         Throws<ArgumentException>(() => ShaderPackGraphValidator.Validate(new ShaderPackSpec { BloomMipLevels = 8 }));
 
         // Reserved target names and prefix
-        foreach (string badName in new[] { "hdr", "glow", "bloom", "scene", "depth", "mapLightField", "backbuffer", "prev:foo", "" })
+        foreach (string badName in new[] { "hdr", "glow", "bloom", "scene", "depth", "mapLightField", "lightSum", "backbuffer", "prev:foo", "" })
         {
             Throws<ArgumentException>(() => ShaderPackGraphValidator.Validate(new ShaderPackSpec
             {

@@ -5,6 +5,7 @@ layout(set = 0, binding = 0) uniform sampler2D sceneImage;
 layout(set = 0, binding = 1) uniform sampler2D bloomImage;
 layout(set = 0, binding = 2) uniform sampler2D depthImage;
 layout(set = 0, binding = 3) uniform sampler2D mapLightField;
+layout(set = 0, binding = 4) uniform sampler2D lightSum;
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 outColor;
 
@@ -70,6 +71,13 @@ void main()
         // fact (including room-less walls/rock) fully suppresses this pack's outdoor fog and darkening.
         enclosure = field.r * mix(1.0, 0.55, field.b);
         fogOfWar = field.a;
+    }
+    if (ubo.LayerFlags.y > 0.5)
+    {
+        // RimLumen's per-pixel light sum replaces the per-cell G: its luminance stands in for GroundGlowAt's
+        // max channel / 255, through the same Min(0.5, 3.6 x) (MapLightFieldEncoder.EncodeArtificialGroundGlow).
+        float lum = dot(texture(lightSum, uv).rgb, vec3(0.2126, 0.7152, 0.0722));
+        artificialGroundGlow = clamp(lum * 3.6, 0.0, 0.5);
     }
 
     float outdoorFactor = 1.0 - smoothstep(0.25, 0.90, enclosure);

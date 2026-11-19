@@ -227,7 +227,8 @@ public struct ShaderPackUniforms
     public Vector4 PackParam1;          // 160
     public Vector4 PackParam2;          // 176
     public Vector4 PackParam3;          // 192
-    public Vector4 LayerFlags;          // 208: x = distortion refracts the RimLumen layer (0/1); yzw reserved 0
+    public Vector4 LayerFlags;          // 208: x = distortion refracts the RimLumen layer (0/1); y = lightSum holds
+                                        //      the takeover light sum (0/1, set by RimLumenMapChain.RecordChain); zw reserved 0
 
     internal static ShaderPackUniforms Build(
         in Matrix4x4 viewProjection,

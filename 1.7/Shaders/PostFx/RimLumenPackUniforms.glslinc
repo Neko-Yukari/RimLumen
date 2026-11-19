@@ -2,7 +2,9 @@
 #define RIMLUMEN_PACK_UNIFORMS_INCLUDED
 
 // C# ShaderPackUniforms, 224 bytes std140. ColorBlendSpace: 0 Legacy (hdr/bloom in stored units), 1 Linear.
-// LayerFlags.x: 1 when screen distortion also refracts the RimLumen layer (see lumenLayerUv); yzw reserved.
+// LayerFlags.x: 1 when screen distortion also refracts the RimLumen layer (see lumenLayerUv);
+// LayerFlags.y: 1 when the lightSum input holds this frame's lighting-takeover light sum (vanilla glowers and effect
+// pools), 0 when it is the black placeholder and vanilla's own light overlay is drawn; zw reserved.
 layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 {
     mat4 InvViewProjection;

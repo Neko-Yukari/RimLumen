@@ -9,10 +9,10 @@ public static class ShaderPackGraphValidator
     private const string PrevPrefix = "prev:";
     private static readonly string[] ReservedSourceNames =
     [
-        "hdr", "glow", "bloom", "scene", "depth", "mapLightField", "distortion", "backbuffer",
+        "hdr", "glow", "bloom", "scene", "depth", "mapLightField", "distortion", "lightSum", "backbuffer",
     ];
 
-    internal enum InputKind { Hdr, Glow, Bloom, Scene, Depth, MapLightField, Distortion, Target }
+    internal enum InputKind { Hdr, Glow, Bloom, Scene, Depth, MapLightField, Distortion, LightSum, Target }
 
     internal readonly record struct PlannedInput(int Binding, InputKind Kind, int TargetIndex = -1, int HistoryFramesAgo = 0);
 
@@ -197,6 +197,7 @@ public static class ShaderPackGraphValidator
             _ when string.Equals(source, "depth", StringComparison.OrdinalIgnoreCase) => InputKind.Depth,
             _ when string.Equals(source, "mapLightField", StringComparison.OrdinalIgnoreCase) => InputKind.MapLightField,
             _ when string.Equals(source, "distortion", StringComparison.OrdinalIgnoreCase) => InputKind.Distortion,
+            _ when string.Equals(source, "lightSum", StringComparison.OrdinalIgnoreCase) => InputKind.LightSum,
             _ => null,
         };
         if (kind is { } reservedKind)

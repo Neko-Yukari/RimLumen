@@ -124,6 +124,10 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         ShaderPackUniforms uniforms = payload.Uniforms;
         uniforms.ScreenAndMapSize = new System.Numerics.Vector4(
             1f / scene.Width, 1f / scene.Height, uniforms.ScreenAndMapSize.Z, uniforms.ScreenAndMapSize.W);
+        // Only a takeover sum holds every pool, vanilla glowers included; this record's 3100 split wrote it (RecordLightPools)
+        // before this 3152 split, and the slot's LightSum has no other writer.
+        RenderTexture? lightSum = payload.Takeover ? slot.LightSum! : null;
+        uniforms.LayerFlags.Y = lightSum is null ? 0f : 1f;
         var frame = new FrameContext(ctx.RenderContext, ctx.Resources, ctx.CommandBuffer, owner.Targets.RenderPass,
             slot.Framebuffer, slot.Color.Extent, VkSampleCountFlags._1Bit, VkFormat.R16G16B16A16SFloat, scene.DepthFormat);
         var barrierContext = new LumenBarrierContext { Frame = frame, FrameIndex = payload.Index };
@@ -152,13 +156,13 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         ShaderPackSpec pack = owner.ShaderPack.Spec;
         try
         {
-            owner.ShaderPack.RecordOffscreen(in ctx, slot, hdrSource, slot.SceneSnapshot, distortion, in uniforms,
+            owner.ShaderPack.RecordOffscreen(in ctx, slot, hdrSource, slot.SceneSnapshot, distortion, lightSum, in uniforms,
                 payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
             FrameContext composite = attachment.MakeFrameContext(in ctx);
             BeginPass(in composite, clear: false, ref renderPassOpen);
             try
             {
-                owner.ShaderPack.RecordComposite(in composite, slot, hdrSource, slot.SceneSnapshot, distortion, in uniforms,
+                owner.ShaderPack.RecordComposite(in composite, slot, hdrSource, slot.SceneSnapshot, distortion, lightSum, in uniforms,
                     payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
             }
             finally { EndPass(in composite, ref renderPassOpen); }

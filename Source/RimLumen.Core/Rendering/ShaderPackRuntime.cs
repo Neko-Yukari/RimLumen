@@ -154,12 +154,14 @@ internal sealed class ShaderPackRuntime : IDisposable
     }
 
     // distortion: this frame's DistortionPass target, null when the frame has no distortion draws.
+    // lightSum: this record's light-pool sum, null when the record wrote none (uniforms.LayerFlags.y says which).
     internal void RecordOffscreen(
         in FrameContext ctx,
         HdrTargets.Slot slot,
         RenderTexture hdrSource,
         RenderTexture scene,
         RenderTexture? distortion,
+        RenderTexture? lightSum,
         in ShaderPackUniforms uniforms,
         bool hasHdrDraws,
         bool hasGlowDraws,
@@ -176,6 +178,7 @@ internal sealed class ShaderPackRuntime : IDisposable
 
         RenderTexture bloomTex = skipBuiltInBloom || slot.Bloom is null ? black1x1! : slot.Bloom;
         RenderTexture distortionTex = distortion ?? black1x1!;
+        RenderTexture lightSumTex = lightSum ?? black1x1!;
         ulong writeOrdinal = persistentFrameOrdinal;
 
         for (int i = 0; i < customOffscreenPasses.Length; i++)
@@ -184,8 +187,8 @@ internal sealed class ShaderPackRuntime : IDisposable
             PostEffectPass pass = customOffscreenPasses[i];
             foreach (PlannedInput input in passSpec.Inputs)
             {
-                BindInputSource(pass, input, hdrSource, glowTex, bloomTex, scene, depthTex, distortionTex, ctx.SubmissionFrameIndex,
-                    writeOrdinal);
+                BindInputSource(pass, input, hdrSource, glowTex, bloomTex, scene, depthTex, distortionTex, lightSumTex,
+                    ctx.SubmissionFrameIndex, writeOrdinal);
             }
             pass.SetUniforms(in uniforms);
             RenderTexture output = ResolveWriteTarget(passSpec.OutputTargetIndex, ctx.SubmissionFrameIndex, writeOrdinal);
@@ -253,6 +256,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         RenderTexture hdrSource,
         RenderTexture scene,
         RenderTexture? distortion,
+        RenderTexture? lightSum,
         in ShaderPackUniforms uniforms,
         bool hasHdrDraws,
         bool hasGlowDraws,
@@ -263,11 +267,12 @@ internal sealed class ShaderPackRuntime : IDisposable
         bool skipBuiltInBloom = plan.BloomMipLevels == 0 || (!hasHdrDraws && !plan.HasCustomBloomShader);
         RenderTexture bloomTex = skipBuiltInBloom || slot.Bloom is null ? black1x1! : slot.Bloom;
         RenderTexture distortionTex = distortion ?? black1x1!;
+        RenderTexture lightSumTex = lightSum ?? black1x1!;
 
         PlannedPass finalSpec = plan.Passes[^1];
         foreach (PlannedInput input in finalSpec.Inputs)
         {
-            BindInputSource(compositePass, input, hdrSource, glowTex, bloomTex, scene, depthTex, distortionTex,
+            BindInputSource(compositePass, input, hdrSource, glowTex, bloomTex, scene, depthTex, distortionTex, lightSumTex,
                 ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
         }
         compositePass.SetUniforms(in uniforms);
@@ -435,6 +440,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         RenderTexture scene,
         RenderTexture depthTex,
         RenderTexture distortionTex,
+        RenderTexture lightSumTex,
         int submissionIndex,
         ulong writeOrdinal)
     {
@@ -447,6 +453,7 @@ internal sealed class ShaderPackRuntime : IDisposable
             case InputKind.Depth: pass.SetInput(input.Binding, depthTex); return;
             case InputKind.MapLightField: BindMapLightField(pass, input.Binding); return;
             case InputKind.Distortion: pass.SetInput(input.Binding, distortionTex); return;
+            case InputKind.LightSum: pass.SetInput(input.Binding, lightSumTex); return;
             case InputKind.Target:
                 CustomTargetAllocation alloc = customTargets[input.TargetIndex];
                 int index = alloc.Spec.Persistent
