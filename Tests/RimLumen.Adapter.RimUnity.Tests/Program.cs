@@ -17,6 +17,7 @@ internal static class Program
         [
             ("WotF all seven translation and native/hybrid play", IntegrationTests.WotfIntegration),
             ("WotF tier report", IntegrationTests.WotfTierReport),
+            ("External map disposal releases only the removed map", IntegrationTests.ExternalMapDisposal),
             ("Tier matrix and External ownership", TranslationTests.TierMatrix),
             ("Phase3 active export fields", TranslationTests.ActiveExportFields),
             ("Phase3 bounded imported bursts", TranslationTests.BoundedImportedBursts),

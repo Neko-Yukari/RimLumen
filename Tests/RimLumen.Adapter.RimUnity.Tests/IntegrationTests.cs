@@ -8,6 +8,8 @@ using static RimLumen.Adapter.RimUnity.Tests.Export;
 using System.Numerics;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Scene;
+using RU = global::RimUnity;
+using ExternalHandle = RimLumen.Adapter.RimUnity.RimUnityLegacyFallbackPlayer.ExternalHandle;
 
 namespace RimLumen.Adapter.RimUnity.Tests;
 
@@ -271,6 +273,36 @@ internal static class IntegrationTests
         handle.Stop(false);
         Check.True(!handle.IsAlive && !external.LastHandle!.IsAlive, "Probe composite stop forwards externally");
         Console.WriteLine($"PROBE L2->External reason={reason} externalPlays={external.Plays} nativeCpu=0 nativeGpu=0");
+    }
+
+    internal static void ExternalMapDisposal()
+    {
+        RU.Runtime.NativeRuntime.InitializeOnCurrentThread();
+        var anchorA = new RU.GameObject("lightning A");
+        var anchorB = new RU.GameObject("lightning B");
+        static ExternalHandle PlayLine(RU.GameObject anchor, int mapIndex)
+        {
+            var request = new LumenPlayRequest { EffectId = "lightning", MapIndex = mapIndex };
+            var handle = new ExternalHandle(anchor, [], [], [anchor.AddComponent<RU.LineRenderer>()], request);
+            handle.Start();
+            return handle;
+        }
+        var first = PlayLine(anchorA, 7101);
+        var second = PlayLine(anchorB, 7102);
+        try
+        {
+            Check.True(first.IsAlive && second.IsAlive, "Both external lines started");
+            ExternalHandle.ReleaseMap(7101);
+            Check.True(!first.IsAlive && anchorA == null, "Map A's external line and anchor must be destroyed immediately");
+            Check.True(second.IsAlive && anchorB != null, "Map B's external line and anchor must survive");
+        }
+        finally
+        {
+            first.Dispose();
+            second.Dispose();
+            first.CaptureMainThread(default);
+            second.CaptureMainThread(default);
+        }
     }
 
     internal static void RejectedHybrid()

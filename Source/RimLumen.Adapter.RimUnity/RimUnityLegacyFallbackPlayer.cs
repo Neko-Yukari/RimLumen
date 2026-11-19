@@ -93,7 +93,7 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
         return result;
     }
 
-    private sealed class ExternalHandle : ILumenEffectHandle, ILumenFrameContributor
+    internal sealed class ExternalHandle : ILumenEffectHandle, ILumenFrameContributor
     {
         private enum Playback { Playing, Draining, Dead }
         private Playback state;
@@ -117,7 +117,9 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
             this.systems = systems;
             this.trails = trails;
             this.lines = lines;
-            this.request = request;
+            this.request = request.MapIndex == -1
+                ? request with { MapIndex = Verse.Find.CurrentMap?.uniqueID ?? throw new InvalidOperationException("External playback requires a current map when MapIndex is -1.") }
+                : request;
             rates = systems.Select(system => system.emission.rateOverTime).ToArray();
             colors = systems.Select(system => system.main.startColor).ToArray();
             origin = request.OriginWorld;
@@ -135,6 +137,12 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
             trails = trails.Where(trail => trail.gameObject.activeInHierarchy).ToArray();
             lines = lines.Where(line => line.gameObject.activeInHierarchy).ToArray();
             LumenHostRegistry.RegisterContributor(this);
+        }
+
+        internal static void ReleaseMap(int mapIndex)
+        {
+            foreach (var contributor in LumenHostRegistry.GetContributorsSnapshot())
+                if (contributor is ExternalHandle handle && handle.request.MapIndex == mapIndex) handle.Dispose();
         }
 
         public bool IsAlive => state != Playback.Dead && anchor != null;
