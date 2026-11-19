@@ -131,7 +131,7 @@ public sealed class RimLumenMod : Verse.Mod
     public static RimLumenSettings Settings { get; private set; } = new();
 
     private Vector2 scrollPosition;
-    private float lastContentHeight = 640f;
+    private float lastContentHeight;
 
     public RimLumenMod(ModContentPack content) : base(content)
     {
@@ -155,7 +155,7 @@ public sealed class RimLumenMod : Verse.Mod
         Rect viewRect = new(0f, 0f, inRect.width - 20f, Mathf.Max(inRect.height, lastContentHeight));
         Widgets.BeginScrollView(inRect, ref scrollPosition, viewRect);
 
-        var listing = new Listing_Standard();
+        var listing = new Listing_Standard { maxOneColumn = true };
         listing.Begin(viewRect);
 
         listing.CheckboxLabeled(
