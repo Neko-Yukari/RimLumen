@@ -174,7 +174,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
   粒子尺寸曲线由 L1 和 L2 使用相同的 64 点查找表（LUT）：采样点为 `i/63`（`i = 0…63`），包含两端，再对相邻样本插值。阶跃可能在宽度为 `1/63` 的采样区间内被平滑，不能保证精确保留。点光曲线按秒直接求值，不使用该粒子查找表。
 - **材质颜色**：`materialTint` 默认为 `(1,1,1,1)`，与 `startColor` 和渐变遵循上述颜色范围；`colorSpace` 为 `Stored`（默认）或 `Linear`。令 `vertex = startColor × gradient`。Stored 的 RGB 为 `vertex × tint × texel`；Linear 的 RGB 为 `E(vertex × D(tint) × (贴图为 sRGB ? D(texel) : texel))`。`vertex` 不解码。标量增益 `g = hdrIntensity × intensity` 在材质颜色转入本帧混合空间之后才乘到 RGB 上（Legacy 为 `g × rgb`，Linear 混合空间为 `g × D(rgb)`），不经过任何 sRGB 传递函数放大或压缩；`D` / `E` 分别为 sRGB 解码 / 编码，在非负值上延伸至大于 1，不截断。alpha 始终为三个原始 alpha 的乘积，再应用软粒子覆盖度和混合模式要求的预乘。逐分量计算中，`D(x) = x/12.92`（`x <= 0.04045`），否则为 `((x+0.055)/1.055)^2.4`；`E(x) = 12.92*x`（`x <= 0.0031308`），否则为 `1.055*x^(1/2.4)-0.055`。依据 RimUnity 固定版本 `45ca90987f7d3721715b45c021cab986ee14c468` 的 `Source/Shared/ShaderColorSpace.cs:69-103,122-134`。此处只描述材质计算，不改变玩家混合空间。
 - **渐变（`colorOverLifetime`）**：支持颜色数组（单色常量）或停靠点数组 `[[time, [r,g,b,a]], ...]` 或对象 `{ "stops": [{ "time": 0, "color": [r,g,b,a] }] }`，要求 `time` 严格递增。
-- **`pointLight`**：JSON 下颜色键为 `color`（RGBA），半径键为 `glowRadius`（单位：地图格）。点光是纯视觉光池，不写入原版 `GlowGrid`，不影响心情、种植和工作速度。圆心取节点世界位置在地面上的投影，半径 `R = glowRadius`，衰减公式为 `w = (1 - (d/R)^2)^2`，在 `d >= R` 处精确为 `0`。各光源项 `L = color × intensityOverTime × w` 在重叠处线性相加，总和只作用一次：场景变为 `scene × (1 + C(ΣL))`，其中 `C` 在峰值不超过 1 时为恒等，超过后峰值保持 1 并沿色相趋白，因此重叠处最多提亮 2 倍。绘制在原版光照层之后，迷雾、黑暗和屋顶照常覆盖。推荐 `intensity`：常亮灯具 `0.5–1.2`，短促强闪光 `1.0–2.0`；不要把原版 `GlowGrid` 的 `3.6` 尺度照搬到视觉光池上。光池每帧跟随节点。`intensity` 和曲线关键帧值须有限且 `>= 0`，无上限；有效强度 `<= 0` 时不绘制。`overlightRadius` 已移除，JSON 和 XML 解析均直接拒绝。光池会被墙、门和掩体遮挡，遮挡按物体贴图生成，见第七章第 4 节；遮挡只影响画面，不新增资产字段。原版日影/月影（`SunShadow` 3170、`SunShadowFade` 3175）落在光池里时只压掉日光：阴影乘数由 `c` 改为逐通道 `(c+L)/(1+L)`，`L` 为该像素压缩后的光池项；没有光池的像素与原版逐像素一致。只替换原版材质加原版着色器的阴影绘制，其他模组替换过的阴影（如 RimIris 水面阴影）保持原样并记录一次警告。已知近似：光池把画面提亮到顶处阴影恢复偏少；3101 之后画的折射、加色和雾会一起被提亮；原版灯光不分离；HDR 粒子/泛光层与 IsoRim 3D 阴影不覆盖。需要游戏逻辑光时，见第七章第 3 节的 `CompRimLumenLogicalLight`。
+- **`pointLight`**：JSON 下颜色键为 `color`（RGBA），半径键为 `glowRadius`（单位：地图格）。点光是纯视觉光池，不写入原版 `GlowGrid`，不影响心情、种植和工作速度。圆心取节点世界位置在地面上的投影，节点高度 Y（离地格数）决定它投出的高度阴影有多长，见第七章第 4 节。地下的光源（Y < 0）按放在地面上处理。引擎不设最低高度：Y = 0 的光源贴着地面，所有有高度的物体都会投出不封顶的阴影。想要短阴影就抬高节点；灯具类效果光推荐 Y 为 1～2 格（原版墙高 1 格）。半径 `R = glowRadius`，衰减公式为 `w = (1 - (d/R)^2)^2`，在 `d >= R` 处精确为 `0`。各光源项 `L = color × intensityOverTime × w` 在重叠处线性相加，总和只作用一次：场景变为 `scene × (1 + C(ΣL))`，其中 `C` 在峰值不超过 1 时为恒等，超过后峰值保持 1 并沿色相趋白，因此重叠处最多提亮 2 倍。绘制在原版光照层之后，迷雾、黑暗和屋顶照常覆盖。推荐 `intensity`：常亮灯具 `0.5–1.2`，短促强闪光 `1.0–2.0`；不要把原版 `GlowGrid` 的 `3.6` 尺度照搬到视觉光池上。光池每帧跟随节点。`intensity` 和曲线关键帧值须有限且 `>= 0`，无上限；有效强度 `<= 0` 时不绘制。`overlightRadius` 已移除，JSON 和 XML 解析均直接拒绝。光池会被墙、门和掩体遮挡，遮挡按物体贴图生成，见第七章第 4 节；遮挡只影响画面，不新增资产字段。原版日影/月影（`SunShadow` 3170、`SunShadowFade` 3175）落在光池里时只压掉日光：阴影乘数由 `c` 改为逐通道 `(c+L)/(1+L)`，`L` 为该像素压缩后的光池项；没有光池的像素与原版逐像素一致。只替换原版材质加原版着色器的阴影绘制，其他模组替换过的阴影（如 RimIris 水面阴影）保持原样并记录一次警告。已知近似：光池把画面提亮到顶处阴影恢复偏少；3101 之后画的折射、加色和雾会一起被提亮；原版灯光不分离；HDR 粒子/泛光层与 IsoRim 3D 阴影不覆盖。需要游戏逻辑光时，见第七章第 3 节的 `CompRimLumenLogicalLight`。
 - **力场 `strength`**：JSON、XML 与 C# 均须显式提供；省略时拒绝资产，不使用默认值。
 - **`timelineEvents` / `states` / `initialState` / `stopState`**：见下一节「状态机」。
 - **粒子密度设置**：公开 setter `RimLumenRenderHost.ParticleDensityScale` 接受范围为 `0.1`～`1.0`；范围外的有限值静默截到边界，不记录日志，NaN 和正负无穷抛出 `ArgumentOutOfRangeException`。设置滑条连续取值，显示时四舍五入为整数百分比。密度 `1` 精确；截断后的密度为 `d` 时，脉冲有效密度为 `floor(d * 65536) / 65536`。
@@ -640,8 +640,9 @@ RimLumen 的视觉光池（`pointLight` 效果光池，以及接管开启时的�
 | 类别 | 判定 | 对光池的作用 |
 | --- | --- | --- |
 | 墙、平滑墙、天然岩石、门、冷却器等 | `def.blockLight` | 无限高遮挡。形状取贴图 alpha，alpha ≥ 0.5 的纹素为实心 |
-| 掩体（沙袋、路障、矮墙、部分植物和物品） | 非 `blockLight`，`Fillage == Partial`，类别为建筑、植物或物品 | 部分透光，强度由 `fillPercent` 决定 |
+| 掩体（沙袋、路障、矮墙、部分植物和物品） | 非 `blockLight`，`Fillage == Partial`，类别为建筑、植物或物品，且没有高度（见下一行） | 部分透光，强度由 `fillPercent` 决定 |
 | `Fillage == Full` 但非 `blockLight` 的物体 | 同上 | 按 `fillPercent ≈ 1` 的掩体处理，几乎不透光，但不走墙体规则 |
+| 有高度的物体（柱子、雕像、家具、植物、石棺等） | 非 `blockLight`，有 `staticSunShadowHeight > 0` 的建筑，或有 `graphicData.shadowData` 的物体（`RealtimeOnly` 除外） | 按高度投几何阴影，不再按 `fillPercent` 部分透光。高度取原版太阳阴影的同一高度 |
 
 小人、动物、mote 和投射物不进遮挡图。屋顶不挡光，地图外的位置也不挡光。读不到贴图像素的 `blockLight` 物体按 `def.size` 实心占位，每个 def 只警告一次；读不到贴图的掩体不参与遮挡。
 
@@ -663,6 +664,15 @@ T = Π (1 − o_i)^(Δs_i)
 ```
 
 `o_i` 是第 i 段的不透明度（贴图 alpha × `fillPercent`），`Δs_i` 是射线在该段走过的格数。光线正交穿过 1 格宽的沙袋，透射率为 `1 − fillPercent`；斜穿路径更长，遮挡更多。
+
+**高度阴影**
+
+有高度的物体沿远离光源的方向投阴影，效果光池和原版发光体光池相同。光源高 H、物体高 h、水平距离 d 时，阴影延伸到物体之后 `d·h/(H − h)` 格。`h ≥ H` 时阴影不封顶，一直延伸到光池边缘。带 `shadowData` 的物体沿用原版太阳阴影的渐隐，所以不封顶的阴影也是逐渐变淡，不是全黑。
+
+- 效果光池的 H 取节点世界 Y。原版发光体没有高度，统一取 H = 1 格。
+- 物体被光照亮的一面不会被它自己的阴影压暗。光源所在的物体也不挡自己的光，例如落地灯的灯柱。
+- 墙、门等 `blockLight` 物体仍按无限高遮挡，对点光源只看实心与门缝，不再叠加高度阴影：墙影边缘不会被压暗两次，打开的门照常透光。日影不受影响。
+- 掩体的透射与高度阴影不会同时作用于同一个物体：有高度的物体只投高度阴影。例如柱子（`fillPercent` 0.25，阴影高 0.5）在 H = 1 的火把旁投出约 `d·0.5/0.5 = d` 格长的阴影。
 
 **平滑边缘**
 
@@ -921,7 +931,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 
 #### 静态 DAG 校验规则（`ShaderPackGraphValidator`）
 
-1. **保留源名**：`hdr`、`glow`、`bloom`、`scene`、`depth`、`mapLightField`、`distortion`、`backbuffer` 为保留源名，不可作为自定义 `targets[].name`，也不能用 `prev:` 作为自定义目标前缀。
+1. **保留源名**：`hdr`、`glow`、`bloom`、`scene`、`depth`、`mapLightField`、`distortion`、`lightSum`、`backbuffer` 为保留源名，不可作为自定义 `targets[].name`，也不能用 `prev:` 作为自定义目标前缀。
 2. **末尾唯一 `backbuffer`**：若 `passes` 非空，仅最后一个 Pass 必须输出到 `"backbuffer"`；其余所有离屏 Pass 必须输出到已声明的 `targets[].name`，且必须使用 `"blend": "Opaque"` 与非空 `shader`。
 3. **禁止采样 `backbuffer`**：任何 Pass 的 `inputs[].source` 均不能填 `"backbuffer"`。
 4. **无前向引用与无同帧自读**：采样普通 `target` 时，必须有排在当前 Pass 之前的 Pass 已向其写入；禁止在同一 Pass 中既写 `X` 又直接以 `X` 作为输入。
@@ -959,6 +969,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 | `depth` | `R32SFloat` / `Point` | `depth1x1`（`R32SFloat`，远平面 `0.0`） | 由 3152 边界同帧场景深度拷贝得到、供常规采样的颜色快照。 |
 | `mapLightField` | `R8G8B8A8UNorm` / `Linear` | `black1x1`（全 0） | 尺寸为 `mapSizeX x mapSizeZ` 的全图屋顶/人工光/存在使用室外温度的房间/迷雾场。 |
 | `distortion` | `R16G16SFloat` / `Linear` | `black1x1`（全 0） | 屏幕尺寸，RG 为场景采样偏移，单位为帧缓冲像素。 |
+| `lightSum` | `R16G16B16A16SFloat` / `Linear` | `black1x1`（全 0） | 屏幕尺寸，接管照明帧的逐像素光池总和：原版发光体与 RimLumen 效果光池线性相加，已含遮挡。仅当 `ubo.LayerFlags.y = 1` 时有效，否则为占位纹理。不在任何默认绑定中，需在 `inputs` 显式声明。 |
 
 `hdr`、`glow` 与 `scene` 的 RGB 使用同一种编码，可以直接相加，不需要做 gamma / 线性转换：场景目标是 `B8G8R8A8UNorm`，原版直接按存储值混合，RimLumen 的 HDR 目标用同样的着色器输出与混合方式，只是不截断。`1.0` 等于原版的满亮度，大于 `1.0` 的部分就是原版会截掉的额外亮度。
 
@@ -1015,12 +1026,13 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
     float ColorBlendSpace;  // 124: 0 Legacy（hdr/bloom 为 stored 值），1 Linear（线性辐射）
     vec4 BloomParams;       // 128: intensity, threshold, knee, scatter
     vec4 PackParams[4];     // 144: 4 行，每行 16 字节，共 64 字节
-    vec4 LayerFlags;        // 208: x 为效果层折射开关，yzw 保留为 0
+    vec4 LayerFlags;        // 208: x 为效果层折射开关，y 为 lightSum 有效标志，zw 保留为 0
 } ubo;
 ```
 
 - **参数映射**：`options[].target` 的 `packParamN`（`N = 0..15`）对应 `ubo.PackParams[N / 4][N % 4]`；已有着色器需将旧向量成员改为 `PackParams` 数组。
 - **当前 ABI**：布局共 224 字节；只声明前 208 字节的包仍有效，但其效果层不折射。`HasHdrDraws`（含早组 glow 拷贝）、`HasSceneDepth`、`HasMapLightField`、`IsPaused` 均为独立的 0/1 float。`DepthValid=1` 表示该边界的真实深度快照，`0` 表示远平面占位，不表示每个像素都有几何体。
+- **`LayerFlags.y`**：开启“RimLumen 接管照明”且本帧生效时为 `1`，`lightSum` 绑定的是本帧光池总和；否则为 `0`，绑定的是全黑占位，原版八边形光照覆盖层照常绘制。读 `lightSum` 的包应在 `y = 0` 时回退到 `mapLightField.G`。不声明 `lightSum` 的包不受影响，UBO 大小和已有偏移不变。
 - `GameSeconds` 为游戏 ticks / 60，暂停停止；`RealSeconds` 为宿主经过的真实秒数。对应 Delta 字段是本帧步长。Cinematic 的 Adapt 与 StreakExtract 读取 `hdr + glow`，合成核心仍只读取 `hdr`；Adapt 使用游戏秒时间常数 0.2 秒，权重 `1-exp(-GameDeltaSeconds/0.2)`。
 
 #### Push Constant（16 字节 `vec4`）
@@ -1080,6 +1092,8 @@ bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fie
 | `cinematic` | 5 Pass / 4 目标（含持久化 `adapt`） | `false` | `false` | `false` | `6` | `1.7/ShaderPacks/Cinematic/` |
 | `crisp` | 单自定义合成 / 0 | `false` | `false` | `false` | `3` | `1.7/ShaderPacks/Crisp/` |
 | `vibrant` | 单自定义合成 / 0 | `false` | `false` | `false` | `6` | `1.7/ShaderPacks/Vibrant/` |
+
+`atmospheric` 的 `FogAndMask` 在 binding 4 读取 `lightSum`。`LayerFlags.y = 1` 时用其亮度（Rec.709 系数）经 `min(0.5, 3.6 × 亮度)` 代替 `mapLightField.G`，作为火光保护与暖雾强度；否则仍用 G。
 
 ---
 
