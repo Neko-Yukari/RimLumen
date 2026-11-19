@@ -614,7 +614,8 @@ public static class ShowcaseStage
             new EffectNodeSpec
             {
                 Name = "arcane_light",
-                LocalPosition = Vector3.Zero,
+                // One cell above the orb: a light at Y = 0 casts unbounded height shadows.
+                LocalPosition = new Vector3(0f, height + 1f, 0f),
                 PointLight = new PointLightSpec(9.5f, new Vector3(0.30f, 0.92f, 1.0f), ScalarCurve.Constant(2.2f)),
             },
         },

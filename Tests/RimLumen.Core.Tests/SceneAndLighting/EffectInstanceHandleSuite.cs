@@ -144,6 +144,31 @@ public static class EffectInstanceHandleSuite
     }
 
     [LumenFact]
+    public static void ALightBelowTheGroundSitsOnTheGround()
+    {
+        var asset = new EffectAsset
+        {
+            EffectId = "b3.buried", Nodes = new[]
+            {
+                new EffectNodeSpec { Name = "glow", Emitter = VfxTestData.Emitter(), PointLight = new PointLightSpec(6f, new Vector3(1f)) },
+            },
+        };
+        var service = VfxTestData.Service(asset);
+        using var handle = service.Play(new LumenPlayRequest { MapIndex = 7, EffectId = asset.EffectId, OriginWorld = new Vector3(5.5f, -0.25f, 2.5f) });
+        VfxTestData.Step(service, 0.25f, currentMapIndex: 7);
+        // A 0.5-high faded box between the light and the ground behind it: the pool stays non-negative.
+        var builder = new RimLumen.Core.Lighting.Occlusion.OcclusionBuilder(16, 16);
+        builder.StampSunBox(new RimLumen.Core.Lighting.Occlusion.MaskPlacement(5.5f, 5.27f, 0.3f, 0.3f), 0.5f, blocker: false);
+        builder.RecomputeDerived(new RimLumen.Core.Lighting.Occlusion.CellBox(0, 0, 15, 15));
+        var frame = new RimLumen.Core.Lighting.Occlusion.OcclusionFrame(builder.Publish(), new RimLumen.Core.Lighting.Occlusion.DoorStates(16, 16, new byte[16 * 16 * 4]));
+        for (float z = 5.5f; z <= 8f; z += 0.25f)
+        {
+            Vector3 pool = service.Lights[0].EvaluateAt(5.5f, z, frame);
+            VfxAssert.Check(pool.X >= 0f && pool.Y >= 0f && pool.Z >= 0f, $"Pool at z = {z} must not be negative; got {pool}.");
+        }
+    }
+
+    [LumenFact]
     public static void ParamsScaleRealLightColourRgbVerticesEmissionRateAndRootScale()
     {
         var asset = new EffectAsset
@@ -165,7 +190,7 @@ public static class EffectInstanceHandleSuite
         VfxTestData.Step(service, 0.25f, currentMapIndex: 111);
         VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
         VfxAssert.Equal(Vector4.One, service.Simulator.Vertices[0].Color);
-        VfxAssert.Equal(new VisualPointLight(10f, 20f, 4f, new Vector3(0.5f, 0.25f, 0.125f), VisualPointLightKind.Effect), service.Lights[0]);
+        VfxAssert.Equal(new VisualPointLight(10f, 2f, 20f, 4f, new Vector3(0.5f, 0.25f, 0.125f), VisualPointLightKind.Effect), service.Lights[0]);
         handle.SetParam("intensity", 2f);
         handle.SetParam("rate", 2f);
         handle.SetParam("scale", 3f);
@@ -180,7 +205,7 @@ public static class EffectInstanceHandleSuite
         VfxAssert.Equal(Vector4.One, service.Simulator.Vertices[0].Color);
         VfxAssert.Equal(2f, service.Simulator.Vertices[0].HdrGain);
         // Unclamped: the light pool radius is not scaled with the effect, and intensity 2 doubles the colour.
-        VfxAssert.Equal(new VisualPointLight(10f, 20f, 4f, new Vector3(1f, 0.5f, 0.25f), VisualPointLightKind.Effect), service.Lights[0]);
+        VfxAssert.Equal(new VisualPointLight(10f, 2f, 20f, 4f, new Vector3(1f, 0.5f, 0.25f), VisualPointLightKind.Effect), service.Lights[0]);
         VfxAssert.Equal(new Vector3(10f, 2f, 20f), handle.RootWorld.Translation);
         VfxAssert.Equal(new Vector3(6f, 0f, 0f), Vector3.TransformNormal(Vector3.UnitX, handle.RootWorld));
         handle.Dispose();

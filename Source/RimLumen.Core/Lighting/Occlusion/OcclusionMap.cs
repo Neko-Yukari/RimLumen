@@ -20,6 +20,9 @@ internal static class OcclusionLayout
     // Main texture A flags.
     internal const byte FlagDoor = 1;
     internal const byte FlagDoorAxisZ = 2; // set: the door's leaves slide along world z
+    // G was written by a non-blockLight height occluder. Point lights read G only here: blockLight texels are governed
+    // by the solid and door-gap term alone. The sun reads G everywhere.
+    internal const byte FlagPointHeight = 4;
     internal const byte FlagSunFade = 128; // shadowData box: sun shadow fades as 1 - t/h
 
     // Coarse texture B flags.
@@ -62,7 +65,8 @@ internal sealed record AlphaMask(int Width, int Height, byte[] Alpha);
 // Texels: RGBA8, (Width * 4) x (Height * 4), row-major from world (0, 0); texel (tx, tz) covers world
 //         [tx / 4, (tx + 1) / 4) x [tz / 4, (tz + 1) / 4). Coarse: RGBA8, Width x Height, R and G = max over the cell's
 //         3 x 3 neighbourhood of the main R and G, B = CoarseDoor when any cell of that 3 x 3 neighbourhood holds door
-//         texels (so a fine step whose 2 x 2 gather can reach a door texel knows to read A and DoorStates), A unused (0).
+//         texels (so a fine step whose 2 x 2 gather can reach a door texel knows to read A and DoorStates), A = max over
+//         the same neighbourhood of G on FlagPointHeight texels (the point-light coarse height).
 internal sealed record OcclusionMap(int Width, int Height, byte[] Texels, byte[] Coarse)
 {
     internal int TexelWidth => Width * OcclusionLayout.TexelsPerCell;

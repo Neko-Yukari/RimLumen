@@ -45,8 +45,9 @@ internal sealed class OcclusionBuilder
     // Ensures: every texel of footprint gets R = Solid and G = max(G, sunHeight encoded).
     internal void StampSolidFootprint(CellBox footprint, float sunHeight) => StampFootprint(footprint, sunHeight, solid: true);
 
-    // Requires: footprint is inside the map and sunHeight is positive.
-    // Ensures: every footprint texel takes the greater of G and the encoded sunHeight; R, B and A are preserved.
+    // Non-blockLight edifices with staticSunShadowHeight. Requires: footprint is inside the map and sunHeight is positive.
+    // Ensures: every footprint texel takes the greater of G and the encoded sunHeight and gets FlagPointHeight; R and B
+    //          are preserved.
     internal void StampSunFootprint(CellBox footprint, float sunHeight) => StampFootprint(footprint, sunHeight, solid: false);
 
     private void StampFootprint(CellBox footprint, float sunHeight, bool solid)
@@ -57,6 +58,7 @@ internal sealed class OcclusionBuilder
             {
                 int i = (z * texelWidth + x) * OcclusionLayout.Channels;
                 if (solid) texels[i] = OcclusionLayout.Solid;
+                else texels[i + 3] |= OcclusionLayout.FlagPointHeight;
                 texels[i + 1] = Math.Max(texels[i + 1], encodedHeight);
             }
     }
@@ -68,12 +70,13 @@ internal sealed class OcclusionBuilder
         Stamp(mask, at, (index, alpha) => texels[index] = Math.Max(texels[index], (byte)Math.Min(OcclusionLayout.MaxCover, (int)MathF.Round(alpha * fillPercent))));
 
     // graphicData.shadowData box (volume x/z footprint, offset and rotation applied by the host).
-    // Ensures: texels whose centre falls inside box get G = max(G, height encoded) and FlagSunFade.
-    internal CellBox? StampSunBox(MaskPlacement box, float height) =>
+    // Ensures: texels whose centre falls inside box get G = max(G, height encoded) and FlagSunFade, plus FlagPointHeight
+    //          unless the box belongs to a blockLight thing (blocker).
+    internal CellBox? StampSunBox(MaskPlacement box, float height, bool blocker) =>
         Stamp(new AlphaMask(1, 1, [byte.MaxValue]), box, (index, _) =>
         {
             texels[index + 1] = Math.Max(texels[index + 1], EncodeHeight(height));
-            texels[index + 3] |= OcclusionLayout.FlagSunFade;
+            texels[index + 3] |= blocker ? OcclusionLayout.FlagSunFade : (byte)(OcclusionLayout.FlagSunFade | OcclusionLayout.FlagPointHeight);
         });
 
     private CellBox? Stamp(AlphaMask mask, MaskPlacement at, Action<int, byte> apply)
@@ -143,7 +146,7 @@ internal sealed class OcclusionBuilder
             for (int x = area.MinX; x <= area.MaxX; x++)
             {
                 int c = (z * width + x) * OcclusionLayout.Channels;
-                coarse[c] = coarse[c + 1] = coarse[c + 2] = 0;
+                coarse[c] = coarse[c + 1] = coarse[c + 2] = coarse[c + 3] = 0;
                 for (int tz = Math.Max(0, (z - 1) * OcclusionLayout.TexelsPerCell); tz < Math.Min(texelHeight, (z + 2) * OcclusionLayout.TexelsPerCell); tz++)
                     for (int tx = Math.Max(0, (x - 1) * OcclusionLayout.TexelsPerCell); tx < Math.Min(texelWidth, (x + 2) * OcclusionLayout.TexelsPerCell); tx++)
                     {
@@ -152,6 +155,8 @@ internal sealed class OcclusionBuilder
                         coarse[c + 1] = Math.Max(coarse[c + 1], texels[i + 1]);
                         if ((texels[i + 3] & OcclusionLayout.FlagDoor) != 0)
                             coarse[c + 2] = OcclusionLayout.CoarseDoor;
+                        if ((texels[i + 3] & OcclusionLayout.FlagPointHeight) != 0)
+                            coarse[c + 3] = Math.Max(coarse[c + 3], texels[i + 1]);
                     }
             }
     }
