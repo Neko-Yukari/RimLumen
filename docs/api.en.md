@@ -639,19 +639,18 @@ Classification reads def fields only, never names, so modded buildings written t
 
 | Kind | Test | Effect on pools |
 | --- | --- | --- |
-| Walls, smoothed walls, natural rock, doors, coolers and similar | `def.blockLight` | Infinitely high blocker. The shape is the sprite's alpha ≥ 0.5 outline; a texel whose centre lies inside it is solid |
+| Walls, smoothed walls, natural rock, doors, coolers and similar | `def.blockLight` | Infinitely high blocker over its occupied cells; the sprite is not read |
 | Cover (sandbags, barricades, low walls, some plants and items) | not `blockLight`, `Fillage == Partial`, category Building, Plant or Item, and no height (see the next row) | Partial transmission set by `fillPercent` |
 | Things with `Fillage == Full` but no `blockLight` | as above | Treated as cover with `fillPercent ≈ 1`: almost opaque, but without the wall rules |
 | Things with a height (columns, sculptures, furniture, plants, sarcophagi) | not `blockLight`, and a building with `staticSunShadowHeight > 0` or a thing with `graphicData.shadowData` (not `RealtimeOnly`) | Cast a geometric height shadow instead of `fillPercent` partial transmission, at the height of their vanilla sun shadow, shaped by the sprite's alpha ≥ 0.5 outline |
 
-Pawns, animals, motes and projectiles are not in the map. Roofs never block, and neither do positions outside the map. A `blockLight` thing whose sprite pixels cannot be read is stamped solid over `def.size`, with one warning per def; cover with an unreadable sprite does not occlude.
+Pawns, animals, motes and projectiles are not in the map. Roofs never block, and neither do positions outside the map. A height-bearing thing whose sprite pixels cannot be read is stamped solid over `def.size`, with one warning per def; cover with an unreadable sprite does not occlude.
 
 **Walls and doors**
 
-- Wall outlines come from the sprite, so linked-wall corners and gaps show in the lighting.
+- Walls, rock and doors block over whole cells; linked-wall corners and gaps in the art do not change the lighting.
 - A lamp embedded in a wall is not blocked by the solid run it sits in.
-- A one-cell-wide wall column takes one brightness along its whole length, the brightness of its lit face. The alternating per-cell banding is gone.
-- Wall cores at least 0.875 cell (3.5 texels) from the nearest wall edge receive no light, so the far row of a two-cell-thick wall, mountain interiors and concave mountain corners stay dark.
+- Only the first layer of wall cells is lit: each point of a wall cell takes the brightness of the ground point level with it just outside the cell edge that faces the light and does not border another wall, so a wall face follows the ground in front of it continuously, without alternating per-cell banding. Deeper wall cells, mountain interiors and rock touching a room only at a corner stay dark.
 - A closed door blocks all light. An open door lets light through only the gap its leaves clear: the opening half-width is `0.45 × openness` for ordinary doors and `0.35 × openness` for multi-tile doors (in door widths). A multi-tile door that is `StuckOpen` draws no leaves and counts as fully open.
 - Door state is polled every frame and only updates a small door-state texture, so opening and closing doors never rebuilds the whole occlusion map.
 
@@ -1058,6 +1057,8 @@ float depth = texture(depthImage, uv).r;
 float is3DGeom = ubo.DepthValid * step(0.0001, min(depth, 1.0 - depth));
 ```
 
+It is 1 in the vanilla top-down view too: vanilla `Cutout`, `CutoutPlant` and `CutoutComplex` write depth (`Data/Core/Defs/ShaderDefs/Shaders.Map.xml`), so wall, rock, plant and item sprite pixels all match; only terrain writes none.
+
 To reconstruct the world ground-plane (`y = 0`) position and `mapLightField` UV from screen `uv` (compatible with both vanilla 2D top-down and IsoRim oblique cameras):
 
 ```glsl
@@ -1089,12 +1090,12 @@ bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fie
 | Pack ID | Passes / Targets | `runOnEmptyFrames` | `requiresSceneDepth` | `requiresMapLightField` | `bloomMipLevels` | Source Reference |
 | --- | --- | --- | --- | --- | --- | --- |
 | `default` | Built-in composite / 0 | `false` | `false` | `false` | `5` | `1.7/Shaders/PostFx/RimLumenComposite.frag.glsl` |
-| `atmospheric` | 3 passes / 2 targets | `true` | `true` | `true` | `7` | `1.7/ShaderPacks/Atmospheric/` |
+| `atmospheric` | 3 passes / 2 targets | `true` | `false` | `true` | `7` | `1.7/ShaderPacks/Atmospheric/` |
 | `cinematic` | 5 passes / 4 targets (incl. persistent `adapt`) | `false` | `false` | `false` | `6` | `1.7/ShaderPacks/Cinematic/` |
 | `crisp` | 1 custom composite / 0 | `false` | `false` | `false` | `3` | `1.7/ShaderPacks/Crisp/` |
 | `vibrant` | 1 custom composite / 0 | `false` | `false` | `false` | `6` | `1.7/ShaderPacks/Vibrant/` |
 
-`atmospheric`'s `FogAndMask` reads `lightSum` at binding 4. With `LayerFlags.y = 1` it replaces `mapLightField.G` by `min(0.5, 3.6 × luminance)` (Rec.709 weights) for its lit-area protection and warm mist; otherwise it keeps G.
+`atmospheric`'s `FogAndMask` reads `lightSum` at binding 4. With `LayerFlags.y = 1` it replaces `mapLightField.G` by `min(0.5, 3.6 × luminance)` (Rec.709 weights) for its lit-area protection and warm mist; otherwise it keeps G. It reads no scene depth: under the IsoRim 3D view, mist over walls is no longer reduced.
 
 ---
 

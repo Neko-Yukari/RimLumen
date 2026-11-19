@@ -639,19 +639,18 @@ RimLumen 的视觉光池（`pointLight` 效果光池，以及接管开启时的�
 
 | 类别 | 判定 | 对光池的作用 |
 | --- | --- | --- |
-| 墙、平滑墙、天然岩石、门、冷却器等 | `def.blockLight` | 无限高遮挡。形状取贴图 alpha ≥ 0.5 的轮廓，纹素中心落在轮廓内即为实心 |
+| 墙、平滑墙、天然岩石、门、冷却器等 | `def.blockLight` | 无限高遮挡，按占据的整格遮挡，不读贴图 |
 | 掩体（沙袋、路障、矮墙、部分植物和物品） | 非 `blockLight`，`Fillage == Partial`，类别为建筑、植物或物品，且没有高度（见下一行） | 部分透光，强度由 `fillPercent` 决定 |
 | `Fillage == Full` 但非 `blockLight` 的物体 | 同上 | 按 `fillPercent ≈ 1` 的掩体处理，几乎不透光，但不走墙体规则 |
 | 有高度的物体（柱子、雕像、家具、植物、石棺等） | 非 `blockLight`，有 `staticSunShadowHeight > 0` 的建筑，或有 `graphicData.shadowData` 的物体（`RealtimeOnly` 除外） | 按高度投几何阴影，不再按 `fillPercent` 部分透光。高度取原版太阳阴影的同一高度，形状取贴图 alpha ≥ 0.5 的轮廓 |
 
-小人、动物、mote 和投射物不进遮挡图。屋顶不挡光，地图外的位置也不挡光。读不到贴图像素的 `blockLight` 物体按 `def.size` 实心占位，每个 def 只警告一次；读不到贴图的掩体不参与遮挡。
+小人、动物、mote 和投射物不进遮挡图。屋顶不挡光，地图外的位置也不挡光。读不到贴图像素的有高度物体按 `def.size` 实心占位，每个 def 只警告一次；读不到贴图的掩体不参与遮挡。
 
 **墙与门**
 
-- 墙的轮廓来自贴图，链接墙的圆角和缺口都会体现在光影里。
+- 墙、岩石和门按整格遮挡，链接墙贴图的圆角和缺口不影响光影。
 - 灯嵌在墙里时，灯所在的那段实心不挡它自己的光。
-- 单格宽的墙整列取同一个亮度，即朝光那一面的亮度，不再出现逐格交替的明暗条纹。
-- 离最近墙边 0.875 格（3.5 纹素）以上的墙芯不受光，所以两格厚墙的背光一排、山体内部和山体内凹角保持黑暗。
+- 只有第一层墙格受光：墙格里每一点取它朝光、且外侧不是墙的那条格边外，与它平齐的地面点的亮度，所以墙面随面前的地面连续变化，不会逐格交替明暗。更深的墙格、山体内部，以及只在角上接触房间的岩石都保持黑暗。
 - 关闭的门完全挡光。门打开时，光只从门扇让出的缝隙通过：普通门的开口半宽为 `0.45 × 开门量`，多格门为 `0.35 × 开门量`（单位：门宽）。多格门卡在打开状态（`StuckOpen`）时不画门扇，视为完全敞开。
 - 门的开合每帧轮询，只更新一张小的门状态纹理，开关门不会触发整张遮挡图重建。
 
@@ -1058,6 +1057,8 @@ float depth = texture(depthImage, uv).r;
 float is3DGeom = ubo.DepthValid * step(0.0001, min(depth, 1.0 - depth));
 ```
 
+原版俯视下它同样为 1：原版 `Cutout`、`CutoutPlant`、`CutoutComplex` 着色器写深度（`Data/Core/Defs/ShaderDefs/Shaders.Map.xml`），墙、岩石、植物和物品的精灵像素都会命中，只有地形不写深度。
+
 使用 `ubo.InvViewProjection` 从屏幕 `uv` 重建世界地面（`y = 0`）坐标与地图光场 UV（同时兼容原版俯视与 IsoRim 倾斜视角）：
 
 ```glsl
@@ -1089,12 +1090,12 @@ bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fie
 | 包 ID | Pass / 目标数 | `runOnEmptyFrames` | `requiresSceneDepth` | `requiresMapLightField` | `bloomMipLevels` | 典型技术参考文件 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `default` | 内置合成 / 0 | `false` | `false` | `false` | `5` | `1.7/Shaders/PostFx/RimLumenComposite.frag.glsl` |
-| `atmospheric` | 3 Pass / 2 目标 | `true` | `true` | `true` | `7` | `1.7/ShaderPacks/Atmospheric/` |
+| `atmospheric` | 3 Pass / 2 目标 | `true` | `false` | `true` | `7` | `1.7/ShaderPacks/Atmospheric/` |
 | `cinematic` | 5 Pass / 4 目标（含持久化 `adapt`） | `false` | `false` | `false` | `6` | `1.7/ShaderPacks/Cinematic/` |
 | `crisp` | 单自定义合成 / 0 | `false` | `false` | `false` | `3` | `1.7/ShaderPacks/Crisp/` |
 | `vibrant` | 单自定义合成 / 0 | `false` | `false` | `false` | `6` | `1.7/ShaderPacks/Vibrant/` |
 
-`atmospheric` 的 `FogAndMask` 在 binding 4 读取 `lightSum`。`LayerFlags.y = 1` 时用其亮度（Rec.709 系数）经 `min(0.5, 3.6 × 亮度)` 代替 `mapLightField.G`，作为火光保护与暖雾强度；否则仍用 G。
+`atmospheric` 的 `FogAndMask` 在 binding 4 读取 `lightSum`。`LayerFlags.y = 1` 时用其亮度（Rec.709 系数）经 `min(0.5, 3.6 × 亮度)` 代替 `mapLightField.G`，作为火光保护与暖雾强度；否则仍用 G。它不读场景深度：IsoRim 3D 视图下，墙面上的雾不再减弱。
 
 ---
 
