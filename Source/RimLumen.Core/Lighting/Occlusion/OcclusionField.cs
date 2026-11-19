@@ -160,95 +160,40 @@ internal static class OcclusionField
         if (Fields.Remove(mapId, out Field? field)) Drawers.Remove(field.Map.mapDrawer);
     }
 
-    private static CellBox Box(CellRect rect) => new(rect.minX, rect.minZ, rect.maxX, rect.maxZ);
-
-    // IOcclusionSource.Stamp of Field; returns the union of every stamp's cells. On a map without sun shadows vanilla
-    // builds no SectionLayer_SunShadows (Section.cs:46-50), so staticSunShadowHeight is not written; Printer_Shadow's
-    // shadowData still prints (Printer_Shadow.cs:26-28), except for RealtimeOnly things it never prints into the map
-    // mesh (ACS:83086), whose shadow is the dynamic SunShadowFade.
+    // IOcclusionSource.Stamp of Field. The sprite is the footprint of every channel (OcclusionBuilder.StampOccluder);
+    // the def only picks the values. Height is vanilla's: staticSunShadowHeight for edifices, which vanilla prints only
+    // on maps with sun shadows (SectionLayer_SunShadows, Section.cs:46-50), else the shadowData height, which
+    // Printer_Shadow prints on every map (Printer_Shadow.cs:26-28) except for RealtimeOnly things it never prints into
+    // the map mesh (ACS:83086), whose shadow is the dynamic SunShadowFade.
     private static CellBox? Stamp(Thing thing, OcclusionBuilder builder, HashSet<Building_Door> doors, bool sunDisabled)
     {
         ThingDef def = thing.def;
         if (def.category != ThingCategory.Building && def.category != ThingCategory.Plant && def.category != ThingCategory.Item) return null;
-        CellBox? touched = null;
         bool blocker = def.blockLight;
         float staticHeight = sunDisabled ? 0f : def.staticSunShadowHeight;
         ShadowData? shadow = def.drawerType == DrawerType.RealtimeOnly ? null : def.graphicData?.shadowData;
-        bool heightFootprint = !blocker && def.IsEdifice() && staticHeight > 0f;
-        if (heightFootprint)
+        float height = 0f;
+        bool fade = false;
+        if (staticHeight > 0f && def.IsEdifice()) height = staticHeight;
+        else if (shadow is not null)
         {
-            CellBox footprint = Box(thing.OccupiedRect());
-            builder.StampSunFootprint(footprint, staticHeight);
-            touched = footprint;
-        }
-        CellBox? sunBox = null;
-        if (shadow is not null)
-        {
-            float scale = 1f;
-            Vector3 center;
-            if (thing is Plant plant)
-            {
-                Vector3 origin = plant.TrueCenter();
-                scale = plant.def.plant.visualSizeRange.LerpThroughRange(plant.Growth);
-                bool southEdgeClamped = false;
-                if (plant.def.plant.maxMeshCount == 1)
-                {
-                    Rand.PushState();
-                    try
-                    {
-                        Rand.Seed = plant.Position.GetHashCode();
-                        foreach (int _ in PlantPosIndices.GetPositionIndices(plant))
-                        {
-                            Vector3 position = origin + Gen.RandomHorizontalVector(0.05f);
-                            southEdgeClamped = position.z - scale / 2f < plant.Position.z;
-                            break;
-                        }
-                    }
-                    finally { Rand.PopState(); }
-                }
-                center = origin + shadow.offset * scale;
-                if (southEdgeClamped) center.z = plant.Position.ToVector3Shifted().z + shadow.offset.z;
-            }
-            else center = thing.DrawPos + thing.Rotation.AsQuat * shadow.offset;
-            float x = shadow.volume.x * scale, z = shadow.volume.z * scale;
-            if (thing is not Plant && thing.Rotation.IsHorizontal) (x, z) = (z, x);
+            float scale = thing is Plant plant ? plant.def.plant.visualSizeRange.LerpThroughRange(plant.Growth) : 1f;
             // Printer_Shadow.PrintShadow encodes the extrusion as vertex alpha (byte)min(255 * y, 255), so vanilla caps it at 1.
-            float height = MathF.Floor(MathF.Min(255f * shadow.volume.y * scale, 255f)) / 255f;
-            sunBox = builder.StampSunBox(new MaskPlacement(center.x, center.z, x, z), height, blocker);
-            touched = touched.Union(sunBox);
+            height = MathF.Floor(MathF.Min(255f * shadow.volume.y * scale, 255f)) / 255f;
+            fade = true;
         }
-        // A thing that stamped a height (G) is a height occluder only and stamps no fillPercent cover, so one thing never
-        // darkens a texel through both terms (design 2; narrows the cover rule to things without height). A shadowData
-        // box narrower than the texel grid writes no G and keeps its cover.
-        bool cover = !blocker && def.Fillage != FillCategory.None && !heightFootprint && sunBox is null;
-        if (blocker || cover)
+        float cover = !blocker && def.Fillage != FillCategory.None ? def.fillPercent : 0f;
+        if (!blocker && height == 0f && cover == 0f) return null;
+        if (thing is Building_Door door) doors.Add(door);
+        if (!OcclusionMasks.TryGet(thing, out SpritePiece[] sprite))
         {
-            if (thing is Building_Door door) doors.Add(door);
-            if (OcclusionMasks.TryGet(thing, out AlphaMask mask, out MaskPlacement placement))
-            {
-                touched = touched.Union(blocker
-                    ? builder.StampBlocker(mask, placement, staticHeight,
-                        thing is Building_Door ? (thing.Rotation.IsHorizontal ? DoorAxis.Z : DoorAxis.X) : null)
-                    : builder.StampCover(mask, placement, def.fillPercent));
-            }
-            else if (blocker)
-            {
-                if (Warned.Add(def)) Log.Warning($"[RimLumen] Cannot read occlusion texture for {def.defName}; using solid footprint.");
-                CellRect rect = thing.OccupiedRect();
-                if (thing is Building_Door)
-                {
-                    var at = new MaskPlacement((rect.minX + rect.maxX + 1) * 0.5f, (rect.minZ + rect.maxZ + 1) * 0.5f,
-                        rect.maxX - rect.minX + 1, rect.maxZ - rect.minZ + 1);
-                    touched = touched.Union(builder.StampBlocker(new AlphaMask(1, 1, [255]), at, staticHeight,
-                        thing.Rotation.IsHorizontal ? DoorAxis.Z : DoorAxis.X));
-                }
-                else
-                {
-                    builder.StampSolidFootprint(Box(rect), staticHeight);
-                    touched = touched.Union(Box(rect));
-                }
-            }
+            if (!blocker && height == 0f) return null;
+            if (Warned.Add(def)) Log.Warning($"[RimLumen] Cannot read occlusion texture for {def.defName}; using solid footprint.");
+            CellRect rect = thing.OccupiedRect();
+            sprite = [new SpritePiece(AlphaMask.Opaque(rect.Width * OcclusionLayout.TexelsPerCell, rect.Height * OcclusionLayout.TexelsPerCell), new MaskPlacement((rect.minX + rect.maxX + 1) * 0.5f,
+                (rect.minZ + rect.maxZ + 1) * 0.5f, rect.maxX - rect.minX + 1, rect.maxZ - rect.minZ + 1))];
         }
-        return touched;
+        DoorAxis? axis = thing is Building_Door ? (thing.Rotation.IsHorizontal ? DoorAxis.Z : DoorAxis.X) : null;
+        return builder.StampOccluder(sprite, new Occluder(blocker, axis, height, fade, cover));
     }
 }

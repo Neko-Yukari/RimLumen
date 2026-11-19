@@ -13,8 +13,8 @@ internal static class SunTransport
     // castXZ: vanilla _CastVect.xz, the ground offset of a unit-height shadow (SkyManager; |castXZ| > 0).
     // Ensures: in [0, 1]. 1 outside the map (sun-masked cells are vanilla's stencil bit 4, applied by the GPU).
     //          Otherwise 1 - max over t in [0, MaxSunHeight] of shadow(t), q = p - castXZ * t. TexelSplit of G at q with
-    //          occupied = G > 0 gives coverage c and h = Inside / c decoded; shadow(t) = clamp((h - t) / HeightBand, 0, 1)
-    //          * (2c - 1) where c > 0.5, else 0, so the edge ramp lies inside the footprint; scaled by (1 - t / h) where
+    //          occupied = G > 0 gives edge e, coverage c and h = Inside / c decoded; shadow(t) = clamp((h - t) / HeightBand,
+    //          0, 1) * e where e > 0, else 0, so the edge ramp lies inside the footprint; scaled by (1 - t / h) where
     //          the nearest texel at q has FlagSunFade. t = 0 counts, so the occluder's own top is shadowed (vanilla SunShadow prints the cell).
     //          Coarse steps skip cells whose coarse G is 0; fine steps are one texel along castXZ.
     internal static float Visibility(in OcclusionFrame frame, Vector2 p, Vector2 castXZ)
@@ -89,8 +89,10 @@ internal static class SunTransport
         int x = (int)MathF.Floor(uv.X), z = (int)MathF.Floor(uv.Y);
         var g = new Vector4(Height(map, x, z, point), Height(map, x + 1, z, point), Height(map, x, z + 1, point), Height(map, x + 1, z + 1, point));
         var occupied = new Vector4(g.X > 0f ? 1f : 0f, g.Y > 0f ? 1f : 0f, g.Z > 0f ? 1f : 0f, g.W > 0f ? 1f : 0f);
-        TexelSplit split = TexelSplit.Of(g, occupied, uv.X - x, uv.Y - z);
-        float edge = 2f * split.Coverage - 1f;
+        var distances = new Vector4(LightTransport.Distance(map, x, z), LightTransport.Distance(map, x + 1, z),
+            LightTransport.Distance(map, x, z + 1), LightTransport.Distance(map, x + 1, z + 1));
+        TexelSplit split = TexelSplit.Of(g, occupied, distances, uv.X - x, uv.Y - z);
+        float edge = split.Edge;
         if (edge <= 0f) return 0f;
         float h = split.Inside / split.Coverage / 255f * OcclusionLayout.MaxSunHeight;
         float s = Math.Clamp((h - t) / HeightBand, 0f, 1f) * edge;

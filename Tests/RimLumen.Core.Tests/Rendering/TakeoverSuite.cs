@@ -17,7 +17,7 @@ public static class TakeoverSuite
     public static void NoonShadowReachesOneAndAHalfCellsAndTheWallTopIsShaded()
     {
         var builder = new OcclusionBuilder(12, 12);
-        builder.StampSolidFootprint(new CellBox(5, 5, 5, 5), 1f);
+        builder.Wall(new CellBox(5, 5, 5, 5));
         OcclusionFrame frame = Frame(builder, 12);
         Equal(0f, SunTransport.Visibility(frame, new(5.5f, 5.5f), Noon));
         Equal(0f, SunTransport.Visibility(frame, new(5.5f, 4.0f), Noon));
@@ -32,7 +32,7 @@ public static class TakeoverSuite
         // Vanilla SunShadow extrudes the wall's cell footprint along the cast vector: ground just outside it on the
         // sun-facing side and beside the cast shadow stays lit.
         var builder = new OcclusionBuilder(12, 12);
-        builder.StampSolidFootprint(new CellBox(5, 5, 5, 5), 1f);
+        builder.Wall(new CellBox(5, 5, 5, 5));
         OcclusionFrame frame = Frame(builder, 12);
         Equal(1f, SunTransport.Visibility(frame, new(5.5f, 6.05f), Noon));
         Equal(1f, SunTransport.Visibility(frame, new(4.95f, 4.5f), Noon));
@@ -45,7 +45,7 @@ public static class TakeoverSuite
         // Pre-split values (bilinear G) at the noon tip of a unit-height wall whose south edge is z = 30: the coverage
         // split moves only the ramp at the footprint edge, so a tip cast from the wall's interior height is unchanged.
         var builder = new OcclusionBuilder(40, 40);
-        builder.StampSolidFootprint(new CellBox(5, 30, 5, 30), 1f);
+        builder.Wall(new CellBox(5, 30, 5, 30));
         OcclusionFrame frame = Frame(builder, 40);
         Equal(1f, SunTransport.Visibility(frame, new(5.5f, 28.6f), Noon));
         Near(0.5686f, SunTransport.Visibility(frame, new(5.5f, 28.7f), Noon), 1e-4f);
@@ -54,12 +54,25 @@ public static class TakeoverSuite
     }
 
     [LumenFact]
+    public static void SunWallEdgeRampLiesInsideTheFootprint()
+    {
+        // Noon shadow of wall cell (5, 30) at row z = 29.5: the onset stays on the footprint edge x = 5 and the ramp ends
+        // EdgeRamp (0.125 texel, 0.03125 cell) inside it. Before the distance field it spanned half a texel (0.744 at 5.032).
+        var builder = new OcclusionBuilder(32, 32);
+        builder.Wall(new CellBox(5, 30, 5, 30));
+        OcclusionFrame frame = Frame(builder, 32);
+        Equal(1f, SunTransport.Visibility(frame, new(4.999f, 29.5f), Noon));
+        Require(SunTransport.Visibility(frame, new(5.001f, 29.5f), Noon) < 1f, "The shadow must start on the footprint edge.");
+        Equal(0f, SunTransport.Visibility(frame, new(5.032f, 29.5f), Noon));
+    }
+
+    [LumenFact]
     public static void FadedBoxShadowRisesMonotonicallyAwayFromTheBox()
     {
         // A shadowData box fades as t / h from its edge. Before the split, the bilinear spill just outside the box
         // carried no FlagSunFade and fine steps landing in it shaded fully: black bands and isolated zeros.
         var builder = new OcclusionBuilder(40, 40);
-        builder.StampSunBox(new MaskPlacement(20.5f, 30.5f, 3f, 3f), 1f, blocker: false);
+        builder.Height(OcclusionStamps.Opaque, new MaskPlacement(20.5f, 30.5f, 3f, 3f), 1f, fade: true);
         OcclusionFrame frame = Frame(builder, 40);
         float previous = 0f;
         for (int i = 0; i <= 40; i++)
@@ -75,7 +88,7 @@ public static class TakeoverSuite
     public static void DuskShadowStretchesAlongTheCastVector()
     {
         var builder = new OcclusionBuilder(40, 40);
-        builder.StampSolidFootprint(new CellBox(5, 30, 5, 30), 1f);
+        builder.Wall(new CellBox(5, 30, 5, 30));
         OcclusionFrame frame = Frame(builder, 40);
         var wall = new Vector2(5.5f, 30.5f);
         // Half a height unit along the dusk vector is about 8.3 cells away, far beyond the noon reach of 1.5 cells.
@@ -85,18 +98,29 @@ public static class TakeoverSuite
     }
 
     [LumenFact]
+    public static void DuskColumnShadowIsCastFromItsWholeSprite()
+    {
+        // The sprite's upper half (z 5.5-6.25) casts as well: a point 0.1 height units along the dusk vector from it is
+        // shadowed, and so is the same point cast from the sprite's base.
+        OcclusionFrame column = Column();
+        float beside = SunTransport.Visibility(column, new Vector2(5.5f, 6.0f) + Dusk * 0.1f, Dusk);
+        float behind = SunTransport.Visibility(column, new Vector2(5.5f, 5.25f) + Dusk * 0.1f, Dusk);
+        Require(beside < 0.5f && behind < 0.5f, $"Dusk shadow of the Column sprite: beside its upper half {beside}, behind its base {behind}; expected both below 0.5.");
+    }
+
+    [LumenFact]
     public static void ShadowDataBoxFadesAsOneMinusTOverH()
     {
         // 3 x 3 box, height 1, sampled 0.75 cells south of its south edge at noon. The first fine step inside the box
         // is the texel centre z = 4.125, reached at t = 0.875 / 1.5; the fade leaves 1 - (1 - t / h) = t / h lit.
         var faded = new OcclusionBuilder(12, 12);
-        faded.StampSunBox(new MaskPlacement(5.5f, 5.5f, 3f, 3f), 1f, blocker: false);
+        faded.Height(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 5.5f, 3f, 3f), 1f, fade: true);
         float vis = SunTransport.Visibility(Frame(faded, 12), new(5.5f, 3.25f), Noon);
         float expected = (0.875f / 1.5f) / (128f / 255f * OcclusionLayout.MaxSunHeight);
         Require(MathF.Abs(vis - expected) < 1e-4f, $"Faded box: expected {expected}; got {vis}.");
 
         var hard = new OcclusionBuilder(12, 12);
-        hard.StampSunFootprint(new CellBox(4, 4, 6, 6), 1f);
+        hard.Height(OcclusionStamps.Opaque, OcclusionStamps.Over(new CellBox(4, 4, 6, 6)), 1f, fade: false);
         Equal(0f, SunTransport.Visibility(Frame(hard, 12), new(5.5f, 3.25f), Noon));
     }
 
@@ -184,13 +208,13 @@ public static class TakeoverSuite
     [LumenFact]
     public static void ColumnCastsAHeightShadowAwayFromATorchLamp()
     {
-        // TorchLamp-height light three cells south of the Column: the ground right behind it is shaded, the shadow ends
-        // near d * h / (H - h) (about 3 cells behind), and ground beside it stays lit.
+        // TorchLamp-height light south of the Column: the ground right behind its sprite (north edge z = 6.25) is shaded,
+        // the shadow ends where the ray clears h over that edge (z = 9.97), and ground beside it stays lit.
         var torch = new VisualPointLight(5.5f, VisualPointLight.VanillaHeight, 2.5f, 10f, new Vector3(0.5f), VisualPointLightKind.Vanilla);
         OcclusionFrame column = Column();
-        float behind = PoolVisibility(torch, column, 5.5f, 6.0f);
+        float behind = PoolVisibility(torch, column, 5.5f, 6.5f);
         Require(behind < 0.75f, $"Ground behind the Column: expected a shadow; visibility {behind}.");
-        Equal(1f, PoolVisibility(torch, column, 5.5f, 9.0f));
+        Equal(1f, PoolVisibility(torch, column, 5.5f, 11.0f));
         Equal(1f, PoolVisibility(torch, column, 7.0f, 6.0f));
     }
 
@@ -202,7 +226,7 @@ public static class TakeoverSuite
         var torch = new VisualPointLight(5.5f, VisualPointLight.VanillaHeight, 2.5f, 10f, new Vector3(0.5f), VisualPointLightKind.Vanilla);
         OcclusionFrame column = Column();
         Equal(1f, PoolVisibility(torch, column, 5.5f, 5.2f));
-        float behind = PoolVisibility(torch, column, 5.5f, 6.0f);
+        float behind = PoolVisibility(torch, column, 5.5f, 6.5f);
         Require(behind < 0.75f, $"Ground behind the Column: expected a shadow; visibility {behind}.");
     }
 
@@ -222,15 +246,15 @@ public static class TakeoverSuite
     public static void PointLightWallShadowIsTheSolidShadowAlone()
     {
         // A wall is solid and carries G = 1. Solid and height are both opaque blockers and combine by the darker term,
-        // so the wall's height shadow never darkens its solid penumbra a second time (product 0.1247 at this edge).
+        // so the wall's height shadow never darkens its solid penumbra a second time (product 0.2089 at this edge).
         var builder = new OcclusionBuilder(32, 32);
-        builder.StampSolidFootprint(new CellBox(16, 20, 16, 20), 1f);
+        builder.Wall(new CellBox(16, 20, 16, 20));
         OcclusionFrame wall = Frame(builder, 32);
         var flat = new OcclusionBuilder(32, 32);
-        flat.StampSolidFootprint(new CellBox(16, 20, 16, 20), 0f);
+        flat.Wall(new CellBox(16, 20, 16, 20), 0f);
         OcclusionFrame withoutHeight = Frame(flat, 32);
         var torch = new VisualPointLight(16.5f, VisualPointLight.VanillaHeight, 16.5f, 10f, new Vector3(0.5f), VisualPointLightKind.Vanilla);
-        Near(0.2497f, PoolVisibility(torch, wall, 17.37f, 24f), 1e-4f);
+        Near(0.4571f, PoolVisibility(torch, wall, 17.46f, 24f), 1e-4f);
         // For point lights a blockLight texel is governed only by the solid term: the same wall with and without G.
         foreach (Vector2 at in new Vector2[] { new(16.5f, 16.5f), new(13.2f, 17.7f), new(19.9f, 18.1f), new(16.5f, 23.5f) })
         {
@@ -253,7 +277,7 @@ public static class TakeoverSuite
         {
             var builder = new OcclusionBuilder(12, 12);
             foreach (CellBox wall in new[] { new CellBox(5, 5, 5, 5), new CellBox(5, 6, 5, 6), new CellBox(6, 5, 6, 5) })
-                builder.StampSolidFootprint(wall, height);
+                builder.Wall(wall, height);
             return Frame(builder, 12);
         }
         // Inner corner of three walls: the bilinear height at the target must not see the walls' G.
@@ -261,21 +285,20 @@ public static class TakeoverSuite
         OcclusionFrame LampInWall(float height)
         {
             var builder = new OcclusionBuilder(12, 12);
-            builder.StampSolidFootprint(new CellBox(5, 5, 5, 5), height);
-            builder.StampSunFootprint(new CellBox(6, 5, 6, 5), 0.5f);
+            builder.Wall(new CellBox(5, 5, 5, 5), height);
+            builder.Height(OcclusionStamps.Opaque, OcclusionStamps.Over(new CellBox(6, 5, 6, 5)), 0.5f, fade: false);
             return Frame(builder, 12);
         }
         // A light inside a wall: the wall's G must not join the neighbouring occluder into the light's own footprint.
         Equal(PoolVisibility(torch with { X = 5.5f, Z = 5.5f }, LampInWall(0f), 7.5f, 5.5f), PoolVisibility(torch with { X = 5.5f, Z = 5.5f }, LampInWall(1f), 7.5f, 5.5f));
-        OcclusionFrame BoxBeyondMask(bool box)
+        OcclusionFrame FadedBlocker(float height)
         {
             var builder = new OcclusionBuilder(12, 12);
-            builder.StampBlocker(new AlphaMask(1, 1, [255]), new MaskPlacement(5.5f, 5.5f, 1f, 1f), 1f, null);
-            if (box) builder.StampSunBox(new MaskPlacement(5.5f, 5.5f, 3f, 3f), 1f, blocker: true);
+            builder.Blocker(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 5.5f, 1f, 1f), height, null, fade: true);
             return Frame(builder, 12);
         }
-        // A blockLight thing's shadowData box reaching past its solid mask (Ship_ComputerCore): no point-light height.
-        Equal(PoolVisibility(torch with { X = 6.25f, Z = 3f }, BoxBeyondMask(false), 6.25f, 7.5f), PoolVisibility(torch with { X = 6.25f, Z = 3f }, BoxBeyondMask(true), 6.25f, 7.5f));
+        // A blockLight thing with a shadowData height (Ship_ComputerCore) carries it on its solid texels: no point-light height.
+        Equal(PoolVisibility(torch with { X = 6.25f, Z = 3f }, FadedBlocker(0f), 6.25f, 7.5f), PoolVisibility(torch with { X = 6.25f, Z = 3f }, FadedBlocker(1f), 6.25f, 7.5f));
     }
 
     [LumenFact]
@@ -283,7 +306,7 @@ public static class TakeoverSuite
     {
         // A door is blockLight and carries G = 1 for the sun; for a point light only its gap decides (fully open: 230).
         var builder = new OcclusionBuilder(12, 12);
-        builder.StampBlocker(new AlphaMask(1, 1, [255]), new MaskPlacement(5.5f, 5.5f, 1f, 1f), 1f, DoorAxis.Z);
+        builder.Blocker(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 5.5f, 1f, 1f), 1f, DoorAxis.Z);
         builder.RecomputeDerived(new CellBox(0, 0, 11, 11));
         var state = new byte[12 * 12 * 4];
         state[(5 * 12 + 5) * 4] = 230;
@@ -298,7 +321,7 @@ public static class TakeoverSuite
     {
         // A start on a texel edge does not own the solid texel behind it: the wall still blocks light leaving through it.
         var builder = new OcclusionBuilder(12, 12);
-        builder.StampSolidFootprint(new CellBox(5, 5, 5, 5), 1f);
+        builder.Wall(new CellBox(5, 5, 5, 5));
         var torch = new VisualPointLight(6f, VisualPointLight.VanillaHeight, 5.5f, 10f, new Vector3(0.5f), VisualPointLightKind.Vanilla);
         Equal(0f, PoolVisibility(torch, Frame(builder, 12), 3.5f, 5.5f));
     }
@@ -306,10 +329,10 @@ public static class TakeoverSuite
     [LumenFact]
     public static void StandingLampDoesNotShadeItsOwnPool()
     {
-        // StandingLamp's shadowData box (0.3, 0.6, 0.3) at offset (0, 0, -0.1) contains its own light (H = 1): the light's
-        // own footprint is skipped at the source end, as a lamp inside a wall is not blocked by its own solid run.
+        // StandingLamp's sprite (drawSize 1) carries its shadowData height 0.6 and contains its own light (H = 1): the
+        // light's own footprint is skipped at the source end, as a lamp inside a wall is not blocked by its own solid run.
         var builder = new OcclusionBuilder(16, 16);
-        builder.StampSunBox(new MaskPlacement(8.5f, 8.4f, 0.3f, 0.3f), MathF.Floor(255f * 0.6f) / 255f, blocker: false);
+        builder.Height(OcclusionStamps.Opaque, new MaskPlacement(8.5f, 8.5f, 1f, 1f), MathF.Floor(255f * 0.6f) / 255f, fade: true);
         OcclusionFrame lamp = Frame(builder, 16);
         var light = new VisualPointLight(8.5f, VisualPointLight.VanillaHeight, 8.5f, 10f, new Vector3(0.5f), VisualPointLightKind.Vanilla);
         for (float r = 0.05f; r <= 1.5f; r += 0.05f)
@@ -320,12 +343,13 @@ public static class TakeoverSuite
             }
     }
 
-    // Column (Buildings_Structure.xml:474) at cell (5, 5) as OcclusionField.Stamp prints it: shadowData volume
-    // (0.3, 0.5, 0.3) at offset (0, 0, -0.23), height floor(255 * 0.5) / 255; height-bearing, so no fillPercent cover.
+    // Column (Buildings_Structure.xml:474-516) at cell (5, 5) as OcclusionField.Stamp prints it: its sprite, drawSize
+    // (0.5, 1.25) at TrueCenter + drawOffset (0, 0, 0.2), so texels x 21-22, z 20-24; shadowData height
+    // floor(255 * 0.5) / 255; height-bearing, so no fillPercent cover. The art is taken as opaque over the quad.
     private static OcclusionFrame Column()
     {
         var builder = new OcclusionBuilder(16, 16);
-        builder.StampSunBox(new MaskPlacement(5.5f, 5.27f, 0.3f, 0.3f), MathF.Floor(255f * 0.5f) / 255f, blocker: false);
+        builder.Height(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 5.7f, 0.5f, 1.25f), MathF.Floor(255f * 0.5f) / 255f, fade: true);
         return Frame(builder, 16);
     }
 

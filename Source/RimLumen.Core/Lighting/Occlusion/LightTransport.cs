@@ -18,10 +18,10 @@ internal static class LightTransport
 {
     // Transmittance of the segment target -> light through the occlusion map (design 1.6-1.8 and 2), returned as the
     // solid term with the cover term in cover; the caller multiplies cover and combines solid with other opaque terms.
-    // Ensures: both in [0, 1]; 1 when target == light; both 0 when the segment is blocked. Smoothed per 1.8: solid as min(1 - s_i), cover as
-    //          prod (1 - o_i)^(ds_i), both bilinear from the 2 x 2 texels around each step. Wall-body rule per 1.7:
-    //          a target on a solid texel first skips its own contiguous solid run without loss, and is 0 if that run
-    //          reaches a texel with wall-core depth > WallCoreDepth; door texels count as depth 0. The exit band right after
+    // Ensures: both in [0, 1]; 1 when target == light; both 0 when the segment is blocked. Smoothed per 1.8: solid as min(1 - s_i)
+    //          with s_i the TexelSplit edge of the solid texels, cover as prod (1 - o_i)^(ds_i), both from the 2 x 2 texels
+    //          around each step. Wall-body rule per 1.7: a target on a solid texel first skips its own contiguous solid
+    //          run without loss, and is 0 if that run reaches a wall-core texel (d >= DeepCore; never a door). The exit band right after
     //          that run (from the first step whose nearest texel is not solid until the first step whose 2 x 2 solid
     //          fraction s is 0) ignores s but still accumulates cover; a nearest texel turning solid again inside the band
     //          gives 0. The light's own solid run and its exit band never count s either. Positions outside the map are transparent. Door texels take DoorGap with the
@@ -35,8 +35,8 @@ internal static class LightTransport
         cover = 0f;
         Vector2 direction = delta / length;
         float lightRun = RunLength(frame, light, -direction, length, false);
-        bool skipTarget = Solid(frame, target, out int initialDepth);
-        if (skipTarget && initialDepth > OcclusionLayout.WallCoreDepth) return 0f;
+        bool skipTarget = Solid(frame, target, out bool deepTarget);
+        if (skipTarget && deepTarget) return 0f;
         bool exitBand = false;
         float solidVisibility = 1f, pendingSolid = 1f, coverVisibility = 1f, distance = 0f;
         int cellX = (int)MathF.Floor(target.X), cellZ = (int)MathF.Floor(target.Y);
@@ -67,13 +67,13 @@ internal static class LightTransport
             {
                 float at = distance + (step + 0.5f) * ds;
                 Vector2 p = target + direction * at;
-                int depth = 0;
-                bool solid = (skipTarget || exitBand || lightRun > 0f) && Solid(frame, p, out depth);
+                bool deep = false;
+                bool solid = (skipTarget || exitBand || lightRun > 0f) && Solid(frame, p, out deep);
                 if (skipTarget)
                 {
                     if (solid)
                     {
-                        if (depth > OcclusionLayout.WallCoreDepth) return 0f;
+                        if (deep) return 0f;
                         continue;
                     }
                     skipTarget = false;
@@ -141,16 +141,16 @@ internal static class LightTransport
             && (frame.Map.Texels[(z * frame.Map.TexelWidth + x) * 4 + 3] & OcclusionLayout.FlagPointHeight) != 0
         : SolidTexel(frame, x, z, out _);
 
-    private static bool Solid(in OcclusionFrame frame, Vector2 position, out int depth) =>
-        SolidTexel(frame, (int)MathF.Floor(position.X * 4f), (int)MathF.Floor(position.Y * 4f), out depth);
+    private static bool Solid(in OcclusionFrame frame, Vector2 position, out bool deep) =>
+        SolidTexel(frame, (int)MathF.Floor(position.X * 4f), (int)MathF.Floor(position.Y * 4f), out deep);
 
-    private static bool SolidTexel(in OcclusionFrame frame, int x, int z, out int depth)
+    private static bool SolidTexel(in OcclusionFrame frame, int x, int z, out bool deep)
     {
-        depth = 0;
+        deep = false;
         if (x < 0 || z < 0 || x >= frame.Map.TexelWidth || z >= frame.Map.TexelHeight) return false;
         int i = (z * frame.Map.TexelWidth + x) * 4;
         byte flags = frame.Map.Texels[i + 3];
-        depth = frame.Map.Texels[i + 2];
+        deep = (flags & OcclusionLayout.FlagDoor) == 0 && OcclusionLayout.DecodeDistance(frame.Map.Texels[i + 2]) >= OcclusionLayout.DeepCore;
         return Opacity(frame, x, z, frame.Map.Texels[i], flags) == 1f;
     }
 
@@ -172,10 +172,17 @@ internal static class LightTransport
         int x = (int)MathF.Floor(uv.X), z = (int)MathF.Floor(uv.Y);
         var opacity = new Vector4(Read(frame, x, z, doors), Read(frame, x + 1, z, doors), Read(frame, x, z + 1, doors), Read(frame, x + 1, z + 1, doors));
         var solids = new Vector4(opacity.X == 1f ? 1f : 0f, opacity.Y == 1f ? 1f : 0f, opacity.Z == 1f ? 1f : 0f, opacity.W == 1f ? 1f : 0f);
-        TexelSplit split = TexelSplit.Of(opacity, solids, uv.X - x, uv.Y - z);
-        solid = split.Coverage;
+        OcclusionMap map = frame.Map;
+        var distances = new Vector4(Distance(map, x, z), Distance(map, x + 1, z), Distance(map, x, z + 1), Distance(map, x + 1, z + 1));
+        TexelSplit split = TexelSplit.Of(opacity, solids, distances, uv.X - x, uv.Y - z);
+        solid = split.Edge;
         cover = split.Outside;
     }
+
+    // Decoded B of texel (x, z); -DistanceBand outside the map. Shared with SunTransport.
+    internal static float Distance(OcclusionMap map, int x, int z) =>
+        x < 0 || z < 0 || x >= map.TexelWidth || z >= map.TexelHeight ? -OcclusionLayout.DistanceBand
+            : OcclusionLayout.DecodeDistance(map.Texels[(z * map.TexelWidth + x) * 4 + 2]);
 
     private static float Read(in OcclusionFrame frame, int x, int z, bool doors)
     {

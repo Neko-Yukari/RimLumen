@@ -158,7 +158,8 @@ public static class EffectInstanceHandleSuite
         VfxTestData.Step(service, 0.25f, currentMapIndex: 7);
         // A 0.5-high faded box between the light and the ground behind it: the pool stays non-negative.
         var builder = new RimLumen.Core.Lighting.Occlusion.OcclusionBuilder(16, 16);
-        builder.StampSunBox(new RimLumen.Core.Lighting.Occlusion.MaskPlacement(5.5f, 5.27f, 0.3f, 0.3f), 0.5f, blocker: false);
+        RimLumen.Core.Tests.Rendering.OcclusionStamps.Height(builder, RimLumen.Core.Tests.Rendering.OcclusionStamps.Opaque,
+            new RimLumen.Core.Lighting.Occlusion.MaskPlacement(5.5f, 5.27f, 0.3f, 0.3f), 0.5f, fade: true);
         builder.RecomputeDerived(new RimLumen.Core.Lighting.Occlusion.CellBox(0, 0, 15, 15));
         var frame = new RimLumen.Core.Lighting.Occlusion.OcclusionFrame(builder.Publish(), new RimLumen.Core.Lighting.Occlusion.DoorStates(16, 16, new byte[16 * 16 * 4]));
         for (float z = 5.5f; z <= 8f; z += 0.25f)
