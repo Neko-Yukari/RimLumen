@@ -21,22 +21,26 @@ float lumenDoorOpacity(ivec2 p, float value, int flags)
     return lumenDoorOpacityWithState(p, value, flags, texelFetch(_LumenDoorOpen, p / 4, 0));
 }
 
-bool lumenSolidTexel(ivec2 p, out int depth)
+// OcclusionLayout.DecodeDistance: B as the signed distance in texels, positive inside.
+float lumenDecodeDistance(float b) { return (b * 255.0 - 128.0) / 32.0; }
+
+// deep: a wall-core texel (d >= DeepCore 3.5, never a door).
+bool lumenSolidTexel(ivec2 p, out bool deep)
 {
-    depth = 0;
+    deep = false;
     if (!lumenInside(p, textureSize(_LumenOcclusion, 0))) return false;
     vec4 v = texelFetch(_LumenOcclusion, p, 0);
     int flags = int(round(v.a * 255.0));
-    depth = int(round(v.b * 255.0));
+    deep = (flags & 1) == 0 && lumenDecodeDistance(v.b) >= 3.5;
     return lumenDoorOpacity(p, v.r, flags) == 1.0;
 }
 
-bool lumenSolid(vec2 p, out int depth) { return lumenSolidTexel(ivec2(floor(p * 4.0)), depth); }
+bool lumenSolid(vec2 p, out bool deep) { return lumenSolidTexel(ivec2(floor(p * 4.0)), deep); }
 
 bool lumenRunTexel(ivec2 p, bool height)
 {
-    int depth;
-    if (!height) return lumenSolidTexel(p, depth);
+    bool deep;
+    if (!height) return lumenSolidTexel(p, deep);
     if (!lumenInside(p, textureSize(_LumenOcclusion, 0))) return false;
     vec4 v = texelFetch(_LumenOcclusion, p, 0);
     return v.g != 0.0 && (int(round(v.a * 255.0)) & 4) != 0;
@@ -46,8 +50,8 @@ bool lumenRunTexel(ivec2 p, bool height)
 // most limit. Solid starts in start's own texel; height starts in the first texel along direction.
 float lumenRunLength(vec2 start, vec2 direction, float limit, bool height)
 {
-    int depth;
-    if (!height && !lumenSolid(start, depth)) return 0.0;
+    bool deep;
+    if (!height && !lumenSolid(start, deep)) return 0.0;
     float distance = 0.0;
     vec2 texel = start * 4.0;
     ivec2 cell = ivec2(floor(texel));
@@ -65,15 +69,27 @@ float lumenRunLength(vec2 start, vec2 direction, float limit, bool height)
     return distance;
 }
 
-// TexelSplit.Of: x = bilerp(occupied), y = bilerp(occupied ? value : 0), z = bilerp(occupied ? 0 : value); texels in
-// gather order 00, 10, 01, 11. Shared by the point-light and sun paths (design 1.8).
-vec3 lumenTexelSplit(vec4 values, vec4 occupied, vec2 f)
+// TexelSplit.Of: x = edge, clamp(bilerp(d) / EdgeRamp 0.125, 0, 1) with d = -DistanceBand on texels inside another term's
+// footprint (d > 0, not occupied); y = bilerp(occupied); z = bilerp(occupied ? value : 0); w = bilerp(occupied ? 0 :
+// value). Texels in gather order 00, 10, 01, 11. Shared by the point-light and sun paths (design 1.8).
+vec4 lumenTexelSplit(vec4 values, vec4 occupied, vec4 distances, vec2 f)
 {
     vec4 inside = values * occupied;
     vec4 outside = values - inside;
-    return vec3(mix(mix(occupied.x, occupied.y, f.x), mix(occupied.z, occupied.w, f.x), f.y),
+    vec4 gated = mix(distances, vec4(-4.0), vec4(lessThan(occupied, vec4(0.5))) * vec4(greaterThan(distances, vec4(0.0))));
+    return vec4(clamp(mix(mix(gated.x, gated.y, f.x), mix(gated.z, gated.w, f.x), f.y) / 0.125, 0.0, 1.0),
+        mix(mix(occupied.x, occupied.y, f.x), mix(occupied.z, occupied.w, f.x), f.y),
         mix(mix(inside.x, inside.y, f.x), mix(inside.z, inside.w, f.x), f.y),
         mix(mix(outside.x, outside.y, f.x), mix(outside.z, outside.w, f.x), f.y));
+}
+
+// LightTransport.Distance of the four gathered texels: decoded B, -DistanceBand outside the map.
+vec4 lumenGatherDistances(vec2 gatherUv, ivec2 points[4], ivec2 size)
+{
+    vec4 b = textureGather(_LumenOcclusion, gatherUv, 2).wzxy;
+    vec4 d;
+    for (int i = 0; i < 4; i++) d[i] = lumenInside(points[i], size) ? lumenDecodeDistance(b[i]) : -4.0;
+    return d;
 }
 
 void lumenSample(vec2 p, bool doors, out float solid, out float cover)
@@ -110,9 +126,9 @@ void lumenSample(vec2 p, bool doors, out float solid, out float cover)
         }
         opacities[i] = opacity;
     }
-    vec3 split = lumenTexelSplit(opacities, vec4(equal(opacities, vec4(1.0))), f);
+    vec4 split = lumenTexelSplit(opacities, vec4(equal(opacities, vec4(1.0))), lumenGatherDistances(gatherUv, points, size), f);
     solid = split.x;
-    cover = split.z;
+    cover = split.w;
 }
 
 // LightTransport.Visibility: returns the solid term, cover receives the cover term.
@@ -125,9 +141,9 @@ float lightVisibility(vec2 light, vec2 target, out float cover)
     cover = 0.0;
     vec2 direction = delta / len;
     float lightRun = lumenRunLength(light, -direction, len, false);
-    int initialDepth;
-    bool skipTarget = lumenSolid(target, initialDepth);
-    if (skipTarget && initialDepth > 3) return 0.0;
+    bool deepTarget;
+    bool skipTarget = lumenSolid(target, deepTarget);
+    if (skipTarget && deepTarget) return 0.0;
     bool exitBand = false;
     float solidVisibility = 1.0, pendingSolid = 1.0, coverVisibility = 1.0, distance = 0.0;
     ivec2 mapSize = textureSize(_LumenOcclusionCoarse, 0);
@@ -159,13 +175,13 @@ float lightVisibility(vec2 light, vec2 target, out float cover)
         {
             float at = distance + (float(step) + 0.5) * ds;
             vec2 p = target + direction * at;
-            int depth = 0;
-            bool isSolid = (skipTarget || exitBand || lightRun > 0.0) && lumenSolid(p, depth);
+            bool deep = false;
+            bool isSolid = (skipTarget || exitBand || lightRun > 0.0) && lumenSolid(p, deep);
             if (skipTarget)
             {
                 if (isSolid)
                 {
-                    if (depth > 3) return 0.0;
+                    if (deep) return 0.0;
                     continue;
                 }
                 skipTarget = false;
@@ -211,18 +227,19 @@ float lumenSunShadow(vec2 q, float t, bool point)
     vec2 uv = q * 4.0 - 0.5;
     ivec2 base = ivec2(floor(uv));
     vec2 f = fract(uv);
-    vec4 heights = textureGather(_LumenOcclusion, q * 4.0 / vec2(size), 1).wzxy;
+    vec2 gatherUv = q * 4.0 / vec2(size);
+    vec4 heights = textureGather(_LumenOcclusion, gatherUv, 1).wzxy;
     if (point)
     {
-        vec4 flags = textureGather(_LumenOcclusion, q * 4.0 / vec2(size), 3).wzxy;
+        vec4 flags = textureGather(_LumenOcclusion, gatherUv, 3).wzxy;
         for (int i = 0; i < 4; i++) if ((int(round(flags[i] * 255.0)) & 4) == 0) heights[i] = 0.0;
     }
     ivec2 points[4] = ivec2[4](base, base + ivec2(1, 0), base + ivec2(0, 1), base + ivec2(1, 1));
     for (int i = 0; i < 4; i++) if (!lumenInside(points[i], size)) heights[i] = 0.0;
-    vec3 split = lumenTexelSplit(heights, vec4(greaterThan(heights, vec4(0.0))), f);
-    float edge = 2.0 * split.x - 1.0;
+    vec4 split = lumenTexelSplit(heights, vec4(greaterThan(heights, vec4(0.0))), lumenGatherDistances(gatherUv, points, size), f);
+    float edge = split.x;
     if (edge <= 0.0) return 0.0;
-    float h = split.y / split.x * 2.0;
+    float h = split.z / split.y * 2.0;
     float s = clamp((h - t) / 0.125, 0.0, 1.0) * edge;
     ivec2 nearest = ivec2(floor(q * 4.0));
     if (s > 0.0 && lumenInside(nearest, size) && (int(round(texelFetch(_LumenOcclusion, nearest, 0).a * 255.0)) & 128) != 0)

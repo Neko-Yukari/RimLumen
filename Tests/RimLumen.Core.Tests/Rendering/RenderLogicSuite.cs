@@ -229,9 +229,9 @@ public static class RenderLogicSuite
     public static void OcclusionClosedDoorBlocksLight()
     {
         var builder = new OcclusionBuilder(10, 10);
-        builder.StampSolidFootprint(new CellBox(5, 3, 5, 3), 1f);
-        builder.StampSolidFootprint(new CellBox(5, 5, 5, 5), 1f);
-        builder.StampBlocker(new AlphaMask(1, 1, [255]), new MaskPlacement(5.5f, 4.5f, 1f, 1f), 1f, DoorAxis.Z);
+        builder.Wall(new CellBox(5, 3, 5, 3));
+        builder.Wall(new CellBox(5, 5, 5, 5));
+        builder.Blocker(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 4.5f, 1f, 1f), 1f, DoorAxis.Z);
         builder.RecomputeDerived(new CellBox(0, 0, 9, 9));
         var state = new byte[10 * 10 * 4];
         state[(4 * 10 + 5) * 4 + 2] = 1;
@@ -264,7 +264,7 @@ public static class RenderLogicSuite
     {
         const int size = 10;
         var builder = new OcclusionBuilder(size, size);
-        foreach ((int x, int z) in cells) builder.StampSolidFootprint(new CellBox(x, z, x, z), 1f);
+        foreach ((int x, int z) in cells) builder.Wall(new CellBox(x, z, x, z));
         builder.RecomputeDerived(new CellBox(0, 0, size - 1, size - 1));
         return new OcclusionFrame(builder.Publish(), new DoorStates(size, size, new byte[size * size * 4]));
     }

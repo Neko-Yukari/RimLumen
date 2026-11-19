@@ -13,7 +13,8 @@ internal interface IOcclusionSource<T> where T : notnull
     bool IsAlive(T thing);
 
     // Ensures: stamps the thing into builder (R, G, A as design 1.2) and returns the cell box covering every texel it
-    //          touched (mask, solid footprint, sun footprint and shadowData box together); null when it stamped nothing.
+    //          touched, including those within DistanceBand of the sprite that only took its distance; null when it
+    //          stamped nothing.
     CellBox? Stamp(T thing, OcclusionBuilder builder);
 }
 
