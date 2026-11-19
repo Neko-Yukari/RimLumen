@@ -174,7 +174,7 @@ Callers using `RimUnityAssetProvider` can call `RegisterPackageRoot` again, even
   For particle size curves, both L1 and L2 use the same 64-sample lookup table (LUT): samples are at `i/63` (`i = 0…63`), including both endpoints, with interpolation between adjacent samples. A step can be smoothed across a sample interval of width `1/63`; exact preservation is not guaranteed. Point-light curves are evaluated directly in seconds, not through the particle LUT.
 - **Material colour**: `materialTint` defaults to `(1,1,1,1)` and follows the colour domain above, as do `startColor` and the gradient; `colorSpace` is `Stored` (default) or `Linear`. Let `vertex = startColor × gradient`. Stored RGB is `vertex × tint × texel`; Linear RGB is `E(vertex × D(tint) × (texture is sRGB ? D(texel) : texel))`. `vertex` is not decoded. The scalar gain `g = hdrIntensity × intensity` multiplies RGB only after that material colour is in the frame's blend space (Legacy `g × rgb`, Linear blend space `g × D(rgb)`), so no sRGB transfer raises or crushes it. `D` / `E` are sRGB decode / encode extended to nonnegative values above 1 without clamping. Alpha is always the product of the three raw alpha values, followed by soft-particle coverage and any blend-mode premultiplication. Componentwise, `D(x) = x/12.92` for `x <= 0.04045`, otherwise `((x+0.055)/1.055)^2.4`; `E(x) = 12.92*x` for `x <= 0.0031308`, otherwise `1.055*x^(1/2.4)-0.055`. Source: RimUnity `Source/Shared/ShaderColorSpace.cs:69-103,122-134` at revision `45ca90987f7d3721715b45c021cab986ee14c468`. This describes material calculation only, not the player blend space.
 - **Gradients (`colorOverLifetime`)**: Supports a stop array `[[time, [r,g,b,a]], ...]` or an object `{ "stops": [{ "time": 0, "color": [r,g,b,a] }] }`, requiring strictly increasing `time`.
-- **`pointLight`**: The JSON colour key is `color` (RGBA); the radius key is `glowRadius` (in map cells). A point light is a purely visual light pool: it never writes vanilla `GlowGrid` and has no effect on mood, plant growth or work speed. Its centre is the node's world position projected to the ground, and the node's height Y (cells above the ground) sets how long its height shadows are; see section 7.4. A light below the ground (Y < 0) sits on the ground. There is no engine minimum: a light at Y = 0 sits on the ground, and every thing with a height casts an unbounded shadow from it. Raise the node for short shadows; for lamp-like effect lights use Y = 1–2 cells (a vanilla wall is 1 cell high). its radius is `R = glowRadius`, and its falloff is `w = (1 - (d/R)^2)^2`, zero at `d >= R`. Each light term `L = color × intensityOverTime × w` is summed linearly over overlapping pools, and the sum is applied once: the scene becomes `scene × (1 + C(ΣL))`, where `C` is identity up to a peak of 1 and above it whitens along the hue with the peak held at 1, so overlaps brighten a pixel at most 2x. This is drawn right after vanilla lighting, so fog, darkness and roofs cover it as usual. Recommended `intensity`: `0.5–1.2` for steady lamps, `1.0–2.0` for short bright flashes; do not copy vanilla `GlowGrid`'s `3.6` scale onto visual light pools. The pool follows its node every frame. `intensity` and curve key values must be finite and `>= 0`, with no upper bound; at effective intensity `<= 0` nothing is drawn. `overlightRadius` has been removed and is rejected in both JSON and XML. Walls, doors and cover occlude light pools through an occlusion map built from each thing's sprite; see section 7.4. Occlusion is visual only and adds no asset field. Vanilla sun and moon shadows (`SunShadow` at 3170, `SunShadowFade` at 3175) that fall inside a light pool remove only sunlight: the shadow multiplier changes from `c` to the per-channel `(c+L)/(1+L)`, where `L` is the compressed pool term at that pixel; pixels outside every pool stay pixel-identical to vanilla. Only draws using the vanilla material through the vanilla shader are replaced; shadows another mod has replaced (for example RimIris water shadows) stay as they are and log one warning. Known approximations: where a pool saturates the image the shadow restores too little; refraction, additive draws and fog drawn after 3101 are lifted too; vanilla lamp light is not separated; the HDR particle/bloom layer and IsoRim 3D shadows are not covered. For gameplay light, see `CompRimLumenLogicalLight` in section 7.3.
+- **`pointLight`**: The JSON colour key is `color` (RGBA); the radius key is `glowRadius` (in map cells). A point light is a purely visual light pool: it never writes vanilla `GlowGrid` and has no effect on mood, plant growth or work speed. Its centre is the node's world position projected to the ground, and the node's height Y (cells above the ground) sets how long its height shadows are; see section 7.4. A light below the ground (Y < 0) sits on the ground. There is no engine minimum: a light at Y = 0 sits on the ground, and every thing with a height casts a shadow that reaches the pool edge and fades along the ground. Raise the node for short shadows; for lamp-like effect lights use Y = 1–2 cells (a vanilla wall is 1 cell high). its radius is `R = glowRadius`, and its falloff is `w = (1 - (d/R)^2)^2`, zero at `d >= R`. Each light term `L = color × intensityOverTime × w` is summed linearly over overlapping pools, and the sum is applied once: the scene becomes `scene × (1 + C(ΣL))`, where `C` is identity up to a peak of 1 and above it whitens along the hue with the peak held at 1, so overlaps brighten a pixel at most 2x. This is drawn right after vanilla lighting, so fog, darkness and roofs cover it as usual. Recommended `intensity`: `0.5–1.2` for steady lamps, `1.0–2.0` for short bright flashes; do not copy vanilla `GlowGrid`'s `3.6` scale onto visual light pools. The pool follows its node every frame. `intensity` and curve key values must be finite and `>= 0`, with no upper bound; at effective intensity `<= 0` nothing is drawn. `overlightRadius` has been removed and is rejected in both JSON and XML. Walls, doors and cover occlude light pools through an occlusion map; cover uses its sprite; see section 7.4. Occlusion is visual only and adds no asset field. Vanilla sun and moon shadows (`SunShadow` at 3170, `SunShadowFade` at 3175) that fall inside a light pool remove only sunlight: the shadow multiplier changes from `c` to the per-channel `(c+L)/(1+L)`, where `L` is the compressed pool term at that pixel; pixels outside every pool stay pixel-identical to vanilla. Only draws using the vanilla material through the vanilla shader are replaced; shadows another mod has replaced (for example RimIris water shadows) stay as they are and log one warning. Known approximations: where a pool saturates the image the shadow restores too little; refraction, additive draws and fog drawn after 3101 are lifted too; vanilla lamp light is not separated; the HDR particle/bloom layer and IsoRim 3D shadows are not covered. For gameplay light, see `CompRimLumenLogicalLight` in section 7.3.
 - **Force-field `strength`**: Required explicitly in JSON, XML, and C#. Omission rejects the asset; no default is used.
 - **`timelineEvents` / `states` / `initialState` / `stopState`**: see the next section, "State Machine".
 - **Particle density setting**: The public setter `RimLumenRenderHost.ParticleDensityScale` accepts a range of `0.1`–`1.0`; finite values outside it are silently clamped without logging, while NaN and positive or negative infinity throw `ArgumentOutOfRangeException`. The settings slider is continuous and displays a rounded whole percentage. Density `1` is exact; after clamping to `d`, the effective burst density is `floor(d * 65536) / 65536`.
@@ -642,9 +642,9 @@ Classification reads def fields only, never names, so modded buildings written t
 | Walls, smoothed walls, natural rock, doors, coolers and similar | `def.blockLight` | Infinitely high blocker over its occupied cells; the sprite is not read |
 | Cover (sandbags, barricades, low walls, some plants and items) | not `blockLight`, `Fillage == Partial`, category Building, Plant or Item, and no height (see the next row) | Partial transmission set by `fillPercent` |
 | Things with `Fillage == Full` but no `blockLight` | as above | Treated as cover with `fillPercent ≈ 1`: almost opaque, but without the wall rules |
-| Things with a height (columns, sculptures, furniture, plants, sarcophagi) | not `blockLight`, and a building with `staticSunShadowHeight > 0` or a thing with `graphicData.shadowData` (not `RealtimeOnly`) | Cast a geometric height shadow instead of `fillPercent` partial transmission, at the height of their vanilla sun shadow, shaped by the sprite's alpha ≥ 0.5 outline |
+| Things with a height (columns, sculptures, furniture, plants, sarcophagi) | not `blockLight`, and an edifice with `staticSunShadowHeight > 0` when sun shadows are enabled, or a thing with `graphicData.shadowData` (not used for `RealtimeOnly`) | Cast object shadows from their sprite outlines instead of transmitting light by `fillPercent` |
 
-Pawns, animals, motes and projectiles are not in the map. Roofs never block, and neither do positions outside the map. A height-bearing thing whose sprite pixels cannot be read is stamped solid over `def.size`, with one warning per def; cover with an unreadable sprite does not occlude.
+Pawns, animals, motes and projectiles are not in the map. Roofs never block, and neither do positions outside the map. A height-bearing thing whose sprite pixels cannot be read casts as a solid block over its occupied cells, with one warning per def; cover with an unreadable sprite does not occlude.
 
 **Walls and doors**
 
@@ -664,18 +664,45 @@ T = Π (1 − o_i)^(Δs_i)
 
 `o_i` is the opacity of segment i (sprite alpha × `fillPercent`) and `Δs_i` is the length of that segment in cells. Light crossing a one-cell sandbag head-on keeps `1 − fillPercent`; a diagonal crossing is longer and blocks more.
 
-**Height shadows**
+**Object shadows**
 
-Things with a height cast shadows away from each light, for effect pools and vanilla glower pools alike. For a light at height H, a thing of height h at horizontal distance d shades the ground up to `d·h/(H − h)` cells behind it. When `h ≥ H` the shadow is unbounded and reaches the pool's edge. Things with `shadowData` keep the fade of their vanilla sun shadow, so an unbounded shadow fades out rather than going black.
+Things that do not block light but have a height cast shadows from their sprite outline, away from each light. Effect pools, vanilla glower pools and, under the lighting takeover, the sun all follow the same rule.
 
-- An effect pool's H is its node's world Y. Vanilla glowers have no height and all use H = 1 cell.
-- A thing's lit side is not darkened by its own shadow, and a thing containing the light does not block it, for example a standing lamp's post.
-- Walls, doors and other `blockLight` things still block as infinitely high; for point lights only their solid and door-gap occlusion applies, with no height shadow on top, so wall shadow edges are not darkened twice and an open door lets light through. Sun shadows are unchanged.
-- Cover transmission and the height shadow never both apply to one thing: things with a height cast only height shadows. For example a column (`fillPercent` 0.25, shadow height 0.5) next to a torch at H = 1 casts a shadow about `d·0.5/0.5 = d` cells long.
+| Condition | Rule |
+| --- | --- |
+| Category | Building, Plant or Item, and not `blockLight` |
+| Height | On maps with sun shadows, a positive `staticSunShadowHeight` for edifices; otherwise the `graphicData.shadowData` height (plants scaled by their growth size, at most 1 cell); `RealtimeOnly` things do not use `shadowData` |
+| Shape | The outline of sprite alpha ≥ 0.5, simplified to within 1/32 cell |
+| Unreadable sprite | Casts from its occupied cells as a solid block, with one warning per def |
+
+A thing with a height only casts shadows. Its `fillPercent`, if any, does not apply as cover. Walls, rock and doors keep their own occlusion rules.
+
+**Shadow length and strength**
+
+For a light at height H and a thing of height h at horizontal distance d:
+
+- `h < H`: the shadow reaches `d·h/(H − h)` cells behind the thing.
+- `h ≥ H`: the shadow reaches the edge of the pool.
+- When `h < H`, with t the height at which the ray from a ground point toward the light crosses the thing's outline, things with `shadowData` shade with strength `1 − t/h`, fading along their height. Buildings with `staticSunShadowHeight` shade with strength 1.
+- When `h ≥ H`, every shadow fades linearly along the ground from the outline to 0 at the pool edge, the way vanilla's `SunShadowFade` fades along its extruded quad. A light on the ground (H = 0) casts no solid block either.
+
+An effect pool's H is its node's world Y; vanilla glowers all use H = 1 cell. The sun casts along vanilla's `_CastVect` with the same strength rule.
+
+**How shadows combine**
+
+- Each light darkens only its own pool: its light term is multiplied by `1 − strength` before pools are summed. The composite after the pools is unchanged.
+- Where shadows of several things overlap under one light, the strongest applies, so they darken once.
+- A thing's own sprite is never darkened by its own or another thing's shadow. Shadows are drawn at ground height, and scene depth rejects them on sprite pixels.
+- A thing whose occupied cells contain the light's cell casts nothing for that light; for example, a standing lamp does not block its own light. Other lights are still blocked by it.
+- Shadow edges follow the outline geometry per pixel, with no penumbra.
+
+**Sun shadows under the takeover**
+
+With the lighting takeover on, the sun shadows of things are drawn as object shadows too, shaped by the sprite outline instead of vanilla's `shadowData` box. Dynamic shadows still combine as `min(S, s_d)`; `S` includes the object sun shadow, so each pixel is darkened once.
 
 **Smooth edges**
 
-Each texel of the occlusion map stores its signed distance to the sprite outline. Every step bilinearly interpolates the distances of the surrounding 2×2 texels, so shadow edges sit at sub-texel positions: occlusion starts on the outline and reaches full blocking within 1/8 texel (about 0.03 cell) inside it. Sun shadows and point lights follow the same rule. Cover bilinearly interpolates the opacity of the surrounding 2×2 texels, so its edges are soft.
+Only `blockLight` things write signed distances, from each texel to the edge of their occupied cells. Every step bilinearly interpolates the distances of the surrounding 2×2 texels, so shadow edges sit at sub-texel positions: occlusion starts on the outline and reaches full blocking within 1/8 texel (about 0.03 cell) inside it. Sun shadows and point lights follow the same rule. Cover bilinearly interpolates the opacity of the surrounding 2×2 texels, so its edges are soft.
 
 **When the map updates**
 
@@ -685,7 +712,7 @@ The map is updated incrementally through a per-map stamp ledger that records the
 2. Every other ledger entry that overlaps a cleared area is restamped, so a large tree whose art overhangs several cells leaves no hole or stale shadow.
 3. When vanilla asks for its 8 neighbouring cells to be redrawn as well (linked walls), the things on those cells are restamped too.
 
-The incremental result is byte-identical to a full rebuild. The main texture is uploaded only on frames where something changed, at most once per frame.
+The incremental result is byte-identical to a full rebuild. The main texture is uploaded only on frames where something changed, at most once per frame. Object outlines share this ledger: when a thing spawns, despawns or changes its graphic, its 8×8-cell chunk shadow mesh is rebuilt on the next frame. Frames without changes rebuild and upload nothing.
 
 #### Lighting takeover setting
 
@@ -713,8 +740,8 @@ It is evaluated once per frame. The frame runs as if the setting were off when a
 - **Map lighting**: vanilla's lighting overlay (`LightOverlay`) is replaced by RimLumen's shader. Sky light, roof coverage and indoor darkening come from vanilla's own mesh data. With no shadow and no pool, the result equals vanilla per component.
 - **Vanilla glowers**: lamps, campfires and every other vanilla `GlowGrid` light each become a light pool bounded by the occlusion map. Falloff follows vanilla: `lerp(1 − d′/R, 1/d′², 0.4)` with `d′ = 1 + distance`.
 - **Effect pools become additive**: effect pools are added into the lighting term instead of `scene × (1 + L)`. At night they are noticeably brighter than with the setting off; this is intended.
-- **Sun shadows**: vanilla's static sun shadows (`SunShadow`) and the shadows printed into the map mesh (persistent `SunShadowFade`) are no longer drawn; the occlusion map reproduces them. Direction, length and colour come from vanilla's cast vector and shadow colour, so weather, eclipses and night-time moon shadows still apply.
-  - Buildings cast with their `staticSunShadowHeight`; furniture, trees and other things with `shadowData` cast at the height of vanilla's box and fade along it. Every shadow takes its shape from the sprite outline instead of vanilla's `shadowData` box, so a tree canopy casts a full canopy shadow.
+- **Sun shadows**: vanilla's static sun shadows (`SunShadow`) and the shadows printed into the map mesh (persistent `SunShadowFade`) are no longer drawn; the occlusion map reproduces shadows from walls, rock and doors, while object shadows draw those from other height-bearing things. Direction, length and colour come from vanilla's cast vector and shadow colour, so weather, eclipses and night-time moon shadows still apply.
+  - Buildings cast with their `staticSunShadowHeight`; furniture, trees and other things with `shadowData` cast at the height of vanilla's box and fade along it. Non-`blockLight` shadows take their shape from the sprite outline instead of vanilla's `shadowData` box, so a tree canopy casts a full canopy shadow.
   - Sun shadows are drawn at vanilla `SunShadow`'s ground altitude, so scene depth keeps them off walls, statues and other sprites, as in vanilla.
   - Indoors, natural rock tops and non-rendered terrain get no sun shadow; vanilla's stencil bit 4 decides.
   - On maps with sun shadows disabled (`disableSunShadows` or the biome's `disableShadows`), only static building shadows go away; `shadowData` shadows stay, as in vanilla.
@@ -747,7 +774,8 @@ Each pixel is darkened once: where both shadows are `c`, the result is `c`, not 
 - Vanilla glow floods around wall corners by path distance; takeover pools use straight line of sight, so light shapes near corners differ from vanilla. `GlowGrid` values are unaffected.
 - Vanilla `VisualGlowAt` is 0 on vacuum terrain; takeover pools do not reproduce this (Odyssey space maps).
 - When a ray that has just left one wall grazes another wall by less than 1/8 texel (about 0.03 cell), that graze has no soft edge. A ray that actually crosses the other wall is still fully blocked.
-- Where a wall meets a thing with a height (such as a table against the wall), the boundary between them may sit up to 0.39 texel (about 0.1 cell) inside the occupied texel.
+- When a thing's height crosses the light's height, its shadow jumps from a finite length to a fading shadow that reaches the pool edge.
+- No object shadow is drawn outside a pool's radius.
 
 ## 8. Optional `Chezhou.RimUnity` Bridge
 
@@ -878,6 +906,7 @@ Each ShaderPack is a standalone subdirectory containing at least a `pack.json` m
 | `author` | `string` | `"Unknown"` | Author name. |
 | `description` | `string` | `""` | Short summary shown in Mod Settings. |
 | `runOnEmptyFrames` | `bool` | `false` | When `true`, forces the HDR pipeline to execute even on frames with zero HDR particle or additive redraw items; required for ambient darkening, fog, or fullscreen grading packs. |
+| `objectShadows` | `bool` | `true` | Height-bearing non-`blockLight` things cast silhouette shadows from point lights and the takeover sun. The “Things cast shadows from lights” setting is saved per shader pack under `objectShadowOverrides`; walls, rock and doors still occlude when off. The built-in pack defaults to on; Cinematic, Atmospheric, Vibrant and Crisp all explicitly declare `true`. |
 | `requiresSceneDepth` | `bool` | `false` | When `true`, copies scene depth to `depth` on every active frame including empty frames (frames with HDR draws already populate scene depth automatically). |
 | `requiresMapLightField` | `bool` | `false` | When `true`, maintains and uploads the active map's `mapLightField` RGBA8 texture. |
 | `bloomMipLevels` | `int` | `5` | Built-in Bloom pyramid mip count, valid in `[0, 7]`; `0` disables built-in Bloom. |
