@@ -776,6 +776,7 @@ Each pixel is darkened once: where both shadows are `c`, the result is `c`, not 
 - When a ray that has just left one wall grazes another wall by less than 1/8 texel (about 0.03 cell), that graze has no soft edge. A ray that actually crosses the other wall is still fully blocked.
 - When a thing's height crosses the light's height, its shadow jumps from a finite length to a fading shadow that reaches the pool edge.
 - No object shadow is drawn outside a pool's radius.
+- Shadows are cast from the sprite's outline laid on the ground. Upright sprites such as columns in adjacent cells join outline to outline into one continuous shadow, with no light between them.
 
 ## 8. Optional `Chezhou.RimUnity` Bridge
 
