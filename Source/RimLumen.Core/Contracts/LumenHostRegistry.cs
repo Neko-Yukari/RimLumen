@@ -115,6 +115,12 @@ public static class LumenHostRegistry
     public static bool TryResolveAsset(string effectId, out EffectAsset? asset)
         => ResolveAsset(effectId, out asset) == LumenAssetResolution.Found;
 
+    public static ReadOnlySpan<LumenEnvironmentForce> GetEnvironmentForces(int mapIndex, LumenEnvironmentChannel channels)
+        => RimLumen.Core.ParticleWorld.ParticleEnvironment.ForMap(mapIndex, channels).Span;
+
+    public static ReadOnlySpan<LumenCursorSnapshot> GetCursors(int mapIndex)
+        => RimLumen.Core.ParticleWorld.ParticleEnvironment.CursorsForMap(mapIndex);
+
     internal static LumenAssetResolution ResolveAsset(string effectId, out EffectAsset? asset)
     {
         lock (Sync)

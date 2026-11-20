@@ -28,6 +28,7 @@ public readonly struct LumenPlayRequest
     // Name of the asset state to start in, overriding EffectAsset.InitialState; null = the asset's own initial
     // state. A name the asset does not declare (any name, for an asset without states) makes Play throw.
     public string? InitialState { get; init; }
+    public InteractionEventSpec[]? InteractionEvents { get; init; }
     public bool RealTime { get; init; }
 }
 

@@ -12,11 +12,121 @@ namespace RimLumen.Core.Contracts;
 public enum LumenEnvironmentChannel : byte
 {
     None = 0,
-    // Vanilla explosions push particles outward.
+    // Explosions and shockwaves push or pull particles.
     Explosion = 1,
-    // The map cursor pushes particles.
+    // Host mouse or mod cursor force sources push or pull particles.
     Cursor = 2,
 }
+
+public enum LumenEnvironmentForceShape : byte
+{
+    // Ground-plane XZ linear distance falloff (ignores particle height Y): w = max(0, 1 - d_xz / Radius).
+    HorizontalRadial = 0,
+    // 3D spherical linear distance falloff: w = max(0, 1 - d_xyz / Radius).
+    SphericalRadial = 1,
+    // Expanding 3D spherical shell shockwave: r(t) = Radius * (t / Duration), triangular falloff over ShellHalfThickness.
+    SphericalWave = 2,
+}
+
+public readonly struct LumenEnvironmentPulseRequest
+{
+    public LumenEnvironmentPulseRequest()
+    {
+    }
+
+    public int MapIndex { get; init; } = -1;
+    public LumenEnvironmentChannel Channel { get; init; } = LumenEnvironmentChannel.Explosion;
+    public LumenEnvironmentForceShape Shape { get; init; } = LumenEnvironmentForceShape.SphericalWave;
+    public required Vector3 CenterWorld { get; init; }
+    public required float Radius { get; init; }
+    public required float Strength { get; init; }
+    public required float Duration { get; init; }
+    public float ShellHalfThickness { get; init; }
+    public bool RealTime { get; init; }
+}
+
+public readonly struct LumenEnvironmentSourceRequest
+{
+    public LumenEnvironmentSourceRequest()
+    {
+    }
+
+    public int MapIndex { get; init; } = -1;
+    public LumenEnvironmentChannel Channel { get; init; } = LumenEnvironmentChannel.Cursor;
+    public LumenEnvironmentForceShape Shape { get; init; } = LumenEnvironmentForceShape.HorizontalRadial;
+    public Vector3 InitialPositionWorld { get; init; }
+    public float Radius { get; init; } = 5f;
+    public float Strength { get; init; }
+    public bool FollowHostMouse { get; init; }
+    public bool TriggersCursorEvents { get; init; } = true;
+}
+
+public interface ILumenEnvironmentSource : IDisposable
+{
+    bool IsAlive { get; }
+    int MapIndex { get; }
+
+    void SetPosition(Vector3 worldPosition);
+    void SetStrength(float strength);
+    void SetRadius(float radius);
+}
+
+public enum LumenInteractionTrigger : byte
+{
+    CursorEnter = 0,
+    CursorExit = 1,
+    CursorStay = 2,
+    CursorSwipe = 3,
+    Explosion = 4,
+}
+
+public sealed class InteractionEventSpec
+{
+    public required LumenInteractionTrigger Trigger { get; init; }
+    public required string EventName { get; init; }
+    public float Radius { get; init; }
+    public int AnchorNodeIndex { get; init; } = -1;
+    // Screen heights per real second (>= 0; CursorSwipe requires > 0).
+    public float MinCursorSpeed { get; init; }
+    // Screen heights per real second (null = unbounded).
+    public float? MaxCursorSpeed { get; init; }
+    public float HoldSeconds { get; init; }
+    public float MinExplosionStrength { get; init; }
+    public float CooldownSeconds { get; init; }
+    public string? State { get; init; }
+    public string? GoToState { get; init; }
+    public int TargetNodeIndex { get; init; } = -1;
+    public bool Notify { get; init; }
+}
+
+// Frozen per-frame environment force entry (SPI, valid during main-thread CaptureMainThread).
+public readonly record struct LumenEnvironmentForce(
+    LumenEnvironmentChannel Channel,
+    LumenEnvironmentForceShape Shape,
+    Vector3 CenterWorld,
+    float Radius,
+    float Strength,
+    float WaveRadius,
+    float ShellHalfThickness)
+{
+    internal Vector3 Acceleration(Vector3 worldPosition)
+    {
+        Vector3 delta = worldPosition - CenterWorld;
+        if (Shape == LumenEnvironmentForceShape.SphericalWave)
+            return RimLumen.Core.Scene.ParticleForceMath.RingWave(delta, WaveRadius, ShellHalfThickness, Radius, Strength);
+        if (Shape == LumenEnvironmentForceShape.HorizontalRadial)
+            delta.Y = 0f;
+        float distance = delta.Length();
+        return distance > 1e-6f ? delta / distance * (Strength * MathF.Max(0f, 1f - distance / Radius)) : Vector3.Zero;
+    }
+}
+
+// Frozen per-frame active cursor snapshot (SPI, valid during main-thread CaptureMainThread).
+// PositionXZ is in map ground cells; ScreenVelocity and Speed are in screen heights per real second.
+public readonly record struct LumenCursorSnapshot(
+    Vector2 PositionXZ,
+    Vector2 ScreenVelocity,
+    float Speed);
 
 public enum LumenCollisionMode : byte
 {

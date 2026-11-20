@@ -152,6 +152,7 @@ Callers using `RimUnityAssetProvider` can call `RegisterPackageRoot` again, even
   "timelineEvents": [
     { "time": 0.5, "eventName": "explode", "targetNodeIndex": 0, "state": null, "notify": false }
   ],
+  "interactionEvents": [],
   "states": [],
   "initialState": null,
   "stopState": null
@@ -224,7 +225,29 @@ A frame that crosses several states processes each state and its events in order
 
 A loop state fires its events again every `duration` cycle, and events with `time >= duration` never fire on the timer; a loop state with `duration` `0` fires them once. In a non-loop state an event at exactly `duration` still fires.
 
-**Load-time validation** (`.lumen.json` and XML fail at parse time; a C# `EffectAsset` throws `InvalidDataException` from `Play`): an empty or duplicate state name; a `nodes` entry naming no node; a negative or non-finite duration; `loop` together with `next`; `next`, `initialState`, `stopState` or an event `state` naming an unknown state; a `stopState` that loops or has `next`; zero-duration states that cycle through `next`; `initialState`, `stopState` or an event `state` without `states`.
+**`interactionEvents[]` (environment interaction events)**:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `trigger` | required | `CursorEnter`, `CursorExit`, `CursorStay`, `CursorSwipe`, or `Explosion` (`LumenInteractionTrigger`) |
+| `eventName` | required | Non-empty event name passed to `Notify` when `notify: true` (`Trigger(name)` does not fire `interactionEvents`) |
+| `radius` | `0` | Horizontal ground XZ radius in map cells. Must be finite `> 0` for `Cursor*`, and finite `>= 0` for `Explosion` (added to the explosion's own outer radius) |
+| `anchorNodeIndex` | `-1` | `-1` uses the effect's current world origin `OriginWorld` (follows `Follow`); `[0, nodes.Length)` uses that node's world translation |
+| `minCursorSpeed` | `0` | Minimum cursor speed in **screen heights per real second** (`vh/s`). `CursorSwipe` requires finite `> 0`; other `Cursor*` require finite `>= 0`; `Explosion` requires `0` |
+| `maxCursorSpeed` | `null` | Optional upper cursor speed bound in `vh/s` (`null` means unbounded). On `Cursor*`, non-null values must be finite and `>= minCursorSpeed`; `Explosion` requires `null` |
+| `holdSeconds` | `0` | Continuous dwell duration in seconds required by `CursorStay` (finite `>= 0`); must remain `0` on all other triggers |
+| `minExplosionStrength` | `0` | Minimum pulse peak acceleration magnitude `|Strength|` in cells/s² required by `Explosion` (finite `>= 0`); must remain `0` on `Cursor*` |
+| `cooldownSeconds` | `0` | Minimum cooldown in seconds on the handle's clock after firing (finite `>= 0`) |
+| `state` | `null` | `null` applies in any playing state before `Stop(true)`; non-null restricts evaluation to while that named state is playing |
+| `goToState` | `null` | When non-null and before `Stop(true)`, enters that state first upon firing (same semantics as `GoTo`), before `targetNodeIndex` and `Notify` |
+| `targetNodeIndex` | `-1` | When not `-1`, emits one pulse on that node (same rule as `timelineEvents[].targetNodeIndex`) |
+| `notify` | `false` | When `true`, firing raises `ILumenEffectHandle.Notify(eventName)` |
+
+- **Lazy host mouse sampling**: Whenever an active handle on the current map declares any `Cursor*` rule (or a `FollowHostMouse` source lease is active), the host samples the mouse ground position (`Y = 0`) once at the start of main-thread capture if not obscured by UI (`!MouseObscuredNow`) and inside map bounds, allowing pure `.lumen.json` / XML assets to react to the cursor without C#. With no active sources and no `Cursor*` subscribers, neither mouse nor window state is read.
+- **Screen-space cursor speed & EMA smoothing**: Cursor velocity is measured in isotropic screen heights per real second (`vh/s`)—both X and Y screen-pixel deltas are divided by viewport pixel height `ViewportHeight` (`Screen.height`), i.e., `v_vh = v_px / ViewportHeight = v_uiPx × UIScale / ViewportHeight` (traversing one full screen height in `1` real second equals `1.0`). This unit is invariant to camera zoom, screen resolution, and UI scale. Each active cursor independently smooths velocity with a first-order EMA (`tau = 0.05 s`, `alpha = 1 - exp(-dt_real / 0.05)`): first appearance or re-entry after UI occlusion/off-map starts at speed `0`; `dt_real <= 1e-5 s` holds the previous velocity; frame hitches `dt_real > 0.25 s` reset velocity to `0`.
+- **Trigger and state-reset rules**: Distances use ground horizontal `XZ` (ignoring node height `Y`). `CursorEnter` fires once when at least one active cursor enters `d_xz <= radius` (from none inside) and a cursor inside satisfies `[minCursorSpeed, maxCursorSpeed]`; `CursorExit` fires once when all cursors leave `radius` (either still active outside within `[minCursorSpeed, maxCursorSpeed]`, or obscured/off-map when `minCursorSpeed == 0`); `CursorStay` accumulates handle `dt` while a cursor inside satisfies the speed range, resets to `0` immediately otherwise, and fires + resets dwell at `holdSeconds`; `CursorSwipe` fires once on the rising edge when a cursor inside reaches the speed range, re-arming only after leaving `radius` or dropping outside the speed range; `Explosion` checks active `Explosion`-channel pulses on the same map with `|Strength| >= minExplosionStrength` and `d_xz <= pulse.Radius + radius`—`SphericalWave` pulses fire on the frame the expanding shockwave front reaches the detection circle (`waveRadius + shellHalfThickness >= d_xz - radius`; near explosions with `d_xz <= radius + shellHalfThickness` fire on frame 1), radial pulses fire on frame 1, and each pulse triggers a rule at most once. Rules scoped to `state` reset inside/swipe latches and dwell time when leaving that state while preserving remaining cooldown and seen pulse IDs; non-`realTime` handles do not advance interaction events while paused (`dt == 0`).
+
+**Load-time validation** (`.lumen.json` and XML fail at parse time; a C# `EffectAsset` throws `InvalidDataException` from `Play`): an empty or duplicate state name; a `nodes` entry naming no node; a negative or non-finite duration; `loop` together with `next`; `next`, `initialState`, `stopState`, an event `state`, or an `interactionEvents` `goToState` naming an unknown state; a `stopState` that loops or has `next`; zero-duration states that cycle through `next`; `initialState`, `stopState`, an event `state`, or `goToState` without `states`; unused trigger-specific fields or out-of-range node indices on `interactionEvents`.
 
 #### Example: a tornado that spawns, sustains and collapses
 
@@ -295,7 +318,7 @@ You can define `RimLumen.Core.Assets.LumenEffectDef` in any mod's `Defs/**/*.xml
 1. **ID**: Uses `<defName>`, registering both the bare short name and `<packageId>:<defName>`.
 2. **Node fields**: Adds `<heightOffset>` (added to `localPosition.y`), `localScale` is a single float scalar, and `localRotation` quaternion is omitted (use `<localYawDegrees>`).
 3. **Point light keys**: Uses `<radiusCells>` (matching JSON `glowRadius`), `<color>` (raw float syntax `(r, g, b)` or `(r, g, b, a)`), `<intensity>`, and `<intensityOverTime>`. A curve directly contains `<li>` keys, each with `<time>`, `<value>`, `<inTangent>`, and `<outTangent>`; both tangents default to 0. XML curves have no `multiplier` field.
-4. **List fields**: `<states>`, `<timelineEvents>` and a state's `<nodes>` are `<li>` lists; state fields are `<name>`, `<nodes>`, `<duration>`, `<loop>`, `<next>`, event fields are `<time>`, `<eventName>`, `<targetNodeIndex>`, `<state>`, `<notify>`; the root also takes `<defaultDuration>`, `<initialState>` and `<stopState>`. Meanings and defaults match the "State Machine" section above.
+4. **List fields**: `<states>`, `<timelineEvents>`, `<interactionEvents>`, and a state's `<nodes>` are `<li>` lists; state fields are `<name>`, `<nodes>`, `<duration>`, `<loop>`, `<next>`, timeline event fields are `<time>`, `<eventName>`, `<targetNodeIndex>`, `<state>`, `<notify>`, and interaction event (`LumenInteractionEventXml`) fields are `<trigger>`, `<eventName>`, `<radius>`, `<anchorNodeIndex>`, `<minCursorSpeed>`, `<maxCursorSpeed>`, `<holdSeconds>`, `<minExplosionStrength>`, `<cooldownSeconds>`, `<state>`, `<goToState>`, `<targetNodeIndex>`, `<notify>`; the root also takes `<defaultDuration>`, `<initialState>`, and `<stopState>`. Meanings and defaults match the "State Machine" section above.
 
 XML emitters use `<colorSpace>` and `<materialTint>`, defaulting to `Stored` and `(1,1,1,1)`. XML `<startColor>`, gradient-stop `<color>`, `<materialTint>`, and point-light `<color>` use parenthesized raw float components: three components imply alpha 1; four preserve the given values, without byte-colour interpretation. Malformed text or component counts report the asset and field.
 
@@ -363,6 +386,9 @@ Legacy XML keys are rejected too: `<startColorLinear>` is renamed to `<startColo
 - **`LumenBlendMode`**: `Additive` (`0`, recommended for glow and fire) / `AlphaBlend` (`1`, smoke and mist) / `Premultiplied` (`2`).
 - **`LumenDepthMask`**: `None` (`0`, default) / `NorthBehindReference` (`1`, north of the reference is occlusion-tested at the `Projectile` layer under the vanilla straight-down 2D camera).
 - **`LumenBillboardMode`**: `Camera` (`0`, camera-facing) / `Horizontal` (`1`, flat ground-aligned quad) / `StretchedVelocity` (`2`, stretched along velocity using `VelocityStretchFactor` and `LengthScale`) / `Mesh` (`3`, deferred) / `Vertical` (`4`) / `Local` (`5`).
+- **`LumenEnvironmentChannel`**: `[Flags]` bitmask: `None` (`0`), `Explosion` (`1`), `Cursor` (`2`).
+- **`LumenEnvironmentForceShape`**: `HorizontalRadial` (`0`, ground XZ linear falloff) / `SphericalRadial` (`1`, 3D spherical linear falloff) / `SphericalWave` (`2`, expanding 3D spherical shell wave, pulses only).
+- **`LumenInteractionTrigger`**: `CursorEnter` (`0`) / `CursorExit` (`1`) / `CursorStay` (`2`) / `CursorSwipe` (`3`) / `Explosion` (`4`).
 
 ### Shapes and probabilistic bursts
 
@@ -404,7 +430,7 @@ After sampling, apply shape-local TRS, then mix random direction, spherical dire
 
 ### 3. Environment Forces, Collision, and Sub-emitters
 
-These fields belong to `emitter`; JSON and XML use lower camel case. Flags can use the JSON string `"Explosion, Cursor"` or XML `<environmentChannels>Explosion, Cursor</environmentChannels>`; vectors use `[x,y,z]` or `(x,y,z)`, and curves use `[[time,value], ...]` or XML `<li>` entries containing `time`, `value`, and optional `inTangent` / `outTangent`; tangents default to 0. `environmentChannels` is a flag set: `None`, `Explosion`, `Cursor`, default `Explosion, Cursor`; `environmentForceScale` is finite and nonnegative, default 1. Explosions add visual acceleration only, enabled by default with multiplier 1. For radius R the shell travels at `2R` cells/s, has half-thickness `R/8`, peak acceleration `24R × multiplier`, center lowered by `R/4`, and lasts 0.5 game seconds; each map retains at most eight pulses. The cursor defaults to off and can repel or attract; its default radius is 5 cells and acceleration 4 cells/s², with linear horizontal falloff. World forces are summed and scaled, then transformed back for local simulation. A local emitter with a noninvertible transform (such as zero scale) skips world environment forces and wall collision.
+These fields belong to `emitter`; JSON and XML use lower camel case. Flags can use the JSON string `"Explosion, Cursor"` or XML `<environmentChannels>Explosion, Cursor</environmentChannels>`; vectors use `[x,y,z]` or `(x,y,z)`, and curves use `[[time,value], ...]` or XML `<li>` entries containing `time`, `value`, and optional `inTangent` / `outTangent`; tangents default to 0. `environmentChannels` is a flag set: `None`, `Explosion`, `Cursor`, default `Explosion, Cursor`; `environmentForceScale` is finite and nonnegative, default 1. Vanilla explosions (`Explosion.StartExplosion`) and `RimLumenApi.EmitExplosion` emit `Explosion`-channel `SphericalWave` pulses on their map: for radius `R` the shell travels at `2R` cells/s, has half-thickness `R/8`, peak acceleration `24R × strengthScale`, center lowered by `R/4`, and lasts `0.5` game seconds; each map retains at most `8` active pulses. Ambient host mouse movement applies no particle force by itself; sustained mouse or custom force sources are created from C# via `RimLumenApi.CreateMouseForce`, `CreateCursor`, or `CreateEnvironmentSource` (up to `8` active sustained sources per map), and custom transient pulses use `EmitEnvironmentPulse`. Positive `Strength` repels outward and negative pulls inward: `HorizontalRadial` attenuates linearly by ground XZ distance `max(0, 1 - d_xz / R)` (ignoring particle height `Y`), `SphericalRadial` by 3D distance `max(0, 1 - d_xyz / R)`, and `SphericalWave` by shell weight `max(0, 1 - |d_xyz - r_w| / h)`. Matching world forces are summed and scaled by `environmentForceScale`, then transformed back for local simulation. A local emitter with a noninvertible transform (such as zero scale) skips world environment forces and wall collision. L1 and L2 evaluate identical force formulas.
 
 `RingWave` radius is speed times seconds since node restart; weight is `max(0, 1 - abs(distance - waveRadius) / halfThickness)`, and zero beyond the end radius. Loop wraps do not reset node time.
 
@@ -524,6 +550,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 ```
 
 - `LumenPlayRequest.DepthReferenceZ` supplies the mask reference as world Z in cells. Play records it as a Z offset from `OriginWorld`, so it moves with `Follow`. If a node declares `depthMask` and the request has no reference, `Play` throws `ArgumentException`.
+- `LumenPlayRequest.InteractionEvents` optionally attaches per-play `InteractionEventSpec[]` rules (validated once at `Play`, throwing `ArgumentException` on invalid entries) evaluated in order after the asset's own `InteractionEvents`, without cloning or mutating the shared `EffectAsset`.
 - If `EffectId` does not exist, `Play` returns an inert handle with `IsAlive == false` whose methods are no-ops, and logs `Log.Warning` once per ID per service instance. An asset rejected by validation also returns an inert handle; it retains the registry's validation error without adding an "unknown ID" warning.
 
 ### 3. Handle Controls (`ILumenEffectHandle`)
@@ -533,7 +560,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 | `bool IsAlive` | `true` while playing or fading/draining; becomes `false` once all particles and point lights are cleaned up. |
 | `void Trigger(string name)` | Fires every timeline event with that name now, whatever its state and time (target-node pulse, `Notify`), and restarts the emission schedule of every node with that name until the next state entry decides again; the current state is unchanged. Unmatched names do nothing; no effect after fading out or death. L1 and L2 behave identically. |
 | `void GoTo(string stateName)` | Enters that state now (going to the current state restarts it). On an asset-backed handle, an undeclared state name always throws `ArgumentException`, including after `Stop(true)`, while draining, or once dead; a declared state is entered only while playing before `Stop(true)`, otherwise it has no effect. `Stop(false)` tears down immediately; `GoTo` on an inert handle is always a no-op. |
-| `event Action<string> Notify` | Raised with the event name when a timeline event with `notify: true` fires (on its time or through `Trigger`). |
+| `event Action<string> Notify` | Raised with the event name when a timeline event or environment interaction event with `notify: true` fires (on its time, on an interaction trigger, or through `Trigger`). |
 | `event Action<string> StateChanged` | Raised with the state name each time a declared state is entered, including the initial state. |
 | `event Action Finished` | Raised once when `IsAlive` becomes `false`, for any reason (played out, `Stop`, `Dispose`). |
 | `void SetParam(string name, float value)` | Updates runtime scalar parameters. Three built-in names take effect immediately: `intensity` (scales particle and light brightness), `rate` (scales only continuous L1 and L2 emission, not `bursts`; must be finite and nonnegative or throws `ArgumentOutOfRangeException`; zero pauses only continuous emission), and `scale` (multiplies root scale). Other names are stored without affecting simulation. |
@@ -568,6 +595,40 @@ Linear mode decodes straight material RGB before alpha / hardware blending. The 
 Draws on `RimLumenRenderHost.DistortionPassId` accumulate into the `R16G16SFloat` `distortion` input in group 0 at 3152. Third parties can draw on layer 14 or submit a dynamic `MeshDrawCommand` with that pass ID; persistent draw sources are unsupported. RG is the scene sample offset in framebuffer pixels, +x right and +y down; write the opposite offset to push the scene outward from a center. Blending is `One, One`, without a depth attachment; the target is cleared each frame. With no distortion draws, no target or distortion pass is allocated and a zero placeholder is used.
 
 The player setting “Distortion also refracts RimLumen effects” defaults to on. Custom composites can include `PostFx/RimLumenDistortion.glslinc` after declaring the UBO: `lumenRefractedUv(distortionImage, uv)` returns the scene sample UV, and `lumenLayerUv(uv, sceneUv)` selects the effect-layer UV according to the setting. The latter requires the 224-byte UBO from `PostFx/RimLumenPackUniforms.glslinc`. Zero or nonfinite offsets retain the original UV.
+
+### 6. Environment Pulses and Sustained Force / Cursor Sources
+
+Mods can inject explosion shockwaves, radial pulses, host-mouse push/pull leases, or custom world-space cursors on the main thread via `RimLumenApi`:
+
+```csharp
+// 1. Vanilla-preset spherical explosion wave (drives both particle forces and Explosion interaction events)
+RimLumenApi.EmitExplosion(map, new System.Numerics.Vector3(cell.x + 0.5f, 0f, cell.z + 0.5f), radius: 6f, strengthScale: 1f);
+
+// 2. Custom environment pulse (HorizontalRadial / SphericalRadial / SphericalWave)
+RimLumenApi.EmitEnvironmentPulse(new LumenEnvironmentPulseRequest
+{
+    MapIndex = map.uniqueID, // -1 resolves to Find.CurrentMap.uniqueID at call time
+    Channel = LumenEnvironmentChannel.Explosion,
+    Shape = LumenEnvironmentForceShape.SphericalRadial,
+    CenterWorld = originWorld,
+    Radius = 5f,
+    Strength = -18f, // positive repels outward, negative pulls inward
+    Duration = 0.35f,
+    RealTime = false,
+});
+
+// 3. Sustained host-mouse push/pull lease (disposing stops the force immediately)
+using ILumenEnvironmentSource mouseForce = RimLumenApi.CreateMouseForce(map, radius: 5f, strength: 4f);
+
+// 4. Mod-controlled world-space cursor (strength == 0 triggers Cursor* events without pushing particles; nonzero also applies HorizontalRadial force)
+using ILumenEnvironmentSource aimCursor = RimLumenApi.CreateCursor(map, initialWorldPos, radius: 4f, strength: -6f);
+aimCursor.SetPosition(clampedAimWorldPos);
+```
+
+- **Lease contract (`ILumenEnvironmentSource`)**: Exposes `IsAlive`, `MapIndex`, `SetPosition(Vector3)`, `SetStrength(float)`, `SetRadius(float)`, and `Dispose()`. Calling `SetPosition` when `FollowHostMouse == true` throws `InvalidOperationException`; when `Channel == None` (event-only cursor, `TriggersCursorEvents == true`), `Radius` and `Strength` must remain `0`. Each map retains up to `8` transient pulses (evicting the oldest on overflow) and `8` active sustained sources (logging a throttled warning and returning an inert `IsAlive == false` handle when exceeded); when the render fail-safe is tripped, pulses are no-ops and source creation returns an inert handle. `Map.Dispose` immediately releases that map's pulses, sustained sources (`IsAlive` becomes `false`), and cursor state without affecting other maps.
+- **World-space cursor velocity conversion & non-current-map behavior (`CreateCursor` / `FollowHostMouse = false`)**:
+  - When `cursor.MapIndex == CurrentMapIndex` and the viewport is valid (`ViewportHeight > 0`), both the cursor's previous-frame world position and current-frame world position are projected through **the current frame's** `ViewProjection = ProjectionMatrix × ViewMatrix` into isotropic screen-height coordinates `((ndcX + 1) × 0.5 × (W / H), (1 - ndcY) × 0.5)`, then differentiated by `dt_real` and smoothed with the `tau = 0.05 s` EMA into `vh/s` (matching the host mouse unit). Projecting both endpoints with the same frame's `ViewProjection` guarantees that panning or zooming the camera alone adds zero spurious speed to a stationary world-space cursor.
+  - When `cursor.MapIndex != CurrentMapIndex` (a background map not currently rendered), its force field and ground `PositionXZ` remain active on `cursor.MapIndex` (so particle push/pull and `CursorEnter` / `CursorExit` / `CursorStay` rules with `minCursorSpeed == 0` still evaluate on that map), while its screen velocity is `0` and its projection history is reset so switching back to that map enters cleanly at speed `0` without a cross-camera spike.
 
 ## 7. Texture Registry and Compatibility Notes
 
@@ -1267,6 +1328,8 @@ This chapter is for asset adapters and custom backend authors. Content mods usin
 `ILumenFrameContributor` runs in order: main-thread `CaptureMainThread(LumenCaptureContext)` freezes inputs, main-thread `EnqueuePreCompute(LumenComputeContext)` enqueues compute, render-thread `RecordBufferBarriers(LumenBarrierContext)` records barriers before the HDR pass, and `RecordHdrDraws(LumenHdrDrawContext)` runs inside it. An idle `HasActiveWork` permits work to be skipped. `RequiresDirectHdrPass` is read on the main thread after capture, defaults to false, and must be true for direct draws; routed mesh draws are counted separately.
 
 Pair capture and recording by `FrameIndex`: recording may lag or a frame may be dropped. `SubmissionFrameIndex` is only the rotating resource slot. Contexts are not binary GPU layouts. Frames and textures borrowed by render-thread callbacks must not be retained or disposed, and game main-thread APIs must not be accessed there. Capture carries map ID, clocks, camera matrices and viewport; compute carries frame and clocks; barriers carry the frame command buffer; draw carries the HDR target, nullable depth and camera data. Core service, CPU simulator, GPU engine, distortion and ribbon backends register contributors; the adapter's external player also uses one. Pipeline callback exceptions trip the render fail-safe and are logged.
+
+During main-thread `CaptureMainThread`, custom particle backends and adapters can call `LumenHostRegistry.GetEnvironmentForces(int mapIndex, LumenEnvironmentChannel channels)` and `LumenHostRegistry.GetCursors(int mapIndex)` to read the current frame's frozen world-space forces `ReadOnlySpan<LumenEnvironmentForce>` (`Channel`, `Shape`, `CenterWorld`, `Radius`, `Strength`, `WaveRadius`, `ShellHalfThickness`) and active cursor snapshots `ReadOnlySpan<LumenCursorSnapshot>` (`PositionXZ`, screen-height velocity `ScreenVelocity`, scalar `Speed`); empty spans are returned when none are active.
 
 ### 3. GPU Particles and Node Backends
 

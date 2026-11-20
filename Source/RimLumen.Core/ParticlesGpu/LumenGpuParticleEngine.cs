@@ -202,7 +202,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         rows.Clear(); clears.Clear(); removed.Clear(); fields.Clear();
         captureMaps.Clear(); captureLinks.Clear(); captureBursts.Clear(); rowByInstance.Clear(); mapOffsets.Clear();
         int cellCount = 0;
-        ParticleEnvironment.BeginFrame(context.FrameIndex, context.CurrentMapIndex);
+        ParticleEnvironment.BeginFrame(in context);
         int eventCapacity = 0;
         // Player-facing density setting; the default 1.0 leaves the emission budget untouched.
         float density = RimLumenRenderHost.ParticleDensityScale;
@@ -248,13 +248,19 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
             }
             Matrix4x4 inverse = default;
             bool worldInteraction = spec.WorldSpaceSimulation || Matrix4x4.Invert(instance.Transform.World, out inverse);
-            if (worldInteraction)
-                foreach (ParticleEnvironmentSource source in ParticleEnvironment.ForMap(instance.MapIndex, spec.EnvironmentChannels).Span)
+            if (worldInteraction && spec.EnvironmentChannels != LumenEnvironmentChannel.None && spec.EnvironmentForceScale > 0f)
+                foreach (LumenEnvironmentForce source in LumenHostRegistry.GetEnvironmentForces(instance.MapIndex, spec.EnvironmentChannels))
                 {
+                    float kind = source.Shape switch
+                    {
+                        LumenEnvironmentForceShape.SphericalWave => 5f,
+                        LumenEnvironmentForceShape.HorizontalRadial => 6f,
+                        _ => 7f,
+                    };
                     fields.Add(new GpuForceField
                     {
-                        CenterOrAxisAndKind = new(source.Center, source.Channel == LumenEnvironmentChannel.Explosion ? 5f : 6f),
-                        ParametersAndRadius = new(source.WaveRadius, source.Thickness, 0f, source.Radius),
+                        CenterOrAxisAndKind = new(source.CenterWorld, kind),
+                        ParametersAndRadius = new(source.WaveRadius, source.ShellHalfThickness, 0f, source.Radius),
                         StrengthAndFrequency = new(source.Strength * spec.EnvironmentForceScale, 0f, 0f, 0f)
                     });
                 }

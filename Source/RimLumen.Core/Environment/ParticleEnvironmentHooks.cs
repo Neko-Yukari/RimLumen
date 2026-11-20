@@ -21,9 +21,11 @@ internal static class ParticleEnvironmentHooks
 
     private static void ExplosionStarted(Explosion __instance)
     {
-        if (!__instance.Spawned) return; // StartExplosion itself rejects unspawned explosions.
-        ParticleEnvironment.RecordExplosion(__instance.Map.uniqueID,
-            new System.Numerics.Vector3(__instance.Position.x + 0.5f, 0f, __instance.Position.z + 0.5f), __instance.radius);
+        if (!__instance.Spawned || !(__instance.radius > 0f) || !float.IsFinite(__instance.radius)) return;
+        RimLumen.Core.Api.RimLumenApi.EmitExplosion(
+            __instance.Map,
+            new System.Numerics.Vector3(__instance.Position.x + 0.5f, 0f, __instance.Position.z + 0.5f),
+            __instance.radius);
     }
 
     private static void MapRemoved(Map __instance)

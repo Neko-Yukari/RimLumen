@@ -152,6 +152,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
   "timelineEvents": [
     { "time": 0.5, "eventName": "explode", "targetNodeIndex": 0, "state": null, "notify": false }
   ],
+  "interactionEvents": [],
   "states": [],
   "initialState": null,
   "stopState": null
@@ -224,7 +225,29 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 
 循环状态每过一个 `duration` 周期重新触发一遍它的事件，`time >= duration` 的事件不会按时间触发；`duration` 为 `0` 的循环状态只触发一遍。非循环状态里 `time` 恰好等于 `duration` 的事件仍会触发。
 
-**加载时校验**（`.lumen.json` 与 XML 在解析时报错，C# `EffectAsset` 在 `Play` 时抛 `InvalidDataException`）：状态名为空或重复；`nodes` 中的名字没有对应节点；时长为负或非有限值；`loop` 与 `next` 同时出现；`next`、`initialState`、`stopState` 或事件的 `state` 指向不存在的状态；`stopState` 是循环状态或带 `next`；零时长状态经 `next` 成环；没有 `states` 却写了 `initialState`、`stopState` 或事件 `state`。
+**`interactionEvents[]`（环境交互事件）**：
+
+| 字段 | 默认 | 含义 |
+| --- | --- | --- |
+| `trigger` | 必填 | `CursorEnter`、`CursorExit`、`CursorStay`、`CursorSwipe` 或 `Explosion`（`LumenInteractionTrigger`） |
+| `eventName` | 必填 | 非空事件名；`notify: true` 时传给 `Notify`（`Trigger(name)` 不会触发 `interactionEvents`） |
+| `radius` | `0` | 水平地面 XZ 判定半径（单位：地图格）。`Cursor*` 必填有限且 `> 0`；`Explosion` 须有限且 `>= 0`（与爆炸自身外径相加） |
+| `anchorNodeIndex` | `-1` | `-1` 取特效当前世界原点 `OriginWorld`（随 `Follow` 更新）；`[0, nodes.Length)` 取对应节点的世界平移中心 |
+| `minCursorSpeed` | `0` | 光标最低速度阈值，单位为**屏幕高度 / 真实秒**（`vh/s`）。`CursorSwipe` 必填有限且 `> 0`；其余 `Cursor*` 须有限且 `>= 0`；`Explosion` 必须为 `0` |
+| `maxCursorSpeed` | `null` | 光标最高速度上限（`vh/s`，`null` 表示无上限）。`Cursor*` 非 `null` 时须有限且 `>= minCursorSpeed`；`Explosion` 必须为 `null` |
+| `holdSeconds` | `0` | `CursorStay` 所需的连续停留秒数（有限且 `>= 0`）；其余 `trigger` 必须保持 `0` |
+| `minExplosionStrength` | `0` | `Explosion` 所需的脉冲峰值加速度绝对值下限 `|Strength|`（格/秒²，有限且 `>= 0`）；`Cursor*` 必须保持 `0` |
+| `cooldownSeconds` | `0` | 触发后的最小冷却秒数（按句柄时钟推进，有限且 `>= 0`） |
+| `state` | `null` | `null` 表示在 `Stop(true)` 之前的任意播放状态生效；非 `null` 仅在该命名状态播放期间生效 |
+| `goToState` | `null` | 非 `null` 且未进入 `Stop(true)` 收尾态时，触发瞬间先进入该状态（等同 `GoTo`），随后再执行节点脉冲与 `Notify` |
+| `targetNodeIndex` | `-1` | 非 `-1` 时向该节点补发一次脉冲（规则同 `timelineEvents[].targetNodeIndex`） |
+| `notify` | `false` | `true` 时触发后回调 `ILumenEffectHandle.Notify(eventName)` |
+
+- **懒采样宿主鼠标**：当当前地图存在声明了 `Cursor*` 事件的存活播放句柄（或 `FollowHostMouse` 持续力源租约）时，宿主在主线程捕获起点采样一次未受 UI 窗口遮挡（`!MouseObscuredNow`）且位于地图边界内的鼠标地面坐标（`Y = 0`），因此纯 `.lumen.json` / XML 资产无需编写 C# 即可响应鼠标。无活动力源且无 `Cursor*` 订阅时，不读取鼠标或窗口状态。
+- **屏幕速度单位与指数平滑（EMA）**：光标速度在各向同性的屏幕高度坐标系中计算——屏幕像素位移 `(Δx_px, Δy_px)` 的两个分量均除以当前视口像素高度 `ViewportHeight`（`Screen.height`），即 `v_vh = v_px / ViewportHeight = v_uiPx × UIScale / ViewportHeight`（例如以 `1` 秒纵向划满整个屏幕高度或横向划过等于屏幕高度的距离，速度均为 `1.0`）。该单位与镜头缩放、分辨率和游戏 UI 缩放倍率无关。每个活动指针独立做一阶指数平滑（时间常数 `tau = 0.05 s`，`alpha = 1 - exp(-dt_real / 0.05)`）：首次出现或因 UI 遮挡 / 移出地图后重入的首帧速度为 `0`；`dt_real <= 1e-5 s` 时保持上一帧速度；帧间隔 `dt_real > 0.25 s`（长卡顿或切回窗口）时速度重置为 `0`。
+- **五种触发与重置规则**：距离统一按地面水平 `XZ` 计算（忽略节点高度 `Y`）。`CursorEnter` 在活动光标从半径外进入 `d_xz <= radius` 且圈内存在满足 `[minCursorSpeed, maxCursorSpeed]` 的光标时触发一次；`CursorExit` 在所有光标离开半径（离开帧仍在场且速度满足区间，或因 UI 遮挡/出界消失且 `minCursorSpeed == 0`）时触发一次；`CursorStay` 在圈内持续存在速度达标光标满 `holdSeconds` 时触发并清零停留计时（中途不满足立即清零）；`CursorSwipe` 在圈内速度达标的上升沿触发一次，直到光标离开半径或速度跌出区间后才重新武装；`Explosion` 对同地图 `|Strength| >= minExplosionStrength` 且 `d_xz <= pulse.Radius + radius` 的 `Explosion` 通道脉冲求值——`SphericalWave` 在波阵面前沿抵达感应圈（`waveRadius + shellHalfThickness >= d_xz - radius`，近处 `d_xz <= radius + shellHalfThickness` 首帧即达）时触发，径向脉冲在首帧触发，同一脉冲对同一规则最多触发一次。指定了 `state` 的规则在离开该状态时重置进圈/挥砍锁存和停留计时，但保留剩余冷却与已触发脉冲记录；非 `realTime` 句柄在游戏暂停（`dt == 0`）时不推进交互事件。
+
+**加载时校验**（`.lumen.json` 与 XML 在解析时报错，C# `EffectAsset` 在 `Play` 时抛 `InvalidDataException`）：状态名为空或重复；`nodes` 中的名字没有对应节点；时长为负或非有限值；`loop` 与 `next` 同时出现；`next`、`initialState`、`stopState`、事件的 `state` 或 `interactionEvents` 的 `goToState` 指向不存在的状态；`stopState` 是循环状态或带 `next`；零时长状态经 `next` 成环；没有 `states` 却写了 `initialState`、`stopState`、事件 `state` 或 `goToState`；`interactionEvents` 填写了当前 `trigger` 不使用的专属字段或越界节点索引。
 
 #### 示例：龙卷风的生成、持续与消散
 
@@ -295,7 +318,7 @@ tornado.Stop();                                      // 进入 collapse，播完
 1. **ID**：使用 `<defName>`，同样会同时注册裸短名与 `<packageId>:<defName>`。
 2. **节点字段**：额外提供 `<heightOffset>`（会累加到 `localPosition.y`），`localScale` 为单个浮点标量，不提供 `localRotation` 四元数（用 `<localYawDegrees>`）。
 3. **点光键名**：使用 `<radiusCells>`（对应 JSON 的 `glowRadius`）、`<color>`（原始浮点语法 `(r, g, b)` 或 `(r, g, b, a)`）、`<intensity>` 与 `<intensityOverTime>`。曲线直接包含 `<li>` 关键帧，每项可写 `<time>`、`<value>`、`<inTangent>` 和 `<outTangent>`；两个切线默认 0。XML 曲线没有 `multiplier` 字段。
-4. **列表字段**：`<states>`、`<timelineEvents>` 与状态的 `<nodes>` 用 `<li>` 列表；状态字段为 `<name>`、`<nodes>`、`<duration>`、`<loop>`、`<next>`，事件字段为 `<time>`、`<eventName>`、`<targetNodeIndex>`、`<state>`、`<notify>`；根上另有 `<defaultDuration>`、`<initialState>`、`<stopState>`。含义与默认值同上一节「状态机」。
+4. **列表字段**：`<states>`、`<timelineEvents>`、`<interactionEvents>` 与状态的 `<nodes>` 用 `<li>` 列表；状态字段为 `<name>`、`<nodes>`、`<duration>`、`<loop>`、`<next>`，时间轴事件字段为 `<time>`、`<eventName>`、`<targetNodeIndex>`、`<state>`、`<notify>`，环境交互事件（`LumenInteractionEventXml`）字段为 `<trigger>`、`<eventName>`、`<radius>`、`<anchorNodeIndex>`、`<minCursorSpeed>`、`<maxCursorSpeed>`、`<holdSeconds>`、`<minExplosionStrength>`、`<cooldownSeconds>`、`<state>`、`<goToState>`、`<targetNodeIndex>`、`<notify>`；根上另有 `<defaultDuration>`、`<initialState>`、`<stopState>`。含义与默认值同上一节「状态机」。
 
 XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Stored` 和 `(1,1,1,1)`。XML 的 `<startColor>`、渐变停靠点 `<color>`、`<materialTint>` 和点光 `<color>` 使用带括号的原始浮点分量：三分量时 alpha 为 1，四分量时保留给定值，不按字节颜色解释。格式错误或分量数错误会报告资产和字段。
 
@@ -363,6 +386,9 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 - **`LumenBlendMode`**：`Additive`（0，推荐发光与火焰）/ `AlphaBlend`（1，烟雾与水雾）/ `Premultiplied`（2）。
 - **`LumenDepthMask`**：`None`（`0`，默认）/ `NorthBehindReference`（`1`，原版正俯视 2D 相机下在 `Projectile` 层测试参考线北侧的遮挡）。
 - **`LumenBillboardMode`**：`Camera`（0，面向相机）/ `Horizontal`（1，水平贴地面片）/ `StretchedVelocity`（2，按速度方向拉伸，配合 `VelocityStretchFactor` 与 `LengthScale`）/ `Mesh`（3，延期）/ `Vertical`（4）/ `Local`（5）。
+- **`LumenEnvironmentChannel`**：`[Flags]` 位掩码：`None`（`0`）、`Explosion`（`1`）、`Cursor`（`2`）。
+- **`LumenEnvironmentForceShape`**：`HorizontalRadial`（`0`，地面 XZ 线性衰减）/ `SphericalRadial`（`1`，三维球面线性衰减）/ `SphericalWave`（`2`，向外扩张的三维球壳波，仅用于瞬态脉冲）。
+- **`LumenInteractionTrigger`**：`CursorEnter`（`0`）/ `CursorExit`（`1`）/ `CursorStay`（`2`）/ `CursorSwipe`（`3`）/ `Explosion`（`4`）。
 
 ### 形状与概率脉冲
 
@@ -404,7 +430,7 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 
 ### 3. 环境力、碰撞与子发射器
 
-以下字段属于 `emitter`，JSON 与 XML 使用小驼峰名称。标志可写 JSON 字符串 `"Explosion, Cursor"` 或 XML `<environmentChannels>Explosion, Cursor</environmentChannels>`；向量分别写 `[x,y,z]` 或 `(x,y,z)`，曲线分别写 `[[time,value], ...]` 或含 `time` / `value` 及可选 `inTangent` / `outTangent` 的 XML `<li>`；切线默认 0。`environmentChannels` 是标志：`None`、`Explosion`、`Cursor`，默认 `Explosion, Cursor`；`environmentForceScale` 为有限非负数，默认 1。爆炸只产生视觉加速度，默认开启、倍率为 1；半径为 R 的爆炸波速度为 `2R` 格/秒，半厚度为 `R/8`，峰值加速度为 `24R × 倍率`，中心降低 `R/4`，持续 0.5 游戏秒，每图最多保留八个波。光标默认关闭，可排斥或吸引；默认半径 5 格、加速度 4 格/秒²，按水平距离线性衰减。世界力求和并乘以倍率后，局部模拟转换回局部空间。局部变换不可逆（例如零缩放）时，不参与世界环境力和墙碰撞。
+以下字段属于 `emitter`，JSON 与 XML 使用小驼峰名称。标志可写 JSON 字符串 `"Explosion, Cursor"` 或 XML `<environmentChannels>Explosion, Cursor</environmentChannels>`；向量分别写 `[x,y,z]` 或 `(x,y,z)`，曲线分别写 `[[time,value], ...]` 或含 `time` / `value` 及可选 `inTangent` / `outTangent` 的 XML `<li>`；切线默认 0。`environmentChannels` 是标志：`None`、`Explosion`、`Cursor`，默认 `Explosion, Cursor`；`environmentForceScale` 为有限非负数，默认 1。原版爆炸（`Explosion.StartExplosion`）与 `RimLumenApi.EmitExplosion` 向所属地图发射 `Explosion` 通道的 `SphericalWave` 脉冲：半径为 `R` 时波速为 `2R` 格/秒，半厚度为 `R/8`，峰值加速度为 `24R × strengthScale`，波心下沉 `R/4`，持续 `0.5` 游戏秒，每张地图最多保留 `8` 条活动脉冲。宿主鼠标默认不施加环境粒子力；持续的鼠标或自定义力源由模组在 C# 中通过 `RimLumenApi.CreateMouseForce`、`CreateCursor` 或 `CreateEnvironmentSource` 按需创建（每张地图最多同时存在 `8` 个活动持续源），也可通过 `EmitEnvironmentPulse` 注入自定义脉冲。`Strength` 为正值时向外排斥、负值向内吸引：`HorizontalRadial` 按地面水平距离 `max(0, 1 - d_xz / R)` 线性衰减（忽略粒子高度 `Y`），`SphericalRadial` 按三维距离 `max(0, 1 - d_xyz / R)` 线性衰减，`SphericalWave` 按球壳权重 `max(0, 1 - |d_xyz - r_w| / h)` 衰减。匹配通道的世界环境力求和并乘以 `environmentForceScale` 后，局部模拟发射器将其逆变换回局部空间；局部变换不可逆（例如零缩放）时，跳过世界环境力和墙碰撞。L1 与 L2 使用完全一致的力公式。
 
 `RingWave` 半径为速度乘以节点重启后的秒数；权重为 `max(0, 1 - abs(distance - waveRadius) / halfThickness)`，超过终止半径后为零。循环回绕不重置节点计时。
 
@@ -524,6 +550,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 ```
 
 - `LumenPlayRequest.DepthReferenceZ` 以世界格为单位提供遮罩参考 Z。`Play` 将其记录为相对 `OriginWorld` 的 Z 偏移，因此参考线随 `Follow` 移动。节点声明了 `depthMask` 而请求没有参考值时，`Play` 抛出 `ArgumentException`。
+- `LumenPlayRequest.InteractionEvents` 可为单次播放附加 `InteractionEventSpec[]` 规则（`Play` 入口一次性校验，违例抛 `ArgumentException`），在资产自身 `InteractionEvents` 之后按顺序求值，无需克隆或修改共享 `EffectAsset`。
 - 如果 `EffectId` 不存在，`Play` 返回 `IsAlive == false` 的空句柄，句柄方法无效果；每个服务实例对同一 ID 只记录一次 `Log.Warning`。资产存在但被校验拒绝时也返回空句柄，沿用注册表的校验错误，不追加“未知 ID”警告。
 
 ### 3. 句柄控制（`ILumenEffectHandle`）
@@ -533,7 +560,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 | `bool IsAlive` | 播放中或淡出排空期间为 `true`，全部粒子与点光清理完毕后变为 `false`。 |
 | `void Trigger(string name)` | 立即触发所有同名时间轴事件（不论所属状态与时间：目标节点脉冲、`Notify`），并让同名节点从头开始发射计划，直到下一次进入状态时重新决定；不改变当前状态。名字无匹配时无效果；淡出后与死亡后无效果。L1 与 L2 行为一致。 |
 | `void GoTo(string stateName)` | 立即进入该状态（重入当前状态即重启它）。对绑定资产的句柄，未声明的状态名始终抛 `ArgumentException`，即使已调用 `Stop(true)`、正在排空或已经死亡；声明过的状态只在播放中且未调用 `Stop(true)` 时进入，否则无效果。`Stop(false)` 立即销毁；空句柄的 `GoTo` 始终无效果。 |
-| `event Action<string> Notify` | `notify: true` 的时间轴事件触发时回调事件名（按时间触发或经 `Trigger`）。 |
+| `event Action<string> Notify` | `notify: true` 的时间轴事件或环境交互事件触发时回调事件名（按时间、交互条件或经 `Trigger`）。 |
 | `event Action<string> StateChanged` | 每次进入声明过的状态时回调状态名，包括初始状态。 |
 | `event Action Finished` | `IsAlive` 变为 `false` 时回调一次，无论原因（播完、`Stop`、`Dispose`）。 |
 | `void SetParam(string name, float value)` | 实时修改运行时参数。当前内置三个立即生效的参数名：`intensity`（缩放粒子和点光亮度）、`rate`（只缩放 L1 与 L2 的连续发射速率，不缩放 `bursts`；须为有限的非负值，否则抛 `ArgumentOutOfRangeException`；0 只暂停连续发射）、`scale`（乘算根节点缩放）。其他名字会被记录下来但不会影响模拟。 |
@@ -568,6 +595,40 @@ Linear 模式先对直通材质 RGB 解码，再进行 alpha / 硬件混合。�
 `RimLumenRenderHost.DistortionPassId` 的绘制在 3152 组累加到 `R16G16SFloat` 的 `distortion` 输入。第三方可在 layer 14 绘制，或提交带该 pass ID 的动态 `MeshDrawCommand`；不支持持久绘制源。RG 是场景采样偏移，单位为帧缓冲像素，+x 向右、+y 向下；要让场景从中心向外移动，写入反向偏移。混合为 `One, One`，无深度附件，每帧清零。没有扭曲绘制时不分配目标或录制扭曲 pass，使用全零占位。
 
 玩家设置“Distortion also refracts RimLumen effects”默认开启。自定义合成可在 UBO 声明之后包含 `PostFx/RimLumenDistortion.glslinc`：`lumenRefractedUv(distortionImage, uv)` 返回场景采样 UV，`lumenLayerUv(uv, sceneUv)` 根据设置选择效果层采样 UV。后者要求使用 `PostFx/RimLumenPackUniforms.glslinc` 的 224 字节 UBO。零偏移或非有限偏移保持原 UV。
+
+### 6. 环境脉冲与持续力源 / 光标源
+
+模组可在主线程通过 `RimLumenApi` 向指定地图注入爆炸冲击波、径向脉冲、跟随真实鼠标的推/吸力租约或自定义世界坐标指针：
+
+```csharp
+// 1. 原版预设球壳爆炸波（同时驱动粒子推力与 Explosion 交互事件）
+RimLumenApi.EmitExplosion(map, new System.Numerics.Vector3(cell.x + 0.5f, 0f, cell.z + 0.5f), radius: 6f, strengthScale: 1f);
+
+// 2. 自定义环境脉冲（支持 HorizontalRadial / SphericalRadial / SphericalWave）
+RimLumenApi.EmitEnvironmentPulse(new LumenEnvironmentPulseRequest
+{
+    MapIndex = map.uniqueID, // -1 在调用时解析为 Find.CurrentMap.uniqueID
+    Channel = LumenEnvironmentChannel.Explosion,
+    Shape = LumenEnvironmentForceShape.SphericalRadial,
+    CenterWorld = originWorld,
+    Radius = 5f,
+    Strength = -18f, // 正值向外排斥，负值向内吸引
+    Duration = 0.35f,
+    RealTime = false,
+});
+
+// 3. 跟随宿主鼠标的持续推/吸力租约（用毕 Dispose 立即停用）
+using ILumenEnvironmentSource mouseForce = RimLumenApi.CreateMouseForce(map, radius: 5f, strength: 4f);
+
+// 4. 模组自定义世界坐标指针（strength == 0 时仅触发 Cursor* 事件不推粒子；非 0 时同时施加 HorizontalRadial 力）
+using ILumenEnvironmentSource aimCursor = RimLumenApi.CreateCursor(map, initialWorldPos, radius: 4f, strength: -6f);
+aimCursor.SetPosition(clampedAimWorldPos);
+```
+
+- **句柄契约（`ILumenEnvironmentSource`）**：公开 `IsAlive`、`MapIndex`、`SetPosition(Vector3)`、`SetStrength(float)`、`SetRadius(float)` 与 `Dispose()`。`FollowHostMouse == true` 时调用 `SetPosition` 抛 `InvalidOperationException`；`Channel == None`（纯事件指针，`TriggersCursorEvents == true`）时 `Radius` 与 `Strength` 必须保持 `0`。每张地图最多保留 `8` 条瞬态脉冲（超量淘汰最老脉冲）和 `8` 个持续源（超量记录节流警告并返回 `IsAlive == false` 的空句柄）；渲染熔断时脉冲为空操作、创建源返回空句柄。地图销毁（`Map.Dispose`）时立即释放该地图的全部脉冲、持续源与光标状态，不影响其他地图。
+- **自定义世界指针（`CreateCursor` / `FollowHostMouse = false`）的屏幕速度换算与非当前地图行为**：
+  - 当 `cursor.MapIndex == CurrentMapIndex` 且当前帧视口有效（`ViewportHeight > 0`）时，引擎使用**本帧同一个**相机矩阵 `ViewProjection = ProjectionMatrix × ViewMatrix` 将该指针的「上一帧世界坐标」与「本帧世界坐标」同时投影到屏幕高度坐标系 `((ndcX + 1) × 0.5 × (W / H), (1 - ndcY) × 0.5)`，再按 `Δscreen / dt_real` 与 `tau = 0.05 s` EMA 计算速度（单位 `vh/s`，与宿主鼠标完全同量纲）。由于两端点共用当帧 `ViewProjection`，单纯平移或缩放镜头不会给静止的世界坐标指针引入虚假速度。
+  - 当 `cursor.MapIndex != CurrentMapIndex`（该指针位于后台非当前渲染地图）时，其力场与水平位置 `PositionXZ` 在所属地图照常生效（粒子推/吸以及 `minCursorSpeed == 0` 的 `CursorEnter` / `CursorExit` / `CursorStay` 正常触发），屏幕速度记为 `0` 并清空投影历史；切回该地图的首帧从速度 `0` 平滑起步，不产生跨镜头尖峰。
 
 ## 七、贴图注册与兼容注意事项
 
@@ -1267,6 +1328,8 @@ void main()
 `ILumenFrameContributor` 按帧依序调用：主线程 `CaptureMainThread(LumenCaptureContext)` 捕获不可变输入，主线程 `EnqueuePreCompute(LumenComputeContext)` 提交计算，再由渲染线程 `RecordBufferBarriers(LumenBarrierContext)` 在 HDR pass 前记录屏障，最后在 HDR pass 内调用 `RecordHdrDraws(LumenHdrDrawContext)`。空闲的 `HasActiveWork` 允许跳过工作；`RequiresDirectHdrPass` 在捕获后由主线程读取，默认 false，需要直接绘制时返回 true；路由网格绘制单独计数。
 
 以 `FrameIndex` 关联捕获和录制，录制可能滞后或帧被丢弃；`SubmissionFrameIndex` 只是循环资源槽。上下文不是 GPU 二进制布局。渲染线程借用的帧、纹理只在回调内有效，不可保留或释放，也不可读取游戏主线程 API。捕获上下文提供地图 ID、时间、相机矩阵和视口；计算上下文提供帧与时钟；屏障上下文提供帧命令缓冲；绘制上下文提供 HDR 目标、可空深度和相机数据。Core 服务、CPU 模拟器、GPU 引擎及扭曲和 Ribbon 后端均注册贡献者；适配器的外部播放器也使用贡献者。管线回调异常会触发渲染熔断并记录错误。
+
+主线程 `CaptureMainThread` 期间，自定义粒子后端或适配器可通过 `LumenHostRegistry.GetEnvironmentForces(int mapIndex, LumenEnvironmentChannel channels)` 与 `LumenHostRegistry.GetCursors(int mapIndex)` 只读读取本帧已冻结的世界空间环境力切片 `ReadOnlySpan<LumenEnvironmentForce>`（含 `Channel`、`Shape`、`CenterWorld`、`Radius`、`Strength`、`WaveRadius`、`ShellHalfThickness`）与活动光标快照 `ReadOnlySpan<LumenCursorSnapshot>`（含地面 `PositionXZ`、屏幕高度速度向量 `ScreenVelocity` 与标量 `Speed`）；无活动源或光标时返回空切片。
 
 ### 3. GPU 粒子与节点后端
 

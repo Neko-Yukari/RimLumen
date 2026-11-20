@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Numerics;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Lighting;
+using RimLumen.Core.ParticleWorld;
 using RimLumen.Core.ParticlesGpu;
 
 namespace RimLumen.Core.Scene;
@@ -58,6 +60,55 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private float rotation;
     private float playbackTime;
     private Matrix4x4 rootWorld;
+    private readonly CompiledInteractionRule[] interactionRules;
+    private readonly InteractionRuleState[] interactionStates;
+    private bool subscribedCursorEvents;
+
+    private readonly record struct CompiledInteractionRule(
+        LumenInteractionTrigger Trigger,
+        string EventName,
+        float Radius,
+        float RadiusSq,
+        int AnchorNodeIndex,
+        float MinCursorSpeed,
+        float? MaxCursorSpeed,
+        float HoldSeconds,
+        float MinExplosionStrength,
+        float CooldownSeconds,
+        int StateIndex,
+        int GoToStateIndex,
+        int TargetNodeIndex,
+        bool Notify);
+
+    private struct InteractionRuleState
+    {
+        public float CooldownRemaining;
+        public float DwellSeconds;
+        public bool WasInside;
+        public bool WasSwiping;
+        public uint Seen0, Seen1, Seen2, Seen3, Seen4, Seen5, Seen6, Seen7;
+
+        public readonly uint GetSeen(byte slot) => slot switch
+        {
+            0 => Seen0, 1 => Seen1, 2 => Seen2, 3 => Seen3,
+            4 => Seen4, 5 => Seen5, 6 => Seen6, _ => Seen7,
+        };
+
+        public void SetSeen(byte slot, uint id)
+        {
+            switch (slot)
+            {
+                case 0: Seen0 = id; break;
+                case 1: Seen1 = id; break;
+                case 2: Seen2 = id; break;
+                case 3: Seen3 = id; break;
+                case 4: Seen4 = id; break;
+                case 5: Seen5 = id; break;
+                case 6: Seen6 = id; break;
+                default: Seen7 = id; break;
+            }
+        }
+    }
 
     // Requires: request.InitialState is null or names a state the asset declares.
     internal EffectInstanceHandle(LumenVfxService owner, EffectAsset asset, in LumenPlayRequest request, uint playSeed)
@@ -69,6 +120,8 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         int initial = graph.InitialIndex;
         if (request.InitialState is { } initialState && (initial = graph.IndexOf(initialState)) < 0)
             throw new ArgumentException($"Effect '{asset.EffectId}' declares no state '{initialState}'.", nameof(request));
+        interactionRules = CompileInteractionRules(asset, graph, request.InteractionEvents, out bool needsCursor);
+        interactionStates = interactionRules.Length == 0 ? Array.Empty<InteractionRuleState>() : new InteractionRuleState[interactionRules.Length];
         nodeWorldMatrices = new Matrix4x4[asset.Nodes.Length];
         nodeWorldRotations = new Quaternion[asset.Nodes.Length];
         cpuIds = new int[asset.Nodes.Length];
@@ -134,6 +187,11 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                 PushDisplayState(i);
             }
             owner.Simulator.BindNodeInstances(cpuIds, engine, gpuIds);
+            if (needsCursor)
+            {
+                ParticleEnvironment.RegisterCursorSubscriber(request.MapIndex);
+                subscribedCursorEvents = true;
+            }
             EnterState(initial);
         }
         catch
@@ -285,6 +343,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             RefreshTransforms();
             Array.Fill(nodeFrameDelta, deltaTime);
             if (state == PlaybackState.Playing) AdvanceStates(deltaTime);
+            if (state == PlaybackState.Playing && interactionRules.Length != 0) EvaluateInteractionEvents(deltaTime);
             float intensity = parameters["intensity"];
             for (int i = 0; i < asset.Nodes.Length; i++)
             {
@@ -431,6 +490,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
 
     private void BeginDrain(float frameDelta = 0f)
     {
+        ReleaseCursorSubscription();
         state = PlaybackState.Draining;
         currentState = -1;
         for (int i = 0; i < asset.Nodes.Length; i++)
@@ -451,6 +511,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
 
     private void Teardown()
     {
+        ReleaseCursorSubscription();
         state = PlaybackState.Dead;
         currentState = -1;
         for (int i = 0; i < asset.Nodes.Length; i++)
@@ -516,7 +577,12 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     //          node emits; queues Notify(EventName) when the event has Notify.
     private void FireEvent(TimelineEventSpec timelineEvent)
     {
-        int node = timelineEvent.TargetNodeIndex;
+        EmitNodePulse(timelineEvent.TargetNodeIndex);
+        if (timelineEvent.Notify) pendingEvents.Enqueue((EventKind.Notify, timelineEvent.EventName));
+    }
+
+    private void EmitNodePulse(int node)
+    {
         if (node >= 0 && node < asset.Nodes.Length && asset.Nodes[node].Emitter is { } spec)
         {
             int count = spec.Bursts.Length > 0 ? Math.Clamp(spec.Bursts[0].Count, 0, spec.MaxParticles)
@@ -528,7 +594,236 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             }
             if (gpuIds[node] >= 0) engine!.EmitBurst(gpuIds[node], count);
         }
-        if (timelineEvent.Notify) pendingEvents.Enqueue((EventKind.Notify, timelineEvent.EventName));
+    }
+
+    private void ReleaseCursorSubscription()
+    {
+        if (!subscribedCursorEvents) return;
+        subscribedCursorEvents = false;
+        ParticleEnvironment.UnregisterCursorSubscriber(request.MapIndex);
+    }
+
+    private static CompiledInteractionRule[] CompileInteractionRules(
+        EffectAsset asset,
+        EffectStateGraph graph,
+        InteractionEventSpec[]? extra,
+        out bool needsCursor)
+    {
+        InteractionEventSpec[] authored = asset.InteractionEvents;
+        int extraCount = extra?.Length ?? 0;
+        int total = authored.Length + extraCount;
+        needsCursor = false;
+        if (total == 0) return Array.Empty<CompiledInteractionRule>();
+
+        var compiled = new CompiledInteractionRule[total];
+        int cursor = 0;
+        for (int i = 0; i < authored.Length; i++)
+        {
+            compiled[cursor++] = BindRule(authored[i], graph);
+            needsCursor |= authored[i].Trigger != LumenInteractionTrigger.Explosion;
+        }
+
+        if (extra is not null)
+        {
+            bool hasDeclaredStates = asset.States.Length != 0;
+            for (int i = 0; i < extra.Length; i++)
+            {
+                InteractionEventSpec? item = extra[i];
+                if (item is null)
+                    throw new ArgumentException($"LumenPlayRequest.InteractionEvents[{i}] is null.", nameof(request));
+                try
+                {
+                    LumenAssetRules.ValidateInteractionEvent(item, asset.Nodes.Length, $"request.InteractionEvents[{i}]");
+                }
+                catch (InvalidDataException error)
+                {
+                    throw new ArgumentException(error.Message, nameof(request), error);
+                }
+
+                if (!hasDeclaredStates)
+                {
+                    if (item.State is not null)
+                        throw new ArgumentException($"Effect '{asset.EffectId}' declares no states; request.InteractionEvents[{i}] cannot set State '{item.State}'.", nameof(request));
+                    if (item.GoToState is not null)
+                        throw new ArgumentException($"Effect '{asset.EffectId}' declares no states; request.InteractionEvents[{i}] cannot set GoToState '{item.GoToState}'.", nameof(request));
+                }
+                else
+                {
+                    if (item.State is not null && graph.IndexOf(item.State) < 0)
+                        throw new ArgumentException($"Effect '{asset.EffectId}' declares no state '{item.State}'.", nameof(request));
+                    if (item.GoToState is not null && graph.IndexOf(item.GoToState) < 0)
+                        throw new ArgumentException($"Effect '{asset.EffectId}' declares no state '{item.GoToState}'.", nameof(request));
+                }
+
+                compiled[cursor++] = BindRule(item, graph);
+                needsCursor |= item.Trigger != LumenInteractionTrigger.Explosion;
+            }
+        }
+
+        return compiled;
+    }
+
+    private static CompiledInteractionRule BindRule(InteractionEventSpec spec, EffectStateGraph graph)
+        => new(
+            spec.Trigger,
+            spec.EventName,
+            spec.Radius,
+            spec.Radius * spec.Radius,
+            spec.AnchorNodeIndex,
+            spec.MinCursorSpeed,
+            spec.MaxCursorSpeed,
+            spec.HoldSeconds,
+            spec.MinExplosionStrength,
+            spec.CooldownSeconds,
+            spec.State is null ? -1 : graph.IndexOf(spec.State),
+            spec.GoToState is null ? -1 : graph.IndexOf(spec.GoToState),
+            spec.TargetNodeIndex,
+            spec.Notify);
+
+    private void EvaluateInteractionEvents(float deltaTime)
+    {
+        if (!RealTime && deltaTime <= 0f) return;
+        ReadOnlySpan<LumenCursorSnapshot> cursors = ParticleEnvironment.CursorsForMap(request.MapIndex);
+        ReadOnlySpan<FrozenExplosionPulse> explosions = ParticleEnvironment.ExplosionPulsesForMap(request.MapIndex);
+
+        for (int i = 0; i < interactionRules.Length && state == PlaybackState.Playing; i++)
+        {
+            ref readonly CompiledInteractionRule rule = ref interactionRules[i];
+            ref InteractionRuleState rs = ref interactionStates[i];
+            if (rs.CooldownRemaining > 0f)
+                rs.CooldownRemaining = MathF.Max(0f, rs.CooldownRemaining - deltaTime);
+
+            bool stateMatches = rule.StateIndex >= 0 ? currentState == rule.StateIndex : !stopRequested;
+            if (!stateMatches)
+            {
+                rs.WasInside = false;
+                rs.WasSwiping = false;
+                rs.DwellSeconds = 0f;
+                continue;
+            }
+
+            Vector2 anchorXZ = rule.AnchorNodeIndex < 0
+                ? new Vector2(origin.X, origin.Z)
+                : new Vector2(nodeWorldMatrices[rule.AnchorNodeIndex].M41, nodeWorldMatrices[rule.AnchorNodeIndex].M43);
+
+            if (rule.Trigger == LumenInteractionTrigger.Explosion)
+            {
+                for (int p = 0; p < explosions.Length; p++)
+                {
+                    ref readonly FrozenExplosionPulse pulse = ref explosions[p];
+                    if (rs.GetSeen(pulse.Slot) == pulse.Id) continue;
+                    if (pulse.AbsStrength < rule.MinExplosionStrength) continue;
+                    float distSq = Vector2.DistanceSquared(pulse.CenterXZ, anchorXZ);
+                    float maxReach = pulse.Radius + rule.Radius;
+                    if (distSq > maxReach * maxReach) continue;
+                    if (pulse.Shape == LumenEnvironmentForceShape.SphericalWave)
+                    {
+                        float frontReach = pulse.WaveRadius + pulse.ShellHalfThickness + rule.Radius;
+                        if (distSq > frontReach * frontReach) continue;
+                    }
+
+                    rs.SetSeen(pulse.Slot, pulse.Id);
+                    if (rs.CooldownRemaining <= 0f)
+                    {
+                        FireInteractionRule(in rule, ref rs);
+                        if (state != PlaybackState.Playing) break;
+                        bool stillMatches = rule.StateIndex >= 0 ? currentState == rule.StateIndex : !stopRequested;
+                        if (!stillMatches)
+                        {
+                            rs.WasInside = false;
+                            rs.WasSwiping = false;
+                            rs.DwellSeconds = 0f;
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            bool anyInside = false;
+            bool matchInside = false;
+            for (int c = 0; c < cursors.Length; c++)
+            {
+                ref readonly LumenCursorSnapshot cur = ref cursors[c];
+                if (Vector2.DistanceSquared(cur.PositionXZ, anchorXZ) <= rule.RadiusSq)
+                {
+                    anyInside = true;
+                    if (SpeedMatches(cur.Speed, in rule))
+                    {
+                        matchInside = true;
+                        break;
+                    }
+                }
+            }
+
+            switch (rule.Trigger)
+            {
+                case LumenInteractionTrigger.CursorEnter:
+                {
+                    bool entered = !rs.WasInside && anyInside;
+                    rs.WasInside = anyInside;
+                    if (entered && matchInside && rs.CooldownRemaining <= 0f)
+                        FireInteractionRule(in rule, ref rs);
+                    break;
+                }
+                case LumenInteractionTrigger.CursorExit:
+                {
+                    bool exited = rs.WasInside && !anyInside;
+                    rs.WasInside = anyInside;
+                    if (exited && rs.CooldownRemaining <= 0f)
+                    {
+                        bool exitSpeedOk = cursors.IsEmpty ? rule.MinCursorSpeed == 0f : AnySpeedMatches(cursors, in rule);
+                        if (exitSpeedOk) FireInteractionRule(in rule, ref rs);
+                    }
+                    break;
+                }
+                case LumenInteractionTrigger.CursorStay:
+                {
+                    if (matchInside)
+                    {
+                        rs.DwellSeconds += deltaTime;
+                        if (rs.DwellSeconds >= rule.HoldSeconds && rs.CooldownRemaining <= 0f)
+                        {
+                            rs.DwellSeconds = 0f;
+                            FireInteractionRule(in rule, ref rs);
+                        }
+                    }
+                    else
+                    {
+                        rs.DwellSeconds = 0f;
+                    }
+                    break;
+                }
+                case LumenInteractionTrigger.CursorSwipe:
+                {
+                    bool rising = !rs.WasSwiping && matchInside;
+                    rs.WasSwiping = matchInside;
+                    if (rising && rs.CooldownRemaining <= 0f)
+                        FireInteractionRule(in rule, ref rs);
+                    break;
+                }
+            }
+        }
+    }
+
+    private void FireInteractionRule(in CompiledInteractionRule rule, ref InteractionRuleState rs)
+    {
+        rs.CooldownRemaining = rule.CooldownSeconds;
+        if (rule.GoToStateIndex >= 0 && !stopRequested)
+            EnterState(rule.GoToStateIndex, frameDelta: 0f);
+        EmitNodePulse(rule.TargetNodeIndex);
+        if (rule.Notify)
+            pendingEvents.Enqueue((EventKind.Notify, rule.EventName));
+    }
+
+    private static bool SpeedMatches(float speed, in CompiledInteractionRule rule)
+        => speed >= rule.MinCursorSpeed && (rule.MaxCursorSpeed is null || speed <= rule.MaxCursorSpeed.Value);
+
+    private static bool AnySpeedMatches(ReadOnlySpan<LumenCursorSnapshot> cursors, in CompiledInteractionRule rule)
+    {
+        for (int i = 0; i < cursors.Length; i++)
+            if (SpeedMatches(cursors[i].Speed, in rule)) return true;
+        return false;
     }
 
     // Ensures: a node's light colour this frame is ColorRgb * intensity * fade * (IntensityOverTime is null ? 1 :
