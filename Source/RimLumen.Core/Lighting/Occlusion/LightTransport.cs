@@ -48,27 +48,32 @@ internal static class LightTransport
     // Ensures: both in [0, 1]; 1 when target == light off a solid texel. Wall-body rule per 1.7 (2026-11-19): a target on a solid texel
     //          lies in a blockLight cell and takes the value of the point half a texel outside the cell, level with the
     //          target, across each cell edge that faces the light (the light lies beyond its line) and whose texel
-    //          outside is not solid, the one with the larger solid * cover; 0 without such an edge. So only the first
-    //          solid layer is lit, each cell as the ground just in front of its free face, and the cells behind it stay dark.
+    //          outside is not solid, the one with the larger solid * cover; when both edges face the light and neither is
+    //          free, the point half a texel outside the corner between them, if that is not solid (an inner corner, lit as
+    //          vanilla's 8-connected GlowGrid lights it); 0 otherwise. So only the first solid layer is lit, each cell as
+    //          the ground just in front of its free face or corner, and the cells behind it stay dark.
     internal static float Visibility(in OcclusionFrame frame, Vector2 light, Vector2 target, out float cover)
     {
         if (!Solid(frame, target)) return Transport(frame, light, target, out cover);
         float cellX = MathF.Floor(target.X), cellZ = MathF.Floor(target.Y), best = 0f;
+        float faceX = light.X > cellX ? cellX + 1.125f : cellX - 0.125f, faceZ = light.Y > cellZ ? cellZ + 1.125f : cellZ - 0.125f;
+        bool facesX = light.X > cellX + 1f || light.X < cellX, facesZ = light.Y > cellZ + 1f || light.Y < cellZ;
         cover = 0f;
-        if (light.X > cellX + 1f || light.X < cellX)
-            Face(frame, light, new Vector2(light.X > cellX ? cellX + 1.125f : cellX - 0.125f, target.Y), ref best, ref cover);
-        if (light.Y > cellZ + 1f || light.Y < cellZ)
-            Face(frame, light, new Vector2(target.X, light.Y > cellZ ? cellZ + 1.125f : cellZ - 0.125f), ref best, ref cover);
+        bool freeX = facesX && Face(frame, light, new Vector2(faceX, target.Y), ref best, ref cover);
+        bool freeZ = facesZ && Face(frame, light, new Vector2(target.X, faceZ), ref best, ref cover);
+        if (facesX && facesZ && !freeX && !freeZ) Face(frame, light, new Vector2(faceX, faceZ), ref best, ref cover);
         return best;
     }
 
-    private static void Face(in OcclusionFrame frame, Vector2 light, Vector2 face, ref float best, ref float bestCover)
+    // Ensures: whether face is free (not solid); a free face's solid * cover replaces the best when larger.
+    private static bool Face(in OcclusionFrame frame, Vector2 light, Vector2 face, ref float best, ref float bestCover)
     {
-        if (Solid(frame, face)) return;
+        if (Solid(frame, face)) return false;
         float solid = Transport(frame, light, face, out float cover);
-        if (solid * cover <= best * bestCover) return;
+        if (solid * cover <= best * bestCover) return true;
         best = solid;
         bestCover = cover;
+        return true;
     }
 
     // Ensures: both in [0, 1]; 1 when target == light; both 0 when the segment is blocked. Smoothed per 1.8: solid as

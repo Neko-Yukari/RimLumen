@@ -48,14 +48,37 @@ public static class OcclusionSuite
     }
 
     [LumenFact]
-    public static void RockCellTouchingTheRoomOnlyAtACornerStaysDark()
+    public static void InnerCornerRockCellTakesTheGroundInFrontOfItsCorner()
     {
-        // Rock around room cells [5, 8]^2, lamp in the room. Rock cell (4, 4) meets the room only at its corner (5, 5): it
-        // has no face toward the room, so every texel of it stays dark. A wall-core depth rule lit the texels within 3.5
-        // texels of that corner, the bright notch at every concave corner of a mined-out room.
-        OcclusionFrame room = Room();
-        foreach (Vector2 target in CellTexels(4, 4))
-            Equal(0f, Transmission(room, new(6.5f, 6.5f), target));
+        // Rock around a 5 x 5 room [4, 8]^2, torch at its centre. The room's four inner-corner rock cells meet it only at a
+        // corner, both their edges toward the torch border rock: each takes, whole, the ground just inside that corner, as
+        // vanilla's 8-connected GlowGrid lights them. The next ring stays dark, and every straight first-layer cell still
+        // takes the ground in front of its free edge, level with the target. A half cover at (5, 5) dims the south-west
+        // corner's ground, so the corner inherits that value rather than full light.
+        var builder = new OcclusionBuilder(13, 13);
+        foreach (CellBox rock in new[] { new CellBox(0, 0, 12, 3), new CellBox(0, 9, 12, 12), new CellBox(0, 4, 3, 8), new CellBox(9, 4, 12, 8) })
+            builder.Wall(rock);
+        builder.Cover(Full, new MaskPlacement(5.5f, 5.5f, 1f, 1f), 0.5f);
+        var room = new OcclusionFrame(Publish(builder), new DoorStates(13, 13, new byte[13 * 13 * 4]));
+        var torch = new Vector2(6.5f, 6.5f);
+        foreach ((int x, int z, float cx, float cz) in new[] { (3, 3, 4.125f, 4.125f), (9, 3, 8.875f, 4.125f), (3, 9, 4.125f, 8.875f), (9, 9, 8.875f, 8.875f) })
+        {
+            float ground = Transmission(room, torch, new(cx, cz));
+            Require(ground > 0f, $"The ground inside corner ({cx}, {cz}) reads {ground}.");
+            foreach (Vector2 target in CellTexels(x, z))
+                Equal(ground, Transmission(room, torch, target));
+            foreach (Vector2 target in CellTexels(x + (x < 6 ? -1 : 1), z + (z < 6 ? -1 : 1)))
+                Equal(0f, Transmission(room, torch, target));
+        }
+        float dimmed = Transmission(room, torch, new(4.125f, 4.125f));
+        Require(dimmed < 0.9f, $"The cover leaves the south-west corner's ground at {dimmed}.");
+        for (int i = 4; i <= 8; i++)
+            foreach ((int x, int z) in new[] { (i, 3), (i, 9), (3, i), (9, i) })
+                foreach (Vector2 target in CellTexels(x, z))
+                {
+                    Vector2 front = z == 3 ? new(target.X, 4.125f) : z == 9 ? new(target.X, 8.875f) : x == 3 ? new(4.125f, target.Y) : new(8.875f, target.Y);
+                    Equal(Transmission(room, torch, front), Transmission(room, torch, target));
+                }
     }
 
     [LumenFact]
