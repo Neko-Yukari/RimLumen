@@ -264,7 +264,7 @@ vec3 acceleration(GpuEmitterParams emitter, vec3 position, out float drag)
             if (kind == 5u) force = ringWave(delta, parameters.x, parameters.y, radius, strength);
             else
             {
-                delta.y = 0.0;
+                if (kind == 6u) delta.y = 0.0;
                 float distance = length(delta);
                 force = distance > 1e-6 ? delta / distance * (strength * max(0.0, 1.0 - distance / radius)) : vec3(0.0);
             }

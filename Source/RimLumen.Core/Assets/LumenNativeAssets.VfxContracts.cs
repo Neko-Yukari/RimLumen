@@ -103,6 +103,38 @@ public sealed partial class LumenEffectDef
             SoftParticleFadeDistance = xml.softParticleFadeDistance,
         };
     }
+
+    private static InteractionEventSpec[] ToInteractionEvents(List<LumenInteractionEventXml>? events, string source)
+    {
+        if (events is null || events.Count == 0)
+            return Array.Empty<InteractionEventSpec>();
+        var result = new InteractionEventSpec[events.Count];
+        for (int i = 0; i < events.Count; i++)
+        {
+            string eventPath = $"{source}: interactionEvents[{i}]";
+            LumenInteractionEventXml xml = events[i] ?? throw new InvalidDataException($"{eventPath} is null.");
+            if (string.IsNullOrEmpty(xml.eventName))
+                throw new InvalidDataException($"{eventPath}.eventName: required.");
+            result[i] = new InteractionEventSpec
+            {
+                Trigger = xml.trigger ?? throw new InvalidDataException($"{eventPath}.trigger: required."),
+                EventName = xml.eventName!,
+                Radius = xml.radius,
+                AnchorNodeIndex = xml.anchorNodeIndex,
+                MinCursorSpeed = xml.minCursorSpeed,
+                MaxCursorSpeed = xml.maxCursorSpeed,
+                HoldSeconds = xml.holdSeconds,
+                MinExplosionStrength = xml.minExplosionStrength,
+                CooldownSeconds = xml.cooldownSeconds,
+                State = xml.state,
+                GoToState = xml.goToState,
+                TargetNodeIndex = xml.targetNodeIndex,
+                Notify = xml.notify,
+            };
+        }
+
+        return result;
+    }
 }
 
 // XML mirror of CollisionSpec; defaults equal the C# and JSON defaults.
@@ -167,6 +199,24 @@ public sealed class LumenRibbonXml
     public LumenRibbonTextureMode textureMode = LumenRibbonTextureMode.Stretch;
     public LumenRibbonAlignment alignment = LumenRibbonAlignment.View;
     public float softParticleFadeDistance = 0.5f;
+}
+
+// XML mirror of InteractionEventSpec; trigger and eventName are required.
+public sealed class LumenInteractionEventXml
+{
+    public LumenInteractionTrigger? trigger;
+    public string? eventName;
+    public float radius;
+    public int anchorNodeIndex = -1;
+    public float minCursorSpeed;
+    public float? maxCursorSpeed;
+    public float holdSeconds;
+    public float minExplosionStrength;
+    public float cooldownSeconds;
+    public string? state;
+    public string? goToState;
+    public int targetNodeIndex = -1;
+    public bool notify;
 }
 
 internal static partial class LumenAssetRules
@@ -311,6 +361,44 @@ internal static partial class LumenAssetRules
         ValidateNonnegative(ribbon.NoiseFrequency, path + ".noiseFrequency");
     }
 
+    internal static void ValidateInteractionEvent(InteractionEventSpec spec, int nodeCount, string path)
+    {
+        LumenInteractionTrigger trigger = spec.Trigger;
+        ValidateEnum(trigger, path + ".trigger");
+        if (string.IsNullOrEmpty(spec.EventName))
+            throw new InvalidDataException($"{path}.eventName: must not be null or empty.");
+        if (spec.AnchorNodeIndex < -1 || spec.AnchorNodeIndex >= nodeCount)
+            throw new InvalidDataException($"{path}.anchorNodeIndex: must be -1 or in [0, {nodeCount}), got {spec.AnchorNodeIndex}.");
+        if (spec.TargetNodeIndex < -1 || spec.TargetNodeIndex >= nodeCount)
+            throw new InvalidDataException($"{path}.targetNodeIndex: must be -1 or in [0, {nodeCount}), got {spec.TargetNodeIndex}.");
+        ValidateNonnegative(spec.CooldownSeconds, path + ".cooldownSeconds");
+
+        string kind = trigger.ToString();
+        if (trigger == LumenInteractionTrigger.Explosion)
+        {
+            ValidateNonnegative(spec.Radius, path + ".radius");
+            ValidateNonnegative(spec.MinExplosionStrength, path + ".minExplosionStrength");
+            ValidateModeField(spec.MinCursorSpeed, used: false, path + ".minCursorSpeed", kind);
+            if (spec.MaxCursorSpeed is not null)
+                throw new InvalidDataException($"{path}.maxCursorSpeed: not used by Explosion; must be null, got {spec.MaxCursorSpeed.Value}.");
+            ValidateModeField(spec.HoldSeconds, used: false, path + ".holdSeconds", kind);
+            return;
+        }
+
+        ValidatePositive(spec.Radius, path + ".radius");
+        ValidateModeField(spec.MinExplosionStrength, used: false, path + ".minExplosionStrength", kind);
+        if (trigger == LumenInteractionTrigger.CursorSwipe)
+            ValidatePositive(spec.MinCursorSpeed, path + ".minCursorSpeed");
+        else
+            ValidateNonnegative(spec.MinCursorSpeed, path + ".minCursorSpeed");
+        if (spec.MaxCursorSpeed is { } maxSpeed && (!float.IsFinite(maxSpeed) || maxSpeed < spec.MinCursorSpeed))
+            throw new InvalidDataException($"{path}.maxCursorSpeed: must be finite and >= minCursorSpeed ({spec.MinCursorSpeed}), got {maxSpeed}.");
+        if (trigger == LumenInteractionTrigger.CursorStay)
+            ValidateNonnegative(spec.HoldSeconds, path + ".holdSeconds");
+        else
+            ValidateModeField(spec.HoldSeconds, used: false, path + ".holdSeconds", kind);
+    }
+
     // Ensures: a field of the current kind/mode is finite and > 0; a field it does not use is exactly 0.
     private static void ValidateModeField(float value, bool used, string path, string kind)
     {
@@ -365,6 +453,48 @@ public static partial class LumenJsonAssetLoader
         "noiseFrequency", "width", "widthOverLength", "colorOverLength", "hdrIntensity", "textureKey", "blendMode",
         "textureMode", "alignment", "softParticleFadeDistance",
     };
+
+    private static readonly string[] InteractionEventProperties =
+    {
+        "trigger", "eventName", "radius", "anchorNodeIndex", "minCursorSpeed", "maxCursorSpeed",
+        "holdSeconds", "minExplosionStrength", "cooldownSeconds", "state", "goToState", "targetNodeIndex", "notify",
+    };
+
+    private static InteractionEventSpec[] ParseInteractionEvents(JsonScope scope)
+    {
+        if (!scope.TryGet("interactionEvents", out JsonElement element) || element.ValueKind == JsonValueKind.Null)
+            return Array.Empty<InteractionEventSpec>();
+        if (element.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException($"asset.interactionEvents: must be an array, got {element.ValueKind}.");
+        var events = new InteractionEventSpec[element.GetArrayLength()];
+        int index = 0;
+        foreach (JsonElement eventElement in element.EnumerateArray())
+        {
+            string eventPath = $"asset.interactionEvents[{index}]";
+            JsonScope ev = ObjectScope(eventElement, eventPath, InteractionEventProperties);
+            string? name = ev.String("eventName", null);
+            if (string.IsNullOrEmpty(name))
+                throw new InvalidDataException($"{eventPath}.eventName: required.");
+            events[index++] = new InteractionEventSpec
+            {
+                Trigger = RequiredEnum<LumenInteractionTrigger>(ev, "trigger", eventPath),
+                EventName = name,
+                Radius = ev.Float("radius", 0f),
+                AnchorNodeIndex = ev.Int("anchorNodeIndex", -1),
+                MinCursorSpeed = ev.Float("minCursorSpeed", 0f),
+                MaxCursorSpeed = ev.OptionalFloat("maxCursorSpeed"),
+                HoldSeconds = ev.Float("holdSeconds", 0f),
+                MinExplosionStrength = ev.Float("minExplosionStrength", 0f),
+                CooldownSeconds = ev.Float("cooldownSeconds", 0f),
+                State = ev.String("state", null),
+                GoToState = ev.String("goToState", null),
+                TargetNodeIndex = ev.Int("targetNodeIndex", -1),
+                Notify = ev.Bool("notify", false),
+            };
+        }
+
+        return events;
+    }
 
     private static CollisionSpec ParseCollision(JsonScope scope, string path)
     {

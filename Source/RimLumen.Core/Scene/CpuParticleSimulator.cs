@@ -39,7 +39,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         public bool WorldInteraction;
         public float NodeTime;
         public ParticleMapGrid? CollisionGrid;
-        public ReadOnlyMemory<ParticleEnvironmentSource> Environment;
+        public ReadOnlyMemory<LumenEnvironmentForce> Environment;
         public int[] Targets = Array.Empty<int>();
         public readonly HashSet<int> Sources = new();
         public float? FrameDelta;
@@ -254,7 +254,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         float dt = context.DeltaTime;
         float unscaledDt = context.UnscaledDeltaTime;
         float density = RimLumenRenderHost.ParticleDensityScale;
-        ParticleEnvironment.BeginFrame(context.FrameIndex, context.CurrentMapIndex);
+        ParticleEnvironment.BeginFrame(in context);
         subEvents.Clear();
         foreach (int id in emitterIds)
         {

@@ -24,6 +24,7 @@ public sealed partial class LumenEffectDef : Def
     public string? initialState;
     public string? stopState;
     public List<LumenTimelineEventXml>? timelineEvents;
+    public List<LumenInteractionEventXml>? interactionEvents;
 
     // Ensures: converts this XML Def into a validated immutable EffectAsset (EffectId defaults to defName).
     public EffectAsset ToEffectAsset(string? packageId = null)
@@ -75,6 +76,7 @@ public sealed partial class LumenEffectDef : Def
             DefaultDuration = defaultDuration,
             Nodes = specs,
             TimelineEvents = ToTimelineEvents(timelineEvents, source),
+            InteractionEvents = ToInteractionEvents(interactionEvents, source),
             States = ToStates(states, source),
             InitialState = initialState,
             StopState = stopState,
@@ -589,6 +591,13 @@ internal static partial class LumenAssetRules
             }
         }
 
+        InteractionEventSpec[] interactions = asset.InteractionEvents ?? Array.Empty<InteractionEventSpec>();
+        for (int i = 0; i < interactions.Length; i++)
+        {
+            InteractionEventSpec interaction = interactions[i] ?? throw new InvalidDataException($"{source}: interactionEvents[{i}] is null.");
+            ValidateInteractionEvent(interaction, nodes.Length, $"{source}: interactionEvents[{i}]");
+        }
+
         EffectStateGraph.For(asset, source);
     }
 
@@ -851,6 +860,7 @@ public static partial class LumenJsonAssetLoader
                 DefaultDuration = scope.Float("defaultDuration", 2f),
                 Nodes = nodes,
                 TimelineEvents = ParseTimelineEvents(scope),
+                InteractionEvents = ParseInteractionEvents(scope),
                 States = ParseStates(scope),
                 InitialState = scope.String("initialState", null),
                 StopState = scope.String("stopState", null),
@@ -905,7 +915,7 @@ public static partial class LumenJsonAssetLoader
 
     private static readonly string[] RootProperties =
     {
-        "effectId", "defaultDuration", "nodes", "timelineEvents", "states", "initialState", "stopState",
+        "effectId", "defaultDuration", "nodes", "timelineEvents", "interactionEvents", "states", "initialState", "stopState",
     };
 
     private static readonly string[] StateProperties = { "name", "nodes", "duration", "loop", "next" };
@@ -1915,6 +1925,7 @@ public static class LumenModAssetScanner
             DefaultDuration = asset.DefaultDuration,
             Nodes = asset.Nodes,
             TimelineEvents = asset.TimelineEvents,
+            InteractionEvents = asset.InteractionEvents,
             States = asset.States,
             InitialState = asset.InitialState,
             StopState = asset.StopState,

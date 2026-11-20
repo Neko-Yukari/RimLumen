@@ -19,9 +19,12 @@ public static class VfxContractParitySuite
     {
         EffectAsset csharp = FullCSharp();
         LumenAssetRules.Validate(csharp, "csharp");
-        string expected = Describe(csharp.Nodes);
-        Same(expected, Describe(LumenJsonAssetLoader.Parse(FullJson).Nodes), "JSON");
-        Same(expected, Describe(Xml("vfx.parity", FullXml).Nodes), "XML");
+        EffectAsset json = LumenJsonAssetLoader.Parse(FullJson);
+        EffectAsset xml = FullXmlAsset();
+        Same(Describe(csharp.Nodes), Describe(json.Nodes), "JSON nodes");
+        Same(Describe(csharp.Nodes), Describe(xml.Nodes), "XML nodes");
+        Same(Describe(csharp.InteractionEvents), Describe(json.InteractionEvents), "JSON interactionEvents");
+        Same(Describe(csharp.InteractionEvents), Describe(xml.InteractionEvents), "XML interactionEvents");
     }
 
     [LumenFact]
@@ -38,19 +41,23 @@ public static class VfxContractParitySuite
                 new EffectNodeSpec { Name = "dim", ScreenDim = new ScreenDimSpec { Strength = 0.4f } },
             },
         };
-        string expected = Describe(csharp.Nodes);
-        Same(expected, Describe(LumenJsonAssetLoader.Parse("""
+        EffectAsset json = LumenJsonAssetLoader.Parse("""
             { "effectId": "vfx.defaults", "nodes": [
               { "name": "plain", "emitter": {} },
               { "name": "trail", "ribbon": { "mode": "Trail", "lifetime": 1, "minVertexDistance": 0.1, "maxPoints": 8 } },
               { "name": "haze", "distortion": { "kind": "HeatHaze", "radius": 2, "strength": 0.1, "frequency": 1 } },
               { "name": "dim", "screenDim": { "strength": 0.4 } } ] }
-            """).Nodes), "JSON");
-        Same(expected, Describe(Xml("vfx.defaults",
+            """);
+        EffectAsset xml = Xml("vfx.defaults",
             "<li><name>plain</name><emitter /></li>",
             "<li><name>trail</name><ribbon><mode>Trail</mode><lifetime>1</lifetime><minVertexDistance>0.1</minVertexDistance><maxPoints>8</maxPoints></ribbon></li>",
             "<li><name>haze</name><distortion><kind>HeatHaze</kind><radius>2</radius><strength>0.1</strength><frequency>1</frequency></distortion></li>",
-            "<li><name>dim</name><screenDim><strength>0.4</strength></screenDim></li>").Nodes), "XML");
+            "<li><name>dim</name><screenDim><strength>0.4</strength></screenDim></li>");
+        string expected = Describe(csharp.Nodes);
+        Same(expected, Describe(json.Nodes), "JSON");
+        Same(expected, Describe(xml.Nodes), "XML");
+        Same(Describe(csharp.InteractionEvents), Describe(json.InteractionEvents), "JSON interactionEvents");
+        Same(Describe(csharp.InteractionEvents), Describe(xml.InteractionEvents), "XML interactionEvents");
     }
 
     // A. Environment forces
@@ -158,7 +165,27 @@ public static class VfxContractParitySuite
     [LumenFact] public static void RejectsUnknownRibbonTextureMode() => RejectJson(Ribbon(Beam("\"textureMode\": 4")), "ribbon.textureMode", "unknown LumenRibbonTextureMode");
     [LumenFact] public static void RejectsUnknownRibbonAlignment() => RejectJson(Ribbon(Beam("\"alignment\": 4")), "ribbon.alignment", "unknown LumenRibbonAlignment");
 
+    // G. Interaction events
+    [LumenFact] public static void RejectsCursorSwipeWithoutPositiveMinSpeed() => RejectAssetJson("\"interactionEvents\": [{ \"trigger\": \"CursorSwipe\", \"eventName\": \"slash\", \"radius\": 2 }]", "interactionEvents[0].minCursorSpeed", "> 0");
+    [LumenFact] public static void RejectsCursorEventWithExplosionStrength() => RejectAssetJson("\"interactionEvents\": [{ \"trigger\": \"CursorEnter\", \"eventName\": \"enter\", \"radius\": 2, \"minExplosionStrength\": 10 }]", "interactionEvents[0].minExplosionStrength", "not used");
+    [LumenFact] public static void RejectsExplosionEventWithCursorSpeed() => RejectAssetJson("\"interactionEvents\": [{ \"trigger\": \"Explosion\", \"eventName\": \"boom\", \"minCursorSpeed\": 1 }]", "interactionEvents[0].minCursorSpeed", "not used");
+    [LumenFact] public static void RejectsInteractionEventWithUnknownState() => RejectAssetJson("\"states\": [{ \"name\": \"idle\", \"nodes\": [\"spark\"], \"loop\": true }], \"interactionEvents\": [{ \"trigger\": \"Explosion\", \"eventName\": \"boom\", \"goToState\": \"missing\" }]", "goToState", "unknown state");
+    [LumenFact] public static void RequiresInteractionTriggerXml() => Reject(() =>
+    {
+        var doc = new XmlDocument();
+        doc.LoadXml("<li><eventName>enter</eventName><radius>2</radius></li>");
+        new LumenEffectDef
+        {
+            defName = "vfx.reject",
+            nodes = [new LumenNodeXml { name = "spark", emitter = new LumenEmitterXml() }],
+            interactionEvents = [LoadXml<LumenInteractionEventXml>(doc.DocumentElement!)],
+        }.ToEffectAsset();
+    }, "vfx.reject", "interactionEvents[0].trigger", "required");
+
     private const string Spark = "{ \"name\": \"spark\", \"emitter\": {} }";
+
+    private static void RejectAssetJson(string extraRootFields, string field, string message)
+        => Reject(() => LumenJsonAssetLoader.Parse($"{{ \"effectId\": \"vfx.reject\", \"nodes\": [{Spark}], {extraRootFields} }}"), "vfx.reject", field, message);
 
     private static string Emitter(string fields) => $"{{ \"name\": \"source\", \"emitter\": {{ {fields} }} }}";
     private static string RingWave(string parameters, float radius) => $"\"forceFields\": [{{ \"kind\": \"RingWave\", \"parameters\": {parameters}, \"radius\": {radius.ToString(CultureInfo.InvariantCulture)}, \"strength\": 2 }}]";
@@ -308,6 +335,38 @@ public static class VfxContractParitySuite
                 },
             },
         },
+        States = new[]
+        {
+            new EffectStateSpec { Name = "idle", Nodes = new[] { "source" }, Duration = 2f, Loop = true },
+            new EffectStateSpec { Name = "hit", Nodes = new[] { "spark" }, Duration = 0.5f },
+        },
+        InitialState = "idle",
+        InteractionEvents = new[]
+        {
+            new InteractionEventSpec
+            {
+                Trigger = LumenInteractionTrigger.CursorStay,
+                EventName = "attune",
+                Radius = 2.5f,
+                AnchorNodeIndex = 0,
+                MinCursorSpeed = 0.1f,
+                MaxCursorSpeed = 1.5f,
+                HoldSeconds = 0.4f,
+                CooldownSeconds = 1.2f,
+                State = "idle",
+                GoToState = "hit",
+                TargetNodeIndex = 1,
+                Notify = true,
+            },
+            new InteractionEventSpec
+            {
+                Trigger = LumenInteractionTrigger.Explosion,
+                EventName = "rupture",
+                Radius = 0.75f,
+                MinExplosionStrength = 30f,
+                Notify = true,
+            },
+        },
     };
 
     private const string FullJson = """
@@ -327,8 +386,63 @@ public static class VfxContractParitySuite
               "textureKey": "Lumen/Trail", "blendMode": "AlphaBlend", "textureMode": "Tile", "alignment": "Ground", "softParticleFadeDistance": 0.25 } },
           { "name": "beam", "ribbon": { "mode": "Beam", "endLocal": [0,0,5], "segments": 8, "noiseAmplitude": 0.2, "noiseFrequency": 10 } },
           { "name": "zap", "ribbon": { "mode": "Beam", "endAtTarget": true, "segments": 1 } },
-          { "name": "dim", "screenDim": { "strength": 0.7, "duration": 1.5, "strengthOverTime": [[0,0],[0.3,1],[1.5,0]] } } ] }
+          { "name": "dim", "screenDim": { "strength": 0.7, "duration": 1.5, "strengthOverTime": [[0,0],[0.3,1],[1.5,0]] } } ],
+          "states": [
+            { "name": "idle", "nodes": ["source"], "duration": 2, "loop": true },
+            { "name": "hit", "nodes": ["spark"], "duration": 0.5 } ],
+          "initialState": "idle",
+          "interactionEvents": [
+            { "trigger": "CursorStay", "eventName": "attune", "radius": 2.5, "anchorNodeIndex": 0, "minCursorSpeed": 0.1, "maxCursorSpeed": 1.5,
+              "holdSeconds": 0.4, "cooldownSeconds": 1.2, "state": "idle", "goToState": "hit", "targetNodeIndex": 1, "notify": true },
+            { "trigger": "Explosion", "eventName": "rupture", "radius": 0.75, "minExplosionStrength": 30, "notify": true } ] }
         """;
+
+    private static EffectAsset FullXmlAsset()
+    {
+        EffectAsset baseAsset = Xml("vfx.parity", FullXml);
+        var states = new List<LumenStateXml>();
+        foreach (string item in new[]
+        {
+            "<li><name>idle</name><nodes><li>source</li></nodes><duration>2</duration><loop>true</loop></li>",
+            "<li><name>hit</name><nodes><li>spark</li></nodes><duration>0.5</duration></li>",
+        })
+        {
+            var doc = new XmlDocument();
+            doc.LoadXml(item);
+            states.Add(LoadXml<LumenStateXml>(doc.DocumentElement!));
+        }
+
+        var interactions = new List<LumenInteractionEventXml>();
+        foreach (string item in new[]
+        {
+            "<li><trigger>CursorStay</trigger><eventName>attune</eventName><radius>2.5</radius><anchorNodeIndex>0</anchorNodeIndex>" +
+            "<minCursorSpeed>0.1</minCursorSpeed><maxCursorSpeed>1.5</maxCursorSpeed><holdSeconds>0.4</holdSeconds>" +
+            "<cooldownSeconds>1.2</cooldownSeconds><state>idle</state><goToState>hit</goToState><targetNodeIndex>1</targetNodeIndex><notify>true</notify></li>",
+            "<li><trigger>Explosion</trigger><eventName>rupture</eventName><radius>0.75</radius><minExplosionStrength>30</minExplosionStrength><notify>true</notify></li>",
+        })
+        {
+            var doc = new XmlDocument();
+            doc.LoadXml(item);
+            interactions.Add(LoadXml<LumenInteractionEventXml>(doc.DocumentElement!));
+        }
+
+        var nodes = new List<LumenNodeXml>();
+        foreach (string node in FullXml)
+        {
+            var doc = new XmlDocument();
+            doc.LoadXml(node);
+            nodes.Add(LoadXml<LumenNodeXml>(doc.DocumentElement!));
+        }
+
+        return new LumenEffectDef
+        {
+            defName = baseAsset.EffectId,
+            nodes = nodes,
+            states = states,
+            initialState = "idle",
+            interactionEvents = interactions,
+        }.ToEffectAsset();
+    }
 
     private static readonly string[] FullXml =
     {

@@ -84,8 +84,9 @@ internal sealed class EffectStateGraph
         EffectNodeSpec[] nodes = asset.Nodes;
         EffectStateSpec[] specs = asset.States ?? Array.Empty<EffectStateSpec>();
         TimelineEventSpec[] events = asset.TimelineEvents ?? Array.Empty<TimelineEventSpec>();
+        InteractionEventSpec[] interactions = asset.InteractionEvents ?? Array.Empty<InteractionEventSpec>();
         if (specs.Length == 0)
-            return CompileImplicit(asset, nodes, events, source);
+            return CompileImplicit(asset, nodes, events, interactions, source);
 
         var names = new Dictionary<string, int>(StringComparer.Ordinal);
         for (int i = 0; i < specs.Length; i++)
@@ -164,18 +165,35 @@ internal sealed class EffectStateGraph
             eventLists[owner].Add(timelineEvent);
         }
 
+        for (int i = 0; i < interactions.Length; i++)
+        {
+            InteractionEventSpec interaction = interactions[i] ?? throw new InvalidDataException($"{source}: interactionEvents[{i}] is null.");
+            if (interaction.State is not null && !names.ContainsKey(interaction.State))
+                throw new InvalidDataException($"{source}: interactionEvents[{i}] ('{interaction.EventName}'): state names unknown state '{interaction.State}'.");
+            if (interaction.GoToState is not null && !names.ContainsKey(interaction.GoToState))
+                throw new InvalidDataException($"{source}: interactionEvents[{i}] ('{interaction.EventName}'): goToState names unknown state '{interaction.GoToState}'.");
+        }
+
         for (int i = 0; i < states.Length; i++)
             states[i] = states[i] with { Events = SortByTime(eventLists[i]) };
         return new EffectStateGraph(states, initial, stop);
     }
 
-    private static EffectStateGraph CompileImplicit(EffectAsset asset, EffectNodeSpec[] nodes, TimelineEventSpec[] events, string source)
+    private static EffectStateGraph CompileImplicit(EffectAsset asset, EffectNodeSpec[] nodes, TimelineEventSpec[] events, InteractionEventSpec[] interactions, string source)
     {
         if (asset.InitialState is not null || asset.StopState is not null)
             throw new InvalidDataException($"{source}: initialState and stopState require a states list.");
         foreach (TimelineEventSpec timelineEvent in events)
             if (timelineEvent.State is not null)
                 throw new InvalidDataException($"{source}: timeline event '{timelineEvent.EventName}' names state '{timelineEvent.State}', but the effect declares no states.");
+        for (int i = 0; i < interactions.Length; i++)
+        {
+            InteractionEventSpec interaction = interactions[i] ?? throw new InvalidDataException($"{source}: interactionEvents[{i}] is null.");
+            if (interaction.State is not null)
+                throw new InvalidDataException($"{source}: interactionEvents[{i}] ('{interaction.EventName}'): state '{interaction.State}' requires a states list.");
+            if (interaction.GoToState is not null)
+                throw new InvalidDataException($"{source}: interactionEvents[{i}] ('{interaction.EventName}'): goToState '{interaction.GoToState}' requires a states list.");
+        }
         var mask = new bool[nodes.Length];
         Array.Fill(mask, true);
         bool loop = false;

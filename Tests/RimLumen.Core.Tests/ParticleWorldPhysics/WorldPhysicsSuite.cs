@@ -32,10 +32,10 @@ public static class WorldPhysicsSuite
     [LumenFact]
     public static void EnvironmentFiltersChannelsSumsForcesAndConvertsLocalVectors()
     {
-        ParticleEnvironmentSource[] sources =
+        LumenEnvironmentForce[] sources =
         {
-            new(LumenEnvironmentChannel.Explosion, Vector3.Zero, 8, 6, 3, 1),
-            new(LumenEnvironmentChannel.Cursor, Vector3.Zero, 6, 4, 0, 0)
+            new(LumenEnvironmentChannel.Explosion, LumenEnvironmentForceShape.SphericalWave, Vector3.Zero, 8, 6, 3, 1),
+            new(LumenEnvironmentChannel.Cursor, LumenEnvironmentForceShape.HorizontalRadial, Vector3.Zero, 6, 4, 0, 0)
         };
         var spec = new EmitterSpec { Name = "world", WorldSpaceSimulation = true, EnvironmentForceScale = 0.5f };
         Close(new(4, 0, 0), ParticleEnvironmentMath.Acceleration(sources, spec, Matrix4x4.Identity, Matrix4x4.Identity, new(3, 0, 0)));
@@ -46,10 +46,10 @@ public static class WorldPhysicsSuite
 
         Matrix4x4 world = Matrix4x4.CreateScale(2, 3, 4) * Matrix4x4.CreateRotationY(MathF.PI / 2) * Matrix4x4.CreateTranslation(10, 0, 20);
         Matrix4x4.Invert(world, out Matrix4x4 inverse);
-        ParticleEnvironmentSource[] localSources = { new(LumenEnvironmentChannel.Cursor, new(10, 0, 20), 8, 8, 0, 0) };
+        LumenEnvironmentForce[] localSources = { new(LumenEnvironmentChannel.Cursor, LumenEnvironmentForceShape.HorizontalRadial, new(10, 0, 20), 8, 8, 0, 0) };
         var local = new EmitterSpec { Name = "local", WorldSpaceSimulation = false };
         Close(new(0, 0, 1), ParticleEnvironmentMath.Acceleration(localSources, local, world, inverse, new(0, 10, 1)));
-        ParticleEnvironmentSource pull = localSources[0] with { Strength = -8 };
+        LumenEnvironmentForce pull = localSources[0] with { Strength = -8 };
         Close(new(-4, 0, 0), pull.Acceleration(new(14, 30, 20)));
     }
 
@@ -57,6 +57,7 @@ public static class WorldPhysicsSuite
     public static void EnvironmentSnapshotIsSharedByEmittersAndBothCapturesUntilNextFrame()
     {
         const int map = 711;
+        var mapObj = new Verse.Map { uniqueID = map };
         var spec = new EmitterSpec { Name = "cursor", MaxParticles = 1, EnvironmentChannels = LumenEnvironmentChannel.Cursor };
         var cpu = new CpuParticleSimulator();
         using var gpu = new LumenGpuParticleEngine(3);
@@ -68,40 +69,35 @@ public static class WorldPhysicsSuite
         cpu.EmitBurst(first, 1);
         cpu.EmitBurst(second, 1);
         cpu.CaptureMainThread(Frame(0f, 710));
-        float radius = ParticleEnvironment.CursorRadius, strength = ParticleEnvironment.CursorStrength;
         try
         {
-            // Host-input boundary: no game or mouse. The cursor is two cells to the left of both particles.
-            ParticleEnvironment.CursorRadius = 4;
-            ParticleEnvironment.CursorStrength = 8;
+            using ILumenEnvironmentSource source = RimLumen.Core.Api.RimLumenApi.CreateCursor(mapObj, new Vector3(-2, 0, 0), radius: 4f, strength: 8f);
             var frame = Frame(0.25f, 711);
-            ParticleEnvironment.CaptureSources(frame.FrameIndex, map, new Vector3(-2, 0, 0), 0);
+            cpu.CaptureMainThread(frame);
             var shared = ParticleEnvironment.ForMap(map, spec.EnvironmentChannels);
             Check(!shared.IsEmpty && shared.Equals(ParticleEnvironment.ForMap(map, spec.EnvironmentChannels)),
                 "Two emitters on the same map must borrow the same source storage.");
-            cpu.CaptureMainThread(frame);
             Close(Vector3.UnitX, cpu.LiveParticles[0].Velocity);
             Close(Vector3.UnitX, cpu.LiveParticles[1].Velocity);
-            ParticleEnvironment.CursorStrength = 80; // A live setting change must not leak into the second capture.
+            source.SetStrength(80f); // A live handle change must not leak into the second capture of the same frame.
             gpu.CaptureMainThread(frame);
             var captured = gpu.CapturedFrame!;
             Check(captured.Fields.Length == 2 && captured.Fields.All(f => f.StrengthAndFrequency.X == 8f)
                 && captured.Emitters[2].Parameters.Tables.Z == 0f, "L2 must see the same frozen cursor, only on its map.");
-            gpu.CaptureMainThread(Frame(0.25f, 712)); // No cursor on the new frame.
+            source.Dispose();
+            gpu.CaptureMainThread(Frame(0.25f, 712)); // Disposed cursor is absent on the new frame.
             Check(gpu.CapturedFrame!.Fields.Length == 0, "The next frame must replace the old map snapshot.");
         }
         finally
         {
             ParticleEnvironment.ForgetMap(map);
-            ParticleEnvironment.CursorRadius = radius;
-            ParticleEnvironment.CursorStrength = strength;
         }
     }
 
     [LumenFact]
     public static void ExplosionShellHasRadiusDerivedUpwardForceAndExpires()
     {
-        ParticleEnvironmentSource pulse = ParticleEnvironmentMath.Explosion(Vector3.Zero, 4f, 0.25f);
+        LumenEnvironmentForce pulse = ParticleEnvironmentMath.Explosion(Vector3.Zero, 4f, 0.25f);
         Vector3 acceleration = pulse.Acceleration(new(MathF.Sqrt(3), 0, 0));
         Near(96f, acceleration.Length());
         Near(48f, acceleration.Y);

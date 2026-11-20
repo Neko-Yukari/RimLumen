@@ -173,6 +173,7 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
     //          already removes its lights from this frame.
     public void CaptureMainThread(in LumenCaptureContext context)
     {
+        RimLumen.Core.ParticleWorld.ParticleEnvironment.BeginFrame(in context);
         int count = handles.Count;
         if (eventBatches.Length < count) eventBatches = new int[count];
         lights.Clear();

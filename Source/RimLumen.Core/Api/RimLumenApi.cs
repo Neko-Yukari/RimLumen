@@ -90,4 +90,75 @@ public static class RimLumenApi
         UnityEngine.Vector3 center = cell.ToVector3Shifted();
         return Play(effectId, map, new Vector3(center.x, center.y, center.z), scale, rotationDegrees, realTime);
     }
+
+    public static void EmitEnvironmentPulse(in LumenEnvironmentPulseRequest request)
+    {
+        RimLumen.Core.ParticleWorld.ParticleEnvironment.ValidatePulseRequest(in request, out int mapIndex);
+        if (RimLumenRenderHost.FailSafeTripped) return;
+        RimLumen.Core.ParticleWorld.ParticleEnvironment.EmitPulse(mapIndex, in request);
+    }
+
+    public static void EmitExplosion(Map? map, Vector3 groundCenterWorld, float radius, float strengthScale = 1f)
+    {
+        if (!(radius > 0f) || !float.IsFinite(radius))
+            throw new ArgumentOutOfRangeException(nameof(radius), radius, "Explosion radius must be finite and > 0.");
+        if (!float.IsFinite(strengthScale))
+            throw new ArgumentOutOfRangeException(nameof(strengthScale), strengthScale, "strengthScale must be finite.");
+
+        EmitEnvironmentPulse(new LumenEnvironmentPulseRequest
+        {
+            MapIndex = MapId(map),
+            Channel = LumenEnvironmentChannel.Explosion,
+            Shape = LumenEnvironmentForceShape.SphericalWave,
+            CenterWorld = new Vector3(groundCenterWorld.X, groundCenterWorld.Y - 0.25f * radius, groundCenterWorld.Z),
+            Radius = radius,
+            Strength = 24f * radius * strengthScale,
+            Duration = 0.5f,
+            ShellHalfThickness = 0.125f * radius,
+            RealTime = false,
+        });
+    }
+
+    public static ILumenEnvironmentSource CreateEnvironmentSource(in LumenEnvironmentSourceRequest request)
+    {
+        RimLumen.Core.ParticleWorld.ParticleEnvironment.ValidateSourceRequest(in request, out int mapIndex);
+        if (RimLumenRenderHost.FailSafeTripped)
+            return new RimLumen.Core.ParticleWorld.ParticleEnvironment.InertEnvironmentSource(mapIndex, request.Channel, request.FollowHostMouse);
+        return RimLumen.Core.ParticleWorld.ParticleEnvironment.CreateSource(mapIndex, in request);
+    }
+
+    public static ILumenEnvironmentSource CreateMouseForce(Map? map = null, float radius = 5f, float strength = 4f)
+        => CreateEnvironmentSource(new LumenEnvironmentSourceRequest
+        {
+            MapIndex = MapId(map),
+            Channel = LumenEnvironmentChannel.Cursor,
+            Shape = LumenEnvironmentForceShape.HorizontalRadial,
+            Radius = radius,
+            Strength = strength,
+            FollowHostMouse = true,
+            TriggersCursorEvents = true,
+        });
+
+    public static ILumenEnvironmentSource CreateCursor(Map? map, Vector3 initialPositionWorld, float radius = 5f, float strength = 0f)
+    {
+        LumenEnvironmentChannel channel = radius == 0f && strength == 0f
+            ? LumenEnvironmentChannel.None
+            : LumenEnvironmentChannel.Cursor;
+
+        return CreateEnvironmentSource(new LumenEnvironmentSourceRequest
+        {
+            MapIndex = MapId(map),
+            Channel = channel,
+            Shape = LumenEnvironmentForceShape.HorizontalRadial,
+            InitialPositionWorld = initialPositionWorld,
+            Radius = radius,
+            Strength = strength,
+            FollowHostMouse = false,
+            TriggersCursorEvents = true,
+        });
+    }
+
+    private static int MapId(Map? map) => map is null ? -1 : map.uniqueID >= 0
+        ? map.uniqueID
+        : throw new ArgumentOutOfRangeException(nameof(map), "Map must have a non-negative uniqueID.");
 }

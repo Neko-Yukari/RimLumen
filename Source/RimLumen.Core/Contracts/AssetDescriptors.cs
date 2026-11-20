@@ -323,6 +323,7 @@ public sealed class EffectAsset
     public float DefaultDuration { get; init; } = 2f;
     public EffectNodeSpec[] Nodes { get; init; } = Array.Empty<EffectNodeSpec>();
     public TimelineEventSpec[] TimelineEvents { get; init; } = Array.Empty<TimelineEventSpec>();
+    public InteractionEventSpec[] InteractionEvents { get; init; } = Array.Empty<InteractionEventSpec>();
 
     // Empty = one implicit unnamed state holding every node, Duration = DefaultDuration, Loop = any emitter Looping.
     public EffectStateSpec[] States { get; init; } = Array.Empty<EffectStateSpec>();
