@@ -29,6 +29,7 @@ internal sealed class RimLumenPipeline : IDisposable
     internal L1ParticleBatchRenderer L1Renderer { get; private set; } = null!;
     internal LightPoolRenderer LightPool { get; private set; } = null!;
     internal LightingTakeover Takeover { get; private set; } = null!;
+    private bool renderMapFrame;
     private bool takeoverFrame;
     private Map? lastMap;
     private ulong captureIndex;
@@ -120,7 +121,7 @@ internal sealed class RimLumenPipeline : IDisposable
     // still points into it, so Find.CurrentMap itself can throw. That clear runs only while ShouldWaitForEvent holds and
     // only after the map read last here was disposed; such waiting frames skip the read. Other waiting frames still
     // capture (simDt 0, real time runs), with the current map read fresh.
-    private Map? RenderableMap()
+    private Map? SimulatableMap()
     {
         if (Current.ProgramState != ProgramState.Playing) return lastMap = null;
         if (LongEventHandler.ShouldWaitForEvent && lastMap is { Disposed: true }) return null;
@@ -128,24 +129,38 @@ internal sealed class RimLumenPipeline : IDisposable
         return lastMap is { Disposed: false } ? lastMap : null;
     }
 
+    // Matches Waylith MapRenderFeature.CaptureFrame (:263) so map draws and GPU staging run iff the host renders the map.
+    private static bool IsMapRendered() =>
+        !RimWorldWaylith.LongEventState.EventWithoutStandardWindowRunning
+        && RimWorld.Planet.WorldRendererUtility.DrawingMap
+        && MapGenerator.mapBeingGenerated == null;
+
+    // Node-feature draw/staging contributors whose simulation clocks already advanced in LumenVfxService.CaptureMainThread.
+    private static bool IsMapDrawOnlyContributor(ILumenFrameContributor contributor) =>
+        contributor is Ribbons.LumenRibbonContributor
+            or Distortion.LumenDistortionBackend
+            or ScreenDim.LumenScreenDimBackend;
+
     internal void BeginCapture(in FrameTiming timing)
     {
         // FrameRenderer.BeginMainThreadFrame:220-230 runs all early hooks before CaptureFrame:186-192.
         // This is before ComputeRenderFeature drains Enqueue.
         captureIndex = (ulong)timing.FrameNumber;
+        renderMapFrame = false;
         takeoverFrame = false;
         colorBlendSpace = RimLumenRenderHost.CurrentFrameColorBlendSpace;
         mapIndex = -1;
         contributors = Array.Empty<ILumenFrameContributor>();
         var camera = Current.CameraDriver?.MyCamera;
-        Map? map = RenderableMap();
+        Map? map = SimulatableMap();
         if (Current.Game == null || map == null || camera == null)
         {
             MapLightFieldCollector.BeginCapture(App, null);
             return;
         }
         MapLightFieldCollector.BeginCapture(App, map);
-        takeoverFrame = LightingTakeover.EvaluateFrame();
+        bool renderMap = renderMapFrame = IsMapRendered();
+        takeoverFrame = renderMap && LightingTakeover.EvaluateFrame();
         // TickManagerUpdate counts completed ticks; its time budget may run fewer than the requested speed.
         TickManager tickManager = Current.Game.tickManager;
         float unscaledDt = MathF.Max(0f, timing.DeltaTime);
@@ -174,6 +189,14 @@ internal sealed class RimLumenPipeline : IDisposable
         {
             // The service can activate a later contributor in this very capture.
             if (!contributor.HasActiveWork) continue;
+            if (!renderMap)
+            {
+                if (IsMapDrawOnlyContributor(contributor) ||
+                    contributor is ParticlesGpu.LumenGpuParticleEngine { HasInstances: false })
+                    continue;
+                contributor.CaptureMainThread(in capture);
+                continue;
+            }
             activeContributorBuffer.Add(contributor);
             contributor.CaptureMainThread(in capture);
             contributor.EnqueuePreCompute(in compute);
@@ -187,6 +210,7 @@ internal sealed class RimLumenPipeline : IDisposable
             if (ReferenceEquals(contributor, LumenSceneBootstrap.Service))
                 LightPool.Stage(captureIndex, LumenSceneBootstrap.Service.Lights);
         }
+        if (!renderMap) return;
         if (takeoverFrame) LightPool.StageVanilla(captureIndex, map);
         LightPool.Prepare(captureIndex, map, takeoverFrame, RimLumenRenderHost.ObjectShadows);
         bool changed = activeContributorBuffer.Count != activeContributors.Length;
@@ -200,7 +224,7 @@ internal sealed class RimLumenPipeline : IDisposable
     internal PipelineFrame? Capture(in FrameTiming timing)
     {
         Captured = null;
-        if (RenderableMap() == null || Current.CameraDriver?.MyCamera == null)
+        if (!renderMapFrame || SimulatableMap() == null || !IsMapRendered() || Current.CameraDriver?.MyCamera == null)
             return null;
         MeshDrawSubmissionSnapshot snapshot = MeshDrawSubmission.CaptureFlushedSnapshot(App.GraphicsDevice!);
         MeshDrawFrame? mesh = null, glowMesh = null, lightMesh = null, shadowMesh = null, distortionMesh = null;

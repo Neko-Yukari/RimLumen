@@ -42,11 +42,18 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         public readonly List<GpuExplicitBurst> ExplicitBursts = new();
     }
 
+    private readonly record struct PendingClear(EmitterSlotRange Range, ulong? EnqueuedFrame = null);
+    private readonly record struct InFlightGpuDt(int InstanceId, float Dt, ulong FrameIndex);
+
     private readonly int capacity;
     private readonly EmitterSlotAllocator allocator;
     private readonly Dictionary<int, Instance> instances = new();
     private readonly List<ParticleEmitterFrame> captureRows = new();
     private readonly List<EmitterSlotRange> captureClears = new();
+    private readonly List<PendingClear> pendingClears = new();
+    private readonly Dictionary<int, float> pendingGpuDts = new();
+    private readonly List<InFlightGpuDt> inFlightGpuDts = new();
+    private readonly List<int> staleGpuDtIds = new();
     private readonly List<int> captureRemoved = new();
     private readonly List<GpuForceField> captureFields = new();
     private readonly List<ParticleMapGrid> captureMaps = new();
@@ -70,7 +77,16 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
 
     public int Capacity => capacity;
     public string Name => "RimLumen.GpuParticles";
-    public bool HasActiveWork => !disposed && instances.Count != 0;
+    internal bool HasInstances => !disposed && instances.Count != 0;
+    public bool HasActiveWork
+    {
+        get
+        {
+            if (disposed) return false;
+            if (instances.Count != 0) return true;
+            lock (lifecycleGate) return particles is not null && HasUnqueuedClears();
+        }
+    }
 
     // Requires: main thread; spec passed LumenAssetRules validation.
     // Ensures: reserves slots without allocating GPU resources while idle.
@@ -93,6 +109,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         });
         lock (lifecycleGate)
         {
+            SubtractPendingClears(range);
             System.Threading.Volatile.Write(ref idleRequested, false);
             idleStartedAt = null;
         }
@@ -346,9 +363,143 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
             freeStateSlots.Push(instances[id].StateSlot);
             instances.Remove(id);
         }
-        captured = new ParticleFrame(context, rows.ToArray(), fields.ToArray(), clears.ToArray())
-        { Maps = captureMaps.ToArray(), CellCount = cellCount, SubLinks = captureLinks.ToArray(), ExplicitBursts = captureBursts.ToArray(), EventCapacity = eventCapacity, StateSlotCount = stateSlotCount };
+        lock (lifecycleGate)
+        {
+            foreach (int id in removed)
+            {
+                pendingGpuDts.Remove(id);
+                inFlightGpuDts.RemoveAll(step => step.InstanceId == id);
+            }
+            if (pendingGpuDts.Count != 0)
+            {
+                staleGpuDtIds.Clear();
+                foreach (int id in pendingGpuDts.Keys)
+                    if (!rowByInstance.ContainsKey(id)) staleGpuDtIds.Add(id);
+                foreach (int id in staleGpuDtIds) pendingGpuDts.Remove(id);
+            }
+            for (int row = 0; row < rows.Count; row++)
+            {
+                int id = rows[row].InstanceId;
+                GpuEmitterParams parameters = rows[row].Parameters;
+                float accumulated = (pendingGpuDts.TryGetValue(id, out float prior) ? prior : 0f) + parameters.State.X;
+                pendingGpuDts[id] = accumulated;
+                parameters.State.X = accumulated;
+                rows[row] = rows[row] with { Parameters = parameters };
+            }
+            foreach (EmitterSlotRange range in clears) AddPendingClear(range);
+            clears.Clear();
+            foreach (PendingClear pending in pendingClears)
+                if (pending.EnqueuedFrame is null) clears.Add(pending.Range);
+        }
+        captured = new ParticleFrame(
+            context,
+            rows.Count == 0 ? Array.Empty<ParticleEmitterFrame>() : rows.ToArray(),
+            fields.Count == 0 ? Array.Empty<GpuForceField>() : fields.ToArray(),
+            clears.Count == 0 ? Array.Empty<EmitterSlotRange>() : clears.ToArray())
+        {
+            Maps = captureMaps.Count == 0 ? Array.Empty<ParticleMapGrid>() : captureMaps.ToArray(),
+            CellCount = cellCount,
+            SubLinks = captureLinks.Count == 0 ? Array.Empty<GpuSubLink>() : captureLinks.ToArray(),
+            ExplicitBursts = captureBursts.Count == 0 ? Array.Empty<GpuExplicitBurst>() : captureBursts.ToArray(),
+            EventCapacity = eventCapacity,
+            StateSlotCount = stateSlotCount
+        };
         System.Threading.Volatile.Write(ref idleRequested, rows.Count == 0);
+    }
+
+    private bool HasUnqueuedClears()
+    {
+        for (int i = 0; i < pendingClears.Count; i++)
+            if (pendingClears[i].EnqueuedFrame is null) return true;
+        return false;
+    }
+
+    private void ClearPendingGpuState()
+    {
+        pendingClears.Clear();
+        pendingGpuDts.Clear();
+        inFlightGpuDts.Clear();
+    }
+
+    private void AddPendingClear(EmitterSlotRange range)
+    {
+        int start = range.Offset, end = start + range.Capacity;
+        int insertAt = 0;
+        for (int i = 0; i < pendingClears.Count;)
+        {
+            PendingClear existing = pendingClears[i];
+            int exStart = existing.Range.Offset, exEnd = exStart + existing.Range.Capacity;
+            if (existing.EnqueuedFrame is null && exEnd >= start && exStart <= end)
+            {
+                start = Math.Min(start, exStart);
+                end = Math.Max(end, exEnd);
+                pendingClears.RemoveAt(i);
+                continue;
+            }
+            if (exStart < start) insertAt = i + 1;
+            i++;
+        }
+        pendingClears.Insert(insertAt, new PendingClear(new EmitterSlotRange(start, end - start)));
+    }
+
+    private void SubtractPendingClears(EmitterSlotRange allocated)
+    {
+        int cutStart = allocated.Offset, cutEnd = cutStart + allocated.Capacity;
+        for (int i = pendingClears.Count - 1; i >= 0; i--)
+        {
+            PendingClear existing = pendingClears[i];
+            int exStart = existing.Range.Offset, exEnd = exStart + existing.Range.Capacity;
+            if (exEnd <= cutStart || exStart >= cutEnd) continue;
+            pendingClears.RemoveAt(i);
+            if (exEnd > cutEnd)
+                pendingClears.Insert(i, existing with { Range = new EmitterSlotRange(cutEnd, exEnd - cutEnd) });
+            if (exStart < cutStart)
+                pendingClears.Insert(i, existing with { Range = new EmitterSlotRange(exStart, cutStart - exStart) });
+        }
+    }
+
+    internal void MarkFrameEnqueued(ulong frameIndex)
+    {
+        lock (lifecycleGate)
+        {
+            for (int i = 0; i < pendingClears.Count; i++)
+                if (pendingClears[i].EnqueuedFrame is null)
+                    pendingClears[i] = pendingClears[i] with { EnqueuedFrame = frameIndex };
+            foreach (KeyValuePair<int, float> entry in pendingGpuDts)
+                if (entry.Value > 0f)
+                    inFlightGpuDts.Add(new InFlightGpuDt(entry.Key, entry.Value, frameIndex));
+            pendingGpuDts.Clear();
+        }
+    }
+
+    internal void CompleteRecordedFrame(ulong frameIndex)
+    {
+        lock (lifecycleGate)
+        {
+            pendingClears.RemoveAll(clear => clear.EnqueuedFrame == frameIndex);
+            inFlightGpuDts.RemoveAll(step => step.FrameIndex == frameIndex);
+        }
+    }
+
+    internal void RestoreDroppedFrame(ulong frameIndex)
+    {
+        lock (lifecycleGate)
+        {
+            for (int i = pendingClears.Count - 1; i >= 0; i--)
+            {
+                if (pendingClears[i].EnqueuedFrame != frameIndex) continue;
+                EmitterSlotRange range = pendingClears[i].Range;
+                pendingClears.RemoveAt(i);
+                AddPendingClear(range);
+            }
+            for (int i = inFlightGpuDts.Count - 1; i >= 0; i--)
+            {
+                InFlightGpuDt step = inFlightGpuDts[i];
+                if (step.FrameIndex != frameIndex) continue;
+                inFlightGpuDts.RemoveAt(i);
+                pendingGpuDts[step.InstanceId] = (pendingGpuDts.TryGetValue(step.InstanceId, out float current) ? current : 0f) + step.Dt;
+            }
+        }
     }
 
     public void Dispose()
@@ -357,6 +508,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         DisposeGpu();
         disposed = true;
         instances.Clear();
+        lock (lifecycleGate) ClearPendingGpuState();
         captured = null;
     }
 }

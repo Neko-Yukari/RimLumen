@@ -508,6 +508,64 @@ public static class ParticleEngineTests
             $"Stretched axes lost unit orthogonality in view space: right={viewSRight}, up={viewSUp}.");
     }
 
+    [LumenFact]
+    public static void UnrecordedClearsPersistAcrossSkippedFramesAndTrimReallocatedSlots()
+    {
+        using var engine = new LumenGpuParticleEngine(16);
+        var identity = new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity);
+        int first = engine.CreateInstance(Looping(), identity, -1, false, 1u);
+        int second = engine.CreateInstance(Looping(), identity, -1, false, 2u);
+        engine.CaptureMainThread(Frame(0.25f, 0));
+        engine.MarkFrameEnqueued(0);
+        engine.CompleteRecordedFrame(0);
+
+        engine.DestroyInstance(first, immediate: true);
+        engine.CaptureMainThread(Frame(0.25f, 1));
+        Require(engine.CapturedFrame!.Clears is [var firstClear] && firstClear == new EmitterSlotRange(0, 8),
+            "Frame 1 must capture the destroyed emitter's [0, 8) clear range.");
+        Require(MathF.Abs(engine.CapturedFrame.Emitters[0].Parameters.State.X - 0.25f) < 1e-6f,
+            "Frame 1 surviving emitter carries 0.25s integration dt.");
+
+        // Frame 1 is not recorded (e.g. World-layer simulation frame); Frame 2 must carry both [0, 8) and accumulated dt.
+        engine.CaptureMainThread(Frame(0.25f, 2));
+        Require(engine.CapturedFrame!.Clears is [var retained] && retained == new EmitterSlotRange(0, 8),
+            $"Unrecorded clear [0, 8) was lost on the next capture (Clears.Length={engine.CapturedFrame.Clears.Length}).");
+        Require(MathF.Abs(engine.CapturedFrame.Emitters[0].Parameters.State.X - 0.5f) < 1e-6f,
+            $"Surviving emitter must accumulate unrecorded GPU dt to 0.5s; got {engine.CapturedFrame.Emitters[0].Parameters.State.X}.");
+
+        // Reusing [0, 3) before any frame records leaves only the unowned [3, 8) tail to clear.
+        var small = new EmitterSpec { Name = "small", MaxParticles = 3, Looping = true, Duration = 1f, RateOverTime = 4f, StartLifetimeMin = 1f, StartLifetimeMax = 1f };
+        int third = engine.CreateInstance(small, identity, -1, false, 3u);
+        engine.DestroyInstance(second, immediate: true);
+        engine.CaptureMainThread(Frame(0.25f, 3));
+        Require(engine.CapturedFrame!.Clears is [var mergedTail] && mergedTail == new EmitterSlotRange(3, 13),
+            $"Expected trimmed+coalesced clear [3, 16) (Offset=3, Capacity=13); got count={engine.CapturedFrame.Clears.Length}.");
+        Require(engine.CapturedFrame.Emitters[0].InstanceId == third
+            && MathF.Abs(engine.CapturedFrame.Emitters[0].Parameters.State.X - 0.25f) < 1e-6f,
+            "Newly created emitter starts with its own 0.25s integration dt.");
+
+        // An in-flight enqueued frame owns its clears and dt without duplicating them, restores both if retired unrecorded,
+        // and consumes both permanently once recorded.
+        engine.MarkFrameEnqueued(3);
+        engine.CaptureMainThread(Frame(0.125f, 4));
+        Require(engine.CapturedFrame!.Clears.Length == 0
+            && MathF.Abs(engine.CapturedFrame.Emitters[0].Parameters.State.X - 0.125f) < 1e-6f,
+            "In-flight enqueued clears and dt must not duplicate onto the next capture.");
+
+        engine.RestoreDroppedFrame(3);
+        engine.CaptureMainThread(Frame(0.125f, 5));
+        Require(engine.CapturedFrame!.Clears is [var restored] && restored == new EmitterSlotRange(3, 13)
+            && MathF.Abs(engine.CapturedFrame.Emitters[0].Parameters.State.X - 0.5f) < 1e-6f,
+            $"Retiring an unrecorded queued frame must restore clears and 0.25s dt (expected 0.5s, got {engine.CapturedFrame.Emitters[0].Parameters.State.X}).");
+
+        engine.MarkFrameEnqueued(5);
+        engine.CompleteRecordedFrame(5);
+        engine.CaptureMainThread(Frame(0.125f, 6));
+        Require(engine.CapturedFrame!.Clears.Length == 0
+            && MathF.Abs(engine.CapturedFrame.Emitters[0].Parameters.State.X - 0.125f) < 1e-6f,
+            "Recorded clears and dt must be consumed once and not replayed.");
+    }
+
     private static LumenCaptureContext PausedFrame(float unscaled) => new()
     {
         FrameIndex = 0, DeltaTime = 0f, UnscaledDeltaTime = unscaled, ViewportWidth = 64, ViewportHeight = 64,
