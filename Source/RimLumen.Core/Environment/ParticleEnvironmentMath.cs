@@ -26,9 +26,9 @@ internal static class ParticleEnvironmentMath
 {
     // A pulse crosses its authored radius in 0.5 simulation seconds; triangular shell width is 1/4 radius.
     // Centre lowered by radius/4 gives particles at ground height a genuine spherical upward component.
-    internal static ParticleEnvironmentSource Explosion(Vector3 position, float radius, float elapsed, float multiplier)
+    internal static ParticleEnvironmentSource Explosion(Vector3 position, float radius, float elapsed)
         => new(LumenEnvironmentChannel.Explosion, position - Vector3.UnitY * (radius * 0.25f), radius,
-            24f * radius * multiplier, elapsed * (2f * radius), radius * 0.125f);
+            24f * radius, elapsed * (2f * radius), radius * 0.125f);
 
     internal static Vector3 Acceleration(ReadOnlySpan<ParticleEnvironmentSource> sources, EmitterSpec spec,
         in Matrix4x4 world, in Matrix4x4 inverse, Vector3 position)

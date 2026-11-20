@@ -7,14 +7,6 @@
   <RimLumen_ObjectShadows>物件投射光源阴影</RimLumen_ObjectShadows>
   <RimLumen_ObjectShadowsTip>柱子、家具、植物等物件按自身轮廓背向每个光源投下阴影；接管地图光照时也投下日光阴影。墙、岩石和门的阴影不受影响。每个着色器包分别保存。</RimLumen_ObjectShadowsTip>
   <RimLumen_ParticleDensity>全局粒子密度倍率：{0}%</RimLumen_ParticleDensity>
-  <RimLumen_ExplosionForces>爆炸推动粒子（仅视觉效果）</RimLumen_ExplosionForces>
-  <RimLumen_ExplosionForceScale>爆炸粒子推力：{0} 倍</RimLumen_ExplosionForceScale>
-  <RimLumen_CursorForceMode>光标粒子力：{0}</RimLumen_CursorForceMode>
-  <RimLumen_CursorOff>关闭</RimLumen_CursorOff>
-  <RimLumen_CursorRepel>排斥</RimLumen_CursorRepel>
-  <RimLumen_CursorAttract>吸引</RimLumen_CursorAttract>
-  <RimLumen_CursorForceRadius>光标半径：{0} 格</RimLumen_CursorForceRadius>
-  <RimLumen_CursorForceStrength>光标加速度：{0} 格/秒²</RimLumen_CursorForceStrength>
   <RimLumen_ColorBlendSpace>粒子混合方式：</RimLumen_ColorBlendSpace>
   <RimLumen_ColorBlendLegacy>经典</RimLumen_ColorBlendLegacy>
   <RimLumen_ColorBlendLinear>线性</RimLumen_ColorBlendLinear>

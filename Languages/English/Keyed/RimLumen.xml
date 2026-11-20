@@ -7,14 +7,6 @@
   <RimLumen_ObjectShadows>Things cast shadows from lights</RimLumen_ObjectShadows>
   <RimLumen_ObjectShadowsTip>Columns, furniture, plants and other things cast silhouette shadows away from each light, and from the sun while RimLumen replaces map lighting. Walls, rock and doors keep their own shadows. Saved separately for each shader pack.</RimLumen_ObjectShadowsTip>
   <RimLumen_ParticleDensity>Global particle density: {0}%</RimLumen_ParticleDensity>
-  <RimLumen_ExplosionForces>Explosions push particles (visual only)</RimLumen_ExplosionForces>
-  <RimLumen_ExplosionForceScale>Explosion particle force: {0}×</RimLumen_ExplosionForceScale>
-  <RimLumen_CursorForceMode>Cursor particle force: {0}</RimLumen_CursorForceMode>
-  <RimLumen_CursorOff>Off</RimLumen_CursorOff>
-  <RimLumen_CursorRepel>Repel</RimLumen_CursorRepel>
-  <RimLumen_CursorAttract>Attract</RimLumen_CursorAttract>
-  <RimLumen_CursorForceRadius>Cursor radius: {0} cells</RimLumen_CursorForceRadius>
-  <RimLumen_CursorForceStrength>Cursor acceleration: {0} cells/s²</RimLumen_CursorForceStrength>
   <RimLumen_ColorBlendSpace>Particle blending:</RimLumen_ColorBlendSpace>
   <RimLumen_ColorBlendLegacy>Legacy</RimLumen_ColorBlendLegacy>
   <RimLumen_ColorBlendLinear>Linear</RimLumen_ColorBlendLinear>

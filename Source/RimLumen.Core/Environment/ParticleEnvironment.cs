@@ -15,15 +15,13 @@ internal static class ParticleEnvironment
     private static readonly Dictionary<int, MapEnvironmentSources> SourcesByMap = new();
     private static ulong? capturedFrame;
     internal const int MaxPulsesPerMap = 8;
-    internal static bool ExplosionsEnabled = true;
-    internal static float ExplosionForceScale = 1f;
     internal static ParticleCursorMode CursorMode;
     internal static float CursorRadius = 5f;
     internal static float CursorStrength = 4f;
 
     internal static void RecordExplosion(int mapId, Vector3 center, float radius)
     {
-        if (!ExplosionsEnabled || radius <= 0f) return;
+        if (radius <= 0f) return;
         int tick = Find.TickManager.TicksGame;
         RemoveExpiredPulses(tick);
         int count = 0, oldest = -1;
@@ -57,10 +55,9 @@ internal static class ParticleEnvironment
         capturedFrame = frameIndex;
         foreach (MapEnvironmentSources sources in SourcesByMap.Values) sources.Clear();
         RemoveExpiredPulses(tick);
-        if (ExplosionsEnabled)
-            foreach (Pulse pulse in Pulses)
-                Sources(pulse.MapId).Add(ParticleEnvironmentMath.Explosion(pulse.Center, pulse.Radius,
-                    (tick - pulse.StartTick) / 60f, ExplosionForceScale));
+        foreach (Pulse pulse in Pulses)
+            Sources(pulse.MapId).Add(ParticleEnvironmentMath.Explosion(pulse.Center, pulse.Radius,
+                (tick - pulse.StartTick) / 60f));
         if (cursor is Vector3 position)
             Sources(currentMapId).Add(new(LumenEnvironmentChannel.Cursor, position, CursorRadius,
                 CursorMode == ParticleCursorMode.Attract ? -CursorStrength : CursorStrength, 0f, 0f));

@@ -101,12 +101,12 @@ public static class WorldPhysicsSuite
     [LumenFact]
     public static void ExplosionShellHasRadiusDerivedUpwardForceAndExpires()
     {
-        ParticleEnvironmentSource pulse = ParticleEnvironmentMath.Explosion(Vector3.Zero, 4f, 0.25f, 1f);
+        ParticleEnvironmentSource pulse = ParticleEnvironmentMath.Explosion(Vector3.Zero, 4f, 0.25f);
         Vector3 acceleration = pulse.Acceleration(new(MathF.Sqrt(3), 0, 0));
         Near(96f, acceleration.Length());
         Near(48f, acceleration.Y);
         Close(Vector3.Zero, pulse.Acceleration(new(MathF.Sqrt(3), 4, 0)));
-        Close(Vector3.Zero, ParticleEnvironmentMath.Explosion(Vector3.Zero, 4f, 0.6f, 1f).Acceleration(new(4, 0, 0)));
+        Close(Vector3.Zero, ParticleEnvironmentMath.Explosion(Vector3.Zero, 4f, 0.6f).Acceleration(new(4, 0, 0)));
     }
 
     [LumenFact]

@@ -15,11 +15,6 @@ public sealed class RimLumenSettings : ModSettings
     public bool EnhanceVanillaAdditiveGlow = true;
     public bool LightingTakeover;
     public float ParticleDensityScale = 1.0f;
-    public bool ExplosionForces = true;
-    public float ExplosionForceScale = 1f;
-    public ParticleCursorMode CursorForceMode;
-    public float CursorForceRadius = 5f;
-    public float CursorForceStrength = 4f;
     public LumenColorBlendSpace ColorBlendSpace = LumenColorBlendSpace.Legacy;
     public bool DistortionRefractsEffects = true;
     public bool EnableDemoBuildings = false;
@@ -36,14 +31,6 @@ public sealed class RimLumenSettings : ModSettings
         Scribe_Values.Look(ref EnhanceVanillaAdditiveGlow, "enhanceVanillaAdditiveGlow", true);
         Scribe_Values.Look(ref LightingTakeover, "lightingTakeover", false);
         Scribe_Values.Look(ref ParticleDensityScale, "particleDensityScale", 1.0f);
-        Scribe_Values.Look(ref ExplosionForces, "explosionForces", true);
-        Scribe_Values.Look(ref ExplosionForceScale, "explosionForceScale", 1f);
-        Scribe_Values.Look(ref CursorForceMode, "cursorForceMode", ParticleCursorMode.Off);
-        Scribe_Values.Look(ref CursorForceRadius, "cursorForceRadius", 5f);
-        Scribe_Values.Look(ref CursorForceStrength, "cursorForceStrength", 4f);
-        if (!Enum.IsDefined(CursorForceMode) || !float.IsFinite(ExplosionForceScale) || ExplosionForceScale < 0f ||
-            !float.IsFinite(CursorForceRadius) || CursorForceRadius <= 0f || !float.IsFinite(CursorForceStrength) || CursorForceStrength < 0f)
-            throw new InvalidOperationException("Invalid RimLumen particle-world settings: finite nonnegative strengths and positive cursor radius required.");
         string blendSpace = ColorBlendSpace.ToString();
         Scribe_Values.Look(ref blendSpace, "colorBlendSpace", nameof(LumenColorBlendSpace.Legacy));
         ColorBlendSpace = Enum.Parse<LumenColorBlendSpace>(blendSpace);
@@ -76,11 +63,6 @@ public sealed class RimLumenSettings : ModSettings
         RimLumenRenderHost.ColorBlendSpace = ColorBlendSpace;
         RimLumenRenderHost.DistortionRefractsEffects = DistortionRefractsEffects;
         DemoBuildingRegistry.SyncWithSettings(EnableDemoBuildings);
-        ParticleEnvironment.ExplosionsEnabled = ExplosionForces;
-        ParticleEnvironment.ExplosionForceScale = ExplosionForceScale;
-        ParticleEnvironment.CursorMode = CursorForceMode;
-        ParticleEnvironment.CursorRadius = CursorForceRadius;
-        ParticleEnvironment.CursorStrength = CursorForceStrength;
     }
 
     // Ensures: pushes current settings and runtime parameters to RimLumenRenderHost; reloads the
@@ -123,11 +105,6 @@ public sealed class RimLumenSettings : ModSettings
         EnhanceVanillaAdditiveGlow = true;
         LightingTakeover = false;
         ParticleDensityScale = 1.0f;
-        ExplosionForces = true;
-        ExplosionForceScale = 1f;
-        CursorForceMode = ParticleCursorMode.Off;
-        CursorForceRadius = 5f;
-        CursorForceStrength = 4f;
         ColorBlendSpace = LumenColorBlendSpace.Legacy;
         DistortionRefractsEffects = true;
         EnableDemoBuildings = false;
@@ -161,8 +138,6 @@ public sealed class RimLumenMod : Verse.Mod
         float densityBefore = Settings.ParticleDensityScale;
         bool demoBefore = Settings.EnableDemoBuildings;
         bool refractBefore = Settings.DistortionRefractsEffects;
-        var worldBefore = (Settings.ExplosionForces, Settings.ExplosionForceScale, Settings.CursorForceMode,
-            Settings.CursorForceRadius, Settings.CursorForceStrength);
 
         Rect viewRect = new(0f, 0f, inRect.width - 20f, Mathf.Max(inRect.height, lastContentHeight));
         Widgets.BeginScrollView(inRect, ref scrollPosition, viewRect);
@@ -183,22 +158,6 @@ public sealed class RimLumenMod : Verse.Mod
         Settings.ParticleDensityScale = listing.Slider(Settings.ParticleDensityScale, 0.10f, 1.00f);
         listing.Gap(6f);
 
-        listing.CheckboxLabeled("RimLumen_ExplosionForces".Translate(), ref Settings.ExplosionForces);
-        listing.Label("RimLumen_ExplosionForceScale".Translate(Settings.ExplosionForceScale.ToString("0.0")));
-        Settings.ExplosionForceScale = listing.Slider(Settings.ExplosionForceScale, 0f, 4f);
-        if (listing.ButtonText("RimLumen_CursorForceMode".Translate(("RimLumen_Cursor" + Settings.CursorForceMode).Translate())))
-        {
-            var options = new List<FloatMenuOption>();
-            foreach (ParticleCursorMode mode in Enum.GetValues<ParticleCursorMode>())
-                options.Add(new(("RimLumen_Cursor" + mode).Translate(), () =>
-                { Settings.CursorForceMode = mode; Settings.ApplyScalarsToRuntime(); }));
-            Find.WindowStack.Add(new FloatMenu(options));
-        }
-        listing.Label("RimLumen_CursorForceRadius".Translate(Settings.CursorForceRadius.ToString("0.0")));
-        Settings.CursorForceRadius = listing.Slider(Settings.CursorForceRadius, 1f, 20f);
-        listing.Label("RimLumen_CursorForceStrength".Translate(Settings.CursorForceStrength.ToString("0.0")));
-        Settings.CursorForceStrength = listing.Slider(Settings.CursorForceStrength, 0f, 30f);
-        listing.Gap(6f);
         DrawColorBlendSpaceSelector(listing);
         listing.Gap(6f);
         listing.CheckboxLabeled(
@@ -214,9 +173,7 @@ public sealed class RimLumenMod : Verse.Mod
         bool settingsChanged = Settings.EnhanceVanillaAdditiveGlow != glowBefore || Settings.LightingTakeover != takeoverBefore
             || Settings.ParticleDensityScale != densityBefore
             || Settings.EnableDemoBuildings != demoBefore
-            || Settings.DistortionRefractsEffects != refractBefore
-            || worldBefore != (Settings.ExplosionForces, Settings.ExplosionForceScale, Settings.CursorForceMode,
-                Settings.CursorForceRadius, Settings.CursorForceStrength);
+            || Settings.DistortionRefractsEffects != refractBefore;
 
         listing.GapLine(12f);
 
