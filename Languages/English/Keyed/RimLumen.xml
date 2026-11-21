@@ -48,44 +48,19 @@
   <RimLumen_SourceMod>Mod: {0}</RimLumen_SourceMod>
   <RimLumen_SourceLocal>Local</RimLumen_SourceLocal>
   <RimLumen_PreviewWindowTitle>RimLumen Effect Preview</RimLumen_PreviewWindowTitle>
-  <RimLumen_PreviewResolveId>Resolve ID</RimLumen_PreviewResolveId>
-  <RimLumen_PreviewResolveIdTip>Resolve the exact effect ID in the search box (useful for external providers such as RimUnity imports).</RimLumen_PreviewResolveIdTip>
   <RimLumen_PreviewReloadAssets>Reload Assets</RimLumen_PreviewReloadAssets>
-  <RimLumen_PreviewReloadAssetsTip>Rescan .lumen.json files across all enabled mods and refresh the snapshot of loaded LumenEffectDef entries.</RimLumen_PreviewReloadAssetsTip>
   <RimLumen_PreviewStopAll>Stop All ({0})</RimLumen_PreviewStopAll>
-  <RimLumen_PreviewStopAllTip>Immediately stop and release all preview instances started from this window.</RimLumen_PreviewStopAllTip>
-  <RimLumen_PreviewClearError>Clear</RimLumen_PreviewClearError>
   <RimLumen_PreviewEffectListHeader>Registered Effects ({0}/{1})</RimLumen_PreviewEffectListHeader>
   <RimLumen_PreviewNoMatches>No matching effects.</RimLumen_PreviewNoMatches>
   <RimLumen_PreviewSelectPrompt>Select an effect on the left to preview it.</RimLumen_PreviewSelectPrompt>
   <RimLumen_PreviewMissingAfterReload>Effect '{0}' is unavailable after reload (removed or failed validation). Fix the file and reload again.</RimLumen_PreviewMissingAfterReload>
   <RimLumen_PreviewSourceLine>Source: {0}</RimLumen_PreviewSourceLine>
   <RimLumen_PreviewSourceCode>Code registration (C#)</RimLumen_PreviewSourceCode>
-  <RimLumen_PreviewSourceExternal>External provider / RimUnity ({0})</RimLumen_PreviewSourceExternal>
-  <RimLumen_PreviewAssetStats>Nodes: {0}  |  Default duration: {1}s  |  Mode: {2}  |  Interactions: {3}</RimLumen_PreviewAssetStats>
-  <RimLumen_PreviewPlaybackLooping>Looping</RimLumen_PreviewPlaybackLooping>
-  <RimLumen_PreviewPlaybackOneShot>One-shot</RimLumen_PreviewPlaybackOneShot>
-  <RimLumen_PreviewInteractionHint>Mouse interaction events (interactionEvents) are live on preview instances on unobstructed map ground.</RimLumen_PreviewInteractionHint>
-  <RimLumen_PreviewLastOrigin>Last preview origin: ({0}, 0, {1})</RimLumen_PreviewLastOrigin>
-  <RimLumen_PreviewRequiresMap>A loaded current map is required to preview effects.</RimLumen_PreviewRequiresMap>
   <RimLumen_PreviewPlayAtCamera>Play at Camera Center</RimLumen_PreviewPlayAtCamera>
   <RimLumen_PreviewPickMapPos>Pick Position on Map</RimLumen_PreviewPickMapPos>
   <RimLumen_PreviewPickingMapPos>Picking on Map...</RimLumen_PreviewPickingMapPos>
   <RimLumen_PreviewPickMapHint>Click a map cell to play the effect (right-click or Esc to cancel)</RimLumen_PreviewPickMapHint>
   <RimLumen_PreviewReplay>Replay</RimLumen_PreviewReplay>
-  <RimLumen_PreviewFadeOutCurrent>Fade Out Current</RimLumen_PreviewFadeOutCurrent>
-  <RimLumen_PreviewRealTime>Real-time playback (ignore game pause)</RimLumen_PreviewRealTime>
-  <RimLumen_PreviewRealTimeTip>When checked, preview instances advance in real time; when off, they follow the game clock and freeze while paused.</RimLumen_PreviewRealTimeTip>
-  <RimLumen_PreviewPausedHint>Game is paused: non-real-time effects freeze on frame 0. Unpause or enable Real-time playback.</RimLumen_PreviewPausedHint>
   <RimLumen_PreviewStatesHeader>State Machine ({0})</RimLumen_PreviewStatesHeader>
-  <RimLumen_PreviewCurrentState>Current state: {0}</RimLumen_PreviewCurrentState>
-  <RimLumen_PreviewCurrentStateDraining>Current state: {0} (draining)</RimLumen_PreviewCurrentStateDraining>
-  <RimLumen_PreviewCurrentStateNone>Current state: inactive or finished</RimLumen_PreviewCurrentStateNone>
-  <RimLumen_PreviewStateTagInitial>Initial</RimLumen_PreviewStateTagInitial>
-  <RimLumen_PreviewStateTagLoop>Loop</RimLumen_PreviewStateTagLoop>
-  <RimLumen_PreviewStateTagStop>Stop</RimLumen_PreviewStateTagStop>
-  <RimLumen_PreviewReloadSummary>Last reload: {0} JSON files loaded, {1} failed.</RimLumen_PreviewReloadSummary>
   <RimLumen_PreviewReloadFailedSeeLog>{0} file(s) failed to reload; see the game log for details.</RimLumen_PreviewReloadFailedSeeLog>
-  <RimLumen_PreviewResolveNotFound>Effect '{0}' was not found or failed validation. Check diagnostics above or the game log.</RimLumen_PreviewResolveNotFound>
-  <RimLumen_PreviewPlayReturnedInactive>Playing '{0}' returned an inactive handle (rejected by provider or particle pool full).</RimLumen_PreviewPlayReturnedInactive>
 </LanguageData>

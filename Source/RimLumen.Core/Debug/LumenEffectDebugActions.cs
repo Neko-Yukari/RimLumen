@@ -18,13 +18,6 @@ public static class LumenEffectDebugActions
     [DebugAction("RimLumen", "Effect preview window...", allowedGameStates = AllowedGameStates.PlayingOnMap)]
     public static void OpenEffectPreviewWindow()
     {
-        if (!Prefs.DevMode) return;
-        if (Find.CurrentMap is null)
-        {
-            Messages.Message("RimLumen_PreviewRequiresMap".Translate(), MessageTypeDefOf.RejectInput, historical: false);
-            return;
-        }
-
         LumenSceneBootstrap.EnsureInitialized();
         LumenEffectPreviewWindow? existing = Find.WindowStack.WindowOfType<LumenEffectPreviewWindow>();
         if (existing is not null)

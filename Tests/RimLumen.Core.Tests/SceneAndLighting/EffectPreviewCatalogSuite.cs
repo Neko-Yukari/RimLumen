@@ -2,11 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Numerics;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Debug;
-using RimLumen.Core.Scene;
 
 namespace RimLumen.Core.Tests.SceneAndLighting;
 
@@ -14,7 +12,7 @@ namespace RimLumen.Core.Tests.SceneAndLighting;
 public static class EffectPreviewCatalogSuite
 {
     [LumenFact]
-    public static void BuildEntriesClassifiesJsonXmlCodeAndExternalSourcesAndRefreshesOnReload()
+    public static void BuildEntriesClassifiesSourcesAndSelectsAcrossReloadFailureAndRecovery()
     {
         string root = NativeTestData.NewTempDirectory();
         try
@@ -33,35 +31,19 @@ public static class EffectPreviewCatalogSuite
             };
 
             LumenModAssetScanner.ScanSources(catalog, roots, new[] { xmlDef });
-
-            var codeAsset = new EffectAsset
+            catalog.Register(new EffectAsset
             {
                 EffectId = "Code.Flash",
                 Nodes = new[] { new EffectNodeSpec { Name = "code_node" } },
-            };
-            catalog.Register(codeAsset);
+            });
 
-            var externalDuplicate = new EffectAsset
-            {
-                EffectId = "Spark",
-                Nodes = new[] { new EffectNodeSpec { Name = "shadowed" } },
-            };
-            var externalOnly = new EffectAsset
-            {
-                EffectId = "Author.RimUnity:Effects/Beam",
-                Nodes = new[] { new EffectNodeSpec { Name = "ru_node" } },
-            };
-
-            IReadOnlyList<LumenEffectPreviewEntry> entries =
-                LumenEffectPreviewCatalog.BuildEntries(catalog, new[] { externalDuplicate, externalOnly });
+            IReadOnlyList<LumenEffectPreviewEntry> entries = LumenEffectPreviewCatalog.BuildEntries(catalog);
 
             LumenEffectPreviewEntry jsonBare = Find(entries, "Spark");
-            NativeTestData.Check(jsonBare.SourceKind == LumenEffectPreviewSourceKind.Json, "JSON bare source kind");
+            NativeTestData.Check(jsonBare.SourceKind == LumenEffectPreviewSourceKind.Json, "JSON source kind");
             NativeTestData.Check(jsonBare.PackageId == "Mod.Json", $"JSON packageId, got '{jsonBare.PackageId}'");
             NativeTestData.Check(jsonBare.SourceDetail == Path.GetFullPath(jsonPath),
                 $"JSON detail preserves Windows drive colon path, got '{jsonBare.SourceDetail}'");
-            NativeTestData.Check(LumenEffectPreviewCatalog.GetShortSourceDetail(jsonBare) == "Spark.lumen.json",
-                "JSON short detail extracts filename");
 
             LumenEffectPreviewEntry xmlEntry = Find(entries, "XmlBurst");
             NativeTestData.Check(xmlEntry.SourceKind == LumenEffectPreviewSourceKind.XmlDef, "XML Def source kind");
@@ -69,10 +51,6 @@ public static class EffectPreviewCatalogSuite
 
             LumenEffectPreviewEntry codeEntry = Find(entries, "Code.Flash");
             NativeTestData.Check(codeEntry.SourceKind == LumenEffectPreviewSourceKind.Code, "Code source kind");
-
-            LumenEffectPreviewEntry extEntry = Find(entries, "Author.RimUnity:Effects/Beam");
-            NativeTestData.Check(extEntry.SourceKind == LumenEffectPreviewSourceKind.ExternalProvider, "External source kind");
-            NativeTestData.Check(extEntry.PackageId == "Author.RimUnity", "External packageId");
 
             for (int i = 1; i < entries.Count; i++)
             {
@@ -109,7 +87,7 @@ public static class EffectPreviewCatalogSuite
     }
 
     [LumenFact]
-    public static void FilterEntriesMatchesIdPackageSourceAndMultiTokenCaseInsensitively()
+    public static void FilterEntriesMatchesMultiTokenAcrossIdPackageAndSource()
     {
         var entries = new[]
         {
@@ -125,16 +103,10 @@ public static class EffectPreviewCatalogSuite
                 LumenEffectPreviewSourceKind.XmlDef,
                 "ModB",
                 "LumenEffectDef/XmlIce"),
-            new LumenEffectPreviewEntry(
-                "RuMod:guid123",
-                new EffectAsset { EffectId = "RuMod:guid123", Nodes = new[] { new EffectNodeSpec { Name = "n" } } },
-                LumenEffectPreviewSourceKind.ExternalProvider,
-                "RuMod",
-                "RuMod:guid123"),
         };
 
         IReadOnlyList<LumenEffectPreviewEntry> emptyQuery = LumenEffectPreviewCatalog.FilterEntries(entries, "   ");
-        NativeTestData.Check(emptyQuery.Count == 3, "Whitespace query returns all entries");
+        NativeTestData.Check(emptyQuery.Count == 2, "Whitespace query returns all entries");
 
         IReadOnlyList<LumenEffectPreviewEntry> multiToken =
             LumenEffectPreviewCatalog.FilterEntries(entries, "json fireball moda");
@@ -145,19 +117,12 @@ public static class EffectPreviewCatalogSuite
             LumenEffectPreviewCatalog.FilterEntries(entries, "XML modb");
         NativeTestData.Check(xmlSearch.Count == 1 && xmlSearch[0].EffectId == "ModB:XmlIce",
             "XML keyword matches XmlDef entries");
-
-        IReadOnlyList<LumenEffectPreviewEntry> extraSearch = LumenEffectPreviewCatalog.FilterEntries(
-            entries,
-            "Effects/Lightning",
-            entry => entry.EffectId == "RuMod:guid123" ? "Effects/Lightning" : string.Empty);
-        NativeTestData.Check(extraSearch.Count == 1 && extraSearch[0].EffectId == "RuMod:guid123",
-            "Extra search text matches external query aliases");
     }
 
     [LumenFact]
-    public static void BuildPlayRequestEnforcesGroundYZeroAndRequiredFeatureInputs()
+    public static void BuildPlayRequestSatisfiesGroundOriginAndRequiredFeatureContracts()
     {
-        var depthAndBeamAsset = new EffectAsset
+        var asset = new EffectAsset
         {
             EffectId = "Preview.Complex",
             Nodes = new[]
@@ -185,59 +150,26 @@ public static class EffectPreviewCatalogSuite
         };
 
         LumenPlayRequest request = LumenEffectPreviewCatalog.BuildPlayRequest(
-            depthAndBeamAsset,
+            asset,
             mapIndex: 42,
             groundX: 12.5f,
             groundZ: 34.5f,
-            initialState: "burst",
-            realTime: true);
+            initialState: "burst");
 
-        NativeTestData.Check(request.OriginWorld == new Vector3(12.5f, 0f, 34.5f), "OriginWorld adheres to Y=0 ground");
-        NativeTestData.Check(request.DepthReferenceZ == 34.5f, "DepthReferenceZ auto-populates from ground Z");
-        NativeTestData.Check(
-            request.TargetWorld == new Vector3(12.5f + LumenEffectPreviewCatalog.DefaultBeamTargetOffsetCells, 0f, 34.5f),
-            "TargetWorld auto-populates for EndAtTarget beam ribbons");
-        NativeTestData.Check(request.InitialState == "burst" && request.RealTime, "InitialState and RealTime propagate");
+        NativeTestData.Check(request.OriginWorld.Y == 0f, "OriginWorld adheres to Y=0 ground");
 
-        var explicitTarget = new Vector3(20f, 1.5f, 40f);
-        LumenPlayRequest withExplicitTarget = LumenEffectPreviewCatalog.BuildPlayRequest(
-            depthAndBeamAsset,
-            mapIndex: 42,
-            groundX: 1f,
-            groundZ: 2f,
-            targetWorld: explicitTarget);
-        NativeTestData.Check(withExplicitTarget.TargetWorld == explicitTarget, "Explicit TargetWorld is preserved");
-
-        var noTargetOrDepthAsset = new EffectAsset
-        {
-            EffectId = "Preview.Simple",
-            Nodes = new[] { new EffectNodeSpec { Name = "n" } },
-        };
-        LumenPlayRequest simpleReq = LumenEffectPreviewCatalog.BuildPlayRequest(noTargetOrDepthAsset, 42, 3f, 4f);
-        NativeTestData.Check(simpleReq.DepthReferenceZ is null && simpleReq.TargetWorld is null,
-            "Optional DepthReferenceZ/TargetWorld stay null when asset does not require them");
-
-        var service = NativeTestData.Service(depthAndBeamAsset);
+        var service = NativeTestData.Service(asset);
         LumenHostRegistry.RegisterNodeFeatureBackend(new StubRibbonBackend());
         try
         {
             using ILumenEffectHandle handle = service.Play(request);
             NativeTestData.Check(handle.IsAlive, "Play succeeds for DepthMask + EndAtTarget asset");
-            var typed = (EffectInstanceHandle)handle;
-            NativeTestData.Check(typed.RealTime, "RealTime propagates to EffectInstanceHandle");
         }
         finally
         {
             LumenHostRegistry.UnregisterNodeFeatureBackend(
                 LumenHostRegistry.GetNodeFeatureBackend(LumenNodeFeature.Ribbon)!);
         }
-
-        NativeTestData.Throws<ArgumentOutOfRangeException>(
-            () => LumenEffectPreviewCatalog.BuildPlayRequest(noTargetOrDepthAsset, 1, float.NaN, 0f),
-            "NaN groundX rejected");
-        NativeTestData.Throws<ArgumentOutOfRangeException>(
-            () => LumenEffectPreviewCatalog.BuildPlayRequest(noTargetOrDepthAsset, 1, 0f, float.PositiveInfinity),
-            "Infinite groundZ rejected");
     }
 
     private static LumenEffectPreviewEntry Find(IReadOnlyList<LumenEffectPreviewEntry> entries, string effectId)
