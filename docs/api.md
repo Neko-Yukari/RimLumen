@@ -800,17 +800,17 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 
 #### 识别光标来源示例（`InteractionNotify`）
 
-`LumenCursorSource`（`Kind`、`Source`、`IsHostMouse`、`IsModCursor`）区分触发交互事件的来源：
+`LumenCursorSource`（`Kind`、`Source`）区分触发交互事件的来源：
 
-- 真实宿主鼠标（包括存在 `CreateMouseForce` 租约时）：`Kind == LumenCursorSourceKind.HostMouse`（`IsHostMouse == true`，`Source == null`）。
-- 模组自建世界指针（`CreateCursor` 或非宿主鼠标的 `CreateEnvironmentSource`）：`Kind == LumenCursorSourceKind.ModCursor`（`IsModCursor == true`），`Source` 为对应的 `ILumenEnvironmentSource` 实例，可用于精确识别特定指针句柄；即使该指针在圈内被 `Dispose()` 或移出地图触发 `CursorExit`，依然能正确归属到原指针。
-- 爆炸交互事件（`LumenInteractionTrigger.Explosion`）：`Cursor == LumenCursorSource.None`（`Kind == LumenCursorSourceKind.None`，`Source == null`）。
+- 真实宿主鼠标（包括存在 `CreateMouseForce` 租约时）：`Kind == LumenCursorSourceKind.HostMouse`，`Source == null`。
+- 模组自建世界指针（`CreateCursor` 或非宿主鼠标的 `CreateEnvironmentSource`）：`Kind == LumenCursorSourceKind.ModCursor`，`Source` 为对应的 `ILumenEnvironmentSource` 实例，可用于精确识别特定指针句柄；即使该指针在圈内被 `Dispose()` 或移出地图触发 `CursorExit`，依然能正确归属到原指针。
+- 爆炸交互事件（`LumenInteractionTrigger.Explosion`）：`Kind == LumenCursorSourceKind.None`，`Source == null`。
 
 ```csharp
 handle.InteractionNotify += info =>
 {
     // 只响应真实宿主鼠标，忽略其他模组用 CreateCursor 创建的自定义指针
-    if (!info.Cursor.IsHostMouse) return;
+    if (info.Cursor.Kind != LumenCursorSourceKind.HostMouse) return;
     if (info.EventName == "cursorEnter")
         mouseForce = RimLumenApi.CreateMouseForce(map, radius: 3f, strength: -6f);
     else if (info.EventName == "cursorExit")

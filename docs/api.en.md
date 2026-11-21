@@ -800,17 +800,17 @@ All events (including `InteractionNotify`) are raised on the main thread from th
 
 #### Identifying Cursor Sources (`InteractionNotify`)
 
-`LumenCursorSource` (`Kind`, `Source`, `IsHostMouse`, `IsModCursor`) identifies what triggered an interaction event:
+`LumenCursorSource` (`Kind`, `Source`) identifies what triggered an interaction event:
 
-- Real host mouse (including while a `CreateMouseForce` lease is active): `Kind == LumenCursorSourceKind.HostMouse` (`IsHostMouse == true`, `Source == null`).
-- Mod-created world cursor (`CreateCursor` or a non-host-mouse `CreateEnvironmentSource`): `Kind == LumenCursorSourceKind.ModCursor` (`IsModCursor == true`), with `Source` holding the originating `ILumenEnvironmentSource` instance; even `CursorExit` caused by disposing or obscuring an inside cursor preserves attribution to that cursor.
-- Explosion triggers (`LumenInteractionTrigger.Explosion`): `Cursor == LumenCursorSource.None` (`Kind == LumenCursorSourceKind.None`, `Source == null`).
+- Real host mouse (including while a `CreateMouseForce` lease is active): `Kind == LumenCursorSourceKind.HostMouse`, `Source == null`.
+- Mod-created world cursor (`CreateCursor` or a non-host-mouse `CreateEnvironmentSource`): `Kind == LumenCursorSourceKind.ModCursor`, with `Source` holding the originating `ILumenEnvironmentSource` instance; even `CursorExit` caused by disposing or obscuring an inside cursor preserves attribution to that cursor.
+- Explosion triggers (`LumenInteractionTrigger.Explosion`): `Kind == LumenCursorSourceKind.None`, `Source == null`.
 
 ```csharp
 handle.InteractionNotify += info =>
 {
     // React only to the real host mouse, ignoring custom mod cursors from CreateCursor
-    if (!info.Cursor.IsHostMouse) return;
+    if (info.Cursor.Kind != LumenCursorSourceKind.HostMouse) return;
     if (info.EventName == "cursorEnter")
         mouseForce = RimLumenApi.CreateMouseForce(map, radius: 3f, strength: -6f);
     else if (info.EventName == "cursorExit")

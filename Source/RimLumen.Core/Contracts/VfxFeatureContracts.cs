@@ -133,19 +133,7 @@ public enum LumenCursorSourceKind : byte
 
 public readonly record struct LumenCursorSource(
     LumenCursorSourceKind Kind,
-    ILumenEnvironmentSource? Source = null)
-{
-    public static LumenCursorSource None => default;
-    public static LumenCursorSource HostMouse => new(LumenCursorSourceKind.HostMouse);
-    public static LumenCursorSource Mod(ILumenEnvironmentSource source)
-    {
-        ArgumentNullException.ThrowIfNull(source);
-        return new(LumenCursorSourceKind.ModCursor, source);
-    }
-
-    public bool IsHostMouse => Kind == LumenCursorSourceKind.HostMouse;
-    public bool IsModCursor => Kind == LumenCursorSourceKind.ModCursor;
-}
+    ILumenEnvironmentSource? Source = null);
 
 public readonly record struct LumenInteractionNotification(
     string EventName,

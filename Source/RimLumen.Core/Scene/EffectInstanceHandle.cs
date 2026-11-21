@@ -771,7 +771,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                     rs.SetSeen(pulse.Slot, pulse.Id);
                     if (rs.CooldownRemaining <= 0f)
                     {
-                        FireInteractionRule(in rule, ref rs, LumenCursorSource.None);
+                        FireInteractionRule(in rule, ref rs, new(LumenCursorSourceKind.None));
                         if (state != PlaybackState.Playing) break;
                         bool stillMatches = rule.StateIndex >= 0 ? currentState == rule.StateIndex : !stopRequested;
                         if (!stillMatches)
@@ -823,13 +823,13 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                 case LumenInteractionTrigger.CursorExit:
                 {
                     bool exited = rs.WasInside && !anyInside;
-                    LumenCursorSource priorCursor = rs.LastInsideCursor;
+                    LumenCursorSource exitedCursor = rs.LastInsideCursor;
                     rs.WasInside = anyInside;
                     rs.LastInsideCursor = anyInside ? (matchInside ? matchingCursor : firstInsideCursor) : default;
-                    if (exited && rs.CooldownRemaining <= 0f &&
-                        TryResolveExitCursor(cursors, priorCursor, in rule, out LumenCursorSource exitCursor))
+                    if (exited && rs.CooldownRemaining <= 0f)
                     {
-                        FireInteractionRule(in rule, ref rs, exitCursor);
+                        bool exitSpeedOk = cursors.IsEmpty ? rule.MinCursorSpeed == 0f : AnySpeedMatches(cursors, in rule);
+                        if (exitSpeedOk) FireInteractionRule(in rule, ref rs, exitedCursor);
                     }
                     break;
                 }
@@ -875,55 +875,11 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private static bool SpeedMatches(float speed, in CompiledInteractionRule rule)
         => speed >= rule.MinCursorSpeed && (rule.MaxCursorSpeed is null || speed <= rule.MaxCursorSpeed.Value);
 
-    private static bool TryResolveExitCursor(
-        ReadOnlySpan<LumenCursorSnapshot> cursors,
-        LumenCursorSource priorCursor,
-        in CompiledInteractionRule rule,
-        out LumenCursorSource exitCursor)
+    private static bool AnySpeedMatches(ReadOnlySpan<LumenCursorSnapshot> cursors, in CompiledInteractionRule rule)
     {
-        if (cursors.IsEmpty)
-        {
-            if (rule.MinCursorSpeed == 0f)
-            {
-                exitCursor = priorCursor;
-                return true;
-            }
-            exitCursor = default;
-            return false;
-        }
-
-        bool anySpeedMatch = false;
-        LumenCursorSource firstSpeedMatch = default;
-        bool priorPresent = false;
         for (int i = 0; i < cursors.Length; i++)
-        {
-            bool speedOk = SpeedMatches(cursors[i].Speed, in rule);
-            if (speedOk && !anySpeedMatch)
-            {
-                anySpeedMatch = true;
-                firstSpeedMatch = cursors[i].Source;
-            }
-            if (cursors[i].Source == priorCursor)
-            {
-                priorPresent = true;
-                if (speedOk)
-                {
-                    exitCursor = priorCursor;
-                    return true;
-                }
-            }
-        }
-
-        if (!anySpeedMatch)
-        {
-            exitCursor = default;
-            return false;
-        }
-
-        exitCursor = !priorPresent && rule.MinCursorSpeed == 0f && priorCursor != default
-            ? priorCursor
-            : firstSpeedMatch;
-        return true;
+            if (SpeedMatches(cursors[i].Speed, in rule)) return true;
+        return false;
     }
 
     // Ensures: a node's light colour this frame is (lightColor ?? ColorRgb) * (intensity * lightIntensity * fade *

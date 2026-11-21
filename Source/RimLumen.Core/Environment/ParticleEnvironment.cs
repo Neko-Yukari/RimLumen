@@ -496,7 +496,7 @@ internal static class ParticleEnvironment
                         state.HostMouseVelocity,
                         state.HostMouseVelocity.Length())
                     {
-                        Source = LumenCursorSource.HostMouse,
+                        Source = new(LumenCursorSourceKind.HostMouse),
                     });
                 }
             }
@@ -560,7 +560,7 @@ internal static class ParticleEnvironment
                         velocity,
                         velocity.Length())
                     {
-                        Source = LumenCursorSource.Mod(src),
+                        Source = new(LumenCursorSourceKind.ModCursor, src),
                     });
                 }
             }
