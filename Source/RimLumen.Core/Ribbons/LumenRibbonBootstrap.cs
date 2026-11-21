@@ -49,6 +49,7 @@ internal sealed class LumenRibbonContributor : ILumenFrameContributor, ILumenHdr
     public void CaptureMainThread(in LumenCaptureContext context)
     {
         backend.Build(context);
+        if (!context.RendersMap) return;
         // Only the pipeline calls capture, so it and its depth proxy exist by now.
         batches ??= new L1ParticleBatchRenderer(RimLumenRenderHost.Pipeline!.DepthProxy, app.RenderContext?.FramesInFlight ?? 3);
         colorBlendSpace = context.ColorBlendSpace;

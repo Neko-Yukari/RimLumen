@@ -40,6 +40,9 @@ public readonly struct LumenCaptureContext
     public required Matrix4x4 ProjectionMatrix { get; init; }
     /// <summary>Registered host pass-routing id; not a Vulkan handle or a submission-frame slot.</summary>
     public required byte LumenRenderPassId { get; init; }
+    /// <summary>Frame latch of whether the host renders the map this frame (initialized to true; false for default(LumenCaptureContext)).
+    /// When false, advance state/clocks only and skip draw submissions or GPU staging.</summary>
+    public bool RendersMap { get; init; } = true;
 }
 
 /// <summary>Main-thread enqueue phase immediately after capture. Managed values, no packed GPU layout;

@@ -566,6 +566,46 @@ public static class ParticleEngineTests
             "Recorded clears and dt must be consumed once and not replayed.");
     }
 
+    [LumenFact]
+    public static void UnrenderedMapCaptureAdvancesLifecycleAndRetainsStateWithoutStagingSnapshot()
+    {
+        using var engine = new LumenGpuParticleEngine(16);
+        var identity = new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity);
+        var drainingSpec = new EmitterSpec
+        {
+            Name = "draining", MaxParticles = 8, Looping = true, Duration = 1f,
+            RateOverTime = 8f, StartLifetimeMin = 0.5f, StartLifetimeMax = 0.5f,
+        };
+        int first = engine.CreateInstance(drainingSpec, identity, 7, false, 1u);
+        int second = engine.CreateInstance(Looping(), identity, 7, false, 2u);
+        engine.CaptureMainThread(Frame(0.25f, 0));
+        engine.MarkFrameEnqueued(0);
+        engine.CompleteRecordedFrame(0);
+
+        engine.DestroyInstance(first, immediate: false);
+        engine.EmitBurst(second, 5);
+        engine.CaptureMainThread(PausedFrame(0.016f) with { FrameIndex = 1, RendersMap = false });
+        Require(engine.CapturedFrame is null, "Paused RendersMap=false must not stage a ParticleFrame snapshot.");
+
+        engine.CaptureMainThread(Frame(0.25f, 2) with { RendersMap = false });
+        Require(engine.CapturedFrame is null, "RendersMap=false must not stage a ParticleFrame snapshot.");
+        Require(engine.IsInstanceAlive(first), "Draining emitter survives before its 0.5s lifetime elapses.");
+
+        engine.CaptureMainThread(Frame(0.25f, 3) with { RendersMap = false });
+        Require(engine.CapturedFrame is null && !engine.IsInstanceAlive(first),
+            "Draining emitter must finish draining across RendersMap=false captures without staging.");
+
+        engine.CaptureMainThread(Frame(0.25f, 4));
+        ParticleFrame resumed = engine.CapturedFrame!;
+        Require(resumed.Clears is [var clear] && clear == new EmitterSlotRange(0, 8),
+            "Next rendered capture must carry the clear from the emitter that drained while RendersMap=false.");
+        Require(resumed.Emitters is [var live] && live.InstanceId == second
+            && live.Parameters.Slots.Z == 8f
+            && MathF.Abs(live.Parameters.State.X - 0.75f) < 1e-6f
+            && MathF.Abs(live.Parameters.WorldPhysics.X - 1.0f) < 1e-6f,
+            $"Surviving emitter must retain live burst/rate births capped at 8, advance NodeTime to 1.0s and accumulate 0.75s GPU dt; got budget={resumed.Emitters[0].Parameters.Slots.Z}, dt={resumed.Emitters[0].Parameters.State.X}, age={resumed.Emitters[0].Parameters.WorldPhysics.X}.");
+    }
+
     private static LumenCaptureContext PausedFrame(float unscaled) => new()
     {
         FrameIndex = 0, DeltaTime = 0f, UnscaledDeltaTime = unscaled, ViewportWidth = 64, ViewportHeight = 64,

@@ -154,6 +154,26 @@ public static class DistortionSuite
     }
 
     [LumenFact]
+    public static void UnrenderedMapCaptureSubmitsNoDrawsWhileTimelineStillDrains()
+    {
+        var backend = new LumenDistortionBackend();
+        int ring = backend.CreateInstance(Node(Ring), Frame(false, 0f), realTime: false, seed: 1);
+        backend.RestartInstance(ring);
+        backend.UpdateInstance(ring, Frame(true, 0.5f));
+        var unrendered = new LumenCaptureContext
+        {
+            CurrentMapIndex = 7, RendersMap = false, FrameIndex = 1, DeltaTime = 0.5f, ViewportWidth = 64, ViewportHeight = 64,
+            ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
+        };
+        backend.CaptureMainThread(in unrendered);
+        Check(backend.IsInstanceAlive(ring), "visible ring remains alive while RendersMap=false skips draw submission");
+        backend.DestroyInstance(ring, immediate: false);
+        backend.UpdateInstance(ring, Frame(false, 1.0f));
+        backend.CaptureMainThread(unrendered with { FrameIndex = 2 });
+        Check(!backend.IsInstanceAlive(ring) && !backend.HasActiveWork, "ring finishes draining across RendersMap=false frames");
+    }
+
+    [LumenFact]
     public static void FrameGateRunsTheChainOnlyWhenDistortionIsDrawn()
     {
         Equal(HdrFrameMode.Skip, HdrFrameGate.Decide(false, 0, 0, false));

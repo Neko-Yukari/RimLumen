@@ -61,7 +61,8 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
     public bool IsInstanceAlive(int instanceId) => ribbons.ContainsKey(instanceId);
 
     // Requires: main thread, after this frame's UpdateInstance calls.
-    // Ensures: rebuilds Vertices/Indices/SubBatches for the ribbons on context.CurrentMapIndex (-1: every map).
+    // Ensures: clears Vertices/Indices/SubBatches when !context.RendersMap; otherwise rebuilds them for the ribbons on
+    //   context.CurrentMapIndex (-1: every map).
     //   View ribbons face the camera; every centre draws through CameraBillboardBasis.ProjectToDisplay anchored at its
     //   own XZ, so both ends of a beam land on their cells and only height projects. Arrays grow only; steady state
     //   allocates nothing.
@@ -69,6 +70,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
     {
         vertexCount = indexCount = 0;
         subBatches.Clear();
+        if (!context.RendersMap) return;
         CameraBillboardBasis.Extract(context.ViewMatrix, out Vector3 cameraRight, out Vector3 cameraUp, out float yScaleRatio);
         bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(cameraRight, cameraUp, yScaleRatio);
         Vector3 groundUp = CameraBillboardBasis.GroundUp(cameraUp);

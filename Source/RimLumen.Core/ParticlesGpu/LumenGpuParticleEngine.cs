@@ -32,6 +32,9 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         public float? DepthReferenceZ;
         public double DrainRemaining;
         public int PendingBurst;
+        public bool NewBurstPending;
+        public float UnspawnedBurstAge;
+        public float LastHostDt;
         public InstanceState State;
         public float NodeTime;
         public int[] Targets = Array.Empty<int>();
@@ -77,7 +80,6 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
 
     public int Capacity => capacity;
     public string Name => "RimLumen.GpuParticles";
-    internal bool HasInstances => !disposed && instances.Count != 0;
     public bool HasActiveWork
     {
         get
@@ -195,11 +197,20 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!instances.TryGetValue(instanceId, out Instance? instance) || instance.State != InstanceState.Emitting) return;
         if (instance.GpuBurstCarry)
+        {
             instance.ExplicitBursts.Add(new((uint)count, (uint)MathF.Floor(RimLumenRenderHost.ParticleDensityScale * 65536f), instance.ResetVersion, 0));
+            instance.NewBurstPending = true;
+            instance.UnspawnedBurstAge = 0f;
+        }
         else
         {
             int accepted = instance.Scheduler.AcceptBurst(count, RimLumenRenderHost.ParticleDensityScale);
-            instance.PendingBurst = (int)Math.Min((long)instance.PendingBurst + accepted, instance.Slots.Capacity);
+            if (accepted > 0)
+            {
+                instance.PendingBurst = (int)Math.Min((long)instance.PendingBurst + accepted, instance.Slots.Capacity);
+                instance.NewBurstPending = true;
+                instance.UnspawnedBurstAge = 0f;
+            }
         }
     }
 
@@ -212,6 +223,13 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!float.IsFinite(context.DeltaTime) || context.DeltaTime < 0)
             throw new ArgumentOutOfRangeException(nameof(context.DeltaTime));
+        bool rendersMap = context.RendersMap;
+        if (!rendersMap && instances.Count == 0)
+        {
+            captured = null;
+            System.Threading.Volatile.Write(ref idleRequested, true);
+            return;
+        }
         var rows = captureRows;
         var clears = captureClears;
         var removed = captureRemoved;
@@ -226,6 +244,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         foreach (Instance instance in instances.Values)
         {
             float hostDt = instance.RealTime && context.UnscaledDeltaTime > 0f ? context.UnscaledDeltaTime : context.DeltaTime;
+            instance.LastHostDt = hostDt;
             float scheduleDt = instance.FrameDelta ?? hostDt;
             instance.FrameDelta = null;
             instance.Activated |= instance.Emitting;
@@ -234,9 +253,10 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
             {
                 instance.DrainRemaining -= hostDt;
                 // A target can receive new particles until all sources finish; then it gets a full final lifetime.
-                if (instance.PendingBurst > 0 || instance.ExplicitBursts.Count != 0 || instance.Sources.Count != 0)
+                if (instance.NewBurstPending || instance.Sources.Count != 0)
                     instance.DrainRemaining = instance.Spec.StartLifetimeMax;
             }
+            instance.NewBurstPending = false;
             if (instance.State == InstanceState.Remove ||
                 (instance.State == InstanceState.Draining && (instance.Targets.Length == 0 ? instance.DrainRemaining <= 0 : drainedBeforeFrame)))
             {
@@ -247,11 +267,31 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
             }
             EmitterSpec spec = instance.Spec;
             if (instance.Activated) instance.NodeTime += scheduleDt;
-            double requested = instance.PendingBurst;
+            double scheduled = 0.0;
             if (instance.State == InstanceState.Emitting && instance.Activated && scheduleDt > 0f)
-                requested += instance.Scheduler.Advance(scheduleDt, instance.Emitting, density, instance.RateMultiplier);
-            int budget = (int)Math.Min(instance.Slots.Capacity, requested);
+                scheduled = instance.Scheduler.Advance(scheduleDt, instance.Emitting, density, instance.RateMultiplier);
+            if (!rendersMap)
+            {
+                if (scheduled > 0.0)
+                {
+                    instance.PendingBurst = (int)Math.Min(instance.Slots.Capacity, instance.PendingBurst + scheduled);
+                    instance.UnspawnedBurstAge = 0f;
+                }
+                else if (instance.PendingBurst > 0 || instance.ExplicitBursts.Count != 0)
+                {
+                    instance.UnspawnedBurstAge += hostDt;
+                    if (instance.UnspawnedBurstAge >= spec.StartLifetimeMax)
+                    {
+                        instance.PendingBurst = 0;
+                        instance.ExplicitBursts.Clear();
+                        instance.UnspawnedBurstAge = 0f;
+                    }
+                }
+                continue;
+            }
+            int budget = (int)Math.Min(instance.Slots.Capacity, instance.PendingBurst + scheduled);
             instance.PendingBurst = 0;
+            instance.UnspawnedBurstAge = 0f;
             int row = rows.Count;
             int fieldOffset = fields.Count;
             foreach (ForceFieldSpec field in spec.ForceFields)
@@ -374,19 +414,25 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
             {
                 staleGpuDtIds.Clear();
                 foreach (int id in pendingGpuDts.Keys)
-                    if (!rowByInstance.ContainsKey(id)) staleGpuDtIds.Add(id);
+                    if (!instances.ContainsKey(id)) staleGpuDtIds.Add(id);
                 foreach (int id in staleGpuDtIds) pendingGpuDts.Remove(id);
+            }
+            foreach (EmitterSlotRange range in clears) AddPendingClear(range);
+            foreach (Instance live in instances.Values)
+                pendingGpuDts[live.Id] = (pendingGpuDts.TryGetValue(live.Id, out float prior) ? prior : 0f) + live.LastHostDt;
+            if (!rendersMap)
+            {
+                captured = null;
+                System.Threading.Volatile.Write(ref idleRequested, instances.Count == 0);
+                return;
             }
             for (int row = 0; row < rows.Count; row++)
             {
                 int id = rows[row].InstanceId;
                 GpuEmitterParams parameters = rows[row].Parameters;
-                float accumulated = (pendingGpuDts.TryGetValue(id, out float prior) ? prior : 0f) + parameters.State.X;
-                pendingGpuDts[id] = accumulated;
-                parameters.State.X = accumulated;
+                parameters.State.X = pendingGpuDts[id];
                 rows[row] = rows[row] with { Parameters = parameters };
             }
-            foreach (EmitterSlotRange range in clears) AddPendingClear(range);
             clears.Clear();
             foreach (PendingClear pending in pendingClears)
                 if (pending.EnqueuedFrame is null) clears.Add(pending.Range);

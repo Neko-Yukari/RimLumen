@@ -135,12 +135,6 @@ internal sealed class RimLumenPipeline : IDisposable
         && RimWorld.Planet.WorldRendererUtility.DrawingMap
         && MapGenerator.mapBeingGenerated == null;
 
-    // Node-feature draw/staging contributors whose simulation clocks already advanced in LumenVfxService.CaptureMainThread.
-    private static bool IsMapDrawOnlyContributor(ILumenFrameContributor contributor) =>
-        contributor is Ribbons.LumenRibbonContributor
-            or Distortion.LumenDistortionBackend
-            or ScreenDim.LumenScreenDimBackend;
-
     internal void BeginCapture(in FrameTiming timing)
     {
         // FrameRenderer.BeginMainThreadFrame:220-230 runs all early hooks before CaptureFrame:186-192.
@@ -181,7 +175,8 @@ internal sealed class RimLumenPipeline : IDisposable
             FrameIndex = captureIndex, DeltaTime = simDt, UnscaledDeltaTime = unscaledDt,
             ViewportWidth = extent.Width, ViewportHeight = extent.Height,
             ViewMatrix = view.View, ProjectionMatrix = view.Projection,
-            LumenRenderPassId = RimLumenRenderHost.LumenRenderPassId
+            LumenRenderPassId = RimLumenRenderHost.LumenRenderPassId,
+            RendersMap = renderMap
         };
         var compute = new LumenComputeContext { FrameIndex = captureIndex, DeltaTime = simDt, UnscaledDeltaTime = unscaledDt };
         activeContributorBuffer.Clear();
@@ -189,16 +184,9 @@ internal sealed class RimLumenPipeline : IDisposable
         {
             // The service can activate a later contributor in this very capture.
             if (!contributor.HasActiveWork) continue;
-            if (!renderMap)
-            {
-                if (IsMapDrawOnlyContributor(contributor) ||
-                    contributor is ParticlesGpu.LumenGpuParticleEngine { HasInstances: false })
-                    continue;
-                contributor.CaptureMainThread(in capture);
-                continue;
-            }
-            activeContributorBuffer.Add(contributor);
             contributor.CaptureMainThread(in capture);
+            if (!renderMap) continue;
+            activeContributorBuffer.Add(contributor);
             contributor.EnqueuePreCompute(in compute);
             if (ReferenceEquals(contributor, LumenSceneBootstrap.Simulator))
             {
