@@ -166,6 +166,9 @@ internal static class IntegrationTests
         var lightning = LumenHostRegistry.VfxService!.Play(lightningRequest);
         int lightningFinished = 0;
         lightning.Finished += () => lightningFinished++;
+        Action<LumenInteractionNotification> onInteraction = _ => { };
+        lightning.InteractionNotify += onInteraction;
+        lightning.InteractionNotify -= onInteraction;
         Check.Equal(1, spy.Plays, "Lightning delegates External to external");
         Check.Equal(11, spy.LastReport!.Nodes.Count(n => n.Tier == LumenParticleTier.External), "external report External count (5 systems, 6 lines)");
         var lightningInstance = recording.Last as EffectInstanceHandle ?? throw new InvalidOperationException("Lightning inner handle is not native.");
@@ -178,8 +181,14 @@ internal static class IntegrationTests
         Check.True(lightning.IsAlive, "hybrid handle alive while external plays");
         lightning.Trigger("state");
         lightning.SetParam("intensity", .5f);
+        lightning.SetLightIntensity(1.5f);
+        lightning.SetLightColor(new Vector3(0.4f, 0.8f, 1f));
+        Check.Throws<ArgumentOutOfRangeException>(() => lightning.SetLightIntensity(-1f), "nonnegative");
+        Check.Throws<ArgumentOutOfRangeException>(() => lightning.SetLightColor(new Vector3(2f, 0f, 0f)), "[0, 1]");
         Check.Equal(1, spy.LastHandle!.Triggers, "Trigger forwarded");
         Check.Equal(1, spy.LastHandle.Params, "SetParam forwarded");
+        Check.Equal(1, spy.LastHandle.LightIntensityCalls, "SetLightIntensity forwarded once");
+        Check.Equal(1, spy.LastHandle.LightColorCalls, "SetLightColor forwarded once");
         spy.LastHandle.Stop(true);
         Check.True(lightningInstance.IsAlive && lightning.IsAlive, "composite remains alive when external finishes before native");
         Check.Equal(0, lightningFinished, "external finish alone does not complete composite");
@@ -404,15 +413,18 @@ internal static class IntegrationTests
 
     private sealed class SpyHandle : ILumenEffectHandle
     {
-        public int Triggers, Params, Stops, Disposes;
+        public int Triggers, Params, LightIntensityCalls, LightColorCalls, Stops, Disposes;
         public bool LastAllowFadeOut;
         public bool IsAlive { get; private set; } = true;
         public void Trigger(string name) => Triggers++;
         public void GoTo(string stateName) { }
         public void SetParam(string name, float value) => Params++;
+        public void SetLightIntensity(float intensity) => LightIntensityCalls++;
+        public void SetLightColor(Vector3 colorRgb) => LightColorCalls++;
         public void Stop(bool allowFadeOut = true) { Stops++; LastAllowFadeOut = allowFadeOut; End(); }
         public void Dispose() { Disposes++; End(); }
         public event Action<string>? Notify { add { } remove { } }
+        public event Action<LumenInteractionNotification>? InteractionNotify { add { } remove { } }
         public event Action<string>? StateChanged { add { } remove { } }
         public event Action? Finished;
 

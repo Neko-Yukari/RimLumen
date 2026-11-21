@@ -171,6 +171,7 @@ internal static class ParticleEnvironment
             allForceCount = 0;
             explosionForceCount = 0;
             cursorForceCount = 0;
+            if (cursorCount > 0) Array.Clear(cursors, 0, cursorCount);
             cursorCount = 0;
             explosionPulseCount = 0;
         }
@@ -493,7 +494,10 @@ internal static class ParticleEnvironment
                     state.AddCursor(new LumenCursorSnapshot(
                         sample.WorldGroundXZ,
                         state.HostMouseVelocity,
-                        state.HostMouseVelocity.Length()));
+                        state.HostMouseVelocity.Length())
+                    {
+                        Source = new(LumenCursorSourceKind.HostMouse),
+                    });
                 }
             }
             else
@@ -554,7 +558,10 @@ internal static class ParticleEnvironment
                     state.AddCursor(new LumenCursorSnapshot(
                         new Vector2(src.PositionWorld.X, src.PositionWorld.Z),
                         velocity,
-                        velocity.Length()));
+                        velocity.Length())
+                    {
+                        Source = new(LumenCursorSourceKind.ModCursor, src),
+                    });
                 }
             }
 

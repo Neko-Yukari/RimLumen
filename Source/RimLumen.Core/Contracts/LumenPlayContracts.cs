@@ -53,19 +53,31 @@ public interface ILumenEffectHandle : IDisposable
     //          continuous emission only, never authored or explicit bursts.
     void SetParam(string name, float value);
 
+    // Requires: main thread; intensity is finite and >= 0 (otherwise ArgumentOutOfRangeException before mutation).
+    // Ensures: multiplies point-light intensity on this handle without affecting particles or other node features.
+    void SetLightIntensity(float intensity);
+
+    // Requires: main thread; each RGB component of colorRgb is finite and in [0, 1]
+    //          (otherwise ArgumentOutOfRangeException before mutation).
+    // Ensures: overrides the RGB colour of point lights on this handle without affecting particles.
+    void SetLightColor(Vector3 colorRgb);
+
     // Ensures: allowFadeOut == true plays the asset's StopState to its end when it declares one, then stops new
     //          emission and lets particles and lights fade; without a StopState it fades at once.
     //          allowFadeOut == false terminates immediately.
     void Stop(bool allowFadeOut = true);
 
-    // Ensures: raised with EventName when a timeline event with Notify fires (on its time or through Trigger).
+    // Ensures: raised with EventName when a timeline event or interaction event with Notify fires.
     event Action<string>? Notify;
+
+    // Ensures: raised with EventName, Trigger and Cursor source when an interaction event with Notify fires.
+    event Action<LumenInteractionNotification>? InteractionNotify;
 
     // Ensures: raised with the state name each time a declared state is entered, including the initial state.
     event Action<string>? StateChanged;
 
     // Ensures: raised exactly once, when IsAlive becomes false for any reason (the effect ended, Stop, Dispose).
-    // All three events are raised on the main thread from the per-frame advance, in the order they happened,
+    // All events are raised on the main thread from the per-frame advance, in the order they happened,
     // so a call made from a handler (GoTo, Stop) never re-enters the playback that raised it.
     event Action? Finished;
 }

@@ -121,12 +121,34 @@ public readonly record struct LumenEnvironmentForce(
     }
 }
 
+public enum LumenCursorSourceKind : byte
+{
+    // Not triggered by a cursor (e.g. an Explosion interaction event or default value).
+    None = 0,
+    // Triggered by the host mouse sampled on the currently rendered map.
+    HostMouse = 1,
+    // Triggered by a mod-created world-space cursor (RimLumenApi.CreateCursor / CreateEnvironmentSource).
+    ModCursor = 2,
+}
+
+public readonly record struct LumenCursorSource(
+    LumenCursorSourceKind Kind,
+    ILumenEnvironmentSource? Source = null);
+
+public readonly record struct LumenInteractionNotification(
+    string EventName,
+    LumenInteractionTrigger Trigger,
+    LumenCursorSource Cursor);
+
 // Frozen per-frame active cursor snapshot (SPI, valid during main-thread CaptureMainThread).
 // PositionXZ is in map ground cells; ScreenVelocity and Speed are in screen heights per real second.
 public readonly record struct LumenCursorSnapshot(
     Vector2 PositionXZ,
     Vector2 ScreenVelocity,
-    float Speed);
+    float Speed)
+{
+    public LumenCursorSource Source { get; init; }
+}
 
 public enum LumenCollisionMode : byte
 {

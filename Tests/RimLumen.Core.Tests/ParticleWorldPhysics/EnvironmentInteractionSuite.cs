@@ -608,6 +608,300 @@ public static class EnvironmentInteractionSuite
         }
     }
 
+    [LumenFact]
+    public static void InteractionNotifyDistinguishesHostMouseModCursorHandlesAndExplosions()
+    {
+        const int mapId = 8110;
+        var map = new Verse.Map { uniqueID = mapId };
+        try
+        {
+            var asset = new EffectAsset
+            {
+                EffectId = "env.cursor-identity",
+                DefaultDuration = 5f,
+                Nodes = new[]
+                {
+                    new EffectNodeSpec
+                    {
+                        Name = "root",
+                        Emitter = VfxTestData.Emitter(looping: true, rate: 0f, tier: LumenParticleTier.L1_NativeCpu),
+                    },
+                },
+                TimelineEvents = new[]
+                {
+                    new TimelineEventSpec(10f, "manual_ping", -1, Notify: true),
+                },
+                InteractionEvents = new[]
+                {
+                    new InteractionEventSpec { Trigger = LumenInteractionTrigger.CursorEnter, EventName = "enter", Radius = 3f, Notify = true },
+                    new InteractionEventSpec { Trigger = LumenInteractionTrigger.CursorExit, EventName = "exit", Radius = 3f, Notify = true },
+                    new InteractionEventSpec { Trigger = LumenInteractionTrigger.CursorStay, EventName = "stay", Radius = 3f, HoldSeconds = 0.1f, CooldownSeconds = 1f, Notify = true },
+                    new InteractionEventSpec { Trigger = LumenInteractionTrigger.CursorSwipe, EventName = "swipe", Radius = 3f, MinCursorSpeed = 2f, Notify = true },
+                    new InteractionEventSpec { Trigger = LumenInteractionTrigger.Explosion, EventName = "blast", Radius = 1f, Notify = true },
+                },
+            };
+
+            var service = VfxTestData.Service(asset);
+            using ILumenEffectHandle handle = service.Play(new LumenPlayRequest
+            {
+                EffectId = asset.EffectId,
+                MapIndex = mapId,
+                OriginWorld = new Vector3(20f, 0f, 20f),
+            });
+
+            var legacyNames = new List<string>();
+            var notifications = new List<LumenInteractionNotification>();
+            handle.Notify += legacyNames.Add;
+            handle.InteractionNotify += notifications.Add;
+
+            // Timeline events raise Notify only, never InteractionNotify.
+            handle.Trigger("manual_ping");
+            StepService(service, mapId, 0.05f, orthoSize: 10f);
+            Check(string.Join(",", legacyNames) == "manual_ping", $"Expected manual_ping on Notify, got {string.Join(",", legacyNames)}");
+            Check(notifications.Count == 0, $"Timeline Trigger must not raise InteractionNotify, got {notifications.Count}.");
+            legacyNames.Clear();
+
+            // 1. Host mouse enters, dwells, swipes, and exits (while a mod cursor sits far away at (0, 0)):
+            using ILumenEnvironmentSource farCursor = RimLumenApi.CreateCursor(map, new Vector3(0f, 0f, 0f));
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(20f, 20f), new Vector2(0.5f, 0.5f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.05f);
+
+            ReadOnlySpan<LumenCursorSnapshot> snapshots = LumenHostRegistry.GetCursors(mapId);
+            Check(snapshots.Length == 2, $"Expected 2 cursor snapshots (host + mod), got {snapshots.Length}.");
+            Check(snapshots[0].Source.Kind == LumenCursorSourceKind.HostMouse && snapshots[0].Source.Source is null,
+                $"Host mouse snapshot must carry HostMouse kind, got {snapshots[0].Source}.");
+            Check(snapshots[1].Source.Kind == LumenCursorSourceKind.ModCursor && ReferenceEquals(snapshots[1].Source.Source, farCursor),
+                $"Mod cursor snapshot must reference farCursor, got {snapshots[1].Source}.");
+
+            Check(notifications.Count == 1
+                && notifications[0].EventName == "enter"
+                && notifications[0].Trigger == LumenInteractionTrigger.CursorEnter
+                && notifications[0].Cursor.Kind == LumenCursorSourceKind.HostMouse
+                && notifications[0].Cursor.Source is null,
+                $"Host mouse enter must report HostMouse source, got {string.Join(";", notifications)}");
+            Check(string.Join(",", legacyNames) == "enter", $"Legacy Notify must remain unchanged, got {string.Join(",", legacyNames)}");
+            notifications.Clear();
+            legacyNames.Clear();
+
+            // Dwell one more 0.05s step (total 0.10s >= HoldSeconds 0.10s) -> CursorStay from HostMouse:
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(20f, 20f), new Vector2(0.5f, 0.5f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.05f);
+            Check(notifications.Count == 1
+                && notifications[0].EventName == "stay"
+                && notifications[0].Trigger == LumenInteractionTrigger.CursorStay
+                && notifications[0].Cursor.Kind == LumenCursorSourceKind.HostMouse,
+                $"Host mouse stay must report HostMouse source, got {string.Join(";", notifications)}");
+            notifications.Clear();
+            legacyNames.Clear();
+
+            // Fast host mouse swipe inside circle (+0.30 vh in 0.02s -> inst 15 vh/s -> EMA > 2 vh/s):
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.02f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(21f, 20f), new Vector2(0.8f, 0.5f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.02f);
+            Check(notifications.Count == 1
+                && notifications[0].EventName == "swipe"
+                && notifications[0].Trigger == LumenInteractionTrigger.CursorSwipe
+                && notifications[0].Cursor.Kind == LumenCursorSourceKind.HostMouse,
+                $"Host mouse swipe must report HostMouse source, got {string.Join(";", notifications)}");
+            notifications.Clear();
+            legacyNames.Clear();
+
+            // Host mouse obscured by UI (hostMouse = null) while farCursor remains at (0, 0) -> CursorExit still reports HostMouse!
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null, hostMouse: null);
+            StepServiceAlreadyCaptured(service, mapId, 0.05f);
+            Check(notifications.Count == 1
+                && notifications[0].EventName == "exit"
+                && notifications[0].Trigger == LumenInteractionTrigger.CursorExit
+                && notifications[0].Cursor.Kind == LumenCursorSourceKind.HostMouse,
+                $"Host mouse UI-obscured exit must report HostMouse (not farCursor), got {string.Join(";", notifications)}");
+            notifications.Clear();
+            legacyNames.Clear();
+
+            // 2. Mod cursor enters, swipes, and exits while host mouse sits outside at (5, 5):
+            using ILumenEnvironmentSource aimCursor = RimLumenApi.CreateCursor(map, new Vector3(18.5f, 0f, 20f));
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(5f, 5f), new Vector2(0.1f, 0.1f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.05f);
+            Check(notifications.Count == 1
+                && notifications[0].EventName == "enter"
+                && notifications[0].Trigger == LumenInteractionTrigger.CursorEnter
+                && notifications[0].Cursor.Kind == LumenCursorSourceKind.ModCursor
+                && ReferenceEquals(notifications[0].Cursor.Source, aimCursor)
+                && !ReferenceEquals(notifications[0].Cursor.Source, farCursor),
+                $"Mod cursor enter must reference aimCursor specifically, got {string.Join(";", notifications)}");
+            notifications.Clear();
+            legacyNames.Clear();
+
+            // Fast mod cursor swipe inside circle (18.5 -> 21.5 in 0.02s at orthoSize 10 -> EMA > 2 vh/s):
+            aimCursor.SetPosition(new Vector3(21.5f, 0f, 20f));
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.02f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(5f, 5f), new Vector2(0.1f, 0.1f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.02f);
+            Check(notifications.Count == 1
+                && notifications[0].EventName == "swipe"
+                && notifications[0].Cursor.Kind == LumenCursorSourceKind.ModCursor
+                && ReferenceEquals(notifications[0].Cursor.Source, aimCursor),
+                $"Mod cursor swipe must reference aimCursor, got {string.Join(";", notifications)}");
+            notifications.Clear();
+            legacyNames.Clear();
+
+            // Mod cursor moves outside to (10, 0, 20) while host mouse sits at (5, 5) -> CursorExit must report aimCursor, NOT HostMouse!
+            aimCursor.SetPosition(new Vector3(10f, 0f, 20f));
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(5f, 5f), new Vector2(0.1f, 0.1f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.05f);
+            Check(notifications.Count == 1
+                && notifications[0].EventName == "exit"
+                && notifications[0].Trigger == LumenInteractionTrigger.CursorExit
+                && notifications[0].Cursor.Kind == LumenCursorSourceKind.ModCursor
+                && ReferenceEquals(notifications[0].Cursor.Source, aimCursor),
+                $"Mod cursor exit must reference aimCursor (not stationary HostMouse), got {string.Join(";", notifications)}");
+            notifications.Clear();
+            legacyNames.Clear();
+
+            // Mod cursor disposed while inside circle and host mouse sits outside at (5, 5) -> CursorExit must still report disposedCursor, NOT HostMouse!
+            using (ILumenEnvironmentSource disposedCursor = RimLumenApi.CreateCursor(map, new Vector3(19.5f, 0f, 20f)))
+            {
+                ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                    new HostMouseSample(new Vector2(5f, 5f), new Vector2(0.1f, 0.1f)));
+                StepServiceAlreadyCaptured(service, mapId, 0.05f);
+                Check(notifications.Count == 1
+                    && notifications[0].EventName == "enter"
+                    && ReferenceEquals(notifications[0].Cursor.Source, disposedCursor),
+                    $"Disposed-cursor setup enter must reference disposedCursor, got {string.Join(";", notifications)}");
+                notifications.Clear();
+                legacyNames.Clear();
+
+                disposedCursor.Dispose();
+                ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                    new HostMouseSample(new Vector2(5f, 5f), new Vector2(0.1f, 0.1f)));
+                StepServiceAlreadyCaptured(service, mapId, 0.05f);
+                Check(notifications.Count == 1
+                    && notifications[0].EventName == "exit"
+                    && notifications[0].Trigger == LumenInteractionTrigger.CursorExit
+                    && notifications[0].Cursor.Kind == LumenCursorSourceKind.ModCursor
+                    && ReferenceEquals(notifications[0].Cursor.Source, disposedCursor),
+                    $"Disposed mod cursor exit must still report disposedCursor, got {string.Join(";", notifications)}");
+                notifications.Clear();
+                legacyNames.Clear();
+            }
+
+            // CreateMouseForce (FollowHostMouse = true) must still emit Cursor* notifications with HostMouse (Source == null), not ModCursor:
+            using (ILumenEnvironmentSource mouseForce = RimLumenApi.CreateMouseForce(map, radius: 3f, strength: -4f))
+            {
+                ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                    new HostMouseSample(new Vector2(20f, 20f), new Vector2(0.1f, 0.1f)));
+                StepServiceAlreadyCaptured(service, mapId, 0.05f);
+                Check(notifications.Count == 1
+                    && notifications[0].EventName == "enter"
+                    && notifications[0].Cursor.Kind == LumenCursorSourceKind.HostMouse
+                    && notifications[0].Cursor.Source is null,
+                    $"Active CreateMouseForce must keep host mouse source as HostMouse, got {string.Join(";", notifications)}");
+                notifications.Clear();
+                legacyNames.Clear();
+
+                ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null, hostMouse: null);
+                StepServiceAlreadyCaptured(service, mapId, 0.05f);
+                Check(notifications.Count == 1 && notifications[0].EventName == "exit" && notifications[0].Cursor.Kind == LumenCursorSourceKind.HostMouse,
+                    $"Active CreateMouseForce exit must keep HostMouse source, got {string.Join(";", notifications)}");
+                notifications.Clear();
+                legacyNames.Clear();
+                Check(mouseForce.IsAlive, "Mouse force remains alive until disposed.");
+            }
+
+            // 3. Explosion interaction event reports Trigger == Explosion and Kind == None / Source == null:
+            RimLumenApi.EmitExplosion(map, new Vector3(20f, 0f, 20f), radius: 3f);
+            StepService(service, mapId, 0.05f, orthoSize: 10f);
+            Check(notifications.Count == 1
+                && notifications[0].EventName == "blast"
+                && notifications[0].Trigger == LumenInteractionTrigger.Explosion
+                && notifications[0].Cursor.Kind == LumenCursorSourceKind.None
+                && notifications[0].Cursor.Source is null,
+                $"Explosion interaction must report Kind == None and Source == null, got {string.Join(";", notifications)}");
+            Check(string.Join(",", legacyNames) == "blast", $"Legacy Notify must receive 'blast', got {string.Join(",", legacyNames)}");
+
+            // 4. Speed-gated CursorExit keeps AnySpeedMatches condition while always attributing to rs.LastInsideCursor:
+            farCursor.Dispose();
+            aimCursor.Dispose();
+            using ILumenEffectHandle speedGatedHandle = service.Play(new LumenPlayRequest
+            {
+                EffectId = asset.EffectId,
+                MapIndex = mapId,
+                OriginWorld = new Vector3(40f, 0f, 20f),
+                InteractionEvents = new[]
+                {
+                    new InteractionEventSpec { Trigger = LumenInteractionTrigger.CursorExit, EventName = "fast_exit", Radius = 3f, MinCursorSpeed = 2f, Notify = true },
+                },
+            });
+            var fastExitLog = new List<LumenInteractionNotification>();
+            speedGatedHandle.InteractionNotify += n => { if (n.EventName == "fast_exit") fastExitLog.Add(n); };
+
+            // (a) Disposing the sole inside cursor when no cursor remains (cursors.IsEmpty) does not fire when MinCursorSpeed > 0:
+            using (ILumenEnvironmentSource disappearing = RimLumenApi.CreateCursor(map, new Vector3(38f, 0f, 20f)))
+            {
+                ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null, hostMouse: null);
+                StepServiceAlreadyCaptured(service, mapId, 0.05f);
+                disappearing.Dispose();
+                ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null, hostMouse: null);
+                StepServiceAlreadyCaptured(service, mapId, 0.05f);
+                Check(fastExitLog.Count == 0, $"Empty cursor list must not fire speed-gated CursorExit, got {string.Join(";", fastExitLog)}");
+            }
+
+            // (b) Slow leaving cursor with stationary outside host mouse -> AnySpeedMatches is false, does not fire:
+            using ILumenEnvironmentSource leavingCursor = RimLumenApi.CreateCursor(map, new Vector3(37.5f, 0f, 20f));
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(5f, 5f), new Vector2(0.1f, 0.1f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.05f);
+
+            leavingCursor.SetPosition(new Vector3(36.9f, 0f, 20f));
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(5f, 5f), new Vector2(0.1f, 0.1f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.05f);
+            Check(fastExitLog.Count == 0, $"Slow exit with no speed-matching cursor must not fire, got {string.Join(";", fastExitLog)}");
+
+            // (c) Slow leaving cursor while an outside host mouse matches speed -> fires and attributes to leavingCursor (not HostMouse):
+            leavingCursor.SetPosition(new Vector3(37.5f, 0f, 20f));
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(5f, 5f), new Vector2(0.1f, 0.1f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.05f);
+            fastExitLog.Clear();
+
+            leavingCursor.SetPosition(new Vector3(36.9f, 0f, 20f));
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(5f, 5f), new Vector2(0.4f, 0.1f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.05f);
+            Check(fastExitLog.Count == 1
+                && fastExitLog[0].Trigger == LumenInteractionTrigger.CursorExit
+                && fastExitLog[0].Cursor.Kind == LumenCursorSourceKind.ModCursor
+                && ReferenceEquals(fastExitLog[0].Cursor.Source, leavingCursor),
+                $"Speed-gated CursorExit must still attribute to leavingCursor, got {string.Join(";", fastExitLog)}");
+            fastExitLog.Clear();
+
+            // (d) Disposing leavingCursor while an outside host mouse matches speed -> fires and still attributes to leavingCursor:
+            leavingCursor.SetPosition(new Vector3(37.5f, 0f, 20f));
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(5f, 5f), new Vector2(0.4f, 0.1f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.05f);
+            fastExitLog.Clear();
+
+            leavingCursor.Dispose();
+            ParticleEnvironment.CaptureFrame(TopDownFrame(mapId, 0.05f, orthoSize: 10f), null, null,
+                new HostMouseSample(new Vector2(5f, 5f), new Vector2(0.1f, 0.1f)));
+            StepServiceAlreadyCaptured(service, mapId, 0.05f);
+            Check(fastExitLog.Count == 1
+                && fastExitLog[0].Trigger == LumenInteractionTrigger.CursorExit
+                && fastExitLog[0].Cursor.Kind == LumenCursorSourceKind.ModCursor
+                && ReferenceEquals(fastExitLog[0].Cursor.Source, leavingCursor),
+                $"Disposed leavingCursor speed-gated exit must still attribute to leavingCursor, got {string.Join(";", fastExitLog)}");
+        }
+        finally
+        {
+            ParticleEnvironment.ForgetMap(mapId);
+        }
+    }
+
     private static void StepService(LumenVfxService service, int mapId, float dt, float orthoSize)
     {
         var context = TopDownFrame(mapId, dt, orthoSize);
