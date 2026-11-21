@@ -104,6 +104,41 @@ public sealed partial class LumenEffectDef
         };
     }
 
+    private static ParticleTrailSpec ToParticleTrailSpec(LumenParticleTrailXml xml, string path)
+    {
+        string trailPath = path + ".trails";
+        return new ParticleTrailSpec
+        {
+            Ratio = xml.ratio,
+            Lifetime = xml.lifetime,
+            MinVertexDistance = xml.minVertexDistance,
+            MaxPoints = xml.maxPoints,
+            DieWithParticles = xml.dieWithParticles,
+            WorldSpace = xml.worldSpace,
+            SizeAffectsWidth = xml.sizeAffectsWidth,
+            SizeAffectsLifetime = xml.sizeAffectsLifetime,
+            InheritParticleColor = xml.inheritParticleColor,
+            Width = xml.width,
+            WidthOverTrail = xml.widthOverTrail is null
+                ? ScalarCurve.Constant(1f)
+                : new ScalarCurve(ToCurveKeys(xml.widthOverTrail, trailPath + ".widthOverTrail")),
+            ColorOverTrail = xml.colorOverTrail is null
+                ? ColorGradient.Constant(Vector4.One)
+                : new ColorGradient(ToColorStops(xml.colorOverTrail, trailPath + ".colorOverTrail")),
+            ColorOverLifetime = xml.colorOverLifetime is null
+                ? ColorGradient.Constant(Vector4.One)
+                : new ColorGradient(ToColorStops(xml.colorOverLifetime, trailPath + ".colorOverLifetime")),
+            TextureKey = string.IsNullOrEmpty(xml.textureKey) ? null : xml.textureKey,
+            MaterialTint = ParseColor(xml.materialTint, trailPath + ".materialTint"),
+            ColorSpace = xml.colorSpace,
+            BlendMode = xml.blendMode,
+            TextureMode = xml.textureMode,
+            Alignment = xml.alignment,
+            HdrIntensity = xml.hdrIntensity,
+            SoftParticleFadeDistance = xml.softParticleFadeDistance,
+        };
+    }
+
     private static InteractionEventSpec[] ToInteractionEvents(List<LumenInteractionEventXml>? events, string source)
     {
         if (events is null || events.Count == 0)
@@ -198,6 +233,32 @@ public sealed class LumenRibbonXml
     public LumenBlendMode blendMode = LumenBlendMode.Additive;
     public LumenRibbonTextureMode textureMode = LumenRibbonTextureMode.Stretch;
     public LumenRibbonAlignment alignment = LumenRibbonAlignment.View;
+    public float softParticleFadeDistance = 0.5f;
+}
+
+// XML mirror of ParticleTrailSpec.
+public sealed class LumenParticleTrailXml
+{
+    public float ratio = 1f;
+    public float lifetime = 1f;
+    public float minVertexDistance = 0.2f;
+    public int maxPoints = 32;
+    public bool dieWithParticles = true;
+    public bool worldSpace = true;
+    public bool sizeAffectsWidth = true;
+    public bool sizeAffectsLifetime;
+    public bool inheritParticleColor = true;
+    public float width = 1f;
+    public List<LumenCurveKeyXml>? widthOverTrail;
+    public List<LumenGradientStopXml>? colorOverTrail;
+    public List<LumenGradientStopXml>? colorOverLifetime;
+    public string? textureKey;
+    public string materialTint = "(1,1,1,1)";
+    public LumenColorSpace colorSpace = LumenColorSpace.Stored;
+    public LumenBlendMode blendMode = LumenBlendMode.Additive;
+    public LumenRibbonTextureMode textureMode = LumenRibbonTextureMode.Stretch;
+    public LumenRibbonAlignment alignment = LumenRibbonAlignment.View;
+    public float hdrIntensity = 1f;
     public float softParticleFadeDistance = 0.5f;
 }
 
@@ -361,6 +422,26 @@ internal static partial class LumenAssetRules
         ValidateNonnegative(ribbon.NoiseFrequency, path + ".noiseFrequency");
     }
 
+    private static void ValidateParticleTrail(ParticleTrailSpec trails, string path)
+    {
+        ValidateRange(trails.Ratio, 1f, path + ".ratio");
+        ValidatePositive(trails.Lifetime, path + ".lifetime");
+        ValidatePositive(trails.MinVertexDistance, path + ".minVertexDistance");
+        if (trails.MaxPoints < 2 || trails.MaxPoints > 256)
+            throw new InvalidDataException($"{path}.maxPoints: must be in [2, 256], got {trails.MaxPoints}.");
+        ValidatePositive(trails.Width, path + ".width");
+        ValidateNonnegativeCurve(trails.WidthOverTrail, path + ".widthOverTrail", normalized: true);
+        ValidateGradient(trails.ColorOverTrail, path + ".colorOverTrail");
+        ValidateGradient(trails.ColorOverLifetime, path + ".colorOverLifetime");
+        ValidateStoredColor(trails.MaterialTint, path + ".materialTint");
+        ValidateEnum(trails.ColorSpace, path + ".colorSpace");
+        ValidateEnum(trails.BlendMode, path + ".blendMode");
+        ValidateEnum(trails.TextureMode, path + ".textureMode");
+        ValidateEnum(trails.Alignment, path + ".alignment");
+        ValidateNonnegative(trails.HdrIntensity, path + ".hdrIntensity");
+        ValidateNonnegative(trails.SoftParticleFadeDistance, path + ".softParticleFadeDistance");
+    }
+
     internal static void ValidateInteractionEvent(InteractionEventSpec spec, int nodeCount, string path)
     {
         LumenInteractionTrigger trigger = spec.Trigger;
@@ -452,6 +533,14 @@ public static partial class LumenJsonAssetLoader
         "mode", "lifetime", "minVertexDistance", "maxPoints", "endLocal", "endAtTarget", "segments", "noiseAmplitude",
         "noiseFrequency", "width", "widthOverLength", "colorOverLength", "hdrIntensity", "textureKey", "blendMode",
         "textureMode", "alignment", "softParticleFadeDistance",
+    };
+
+    private static readonly string[] ParticleTrailProperties =
+    {
+        "ratio", "lifetime", "minVertexDistance", "maxPoints", "dieWithParticles", "worldSpace", "sizeAffectsWidth",
+        "sizeAffectsLifetime", "inheritParticleColor", "width", "widthOverTrail", "colorOverTrail",
+        "colorOverLifetime", "textureKey", "materialTint", "colorSpace", "blendMode", "textureMode", "alignment",
+        "hdrIntensity", "softParticleFadeDistance",
     };
 
     private static readonly string[] InteractionEventProperties =
@@ -593,6 +682,42 @@ public static partial class LumenJsonAssetLoader
             BlendMode = scope.Enum("blendMode", LumenBlendMode.Additive),
             TextureMode = scope.Enum("textureMode", LumenRibbonTextureMode.Stretch),
             Alignment = scope.Enum("alignment", LumenRibbonAlignment.View),
+            SoftParticleFadeDistance = scope.Float("softParticleFadeDistance", 0.5f),
+        };
+    }
+
+    private static ParticleTrailSpec ParseParticleTrail(JsonElement element, string path)
+    {
+        JsonScope scope = ObjectScope(element, path, ParticleTrailProperties);
+        string? textureKey = scope.String("textureKey", null);
+        return new ParticleTrailSpec
+        {
+            Ratio = scope.Float("ratio", 1f),
+            Lifetime = scope.Float("lifetime", 1f),
+            MinVertexDistance = scope.Float("minVertexDistance", 0.2f),
+            MaxPoints = scope.Int("maxPoints", 32),
+            DieWithParticles = scope.Bool("dieWithParticles", true),
+            WorldSpace = scope.Bool("worldSpace", true),
+            SizeAffectsWidth = scope.Bool("sizeAffectsWidth", true),
+            SizeAffectsLifetime = scope.Bool("sizeAffectsLifetime", false),
+            InheritParticleColor = scope.Bool("inheritParticleColor", true),
+            Width = scope.Float("width", 1f),
+            WidthOverTrail = scope.TryGet("widthOverTrail", out JsonElement width) && width.ValueKind != JsonValueKind.Null
+                ? ParseCurve(width, path + ".widthOverTrail")
+                : ScalarCurve.Constant(1f),
+            ColorOverTrail = scope.TryGet("colorOverTrail", out JsonElement trailColor) && trailColor.ValueKind != JsonValueKind.Null
+                ? ParseGradient(trailColor, path + ".colorOverTrail")
+                : ColorGradient.Constant(Vector4.One),
+            ColorOverLifetime = scope.TryGet("colorOverLifetime", out JsonElement lifeColor) && lifeColor.ValueKind != JsonValueKind.Null
+                ? ParseGradient(lifeColor, path + ".colorOverLifetime")
+                : ColorGradient.Constant(Vector4.One),
+            TextureKey = string.IsNullOrEmpty(textureKey) ? null : textureKey,
+            MaterialTint = scope.ColorRgba("materialTint", Vector4.One),
+            ColorSpace = scope.Enum("colorSpace", LumenColorSpace.Stored),
+            BlendMode = scope.Enum("blendMode", LumenBlendMode.Additive),
+            TextureMode = scope.Enum("textureMode", LumenRibbonTextureMode.Stretch),
+            Alignment = scope.Enum("alignment", LumenRibbonAlignment.View),
+            HdrIntensity = scope.Float("hdrIntensity", 1f),
             SoftParticleFadeDistance = scope.Float("softParticleFadeDistance", 0.5f),
         };
     }

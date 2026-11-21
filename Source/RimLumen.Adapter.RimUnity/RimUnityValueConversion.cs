@@ -134,7 +134,7 @@ public static class RimUnityValueConversion
     /// <summary>Combines independently keyed RGB/alpha in stored encoding; two gradients use the upper branch.</summary>
     public static ColorGradient ToColorGradient(ValueData? value)
     {
-        if (value is null) return ColorGradient.Constant(Vector4.One);
+        if (value is null || value.kind == "null") return ColorGradient.Constant(Vector4.One);
         if (value.kind == "vector") return ColorGradient.Constant(Vector(value, Vector4.One));
         int mode = Integer(Field(value, "mode"));
         if (mode is 0 or 2)

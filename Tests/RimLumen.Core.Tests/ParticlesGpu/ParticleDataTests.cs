@@ -355,6 +355,35 @@ public static class ParticleDataTests
         Offset<GpuSimPushConstants>(nameof(GpuSimPushConstants.FrameSeed), 4);
         Offset<GpuSimPushConstants>(nameof(GpuSimPushConstants.Padding0), 8);
         Offset<GpuSimPushConstants>(nameof(GpuSimPushConstants.Padding1), 12);
+
+        Equal(80, Marshal.SizeOf<GpuTrailHeader>());
+        Offset<GpuTrailHeader>(nameof(GpuTrailHeader.LiveHeadAndTotalLength), 0);
+        Offset<GpuTrailHeader>(nameof(GpuTrailHeader.ClippedTailAndWidth), 16);
+        Offset<GpuTrailHeader>(nameof(GpuTrailHeader.Color), 32);
+        Offset<GpuTrailHeader>(nameof(GpuTrailHeader.RingHead), 48);
+        Offset<GpuTrailHeader>(nameof(GpuTrailHeader.RingCount), 52);
+        Offset<GpuTrailHeader>(nameof(GpuTrailHeader.VisibleCount), 56);
+        Offset<GpuTrailHeader>(nameof(GpuTrailHeader.Flags), 60);
+        Offset<GpuTrailHeader>(nameof(GpuTrailHeader.ParticleSlot), 64);
+        Offset<GpuTrailHeader>(nameof(GpuTrailHeader.SpawnAnchorXZ), 68);
+        Offset<GpuTrailHeader>(nameof(GpuTrailHeader.HeadCumDistance), 72);
+        Offset<GpuTrailHeader>(nameof(GpuTrailHeader.ClippedTailCumDist), 76);
+
+        Equal(32, Marshal.SizeOf<GpuTrailPoint>());
+        Offset<GpuTrailPoint>(nameof(GpuTrailPoint.PositionAndRemaining), 0);
+        Offset<GpuTrailPoint>(nameof(GpuTrailPoint.DistanceAndLifetime), 16);
+
+        Equal(160, Marshal.SizeOf<GpuTrailEmitterParams>());
+        Offset<GpuTrailEmitterParams>(nameof(GpuTrailEmitterParams.World), 0);
+        Offset<GpuTrailEmitterParams>(nameof(GpuTrailEmitterParams.Ranges), 64);
+        Offset<GpuTrailEmitterParams>(nameof(GpuTrailEmitterParams.PointsAndCurve), 80);
+        Offset<GpuTrailEmitterParams>(nameof(GpuTrailEmitterParams.Params), 96);
+        Offset<GpuTrailEmitterParams>(nameof(GpuTrailEmitterParams.Appearance), 112);
+        Offset<GpuTrailEmitterParams>(nameof(GpuTrailEmitterParams.DepthAndParticle), 128);
+        Offset<GpuTrailEmitterParams>(nameof(GpuTrailEmitterParams.MapBase), 144);
+        Offset<GpuTrailEmitterParams>(nameof(GpuTrailEmitterParams.Flags), 148);
+        Offset<GpuTrailEmitterParams>(nameof(GpuTrailEmitterParams.BankCount), 152);
+        Offset<GpuTrailEmitterParams>(nameof(GpuTrailEmitterParams.RandomSeed), 156);
     }
 
     private static void Offset<T>(string field, int expected) where T : struct

@@ -290,6 +290,10 @@ public static class ParticleShaderTests
         CheckStruct<GpuSubLink>(source, 32);
         CheckStruct<GpuForceField>(source, 48);
         CheckStruct<GpuCurveSample>(source, 32);
+        string trailTypes = Read("ParticleTrailTypes.glsl");
+        CheckStruct<GpuTrailHeader>(trailTypes, 80);
+        CheckStruct<GpuTrailPoint>(trailTypes, 32);
+        CheckStruct<GpuTrailEmitterParams>(trailTypes, 160);
         Require(Marshal.SizeOf<GpuSimPushConstants>() == 16, "Compute push constants must be 16 bytes.");
     }
 
@@ -552,6 +556,47 @@ public static class ParticleShaderTests
 
     [LumenFact]
     public static void RuntimeSlangCompilesAllStagesAndPreservesStorageStrides() => WithRuntimeSlang(_ => CompileAndCheckStorageStrides());
+
+    [LumenFact]
+    public static void TrailGpuShadersCompileWithMatchingSpirvStrides() => WithRuntimeSlang(_ =>
+    {
+        byte[] compute = Compile("ParticleTrailSim.comp.glsl", RuntimeShaderStage.Compute);
+        byte[] vertex = Compile("ParticleTrail.vert.glsl", RuntimeShaderStage.Vertex);
+        byte[] fragment = Compile("ParticleTrail.frag.glsl", RuntimeShaderStage.Fragment);
+        var computeInstructions = Instructions(compute);
+        var vertexInstructions = Instructions(vertex);
+        foreach (uint stride in new uint[] { 160, 80, 32, 4 })
+            Require(HasArrayStride(computeInstructions, stride), $"Trail compute SPIR-V missing {stride}-byte storage array stride.");
+        foreach (uint stride in new uint[] { 160, 80, 32 })
+            Require(HasArrayStride(vertexInstructions, stride), $"Trail vertex SPIR-V missing {stride}-byte storage array stride.");
+        Require(computeInstructions.Any(x => x[0] == 16 && x.Length >= 6 && x[2] == 17 && x[3] == 64 && x[4] == 1 && x[5] == 1),
+            "Trail compute SPIR-V workgroup must be LocalSize 64,1,1.");
+        Require(fragment.Length > 20, "Trail fragment compiler returned no program.");
+
+        string vertSource = Read("ParticleTrail.vert.glsl");
+        string fragSource = Read("ParticleTrail.frag.glsl");
+        MaterialLayout vertLayout = ShaderMetadataParser.ExtractMaterialLayout(vertSource, "ParticleTrailVertex");
+        MaterialLayout fragLayout = ShaderMetadataParser.ExtractMaterialLayout(fragSource, "ParticleTrailFragment");
+        Require(!vertLayout.HasErrors && !fragLayout.HasErrors, "Waylith rejected trail material metadata.");
+        CheckUniforms(vertLayout);
+        CheckUniforms(fragLayout);
+        Require(fragLayout.StorageBufferSlots.Select(x => (x.Binding, x.PropertyName)).SequenceEqual(new[]
+        {
+            (1, GpuTrailProperties.Headers), (2, GpuTrailProperties.Points),
+            (3, GpuTrailProperties.Emitters), (4, GpuParticleProperties.Curves)
+        }), "Trail graphics storage properties/bindings differ from C# upload contract.");
+        Require(fragLayout.TextureSlots.Select(x => (x.Binding, x.PropertyName)).SequenceEqual(new[]
+        {
+            (5, GpuParticleProperties.Texture), (6, GpuParticleProperties.SceneDepth)
+        }), "Trail graphics texture properties/bindings differ from C# binding contract.");
+        Require(ShaderMetadataParser.ValidateStageInterface(vertSource, fragSource, "ParticleTrail.vert", "ParticleTrail.frag").Count == 0,
+            "Waylith reports mismatched trail vertex/fragment varyings.");
+        ShaderVertexInputLayout input = ShaderMetadataParser.ExtractVertexInputLayout(vertSource, "ParticleTrail.vert");
+        Require(!input.HasErrors && input.Slots.Select(x => (x.location, x.semantic, x.required)).SequenceEqual(new[]
+        {
+            (0, VertexAttributeSemantic.Position, true)
+        }), "Trail graphics expects one required Position attribute at location 0.");
+    });
 
     private static void WithRuntimeSlang(Action<string> check)
     {

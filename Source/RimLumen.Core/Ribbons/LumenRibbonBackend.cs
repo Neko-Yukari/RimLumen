@@ -81,69 +81,18 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
             EnsureScratch(ribbon.MaxCentres);
             int count = ribbon.Collect(path);
             if (count < 2) continue;
-            for (int i = 0; i < count; i++)
-            {
-                drawn[i] = path[i];
-                Vector3 unusedVelocity = default;
-                CameraBillboardBasis.ProjectToDisplay(ribbon.Vertical3D, isTopDown2D, yScaleRatio, groundUp,
-                    new Vector2(path[i].X, path[i].Z), vanillaMoteY, ref drawn[i], ref unusedVelocity);
-            }
+            RibbonStripGeometry.ProjectCentres(path.AsSpan(0, count), drawn.AsSpan(0, count),
+                ribbon.Vertical3D, isTopDown2D, yScaleRatio, groundUp, vanillaMoteY, sharedAnchorXZ: null);
             bool ground = ribbon.Spec.Alignment == LumenRibbonAlignment.Ground;
-            AppendStrip(ribbon, count, ground ? Vector3.UnitX : cameraRight, ground ? Vector3.UnitZ : cameraUp,
-                ground ? 1f : yScaleRatio, CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, ribbon.DepthReferenceZ, vanillaMoteY));
+            RibbonSpec spec = ribbon.Spec;
+            var sampler = new NodeRibbonSampler(spec);
+            int indexStart = RibbonStripGeometry.AppendStrip(path, drawn, count,
+                ground ? Vector3.UnitX : cameraRight, ground ? Vector3.UnitZ : cameraUp,
+                ground ? 1f : yScaleRatio, CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, ribbon.DepthReferenceZ, vanillaMoteY),
+                spec.TextureMode, spec.HdrIntensity * ribbon.Intensity, in sampler,
+                ref vertices, ref vertexCount, ref indices, ref indexCount);
+            subBatches.Add(new L1SubBatch(spec.TextureKey, spec.BlendMode, indexStart, indexCount - indexStart, spec.SoftParticleFadeDistance));
         }
-    }
-
-    // Strip of `count` centres in path/drawn. axisX/axisY span the facing plane (camera right/up for View, world X/Z
-    // for Ground); a world direction maps to that plane as in CameraBillboardBasis.ComputeStretchedAxes, which also
-    // removes IsoRim's Y squash. Side = (dy, -dx) is Unity's Cross(direction, facing) for the RimWorld cameras.
-    private void AppendStrip(Ribbon ribbon, int count, Vector3 axisX, Vector3 axisY, float yScale, Vector2 depthMask)
-    {
-        RibbonSpec spec = ribbon.Spec;
-        float total = 0f;
-        for (int i = 1; i < count; i++) total += Vector3.Distance(path[i - 1], path[i]);
-        EnsureOutput(vertexCount + 2 * count, indexCount + 6 * (count - 1));
-        int first = vertexCount, indexStart = indexCount;
-        float gain = spec.HdrIntensity * ribbon.Intensity, distance = 0f;
-        var scaledX = new Vector3(axisX.X, axisX.Y * yScale, axisX.Z);
-        var scaledY = new Vector3(axisY.X, axisY.Y * yScale, axisY.Z);
-        Vector2 Plane(Vector3 direction)
-        {
-            var scaled = new Vector3(direction.X, direction.Y * yScale, direction.Z);
-            return new Vector2(Vector3.Dot(scaled, scaledX), Vector3.Dot(scaled, scaledY));
-        }
-        Vector2 sideBefore = default;
-        for (int i = 0; i < count; i++)
-        {
-            Vector2 before = Plane(i > 0 ? drawn[i] - drawn[i - 1] : drawn[1] - drawn[0]);
-            Vector2 after = i + 1 < count ? Plane(drawn[i + 1] - drawn[i]) : before;
-            if (i > 0) distance += Vector3.Distance(path[i - 1], path[i]);
-            float t = total > 0f ? distance / total : 0f;
-            // Geometry.cs:53-57: a direction along the facing axis falls back to the camera right.
-            sideBefore = before.LengthSquared() < 1e-10f ? Vector2.UnitX : Vector2.Normalize(new Vector2(before.Y, -before.X));
-            Vector2 sideAfter = after.LengthSquared() < 1e-10f ? sideBefore : Vector2.Normalize(new Vector2(after.Y, -after.X));
-            Vector2 miter = sideBefore + sideAfter;
-            miter = miter.LengthSquared() < 1e-10f ? sideAfter : Vector2.Normalize(miter);
-            float half = MathF.Max(0f, spec.Width * CurveEvaluator.Evaluate(spec.WidthOverLength, t)) * 0.5f;
-            // Geometry.cs:69: the miter keeps the strip width through a bend, capped at 4x for sharp turns.
-            miter *= half / MathF.Max(0.25f, MathF.Abs(Vector2.Dot(miter, sideAfter)));
-            Vector3 offset = axisX * miter.X + axisY * miter.Y;
-            float u = spec.TextureMode == LumenRibbonTextureMode.Stretch ? t : distance;
-            Vector4 color = GradientEvaluator.Evaluate(spec.ColorOverLength, t);
-            vertices[vertexCount++] = new ParticleVertex(drawn[i] - offset, new Vector2(u, 0f), color, new Vector2(0.5f, 0f), gain, depthMask);
-            vertices[vertexCount++] = new ParticleVertex(drawn[i] + offset, new Vector2(u, 1f), color, new Vector2(0.5f, 1f), gain, depthMask);
-        }
-        for (int i = 0; i + 1 < count; i++)
-        {
-            uint minus = (uint)(first + 2 * i), plus = minus + 1, nextMinus = minus + 2, nextPlus = minus + 3;
-            indices[indexCount++] = minus;
-            indices[indexCount++] = plus;
-            indices[indexCount++] = nextPlus;
-            indices[indexCount++] = minus;
-            indices[indexCount++] = nextPlus;
-            indices[indexCount++] = nextMinus;
-        }
-        subBatches.Add(new L1SubBatch(spec.TextureKey, spec.BlendMode, indexStart, indexCount - indexStart, spec.SoftParticleFadeDistance));
     }
 
     private void EnsureScratch(int centres)
@@ -151,12 +100,6 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
         if (path.Length >= centres) return;
         path = new Vector3[centres];
         drawn = new Vector3[centres];
-    }
-
-    private void EnsureOutput(int vertexTotal, int indexTotal)
-    {
-        if (vertices.Length < vertexTotal) Array.Resize(ref vertices, Math.Max(vertexTotal, 2 * vertices.Length));
-        if (indices.Length < indexTotal) Array.Resize(ref indices, Math.Max(indexTotal, 2 * indices.Length));
     }
 
     private struct TrailPoint
@@ -248,7 +191,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
             {
                 // TrailRenderer.cs:63-80: the live head leads; the oldest point is clipped to the Lifetime cutoff.
                 if (count == 0) return 0;
-                if (frame.Active) Push(path, ref n, frame.Transform.World.Translation);
+                if (frame.Active) RibbonStripGeometry.PushDeduplicated(path, ref n, frame.Transform.World.Translation);
                 float cutoff = elapsed - Spec.Lifetime;
                 for (int i = count - 1; i >= 0; i--)
                 {
@@ -259,7 +202,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
                         float fraction = (cutoff - point.Birth) / (next.Birth - point.Birth);
                         point.Position = Vector3.Lerp(point.Position, next.Position, fraction);
                     }
-                    Push(path, ref n, point.Position);
+                    RibbonStripGeometry.PushDeduplicated(path, ref n, point.Position);
                 }
                 return n;
             }
@@ -285,17 +228,11 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
                     float radius = ParticleRandom.Next01(ref random) * Spec.NoiseAmplitude;
                     position += (across * MathF.Cos(angle) + normal * MathF.Sin(angle)) * radius;
                 }
-                Push(path, ref n, position);
+                RibbonStripGeometry.PushDeduplicated(path, ref n, position);
             }
             return n;
         }
 
         private TrailPoint At(int index) => points[(start + index) % points.Length];
-
-        private static void Push(Vector3[] path, ref int n, Vector3 position)
-        {
-            if (n > 0 && Vector3.DistanceSquared(path[n - 1], position) <= 1e-12f) return;
-            path[n++] = position;
-        }
     }
 }

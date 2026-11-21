@@ -100,3 +100,51 @@ internal static class GpuParticleProperties
     public const string Texture = "_LumenParticleTexture";
     public const string SceneDepth = "_LumenSceneDepth";
 }
+
+// 80 bytes (5 * 16B), std430 matching ParticleTrailTypes.glsl GpuTrailHeader.
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct GpuTrailHeader
+{
+    public Vector4 LiveHeadAndTotalLength;
+    public Vector4 ClippedTailAndWidth;
+    public Vector4 Color;
+    public uint RingHead;
+    public uint RingCount;
+    public uint VisibleCount;
+    public uint Flags;
+    public uint ParticleSlot;
+    public uint SpawnAnchorXZ;
+    public float HeadCumDistance;
+    public float ClippedTailCumDist;
+}
+
+// 32 bytes (2 * 16B), std430 matching ParticleTrailTypes.glsl GpuTrailPoint.
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct GpuTrailPoint
+{
+    public Vector4 PositionAndRemaining;
+    public Vector4 DistanceAndLifetime;
+}
+
+// 160 bytes (10 * 16B), std430 matching ParticleTrailTypes.glsl GpuTrailEmitterParams.
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct GpuTrailEmitterParams
+{
+    public Matrix4x4 World;
+    public Vector4 Ranges;
+    public Vector4 PointsAndCurve;
+    public Vector4 Params;
+    public Vector4 Appearance;
+    public Vector4 DepthAndParticle;
+    public uint MapBase;
+    public uint Flags;
+    public uint BankCount;
+    public uint RandomSeed;
+}
+
+internal static class GpuTrailProperties
+{
+    public const string Headers = "_LumenTrailHeaders";
+    public const string Points = "_LumenTrailPoints";
+    public const string Emitters = "_LumenTrailEmitters";
+}

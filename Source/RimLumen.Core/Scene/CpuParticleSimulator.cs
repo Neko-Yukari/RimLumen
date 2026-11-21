@@ -6,6 +6,7 @@ using RimLumen.Core.Contracts;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.ParticlesGpu;
 using RimLumen.Core.ParticleWorld;
+using RimLumen.Core.Ribbons;
 
 namespace RimLumen.Core.Scene;
 
@@ -43,7 +44,143 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         public int[] Targets = Array.Empty<int>();
         public readonly HashSet<int> Sources = new();
         public float? FrameDelta;
-        public bool CanReclaim => State == EmissionState.Draining && LiveCount == 0 && PendingBurst == 0 && Sources.Count == 0;
+        public ParticleTrailPool? TrailPool;
+        public bool CanReclaim => State == EmissionState.Draining && LiveCount == 0 && PendingBurst == 0
+            && Sources.Count == 0 && (TrailPool is null || TrailPool.LiveTrailCount == 0);
+    }
+
+    private struct TrailRingEntry
+    {
+        public Vector3 Position;
+        public float Remaining;
+    }
+
+    private struct CpuTrailHeader
+    {
+        public bool Active;
+        public bool Detached;
+        public bool WorldSpace;
+        public bool SkipLiveHead;
+        public int RingHead;
+        public int RingCount;
+        public Vector3 LiveHead;
+        public Vector4 Color;
+        public float BaseWidth;
+        public Vector2 AnchorXZ;
+    }
+
+    private sealed class ParticleTrailPool
+    {
+        public readonly ParticleTrailSpec Spec;
+        public readonly int ParticleCapacity;
+        public readonly int BankCount;
+        public readonly int PointStride;
+        public readonly int HeaderCapacity;
+        public readonly uint RandomSeed;
+        public readonly GpuCurveSample[] Curves;
+        public readonly CpuTrailHeader[] Headers;
+        public readonly bool[] ActiveFlags;
+        public readonly TrailRingEntry[] Points;
+        private readonly int[] freeLocalSlots;
+        private int freeLocalTop;
+        public int LiveTrailCount;
+
+        public ParticleTrailPool(EmitterSpec emitterSpec, ParticleTrailSpec trailSpec, uint randomSeed)
+        {
+            Spec = trailSpec;
+            ParticleCapacity = emitterSpec.MaxParticles;
+            BankCount = ParticleTrailMath.ComputeBankCount(trailSpec);
+            PointStride = trailSpec.MaxPoints;
+            HeaderCapacity = checked(ParticleCapacity * BankCount);
+            RandomSeed = randomSeed;
+            Curves = new GpuCurveSample[GpuCurveAtlasPacker.SamplesPerRow * 2];
+            GpuCurveAtlasPacker.Pack(trailSpec.WidthOverTrail, trailSpec.ColorOverTrail,
+                Curves.AsSpan(0, GpuCurveAtlasPacker.SamplesPerRow));
+            GpuCurveAtlasPacker.Pack(ScalarCurve.Constant(1f), trailSpec.ColorOverLifetime,
+                Curves.AsSpan(GpuCurveAtlasPacker.SamplesPerRow, GpuCurveAtlasPacker.SamplesPerRow));
+            Headers = new CpuTrailHeader[HeaderCapacity];
+            ActiveFlags = new bool[HeaderCapacity];
+            Points = new TrailRingEntry[checked(HeaderCapacity * PointStride)];
+            freeLocalSlots = new int[ParticleCapacity];
+            for (int i = 0; i < ParticleCapacity; i++) freeLocalSlots[i] = ParticleCapacity - 1 - i;
+            freeLocalTop = ParticleCapacity;
+        }
+
+        public int PopLocalSlot() => freeLocalSlots[--freeLocalTop];
+
+        public void PushLocalSlot(int localSlot) => freeLocalSlots[freeLocalTop++] = localSlot;
+
+        public void ClearAll()
+        {
+            Array.Clear(Headers);
+            Array.Clear(ActiveFlags);
+            for (int i = 0; i < ParticleCapacity; i++) freeLocalSlots[i] = ParticleCapacity - 1 - i;
+            freeLocalTop = ParticleCapacity;
+            LiveTrailCount = 0;
+        }
+
+        public int PointIndex(int slot, int index)
+            => slot * PointStride + (Headers[slot].RingHead + index) % PointStride;
+
+        public void AppendPoint(int slot, Vector3 position, float remaining)
+        {
+            ref CpuTrailHeader header = ref Headers[slot];
+            if (header.RingCount == PointStride)
+            {
+                header.RingHead = (header.RingHead + 1) % PointStride;
+                header.RingCount--;
+            }
+            Points[PointIndex(slot, header.RingCount++)] = new TrailRingEntry { Position = position, Remaining = remaining };
+        }
+
+        public void AgeAndEvict(int slot, float dt)
+        {
+            ref CpuTrailHeader header = ref Headers[slot];
+            if (dt <= 0f) return;
+            for (int i = 0; i < header.RingCount; i++)
+                Points[PointIndex(slot, i)].Remaining -= dt;
+            while (header.RingCount > 1 && Points[PointIndex(slot, 1)].Remaining <= 0f)
+            {
+                header.RingHead = (header.RingHead + 1) % PointStride;
+                header.RingCount--;
+            }
+            if (header.RingCount == 1 && Points[PointIndex(slot, 0)].Remaining < 0f)
+                header.RingCount = 0;
+        }
+
+        public void FreeHeader(int slot)
+        {
+            if (!Headers[slot].Active) return;
+            Headers[slot].Active = false;
+            ActiveFlags[slot] = false;
+            LiveTrailCount--;
+        }
+
+        public int ClaimHeader(int localSlot, uint particleSeed, Vector3 spawnPos, float pointLifetime,
+            bool worldSpace, Vector4 initialColor, float initialWidth, Vector2 anchorXZ)
+        {
+            if (!ParticleTrailMath.RollRatio(RandomSeed, particleSeed, localSlot, Spec.Ratio))
+                return -1;
+            int slot = ParticleTrailMath.ClaimTrailSlot(ActiveFlags, ParticleCapacity, BankCount, localSlot, out bool recycledBank0);
+            if (!recycledBank0)
+                LiveTrailCount++;
+            ActiveFlags[slot] = true;
+            Headers[slot] = new CpuTrailHeader
+            {
+                Active = true,
+                Detached = false,
+                WorldSpace = worldSpace,
+                SkipLiveHead = true,
+                RingHead = 0,
+                RingCount = 1,
+                LiveHead = spawnPos,
+                Color = initialColor,
+                BaseWidth = initialWidth,
+                AnchorXZ = anchorXZ,
+            };
+            Points[slot * PointStride] = new TrailRingEntry { Position = spawnPos, Remaining = pointLifetime };
+            return slot;
+        }
     }
 
     private readonly int seed;
@@ -52,10 +189,13 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     private CpuParticle[] particles = Array.Empty<CpuParticle>();
     private ParticleVertex[] vertices = Array.Empty<ParticleVertex>();
     private uint[] indices = Array.Empty<uint>();
+    private Vector3[] trailPath = Array.Empty<Vector3>();
+    private Vector3[] trailDrawn = Array.Empty<Vector3>();
     private int nextId;
     private int reservedCapacity;
     private int particleCount;
-    private int batchCount;
+    private int vertexCount;
+    private int indexCount;
     private int activeMapIndex = -1;
     private Matrix4x4 view = Matrix4x4.Identity;
     private readonly List<ParticleSubEvent> subEvents = new();
@@ -79,7 +219,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             foreach (int id in emitterIds)
             {
                 Emitter emitter = emitters[id];
-                if (emitter.PendingBurst > 0 ||
+                if (emitter.PendingBurst > 0 || emitter.TrailPool is { LiveTrailCount: > 0 } ||
                     ((emitter.State is EmissionState.Emitting or EmissionState.Paused) && !emitter.Scheduler.Finished)) return true;
             }
             return false;
@@ -95,10 +235,10 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     // Ensures: read-only view of the live particles, ordered as stored (swap-remove compaction order).
     public ReadOnlySpan<CpuParticle> LiveParticles => particles.AsSpan(0, particleCount);
 
-    // Ensures: 4 vertices and 6 indices per live particle from the last CaptureMainThread.
-    public ReadOnlySpan<ParticleVertex> Vertices => vertices.AsSpan(0, batchCount * 4);
+    // Ensures: particle quad and trail strip vertices/indices from the last CaptureMainThread.
+    public ReadOnlySpan<ParticleVertex> Vertices => vertices.AsSpan(0, vertexCount);
 
-    public ReadOnlySpan<uint> Indices => indices.AsSpan(0, batchCount * 6);
+    public ReadOnlySpan<uint> Indices => indices.AsSpan(0, indexCount);
 
     private readonly List<L1SubBatch> subBatches = new();
     private readonly Dictionary<(string? TextureKey, LumenBlendMode BlendMode, float SoftParticleFadeDistance, Vector4 MaterialTint, LumenColorSpace ColorSpace), int> groupIds = new();
@@ -130,6 +270,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             Spec = spec, Transform = worldTransform, RealTime = realTime, MapIndex = mapIndex, Group = GroupOf(spec),
             State = emitting ? EmissionState.Emitting : EmissionState.Dormant,
             RateMultiplier = rateMultiplier, RandomState = random == 0 ? 1u : random,
+            TrailPool = spec.Trails is { } trailSpec ? new ParticleTrailPool(spec, trailSpec, Hash(random ^ 0x517CC1B7u)) : null,
         });
         emitterIds.Add(id);
         reservedCapacity += spec.MaxParticles;
@@ -230,6 +371,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             emitter.PendingBurst = 0;
             for (int i = particleCount - 1; i >= 0; i--)
                 if (particles[i].EmitterId == emitterId) RemoveParticle(i);
+            emitter.TrailPool?.ClearAll();
             BuildBatch();
         }
         if (immediate || emitter.CanReclaim) RemoveEmitter(emitterId, emitter);
@@ -271,6 +413,8 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 emitter.PendingBurst = (int)Math.Min(emitter.Spec.MaxParticles, emitter.PendingBurst + scheduled);
                 if (!emitter.Spec.Looping && emitter.Scheduler.Finished) emitter.State = EmissionState.Paused;
             }
+            if (emitter.TrailPool is { LiveTrailCount: > 0 } pool)
+                AdvanceDetachedTrails(pool, emitter.RealTime && unscaledDt > 0f ? unscaledDt : dt);
         }
         for (int i = 0; i < particleCount; i++)
         {
@@ -299,11 +443,20 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 {
                     // L2 clears ActiveEmitter without advancing age: inherit the appearance at contact.
                     RecordEvent(owner, particle, LumenSubEmitterTrigger.Death);
+                    if (owner.TrailPool is not null && particle.TrailSlot >= 0)
+                        FinalizeDeadParticleTrail(owner, in particle, particleDt);
                     particle.Age = particle.Lifetime;
                     continue;
                 }
+                if (particle.Age < particle.Lifetime && owner.TrailPool is not null && particle.TrailSlot >= 0)
+                    StepLiveParticleTrail(owner, in particle, particleDt);
             }
-            if (particle.Age >= particle.Lifetime) RecordEvent(owner, particle, LumenSubEmitterTrigger.Death);
+            if (particle.Age >= particle.Lifetime)
+            {
+                RecordEvent(owner, particle, LumenSubEmitterTrigger.Death);
+                if (owner.TrailPool is not null && particle.TrailSlot >= 0)
+                    FinalizeDeadParticleTrail(owner, in particle, particleDt);
+            }
         }
         for (int i = particleCount - 1; i >= 0; i--)
             if (particles[i].Age >= particles[i].Lifetime) RemoveParticle(i);
@@ -331,6 +484,13 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         foreach (var (id, emitter) in emitters)
             if (emitter.CanReclaim) RemoveEmitter(id, emitter);
         view = context.ViewMatrix;
+        if (!context.RendersMap)
+        {
+            vertexCount = 0;
+            indexCount = 0;
+            subBatches.Clear();
+            return;
+        }
         BuildBatch();
     }
 
@@ -346,7 +506,10 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
 
     private void RemoveParticle(int index)
     {
-        emitters[particles[index].EmitterId].LiveCount--;
+        Emitter owner = emitters[particles[index].EmitterId];
+        owner.LiveCount--;
+        if (owner.TrailPool is { } pool)
+            pool.PushLocalSlot(particles[index].TrailLocalSlot);
         particles[index] = particles[--particleCount];
     }
 
@@ -397,13 +560,113 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 if ((inherit & LumenSubEmitterInherit.Color) != 0) color *= ev.Color;
                 if ((inherit & LumenSubEmitterInherit.Size) != 0) size *= ev.Size;
             }
-            particles[particleCount++] = new CpuParticle
+            var spawned = new CpuParticle
             {
                 EmitterId = id, Position = position, Velocity = direction * speed,
                 Lifetime = lifetime, StartSize = size, StartColor = color, SpawnAnchorXZ = anchorXZ,
+                TrailSlot = -1, TrailLocalSlot = -1,
             };
+            if (emitter.TrailPool is { } pool)
+            {
+                int localSlot = pool.PopLocalSlot();
+                spawned.TrailLocalSlot = localSlot;
+                uint birthSeed = Hash(emitter.RandomState ^ unchecked((uint)emitter.LiveCount + 0x9E3779B9u));
+                float nodeSizeScale = spec.WorldSpaceSimulation ? 1f : ParticleAppearanceMath.SizeScale(emitter.Transform.World);
+                Vector4 initColor = color * emitter.Curves[0].Color;
+                float initSize = size * emitter.Curves[0].Size.X * nodeSizeScale;
+                bool trailWorld = spec.WorldSpaceSimulation || pool.Spec.WorldSpace;
+                Vector3 trailPos = trailWorld && !spec.WorldSpaceSimulation
+                    ? Vector3.Transform(position, emitter.Transform.World)
+                    : position;
+                float pointLifetime = lifetime * pool.Spec.Lifetime * (pool.Spec.SizeAffectsLifetime ? initSize : 1f);
+                float initWidth = pool.Spec.Width * (pool.Spec.SizeAffectsWidth ? initSize : 1f);
+                Vector4 trailColor = (pool.Spec.InheritParticleColor ? initColor : Vector4.One)
+                    * pool.Curves[GpuCurveAtlasPacker.SamplesPerRow].Color;
+                Vector2 trailAnchor = spec.WorldSpaceSimulation ? anchorXZ : CameraBillboardBasis.NodeGroundXZ(emitter.Transform.World);
+                spawned.TrailSlot = pool.ClaimHeader(localSlot, birthSeed, trailPos, pointLifetime,
+                    trailWorld, trailColor, initWidth, trailAnchor);
+            }
+            particles[particleCount++] = spawned;
             emitter.LiveCount++;
         }
+    }
+
+    private static void AdvanceDetachedTrails(ParticleTrailPool pool, float dt)
+    {
+        for (int s = 0; s < pool.HeaderCapacity; s++)
+        {
+            if (!pool.Headers[s].Active || !pool.Headers[s].Detached) continue;
+            pool.AgeAndEvict(s, dt);
+            if (pool.Headers[s].RingCount < 2)
+                pool.FreeHeader(s);
+        }
+    }
+
+    private static void StepLiveParticleTrail(Emitter owner, in CpuParticle particle, float dt)
+    {
+        ParticleTrailPool pool = owner.TrailPool!;
+        ParticleTrailSpec spec = pool.Spec;
+        int slot = particle.TrailSlot;
+        ref CpuTrailHeader header = ref pool.Headers[slot];
+        pool.AgeAndEvict(slot, dt);
+
+        bool trailWorld = owner.Spec.WorldSpaceSimulation || spec.WorldSpace;
+        Vector3 pos = trailWorld && !owner.Spec.WorldSpaceSimulation
+            ? Vector3.Transform(particle.Position, owner.Transform.World)
+            : particle.Position;
+        (Vector4 pColor, float pSize) = ParticleSubEmitterMath.Appearance(owner.Curves, particle,
+            owner.Spec.WorldSpaceSimulation ? 1f : ParticleAppearanceMath.SizeScale(owner.Transform.World));
+        if (header.RingCount == 0 ||
+            Vector3.Distance(pool.Points[pool.PointIndex(slot, header.RingCount - 1)].Position, pos) >= spec.MinVertexDistance)
+        {
+            float pointLifetime = particle.Lifetime * spec.Lifetime * (spec.SizeAffectsLifetime ? pSize : 1f);
+            pool.AppendPoint(slot, pos, pointLifetime);
+        }
+        float age01 = Math.Clamp(particle.Age / particle.Lifetime, 0f, 1f);
+        Vector4 lifeTint = RibbonStripGeometry.SampleLut(pool.Curves.AsSpan(GpuCurveAtlasPacker.SamplesPerRow, GpuCurveAtlasPacker.SamplesPerRow), age01).Color;
+        header.LiveHead = pos;
+        header.SkipLiveHead = false;
+        header.WorldSpace = trailWorld;
+        header.BaseWidth = spec.Width * (spec.SizeAffectsWidth ? pSize : 1f);
+        header.Color = (spec.InheritParticleColor ? pColor : Vector4.One) * lifeTint;
+        header.AnchorXZ = owner.Spec.WorldSpaceSimulation ? particle.SpawnAnchorXZ : CameraBillboardBasis.NodeGroundXZ(owner.Transform.World);
+    }
+
+    private static void FinalizeDeadParticleTrail(Emitter owner, in CpuParticle particle, float dt)
+    {
+        ParticleTrailPool pool = owner.TrailPool!;
+        ParticleTrailSpec spec = pool.Spec;
+        int slot = particle.TrailSlot;
+        if (spec.DieWithParticles)
+        {
+            pool.FreeHeader(slot);
+            return;
+        }
+        ref CpuTrailHeader header = ref pool.Headers[slot];
+        pool.AgeAndEvict(slot, dt);
+        bool trailWorld = owner.Spec.WorldSpaceSimulation || spec.WorldSpace;
+        Vector3 deathPos = trailWorld && !owner.Spec.WorldSpaceSimulation
+            ? Vector3.Transform(particle.Position, owner.Transform.World)
+            : particle.Position;
+        (Vector4 pColor, float pSize) = ParticleSubEmitterMath.Appearance(owner.Curves, particle,
+            owner.Spec.WorldSpaceSimulation ? 1f : ParticleAppearanceMath.SizeScale(owner.Transform.World));
+        if (header.RingCount == 0 ||
+            Vector3.DistanceSquared(pool.Points[pool.PointIndex(slot, header.RingCount - 1)].Position, deathPos) > 1e-12f)
+        {
+            float pointLifetime = particle.Lifetime * spec.Lifetime * (spec.SizeAffectsLifetime ? pSize : 1f);
+            pool.AppendPoint(slot, deathPos, pointLifetime);
+        }
+        float age01 = Math.Clamp(particle.Age / particle.Lifetime, 0f, 1f);
+        Vector4 lifeTint = RibbonStripGeometry.SampleLut(pool.Curves.AsSpan(GpuCurveAtlasPacker.SamplesPerRow, GpuCurveAtlasPacker.SamplesPerRow), age01).Color;
+        header.LiveHead = deathPos;
+        header.SkipLiveHead = true;
+        header.WorldSpace = trailWorld;
+        header.BaseWidth = spec.Width * (spec.SizeAffectsWidth ? pSize : 1f);
+        header.Color = (spec.InheritParticleColor ? pColor : Vector4.One) * lifeTint;
+        header.AnchorXZ = owner.Spec.WorldSpaceSimulation ? particle.SpawnAnchorXZ : CameraBillboardBasis.NodeGroundXZ(owner.Transform.World);
+        header.Detached = true;
+        if (header.RingCount < 2)
+            pool.FreeHeader(slot);
     }
 
     private static bool IsDescendingBelowGround(Emitter owner, in CpuParticle particle)
@@ -450,35 +713,50 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     private void BuildBatch()
     {
         subBatches.Clear();
-        if (particleCount == 0)
-        {
-            batchCount = 0;
-            return;
-        }
+        vertexCount = 0;
+        indexCount = 0;
 
-        // LiveCount is kept in step with particles[], so per-group sizes need no extra particle pass.
-        Array.Clear(groupCounts);
+        bool hasLiveTrails = false;
         foreach (int id in emitterIds)
         {
-            var owner = emitters[id];
-            if (activeMapIndex >= 0 && owner.MapIndex >= 0 && owner.MapIndex != activeMapIndex) continue;
-            groupCounts[owner.Group] += owner.LiveCount;
+            Emitter owner = emitters[id];
+            if (owner.TrailPool is { LiveTrailCount: > 0 } && (activeMapIndex < 0 || owner.MapIndex < 0 || owner.MapIndex == activeMapIndex))
+            {
+                hasLiveTrails = true;
+                break;
+            }
         }
+        if (particleCount == 0 && !hasLiveTrails) return;
 
         int offset = 0;
-        for (int group = 0; group < groupCounts.Length; group++)
+        if (particleCount > 0)
         {
-            groupCursors[group] = offset;
-            int count = groupCounts[group];
-            if (count > 0)
+            // LiveCount is kept in step with particles[], so per-group sizes need no extra particle pass.
+            Array.Clear(groupCounts);
+            foreach (int id in emitterIds)
             {
-                var (textureKey, blendMode, softFade, tint, colorSpace) = groupKeys[group];
-                subBatches.Add(new L1SubBatch(textureKey, blendMode, offset * 6, count * 6, softFade)
-                    { MaterialTint = tint, ColorSpace = colorSpace });
+                var owner = emitters[id];
+                if (activeMapIndex >= 0 && owner.MapIndex >= 0 && owner.MapIndex != activeMapIndex) continue;
+                groupCounts[owner.Group] += owner.LiveCount;
             }
 
-            offset += count;
+            for (int group = 0; group < groupCounts.Length; group++)
+            {
+                groupCursors[group] = offset;
+                int count = groupCounts[group];
+                if (count > 0)
+                {
+                    var (textureKey, blendMode, softFade, tint, colorSpace) = groupKeys[group];
+                    subBatches.Add(new L1SubBatch(textureKey, blendMode, offset * 6, count * 6, softFade)
+                        { MaterialTint = tint, ColorSpace = colorSpace });
+                }
+
+                offset += count;
+            }
         }
+        RibbonStripGeometry.EnsureStripCapacity(offset * 4, offset * 6, ref vertices, ref indices);
+        vertexCount = offset * 4;
+        indexCount = offset * 6;
 
         CameraBillboardBasis.Extract(view, out Vector3 cameraRight, out Vector3 cameraUp, out float yScaleRatio);
         bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(cameraRight, cameraUp, yScaleRatio);
@@ -551,6 +829,66 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             indices[index + 4] = (uint)vertex + 2;
             indices[index + 5] = (uint)vertex + 3;
         }
-        batchCount = offset;
+
+        if (!hasLiveTrails) return;
+        foreach (int id in emitterIds)
+        {
+            Emitter owner = emitters[id];
+            if (owner.TrailPool is not { LiveTrailCount: > 0 } pool) continue;
+            if (activeMapIndex >= 0 && owner.MapIndex >= 0 && owner.MapIndex != activeMapIndex) continue;
+            int needed = pool.PointStride + 1;
+            if (trailPath.Length < needed)
+            {
+                trailPath = new Vector3[needed];
+                trailDrawn = new Vector3[needed];
+            }
+            int trailIndexStart = indexCount;
+            ParticleTrailSpec spec = pool.Spec;
+            bool ground = spec.Alignment == LumenRibbonAlignment.Ground;
+            Vector3 axisX = ground ? Vector3.UnitX : cameraRight;
+            Vector3 axisY = ground ? Vector3.UnitZ : cameraUp;
+            float axisYScale = ground ? 1f : yScaleRatio;
+            Vector2 mask = CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, owner.DepthReferenceZ, vanillaMoteY);
+            float gain = spec.HdrIntensity * owner.IntensityMultiplier;
+            for (int s = 0; s < pool.HeaderCapacity; s++)
+            {
+                ref CpuTrailHeader header = ref pool.Headers[s];
+                if (!header.Active) continue;
+                int n = 0;
+                if (!header.SkipLiveHead)
+                {
+                    Vector3 head = header.WorldSpace ? header.LiveHead : Vector3.Transform(header.LiveHead, owner.Transform.World);
+                    RibbonStripGeometry.PushDeduplicated(trailPath, ref n, head);
+                }
+                for (int k = header.RingCount - 1; k >= 0; k--)
+                {
+                    TrailRingEntry entry = pool.Points[pool.PointIndex(s, k)];
+                    Vector3 pt = entry.Position;
+                    if (k == 0 && header.RingCount > 1 && entry.Remaining < 0f)
+                    {
+                        TrailRingEntry next = pool.Points[pool.PointIndex(s, 1)];
+                        pt = RibbonStripGeometry.ClipTailPoint(pt, entry.Remaining, next.Position, next.Remaining);
+                    }
+                    if (!header.WorldSpace) pt = Vector3.Transform(pt, owner.Transform.World);
+                    RibbonStripGeometry.PushDeduplicated(trailPath, ref n, pt);
+                }
+                if (n < 2) continue;
+                Vector2 anchorXZ = header.WorldSpace ? header.AnchorXZ : CameraBillboardBasis.NodeGroundXZ(owner.Transform.World);
+                RibbonStripGeometry.ProjectCentres(trailPath.AsSpan(0, n), trailDrawn.AsSpan(0, n),
+                    owner.IsVertical3D, isTopDown2D, yScaleRatio, groundUp, vanillaMoteY, anchorXZ);
+                var sampler = new ParticleTrailSampler(pool.Curves, header.BaseWidth, header.Color);
+                RibbonStripGeometry.AppendStrip(trailPath, trailDrawn, n, axisX, axisY, axisYScale, mask,
+                    spec.TextureMode, gain, in sampler, ref vertices, ref vertexCount, ref indices, ref indexCount);
+            }
+            if (indexCount > trailIndexStart)
+            {
+                subBatches.Add(new L1SubBatch(spec.TextureKey, spec.BlendMode, trailIndexStart, indexCount - trailIndexStart,
+                    spec.SoftParticleFadeDistance)
+                {
+                    MaterialTint = spec.MaterialTint,
+                    ColorSpace = spec.ColorSpace,
+                });
+            }
+        }
     }
 }

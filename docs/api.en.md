@@ -530,6 +530,146 @@ These fields belong to `emitter`; JSON and XML use lower camel case. Flags can u
 
 `subEmitters` defaults to empty. Each entry requires `trigger` (`Death` or `Collision`), and `targetNodeIndex` pointing to another node with an emitter whose `rateOverTime` is 0, has no `bursts`, and has the same `preferredTier`; the graph must be acyclic. `count` is required and nonnegative; `probability` defaults to 1 in `[0,1]`, drawn once per event; `inherit` defaults to `None` and may combine `Color` and `Size`. Children spawn at the event position; inherited values multiply their own birth values. Capacity drops are final.
 
+#### Per-particle trails (`emitter.trails` / `ParticleTrailSpec`)
+
+Any emitter can attach optional per-particle trails via `trails` (`EmitterSpec.Trails` in C#, `"trails"` in JSON, `<trails>` in XML). Leaving it omitted (`null`) allocates zero extra CPU/GPU buffers, dispatches, or draw calls. Field semantics follow Unity Shuriken's `Trails` module (`0` = particle head, `1` = tail):
+
+| Field | Default | Domain and meaning |
+| --- | --- | --- |
+| `ratio` | `1` | Finite `[0, 1]`; probability that a spawned particle carries a trail (deterministic PRNG). |
+| `lifetime` | `1` | Finite `> 0`; **multiplier of owning particle lifetime**: each sample lives `particleLifetime × lifetime × (sizeAffectsLifetime ? particleSize : 1)` seconds (distinct from node `RibbonSpec.Lifetime` in seconds). |
+| `minVertexDistance` | `0.2` | Finite `> 0` cells; minimum travel before appending a new history sample. |
+| `maxPoints` | `32` | Integer `[2, 256]`; per-trail ring buffer capacity (excluding live head), overwriting oldest on overflow. |
+| `dieWithParticles` | `true` | `true` clears the trail immediately on particle death; `false` records the final death sample, freezes inherited width/colour, and detaches the trail to shrink away cleanly. |
+| `worldSpace` | `true` | Active when `EmitterSpec.WorldSpaceSimulation == false`: `true` stores samples in world space; `false` keeps them in emitter-local space. World-space emitters always record in world space. |
+| `sizeAffectsWidth` / `sizeAffectsLifetime` | `true` / `false` | Multiplies particle display size into base trail width / new point lifetime. |
+| `inheritParticleColor` | `true` | Multiplies current particle vertex colour (`StartColor × ColorOverLifetime`). |
+| `width` | `1` | Finite `> 0` cells; base width scalar before `widthOverTrail(t) × size`. |
+| `widthOverTrail` | constant `1` | Hermite curve over normalized length `[0, 1]` (0 = head, 1 = tail), finite nonnegative values and multiplier. |
+| `colorOverTrail` / `colorOverLifetime` | constant `(1,1,1,1)` | Stored colour gradients over normalized length `[0, 1]` and over particle age `[0, 1]` (frozen at the particle's death age ratio when detached; `1` on natural expiry). |
+| `textureKey` / `materialTint` / `colorSpace` | `null` / `(1,1,1,1)` / `Stored` | Independent trail texture, tint, and shading colour space (untextured uses soft disc falloff across width). |
+| `blendMode` / `textureMode` / `alignment` | `Additive` / `Stretch` / `View` | Blend mode, UV mode (`Stretch` / `Tile`), and ribbon facing (`View` / `Ground`). |
+| `hdrIntensity` / `softParticleFadeDistance` | `1` / `0.5` | Finite nonnegative independent HDR gain and eye-space soft fade distance. |
+
+Known bounds and limits:
+
+- **L2 GPU trail pool caps and overflow recycling**: On the first L2 emitter with `trails` enabled, the engine lazily allocates global device pools (`32,768` headers / `524,288` points / `32,768` particle-to-trail mappings, ~18.625 MB total VRAM, released after 30 s idle); exhaustion throws `ParticlePoolExhaustedException`, turning `Play` into an inert handle with a throttled warning. When `dieWithParticles = false`, each emitter reserves `clamp(1 + ceil(lifetime), 2, 4)` header banks per particle slot: Bank 0 is private to that slot, and Banks `1..N-1` act as shared overflow. Slot acquisition probes own Bank 0, own overflow banks, then up to **64** (`MaxLinearProbe = 64`) overflow slots linearly; if overflow is saturated, it deterministically recycles its own Bank 0 slot so new particle trails never silently disappear and compute cost remains bounded at O(1).
+- **Map disposal and non-map frames**: `Map.Dispose` and `Stop(false)` immediately discard active and detached trails; when `LumenCaptureContext.RendersMap == false` (such as world map view), L1 and L2 continue advancing clocks, aging, and pending clears without staging geometry or draws.
+
+Pure JSON firework example (rising rocket reaches 10 cells in 1.0 s under gravity, leaves an ember trail, and bursts at apex via `Death` sub-emitters with no C# `Follow`):
+
+```json
+{
+  "effectId": "Examples.Firework.ParticleTrail",
+  "defaultDuration": 3.2,
+  "nodes": [
+    {
+      "name": "rocket",
+      "spacePlane": "Vertical3D",
+      "localPosition": [0, 0.35, 0],
+      "emitter": {
+        "preferredTier": "L2_GpuCompute",
+        "maxParticles": 4,
+        "duration": 1.0,
+        "looping": false,
+        "worldSpaceSimulation": true,
+        "rateOverTime": 0,
+        "bursts": [[0, 1]],
+        "shape": "Point",
+        "startLifetime": 1.0,
+        "startSpeed": 19.3,
+        "startSize": 0.16,
+        "startColor": [1.0, 0.96, 0.82, 1.0],
+        "hdrIntensity": 5.0,
+        "forceFields": [
+          { "kind": "GravityDrag", "centerOrAxis": [0, -1, 0], "parameters": [0, 0, 0], "radius": 0, "strength": 19.3 }
+        ],
+        "trails": {
+          "ratio": 1.0,
+          "lifetime": 0.65,
+          "minVertexDistance": 0.06,
+          "maxPoints": 64,
+          "dieWithParticles": false,
+          "width": 0.9,
+          "widthOverTrail": [[0, 1.0], [1, 0.0]],
+          "colorOverTrail": [
+            [0.0, [1.0, 0.96, 0.82, 1.0]],
+            [0.35, [1.0, 0.70, 0.28, 0.85]],
+            [1.0, [0.70, 0.16, 0.03, 0.0]]
+          ],
+          "hdrIntensity": 5.0,
+          "softParticleFadeDistance": 0.4
+        },
+        "subEmitters": [
+          { "trigger": "Death", "targetNodeIndex": 1, "count": 900, "probability": 1.0 },
+          { "trigger": "Death", "targetNodeIndex": 2, "count": 240, "probability": 1.0 }
+        ]
+      }
+    },
+    {
+      "name": "apex_burst",
+      "spacePlane": "Vertical3D",
+      "emitter": {
+        "preferredTier": "L2_GpuCompute",
+        "maxParticles": 1000,
+        "duration": 1.3,
+        "looping": false,
+        "worldSpaceSimulation": true,
+        "rateOverTime": 0,
+        "killBelowFloor": true,
+        "shape": "Sphere",
+        "shapeExtents": [0.18, 0.18, 0.18],
+        "startLifetimeMin": 1.1,
+        "startLifetimeMax": 2.1,
+        "startSpeedMin": 6.0,
+        "startSpeedMax": 14.5,
+        "startSizeMin": 0.09,
+        "startSizeMax": 0.22,
+        "startColor": [1, 1, 1, 1],
+        "hdrIntensity": 8.0,
+        "billboardMode": "StretchedVelocity",
+        "velocityStretchFactor": 0.12,
+        "forceFields": [
+          { "kind": "GravityDrag", "centerOrAxis": [0, -1, 0], "parameters": [0.55, 0, 0], "radius": 0, "strength": 5.4 }
+        ],
+        "collision": { "mode": "Bounce", "bounce": 0.4, "dampen": 0.25, "lifetimeLoss": 0.15, "killUnderRoof": true }
+      }
+    },
+    {
+      "name": "sparkle_core",
+      "spacePlane": "Vertical3D",
+      "emitter": {
+        "preferredTier": "L2_GpuCompute",
+        "maxParticles": 300,
+        "duration": 1.35,
+        "looping": false,
+        "worldSpaceSimulation": true,
+        "rateOverTime": 0,
+        "shape": "Sphere",
+        "shapeExtents": [0.30, 0.30, 0.30],
+        "startLifetimeMin": 0.5,
+        "startLifetimeMax": 1.0,
+        "startSpeedMin": 0.6,
+        "startSpeedMax": 3.8,
+        "startSizeMin": 0.14,
+        "startSizeMax": 0.32,
+        "startColor": [1, 1, 1, 1],
+        "hdrIntensity": 12.0
+      }
+    },
+    {
+      "name": "apex_flash",
+      "localPosition": [0, 10.0, 0],
+      "pointLight": {
+        "glowRadius": 9.0,
+        "color": [1.0, 0.62, 0.16],
+        "intensityOverTime": [[0, 0], [0.97, 0], [1.05, 3.2], [1.50, 1.1], [2.55, 0]]
+      }
+    }
+  ]
+}
+```
+
 ### 4. Distortion Nodes
 
 A node's `distortion` projects onto the ground. Required `kind` is `RingWave`, `Ripple`, or `HeatHaze`; required `radius` and `strength` are finite positive cells. `thickness` is half-width, `speed` is cells/s, `frequency` is per cell, and `duration` is seconds, all default 0. `strengthOverTime` is an endpoint-held Hermite curve in seconds since node restart, default multiplier 1, with finite nonnegative keys and multiplier.
@@ -768,7 +908,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 });
 ```
 
-- **World Y vs. RimWorld draw altitude**: `Thing.DrawPos.y`, `ToVector3ShiftedWithAltitude(...)`, and `Altitudes.AltitudeFor(...)` are 2D draw-sorting layer altitudes — **never pass them to `OriginWorld.Y` or `Follow`'s `pos.Y`**. For ground-level things or pawns, keep `Y = 0f` and put any fixed vertical offset on the node (`localPosition.y` / XML `<heightOffset>`). Pass a real non-zero `Y` only when the **play origin itself is elevated in physical cells above the ground** (for example a rising rocket, an airborne projectile, or a chest/muzzle height measured in map cells).
+- **World Y vs. RimWorld draw altitude**: `Thing.DrawPos.y`, `ToVector3ShiftedWithAltitude(...)`, and `Altitudes.AltitudeFor(...)` are 2D draw-sorting layer altitudes — **never pass them to `OriginWorld.Y` or `Follow`'s `pos.Y`**. For ground-level things or pawns, keep `Y = 0f` and put any fixed vertical offset on the node (`localPosition.y` / XML `<heightOffset>`). Rising rockets and firework shells can be authored purely in data with initial speed, `GravityDrag`, `emitter.trails`, and `Death` sub-emitters without C# `Follow`. Pass a real non-zero `Y` only when the **play origin itself tracks an external airborne host** (for example an airborne projectile or hover craft driven by game code).
 - `LumenPlayRequest.DepthReferenceZ` supplies the mask reference as world Z in cells. Play records it as a Z offset from `OriginWorld`, so it moves with `Follow`. If a node declares `depthMask` and the request has no reference, `Play` throws `ArgumentException`.
 - `LumenPlayRequest.InteractionEvents` optionally attaches per-play `InteractionEventSpec[]` rules (validated once at `Play`, throwing `ArgumentException` on invalid entries) evaluated in order after the asset's own `InteractionEvents`, without cloning or mutating the shared `EffectAsset`.
 - If `EffectId` does not exist, `Play` returns an inert handle with `IsAlive == false` whose methods are no-ops, and logs `Log.Warning` once per ID per service instance. An asset rejected by validation also returns an inert handle; it retains the registry's validation error without adding an "unknown ID" warning.
@@ -1107,8 +1247,8 @@ Each pixel is darkened once: where both shadows are `c`, the result is `c`, not 
 
 When `Chezhou.RimUnity` is active, `RimLumen.Adapter.RimUnity` reads its exported `catalog.json`, prefab JSON (including `.json.gz`), and `.rutex` textures, automatically routing each particle node:
 
-- **Native HDR / GPU (or CPU)**: supported basic shapes with shape-local position, rotation, and scale (TRS), curves, gradients, textures, flipbooks, rate-over-time emission, and probability-controlled scheduled bursts.
-- **Retained on RimUnity (`External`)**: nodes using `trails`, `subEmitters` (including sub-emitter dependencies), `collision`, `trigger`, `renderMode.Mesh` or an unknown `renderMode`, a material `_Color` outside the native colour domain, linear `velocityOverLifetime`, `rotationOverLifetime`, curve-based `forceOverLifetime`, any enabled `lights` module (including `ratio = 1`), as well as deferred dynamic arc / radius modes, alignment, varying velocity / force / rotation curves, dual-curve randomness, geometry, and shape textures.
+- **Native HDR / GPU (or CPU)**: supported basic shapes with shape-local position, rotation, and scale (TRS), curves, gradients, textures, flipbooks, rate-over-time emission, probability-controlled scheduled bursts, and `PerParticle`-mode `trails` modules paired with `renderer.trailMaterial` (reading RimUnity's `worldSpace` default `false`, deriving `MaxPoints` as `clamp(ceil(maxParticleLifetime * trailLifetime * (sizeAffectsLifetime ? maxSize : 1) * 60) + 2, 16, 256)`, and registering trail textures through `RimUnityAssetProvider`).
+- **Retained on RimUnity (`External`)**: nodes using `subEmitters` (including sub-emitter dependencies), `collision`, `trigger`, `renderMode.Mesh` or an unknown `renderMode`, a material `_Color` outside the native colour domain, linear `velocityOverLifetime`, `rotationOverLifetime`, curve-based `forceOverLifetime`, any enabled `lights` module (including `ratio = 1`), unsupported `trails` options (`trails.mode.Ribbon` / `trails.mode.<n>`, `trails.ratio.domain`, `trails.minVertexDistance.domain`, `trails.lifetime.dualCurve` / `.variable` / `.curve` / `.domain`, `trails.widthOverTrail.dualCurve` / `.variable` / `.weighted` / `.domain`, `trails.colorOverLifetime` or `trails.colorOverTrail` `.random` / `.perceptualBlend` / `.domain`, `trails.textureMode.<n>`, `trails.generateLightingData`, `trails.trailMaterial.null`, or `trailMaterial` `_Color.domain`), as well as deferred dynamic arc / radius modes, alignment, varying velocity / force / rotation curves, dual-curve randomness, geometry, and shape textures.
 
 Imported burst schedule times must be strictly less than the system `Duration`. With `cycleCount=0`, repetition restarts from the same local phase in every system loop, even when the interval does not divide the duration. The total expanded occurrences across all burst definitions in one emitter are limited to 4096; above that, the whole emitter routes to External with a reason, never truncation. A nonfinite interval routes to External; a repeated burst with interval `<=0` also routes to External. A one-shot burst permits a finite nonpositive interval but does not use it. The reasons are `emission.bursts.schedule.domain` for an invalid schedule and `emission.bursts.occurrenceLimit` for exceeding the total limit. Deferred curve classification inspects only active modules and axes; stored curves in disabled emission are ignored. Active `main.startSize3D`, active `main.startRotation3D`, or nonzero `startRotation` route to External with reasons `main.startSize3D`, `main.startRotation3D`, and `main.startRotation`, respectively. Active dual-curve `rateOverDistance` uses reason `emission.rateOverDistance.dualCurve`; inactive 3D-axis fields do not cause rejection. Native initial rotation and 3D size remain deferred.
 

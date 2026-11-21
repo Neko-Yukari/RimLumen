@@ -184,6 +184,7 @@ public sealed partial class LumenEffectDef : Def
             EnvironmentForceScale = xml.environmentForceScale,
             Collision = ToCollision(xml.collision),
             SubEmitters = ToSubEmitters(xml.subEmitters, path),
+            Trails = xml.trails is null ? null : ToParticleTrailSpec(xml.trails, path + ".emitter"),
             TextureKey = string.IsNullOrEmpty(xml.textureKey) ? null : xml.textureKey,
             FlipbookTilesX = xml.flipbookTilesX,
             FlipbookTilesY = xml.flipbookTilesY,
@@ -399,6 +400,7 @@ public sealed class LumenEmitterXml
     public float environmentForceScale = 1f;
     public LumenCollisionXml? collision;
     public List<LumenSubEmitterXml>? subEmitters;
+    public LumenParticleTrailXml? trails;
 }
 
 // XML mirror of <see cref="EffectStateSpec"/>; an omitted duration inherits the def's defaultDuration, as in .lumen.json.
@@ -774,6 +776,9 @@ internal static partial class LumenAssetRules
             if (field.Kind == ForceFieldKind.RingWave)
                 ValidateRingWave(field, $"{path}.forceFields[{i}]");
         }
+
+        if (emitter.Trails is { } trails)
+            ValidateParticleTrail(trails, path + ".trails");
     }
 
     // Normalized [0,1] stops in strictly increasing time with stored colours.
@@ -936,7 +941,7 @@ public static partial class LumenJsonAssetLoader
         "startColor", "colorSpace", "materialTint", "sizeOverLifetime", "colorOverLifetime", "forceFields", "textureKey",
         "flipbookTilesX", "flipbookTilesY", "flipbookCycles", "blendMode", "billboardMode",
         "velocityStretchFactor", "lengthScale", "softParticleFadeDistance", "hdrIntensity",
-        "preferredTier", "killBelowFloor", "environmentChannels", "environmentForceScale", "collision", "subEmitters",
+        "preferredTier", "killBelowFloor", "environmentChannels", "environmentForceScale", "collision", "subEmitters", "trails",
     };
 
     private static readonly string[] PointLightProperties =
@@ -1051,6 +1056,9 @@ public static partial class LumenJsonAssetLoader
             EnvironmentForceScale = scope.Float("environmentForceScale", 1f),
             Collision = ParseCollision(scope, path),
             SubEmitters = ParseSubEmitters(scope, path),
+            Trails = scope.TryGet("trails", out JsonElement trailsElement) && trailsElement.ValueKind != JsonValueKind.Null
+                ? ParseParticleTrail(trailsElement, path + ".trails")
+                : null,
             TextureKey = scope.String("textureKey", null),
             FlipbookTilesX = scope.Int("flipbookTilesX", 1),
             FlipbookTilesY = scope.Int("flipbookTilesY", 1),

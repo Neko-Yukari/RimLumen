@@ -318,3 +318,48 @@ public sealed class RibbonSpec
     // Eye-space cells, finite >= 0: same soft fade as EmitterSpec.SoftParticleFadeDistance.
     public float SoftParticleFadeDistance { get; init; } = 0.5f;
 }
+
+// Per-particle trails attached to an EmitterSpec (Unity Shuriken TrailsModule + ParticleSystemRenderer.trailMaterial).
+// Length is normalized from head to tail: 0 = particle head (or detach head), 1 = trail tail.
+public sealed class ParticleTrailSpec
+{
+    // Probability in [0, 1] that a spawned particle receives a trail (rolled deterministically per particle).
+    public float Ratio { get; init; } = 1f;
+    // Trail point lifetime as a multiple of the owning particle's start lifetime (> 0, finite).
+    public float Lifetime { get; init; } = 1f;
+    // Minimum cells a particle must travel from the previous sample before appending a new trail point (> 0, finite).
+    public float MinVertexDistance { get; init; } = 0.2f;
+    // Ring buffer capacity of recorded points per trail (excluding the live head), in [2, 256].
+    public int MaxPoints { get; init; } = 32;
+    // True removes the trail on particle death; false detaches it to age out naturally.
+    public bool DieWithParticles { get; init; } = true;
+    // When EmitterSpec.WorldSpaceSimulation is false, true still records trail points in world space.
+    public bool WorldSpace { get; init; } = true;
+    // Multiplies trail width by the owning particle's current display size.
+    public bool SizeAffectsWidth { get; init; } = true;
+    // Multiplies newly added trail point lifetime by the owning particle's current display size.
+    public bool SizeAffectsLifetime { get; init; }
+    // Multiplies trail vertex colour by the owning particle's colour (StartColor * ColorOverLifetime).
+    public bool InheritParticleColor { get; init; } = true;
+    // Base ribbon width in cells (> 0, finite), modulated by WidthOverTrail and particle size.
+    public float Width { get; init; } = 1f;
+    // Width multiplier over normalized length [0, 1] (0 = head, 1 = tail); values and multiplier finite >= 0.
+    public ScalarCurve WidthOverTrail { get; init; } = ScalarCurve.Constant(1f);
+    // Stored RGBA colour gradient over normalized length [0, 1] (0 = head, 1 = tail).
+    public ColorGradient ColorOverTrail { get; init; } = ColorGradient.Constant(Vector4.One);
+    // Stored RGBA colour gradient over owning particle normalized age [0, 1].
+    public ColorGradient ColorOverLifetime { get; init; } = ColorGradient.Constant(Vector4.One);
+    // Optional independent texture key for the trail; null draws soft cross-strip disc falloff.
+    public string? TextureKey { get; init; }
+    // Stored RGBA material tint multiplied uniformly across the trail surface.
+    public Vector4 MaterialTint { get; init; } = Vector4.One;
+    // Blending colour space (Stored vs Linear).
+    public LumenColorSpace ColorSpace { get; init; } = LumenColorSpace.Stored;
+    public LumenBlendMode BlendMode { get; init; } = LumenBlendMode.Additive;
+    public LumenRibbonTextureMode TextureMode { get; init; } = LumenRibbonTextureMode.Stretch;
+    public LumenRibbonAlignment Alignment { get; init; } = LumenRibbonAlignment.View;
+    // Independent HDR radiance gain (finite >= 0), combined with effect handle intensity.
+    public float HdrIntensity { get; init; } = 1f;
+    // Eye-space cells (finite >= 0) for scene depth feathering.
+    public float SoftParticleFadeDistance { get; init; } = 0.5f;
+}

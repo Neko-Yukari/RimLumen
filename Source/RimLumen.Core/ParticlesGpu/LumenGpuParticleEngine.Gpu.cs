@@ -45,8 +45,18 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
     private readonly object lifecycleGate = new();
     private VkDescriptorSetLayout computeLayout;
     private ComputeKernel? kernel;
+    private GpuComputeBuffer? trailHeaders;
+    private GpuComputeBuffer? trailPoints;
+    private GpuComputeBuffer? particleToTrail;
+    private VkDescriptorSetLayout trailComputeLayout;
+    private ComputeKernel? trailKernel;
+    private int[] emitterToTrail = Array.Empty<int>();
+    private readonly List<EmitterSlotRange> initialTrailHeaderClears = new();
+    private readonly List<EmitterSlotRange> initialTrailMapClears = new();
     private readonly HashSet<int> initializedInstances = new();
+    private readonly HashSet<int> initializedTrailInstances = new();
     private readonly HashSet<int> liveInstanceIds = new();
+    private readonly HashSet<int> liveTrailInstanceIds = new();
 
     // Requires: main thread; capture completed with active work.
     // Ensures: prepares this frame's GPU resources (device objects, emitter/curve buffers, frame slot) and
@@ -58,10 +68,12 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         if (snapshot.Context.FrameIndex != context.FrameIndex)
             throw new InvalidOperationException("Compute and capture frame indices differ.");
         captured = null;
-        if (snapshot.Emitters.Length == 0 && snapshot.Clears.Length == 0) return;
+        bool hasTrailWork = snapshot.TrailEmitters.Length != 0 || snapshot.TrailHeaderClears.Length != 0
+            || snapshot.TrailMapClears.Length != 0;
+        if (snapshot.Emitters.Length == 0 && snapshot.Clears.Length == 0 && !hasTrailWork) return;
         lock (lifecycleGate)
         {
-            if (snapshot.Emitters.Length == 0 && particles is null) return;
+            if (snapshot.Emitters.Length == 0 && !hasTrailWork && particles is null) return;
             if (application is null)
             {
                 application = EngineApplication.Instance;
@@ -73,36 +85,53 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             }
             // The graphics device may not exist yet (headless/idle host): keep the captured work pending.
             if (!EnsureGpu()) return;
+            if (hasTrailWork) EnsureTrailGpu();
             EnsureBurstStates(snapshot.StateSlotCount);
             // Only the frame slot is prepared here; emitter/curve contents are uploaded by the render
             // thread when it records the simulation (first-frame markers and clear rows live there).
-            ParticleGpuFrame gpu = FrameSlot(snapshot);
+            ParticleGpuFrame gpu = FrameSlot(snapshot, hasTrailWork);
             for (int i = 0; i < snapshot.Emitters.Length; i++)
             {
                 ParticleEmitterFrame emitter = snapshot.Emitters[i];
                 string? key = emitter.TextureKey;
-                Texture? texture = null;
-                bool textureSrgb = false;
-                if (!string.IsNullOrEmpty(key))
-                {
-                    if (!LumenTextureRegistry.TryGetRegistered(key, out texture))
-                        texture = ResolveHostTexture(key);
-                    if (texture is not null)
-                    {
-                        textureSrgb = LumenTextureRegistry.TextureIsSrgb(key, texture, emitter.ColorSpace);
-                        Texture.EnsureSampledReady(texture);
-                        if (texture.GpuResource is null && !texture.EnsureResident()) texture = null;
-                    }
-                    if (texture is null && warnedTextures.Add(key)) WarnMissingTexture(key);
-                }
+                Texture? texture = string.IsNullOrEmpty(key) ? null : TryResolveHostOrRegisteredTexture(key);
+                bool textureSrgb = !string.IsNullOrEmpty(key) && texture is not null && LumenTextureRegistry.TextureIsSrgb(key, texture, emitter.ColorSpace);
                 gpu.TexturePresent[i] = texture is not null;
                 gpu.TextureSrgb[i] = texture is not null && textureSrgb;
-                gpu.Textures[i] = texture ?? Texture2D.whiteTexture;
-                Texture.EnsureSampledReady(gpu.Textures[i]);
+                gpu.Textures[i] = SampledOrWhiteTexture(texture);
+            }
+            for (int i = 0; i < snapshot.TrailEmitters.Length; i++)
+            {
+                ParticleTrailEmitterFrame trail = snapshot.TrailEmitters[i];
+                string? key = trail.TextureKey;
+                Texture? texture = string.IsNullOrEmpty(key) ? null : TryResolveHostOrRegisteredTexture(key);
+                gpu.TrailTexturePresent[i] = texture is not null;
+                gpu.TrailTextureSrgb[i] = !string.IsNullOrEmpty(key) && texture is not null && LumenTextureRegistry.TextureIsSrgb(key, texture, trail.ColorSpace);
+                gpu.TrailTextures[i] = SampledOrWhiteTexture(texture);
             }
             MarkFrameEnqueued(snapshot.Context.FrameIndex);
             pendingFrames.Enqueue(new ParticleQueuedFrame(snapshot, gpu.Textures, gpu.TexturePresent, gpu));
         }
+    }
+
+    private Texture? TryResolveHostOrRegisteredTexture(string key)
+    {
+        if (!LumenTextureRegistry.TryGetRegistered(key, out Texture? texture))
+            texture = ResolveHostTexture(key);
+        if (texture is not null)
+        {
+            Texture.EnsureSampledReady(texture);
+            if (texture.GpuResource is null && !texture.EnsureResident()) texture = null;
+        }
+        if (texture is null && warnedTextures.Add(key)) WarnMissingTexture(key);
+        return texture;
+    }
+
+    private static Texture SampledOrWhiteTexture(Texture? texture)
+    {
+        Texture resolved = texture ?? Texture2D.whiteTexture;
+        Texture.EnsureSampledReady(resolved);
+        return resolved;
     }
 
     // Kept out of constructor/capture so pure lifecycle tests never enter the host Content system.
@@ -165,6 +194,41 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         return true;
     }
 
+    // Lazy-allocated only when at least one L2 emitter configures Trails or leaves pending trail clears.
+    private void EnsureTrailGpu()
+    {
+        if (trailHeaders is not null) return;
+        EngineApplication app = application!;
+        DeviceEx device = app.Device;
+        var allocator = app.GraphicsDevice!.Allocator;
+        trailHeaders = GpuComputeBuffer.Create(device, allocator, "Lumen.TrailHeaders",
+            (long)trailHeaderCapacity * Marshal.SizeOf<GpuTrailHeader>(), deviceLocal: true);
+        trailPoints = GpuComputeBuffer.Create(device, allocator, "Lumen.TrailPoints",
+            (long)trailPointCapacity * Marshal.SizeOf<GpuTrailPoint>(), deviceLocal: true);
+        particleToTrail = GpuComputeBuffer.Create(device, allocator, "Lumen.ParticleToTrail",
+            (long)trailMapCapacity * sizeof(uint), deviceLocal: true);
+        trailComputeLayout = ParticleGpuDrawResources.CreateLayout(device, new[]
+        {
+            ParticleGpuDrawResources.Binding(0, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(1, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(2, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(3, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(4, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(5, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
+            ParticleGpuDrawResources.Binding(6, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit)
+        });
+        trailKernel = ComputeKernelCache.Load("Particles/ParticleTrailSim.comp.glsl", "main", new[]
+        {
+            new ComputeBinding(0, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(1, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(2, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(3, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(4, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(5, ComputeBindingType.StorageBuffer),
+            new ComputeBinding(6, ComputeBindingType.StorageBuffer)
+        }, 16);
+    }
+
     // Requires: main thread under lifecycleGate, device resources exist.
     // Ensures: the persistent BurstState buffer holds at least `required` entries, one per live instance index.
     //   Growth doubles; RecordSimulation copies the previous contents forward before the new buffer's first use.
@@ -179,7 +243,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
 
     // Requires: main thread, device resources exist.
     // Ensures: returns the frame resource set for this capture index, growing or shrinking it in place.
-    private ParticleGpuFrame FrameSlot(ParticleFrame snapshot)
+    private ParticleGpuFrame FrameSlot(ParticleFrame snapshot, bool hasTrailWork)
     {
         int requiredRows = snapshot.Emitters.Length + snapshot.Clears.Length;
         int index = (int)(snapshot.Context.FrameIndex % (ulong)frameSlots.Length);
@@ -189,14 +253,20 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             && existing.LinkCapacity >= snapshot.SubLinks.Length && existing.BurstCapacity >= snapshot.ExplicitBursts.Length
             && ReferenceEquals(existing.BurstStates, burstStates)
             && (snapshot.CellCount != 0 || existing.CellCapacity == 1)
-            && (snapshot.EventCapacity != 0 || existing.EventCapacity == 1))
+            && (snapshot.EventCapacity != 0 || existing.EventCapacity == 1)
+            && (!hasTrailWork || (existing.TrailPool is not null
+                && existing.TrailEmitterCapacity >= snapshot.TrailEmitters.Length
+                && ReferenceEquals(existing.TrailHeaders, trailHeaders)
+                && ReferenceEquals(existing.TrailPoints, trailPoints)
+                && ReferenceEquals(existing.ParticleToTrail, particleToTrail))))
             return existing;
         if (existing is not null)
         {
             existing.Dispose();
             frameSlots[index] = null;
         }
-        var created = new ParticleGpuFrame(application!, snapshot, requiredRows, particles!, deadBlocks!, burstStates!);
+        var created = new ParticleGpuFrame(application!, snapshot, requiredRows, particles!, deadBlocks!, burstStates!,
+            hasTrailWork ? trailHeaders : null, hasTrailWork ? trailPoints : null, hasTrailWork ? particleToTrail : null);
         frameSlots[index] = created;
         return created;
     }
@@ -253,27 +323,106 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
                 State = new System.Numerics.Vector4(0, 0, 1, 0)
             }, Array.Empty<GpuCurveSample>(), null, LumenBlendMode.Additive);
         }
+        bool hasTrailWork = resources.TrailPool is not null &&
+            (snapshot.TrailEmitters.Length != 0 || snapshot.TrailHeaderClears.Length != 0 || snapshot.TrailMapClears.Length != 0);
         resources.Upload(snapshot, emitters);
-        var entry = ParticleBarrier(VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit | VkAccessFlags.TransferWriteBit,
+        Span<VkBufferMemoryBarrier> entryBarriers = stackalloc VkBufferMemoryBarrier[4];
+        int entryCount = 1;
+        entryBarriers[0] = BufferBarrier(particles!,
+            VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit | VkAccessFlags.TransferWriteBit,
             VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
+        if (hasTrailWork)
+        {
+            entryBarriers[entryCount++] = BufferBarrier(trailHeaders!,
+                VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit | VkAccessFlags.TransferWriteBit,
+                VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
+            entryBarriers[entryCount++] = BufferBarrier(trailPoints!,
+                VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
+                VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
+            entryBarriers[entryCount++] = BufferBarrier(particleToTrail!,
+                VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
+                VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
+        }
         frame.CommandBuffer.PipelineBarrier(VkPipelineStageFlags.TransferBit | VkPipelineStageFlags.VertexShaderBit | VkPipelineStageFlags.ComputeShaderBit,
             VkPipelineStageFlags.ComputeShaderBit, VkDependencyFlags.None, default(ReadOnlySpan<VkMemoryBarrier>),
-            new ReadOnlySpan<VkBufferMemoryBarrier>(in entry), default(ReadOnlySpan<VkImageMemoryBarrier>));
+            entryBarriers[..entryCount], default(ReadOnlySpan<VkImageMemoryBarrier>));
+
         VkDescriptorSet set = DescriptorSetWriter.AllocateDescriptorSet(frame.Device, resources.Pool, computeLayout);
         ParticleGpuDrawResources.WriteBuffers(frame.Device, set, resources.ComputeBuffers, VkDescriptorType.StorageBuffer);
-        frame.CommandBuffer.BindPipeline(VkPipelineBindPoint.Compute, kernel!.Pipeline);
-        frame.CommandBuffer.BindDescriptorSet(VkPipelineBindPoint.Compute, kernel.PipelineLayout, 0, set, default(Span<ByteSize32>));
+        VkDescriptorSet trailSet = default;
+        if (hasTrailWork)
+        {
+            trailSet = DescriptorSetWriter.AllocateDescriptorSet(frame.Device, resources.TrailPool!.Value, trailComputeLayout);
+            ParticleGpuDrawResources.WriteBuffers(frame.Device, trailSet, resources.TrailComputeBuffers!, VkDescriptorType.StorageBuffer);
+        }
+
+        bool trailKernelBound = false;
+        if (hasTrailWork)
+        {
+            initialTrailHeaderClears.Clear();
+            initialTrailMapClears.Clear();
+            liveTrailInstanceIds.Clear();
+            for (int t = 0; t < snapshot.TrailEmitters.Length; t++)
+            {
+                ParticleTrailEmitterFrame tr = snapshot.TrailEmitters[t];
+                liveTrailInstanceIds.Add(tr.InstanceId);
+                if (initializedTrailInstances.Add(tr.InstanceId))
+                {
+                    initialTrailHeaderClears.Add(new EmitterSlotRange((int)tr.Parameters.Ranges.X, (int)tr.Parameters.Ranges.Y));
+                    initialTrailMapClears.Add(new EmitterSlotRange((int)tr.Parameters.MapBase, (int)tr.Parameters.DepthAndParticle.Z));
+                }
+            }
+            initializedTrailInstances.IntersectWith(liveTrailInstanceIds);
+            if (snapshot.TrailHeaderClears.Length != 0 || snapshot.TrailMapClears.Length != 0 || initialTrailHeaderClears.Count != 0)
+            {
+                BindComputeKernel(frame, trailKernel!, trailSet);
+                trailKernelBound = true;
+                foreach (EmitterSlotRange range in snapshot.TrailHeaderClears)
+                    DispatchTrailSimulation(frame, new GpuSimPushConstants
+                    {
+                        EmitterIndex = (uint)range.Offset, FrameSeed = (uint)range.Capacity, Padding0 = 2u
+                    }, ParticleSimulationDispatch.BlockCount(range.Capacity));
+                foreach (EmitterSlotRange range in initialTrailHeaderClears)
+                    DispatchTrailSimulation(frame, new GpuSimPushConstants
+                    {
+                        EmitterIndex = (uint)range.Offset, FrameSeed = (uint)range.Capacity, Padding0 = 2u
+                    }, ParticleSimulationDispatch.BlockCount(range.Capacity));
+                foreach (EmitterSlotRange range in snapshot.TrailMapClears)
+                    DispatchTrailSimulation(frame, new GpuSimPushConstants
+                    {
+                        EmitterIndex = (uint)range.Offset, FrameSeed = (uint)range.Capacity, Padding0 = 3u
+                    }, ParticleSimulationDispatch.BlockCount(range.Capacity));
+                foreach (EmitterSlotRange range in initialTrailMapClears)
+                    DispatchTrailSimulation(frame, new GpuSimPushConstants
+                    {
+                        EmitterIndex = (uint)range.Offset, FrameSeed = (uint)range.Capacity, Padding0 = 3u
+                    }, ParticleSimulationDispatch.BlockCount(range.Capacity));
+                RecordSimulationStageBarrier(frame, resources, eventWork, includeTrails: true);
+            }
+        }
+        else
+        {
+            initializedTrailInstances.Clear();
+        }
+
+        if (emitterToTrail.Length < emitters.Length) emitterToTrail = new int[emitters.Length];
+        Array.Fill(emitterToTrail, -1, 0, emitters.Length);
+        for (int t = 0; t < snapshot.TrailEmitters.Length; t++)
+            emitterToTrail[snapshot.TrailEmitters[t].ParticleRow] = t;
+
+        BindComputeKernel(frame, kernel!, set);
+        trailKernelBound = false;
         // Reset per-frame event counts and prepare GPU-owned explicit bursts before any source integrates.
         if (eventWork)
         {
-            RecordSimulationStageBarrier(frame, resources, true);
+            RecordSimulationStageBarrier(frame, resources, true, hasTrailWork);
             for (int i = 0; i < snapshot.Emitters.Length; i++)
             {
                 GpuEmitterParams parameters = emitters[i].Parameters;
                 if (parameters.EmitEvents == 0 && parameters.Events.Z == 0f) continue;
                 DispatchSimulation(frame, new GpuSimPushConstants { EmitterIndex = (uint)i, Padding0 = 8u }, 1);
             }
-            RecordSimulationStageBarrier(frame, resources, true);
+            RecordSimulationStageBarrier(frame, resources, true, hasTrailWork);
         }
         for (int i = 0; i < emitters.Length; i++)
         {
@@ -288,26 +437,84 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
                 Padding0 = emitterFrame.KillBelowFloor ? 1u : 0u,
             };
             int emitterCapacity = (int)emitterFrame.Parameters.Slots.Y;
-            if (!ParticleSimulationDispatch.UsesParallelScan(emitterCapacity))
+            int trailIndex = emitterToTrail[i];
+            if (trailIndex < 0)
             {
+                if (trailKernelBound)
+                {
+                    BindComputeKernel(frame, kernel!, set);
+                    trailKernelBound = false;
+                }
+                if (!ParticleSimulationDispatch.UsesParallelScan(emitterCapacity))
+                {
+                    DispatchSimulation(frame, push, 1);
+                    continue;
+                }
+                int blocks = ParticleSimulationDispatch.BlockCount(emitterCapacity);
+                push.Padding0 |= 2u; // Integrate and count dead slots in parallel.
+                DispatchSimulation(frame, push, blocks);
+                if (emitterFrame.Parameters.Slots.Z == 0f && emitterFrame.Parameters.ExplicitCount == 0u) continue;
+                RecordSimulationStageBarrier(frame, resources, eventWork, hasTrailWork);
+                push.Padding0 = (push.Padding0 & 1u) | 4u; // Exclusive prefix of block counts.
                 DispatchSimulation(frame, push, 1);
+                RecordSimulationStageBarrier(frame, resources, eventWork, hasTrailWork);
+                push.Padding0 = (push.Padding0 & 1u) | 6u; // Respawn in cursor order.
+                DispatchSimulation(frame, push, blocks);
+                RecordSimulationStageBarrier(frame, resources, eventWork, hasTrailWork); // Scratch is reused by the next emitter.
                 continue;
             }
-            int blocks = ParticleSimulationDispatch.BlockCount(emitterCapacity);
-            push.Padding0 |= 2u; // Integrate and count dead slots in parallel.
-            DispatchSimulation(frame, push, blocks);
-            if (emitterFrame.Parameters.Slots.Z == 0f && emitterFrame.Parameters.ExplicitCount == 0u) continue;
-            RecordSimulationStageBarrier(frame, resources, eventWork);
-            push.Padding0 = (push.Padding0 & 1u) | 4u; // Exclusive prefix of block counts.
-            DispatchSimulation(frame, push, 1);
-            RecordSimulationStageBarrier(frame, resources, eventWork);
-            push.Padding0 = (push.Padding0 & 1u) | 6u; // Respawn in cursor order.
-            DispatchSimulation(frame, push, blocks);
-            RecordSimulationStageBarrier(frame, resources, eventWork); // Scratch is reused by the next emitter.
+
+            // Trail emitter: always split Phase 1 -> PostIntegrate -> Phase 2/3 -> PostSpawn so dying
+            // particles relinquish/detach their trails using their last frame's position/colour/size.
+            int trailBlocks = ParticleSimulationDispatch.BlockCount(emitterCapacity);
+            int headerCapacity = (int)snapshot.TrailEmitters[trailIndex].Parameters.Ranges.Y;
+            int headerBlocks = ParticleSimulationDispatch.BlockCount(headerCapacity);
+            if (trailKernelBound)
+            {
+                BindComputeKernel(frame, kernel!, set);
+                trailKernelBound = false;
+            }
+            push.Padding0 |= 2u;
+            DispatchSimulation(frame, push, trailBlocks);
+            RecordSimulationStageBarrier(frame, resources, eventWork, includeTrails: true);
+
+            BindComputeKernel(frame, trailKernel!, trailSet);
+            trailKernelBound = true;
+            DispatchTrailSimulation(frame, new GpuSimPushConstants
+            {
+                EmitterIndex = (uint)trailIndex, FrameSeed = unchecked((uint)snapshot.Context.FrameIndex), Padding0 = 0u
+            }, headerBlocks);
+
+            bool maySpawn = emitterFrame.Parameters.Slots.Z != 0f || emitterFrame.Parameters.ExplicitCount != 0u;
+            if (maySpawn)
+            {
+                RecordSimulationStageBarrier(frame, resources, eventWork, includeTrails: true);
+                BindComputeKernel(frame, kernel!, set);
+                trailKernelBound = false;
+                push.Padding0 = (push.Padding0 & 1u) | 4u;
+                DispatchSimulation(frame, push, 1);
+                RecordSimulationStageBarrier(frame, resources, eventWork, includeTrails: false);
+                push.Padding0 = (push.Padding0 & 1u) | 6u;
+                DispatchSimulation(frame, push, trailBlocks);
+                RecordSimulationStageBarrier(frame, resources, eventWork, includeTrails: false);
+                BindComputeKernel(frame, trailKernel!, trailSet);
+                trailKernelBound = true;
+                DispatchTrailSimulation(frame, new GpuSimPushConstants
+                {
+                    EmitterIndex = (uint)trailIndex, FrameSeed = unchecked((uint)snapshot.Context.FrameIndex), Padding0 = 1u
+                }, trailBlocks);
+            }
+            RecordSimulationStageBarrier(frame, resources, eventWork, includeTrails: true);
         }
         if (snapshot.SubLinks.Length != 0)
         {
-            RecordSimulationStageBarrier(frame, resources, eventWork);
+            RecordSimulationStageBarrier(frame, resources, eventWork, hasTrailWork);
+            if (trailKernelBound)
+            {
+                BindComputeKernel(frame, kernel!, set);
+                trailKernelBound = false;
+            }
+            bool dispatchedTrailSubTargets = false;
             for (int i = 0; i < snapshot.Emitters.Length; i++)
             {
                 if (emitters[i].Parameters.SourceLinkCount == 0u) continue;
@@ -315,12 +522,36 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
                 {
                     EmitterIndex = (uint)i, FrameSeed = unchecked((uint)snapshot.Context.FrameIndex), Padding0 = 10u
                 }, 1);
+                if (emitterToTrail[i] >= 0) dispatchedTrailSubTargets = true;
+            }
+            if (dispatchedTrailSubTargets)
+            {
+                RecordSimulationStageBarrier(frame, resources, eventWork, includeTrails: true);
+                BindComputeKernel(frame, trailKernel!, trailSet);
+                trailKernelBound = true;
+                for (int t = 0; t < snapshot.TrailEmitters.Length; t++)
+                {
+                    int row = snapshot.TrailEmitters[t].ParticleRow;
+                    if (emitters[row].Parameters.SourceLinkCount == 0u) continue;
+                    int blocks = ParticleSimulationDispatch.BlockCount((int)emitters[row].Parameters.Slots.Y);
+                    DispatchTrailSimulation(frame, new GpuSimPushConstants
+                    {
+                        EmitterIndex = (uint)t, FrameSeed = unchecked((uint)snapshot.Context.FrameIndex), Padding0 = 1u
+                    }, blocks);
+                }
             }
         }
-        var exit = ParticleBarrier(VkAccessFlags.ShaderWriteBit, VkAccessFlags.ShaderReadBit | VkAccessFlags.IndirectCommandReadBit);
+        Span<VkBufferMemoryBarrier> exitBarriers = stackalloc VkBufferMemoryBarrier[3];
+        int exitCount = 1;
+        exitBarriers[0] = BufferBarrier(particles!, VkAccessFlags.ShaderWriteBit, VkAccessFlags.ShaderReadBit | VkAccessFlags.IndirectCommandReadBit);
+        if (hasTrailWork)
+        {
+            exitBarriers[exitCount++] = BufferBarrier(trailHeaders!, VkAccessFlags.ShaderWriteBit, VkAccessFlags.ShaderReadBit);
+            exitBarriers[exitCount++] = BufferBarrier(trailPoints!, VkAccessFlags.ShaderWriteBit, VkAccessFlags.ShaderReadBit);
+        }
         frame.CommandBuffer.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit,
             VkPipelineStageFlags.VertexShaderBit | VkPipelineStageFlags.DrawIndirectBit, VkDependencyFlags.None,
-            default(ReadOnlySpan<VkMemoryBarrier>), new ReadOnlySpan<VkBufferMemoryBarrier>(in exit), default(ReadOnlySpan<VkImageMemoryBarrier>));
+            default(ReadOnlySpan<VkMemoryBarrier>), exitBarriers[..exitCount], default(ReadOnlySpan<VkImageMemoryBarrier>));
     }
 
     private static void RecordBurstStateCopy(in FrameContext frame, GpuComputeBuffer from, GpuComputeBuffer to)
@@ -352,38 +583,53 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         frame.CommandBuffer.Dispatch(groups, 1, 1);
     }
 
-    private void RecordSimulationStageBarrier(in FrameContext frame, ParticleGpuFrame resources, bool eventWork)
+    private void DispatchTrailSimulation(in FrameContext frame, GpuSimPushConstants push, int groups)
     {
-        Span<VkBufferMemoryBarrier> barriers = stackalloc VkBufferMemoryBarrier[4];
-        barriers[0] = ParticleBarrier(VkAccessFlags.ShaderWriteBit, VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
-        barriers[1] = new VkBufferMemoryBarrier
-        {
-            SrcAccessMask = VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
-            DstAccessMask = VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
-            SrcQueueFamilyIndex = -1, DstQueueFamilyIndex = -1,
-            Buffer = deadBlocks!.Buffer, Offset = ByteSize.Zero, Size = deadBlocks.Size
-        };
-        if (eventWork)
-        {
-            barriers[2] = new VkBufferMemoryBarrier
-            {
-                SrcAccessMask = VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
-                DstAccessMask = VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
-                SrcQueueFamilyIndex = -1, DstQueueFamilyIndex = -1,
-                Buffer = resources.BurstStates.Buffer, Offset = ByteSize.Zero, Size = resources.BurstStates.Size
-            };
-            barriers[3] = barriers[2];
-            barriers[3].Buffer = resources.Events.Buffer;
-            barriers[3].Size = resources.Events.Size;
-        }
-        frame.CommandBuffer.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit, VkPipelineStageFlags.ComputeShaderBit,
-            VkDependencyFlags.None, default(ReadOnlySpan<VkMemoryBarrier>), barriers[..(eventWork ? 4 : 2)], default(ReadOnlySpan<VkImageMemoryBarrier>));
+        frame.CommandBuffer.PushConstants(trailKernel!.PipelineLayout, VkShaderStageFlags.ComputeBit, 0,
+            MemoryMarshal.AsBytes(new ReadOnlySpan<GpuSimPushConstants>(in push)));
+        frame.CommandBuffer.Dispatch(groups, 1, 1);
     }
 
-    private VkBufferMemoryBarrier ParticleBarrier(VkAccessFlags source, VkAccessFlags destination) => new()
+    private void RecordSimulationStageBarrier(in FrameContext frame, ParticleGpuFrame resources, bool eventWork, bool includeTrails = false)
+    {
+        Span<VkBufferMemoryBarrier> barriers = stackalloc VkBufferMemoryBarrier[7];
+        int count = 2;
+        barriers[0] = BufferBarrier(particles!, VkAccessFlags.ShaderWriteBit, VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
+        barriers[1] = BufferBarrier(deadBlocks!, VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
+            VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
+        if (eventWork)
+        {
+            barriers[count++] = BufferBarrier(resources.BurstStates, VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
+                VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
+            barriers[count++] = BufferBarrier(resources.Events, VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
+                VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
+        }
+        if (includeTrails)
+        {
+            barriers[count++] = BufferBarrier(trailHeaders!, VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
+                VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
+            barriers[count++] = BufferBarrier(trailPoints!, VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
+                VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
+            barriers[count++] = BufferBarrier(particleToTrail!, VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit,
+                VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit);
+        }
+        frame.CommandBuffer.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit, VkPipelineStageFlags.ComputeShaderBit,
+            VkDependencyFlags.None, default(ReadOnlySpan<VkMemoryBarrier>), barriers[..count], default(ReadOnlySpan<VkImageMemoryBarrier>));
+    }
+
+    private static void BindComputeKernel(in FrameContext frame, ComputeKernel pipelineKernel, VkDescriptorSet descriptorSet)
+    {
+        frame.CommandBuffer.BindPipeline(VkPipelineBindPoint.Compute, pipelineKernel.Pipeline);
+        frame.CommandBuffer.BindDescriptorSet(VkPipelineBindPoint.Compute, pipelineKernel.PipelineLayout, 0, descriptorSet, default(Span<ByteSize32>));
+    }
+
+    private VkBufferMemoryBarrier ParticleBarrier(VkAccessFlags source, VkAccessFlags destination) =>
+        BufferBarrier(particles!, source, destination);
+
+    private static VkBufferMemoryBarrier BufferBarrier(GpuComputeBuffer buffer, VkAccessFlags source, VkAccessFlags destination) => new()
     {
         SrcAccessMask = source, DstAccessMask = destination, SrcQueueFamilyIndex = -1, DstQueueFamilyIndex = -1,
-        Buffer = particles!.Buffer, Offset = ByteSize.Zero, Size = particles.Size
+        Buffer = buffer.Buffer, Offset = ByteSize.Zero, Size = buffer.Size
     };
 
     // Ensures: no command-buffer work. MeshBatchRenderer records this frame's instanced draws from the
@@ -454,8 +700,19 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         recordedBurstStates = null;
         if (!computeLayout.IsNull()) device.DestroyDescriptorSetLayout(computeLayout, device.VkAllocator);
         computeLayout = default;
+        trailHeaders?.Dispose();
+        trailHeaders = null;
+        trailPoints?.Dispose();
+        trailPoints = null;
+        particleToTrail?.Dispose();
+        particleToTrail = null;
+        if (!trailComputeLayout.IsNull()) device.DestroyDescriptorSetLayout(trailComputeLayout, device.VkAllocator);
+        trailComputeLayout = default;
+        trailKernel = null;
         initializedInstances.Clear();
+        initializedTrailInstances.Clear();
         liveInstanceIds.Clear();
+        liveTrailInstanceIds.Clear();
     }
 
     private void DisposeGpu()

@@ -22,7 +22,7 @@ internal sealed partial class LumenGpuParticleEngine
         app.GraphicsDevice!.WaitIdleAndRun(() =>
         {
             if (particles is null) return;
-            var staging = GpuComputeBuffer.Create(app.Device, app.GraphicsDevice.Allocator,
+            var staging = GpuComputeBuffer.Create(app.Device, app.GraphicsDevice!.Allocator,
                 "RimLumen.ParticleBenchReadback", (long)capacity * 64, readback: true);
             try
             {
