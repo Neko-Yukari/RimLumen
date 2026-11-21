@@ -47,6 +47,10 @@ public sealed class RimUnityPrefabTranslator
             if (particles is not null)
             {
                 MaterialLook material = ReadMaterial(Member(renderer?.members, "sharedMaterial"), resourceResolver, shaderResolver);
+                ValueData? trailMatRef = Member(renderer?.members, "trailMaterial");
+                MaterialLook? trailMaterial = Enabled(Member(particles.members, "trails")) && trailMatRef?.kind == "asset"
+                    ? ReadMaterial(trailMatRef, resourceResolver, shaderResolver)
+                    : null;
                 var classification = Classifier.Classify(particles, renderer, out ParticleBurstSpec[] bursts);
                 var reasons = new List<string>(classification.Reasons);
                 if (material.TintDomainReason is { } tintReason)
@@ -55,6 +59,12 @@ public sealed class RimUnityPrefabTranslator
                     reasons.RemoveAll(reason => reason.EndsWith("L2ParticleThreshold", StringComparison.Ordinal));
                     reasons.Add(tintReason);
                 }
+                if (trailMaterial?.TintDomainReason is { } trailTintReason)
+                {
+                    classification.Tier = LumenParticleTier.External;
+                    reasons.RemoveAll(reason => reason.EndsWith("L2ParticleThreshold", StringComparison.Ordinal));
+                    reasons.Add(trailTintReason);
+                }
                 if (subEmitterTargets.Contains(particles.id))
                 {
                     classification.Tier = LumenParticleTier.External;
@@ -62,12 +72,19 @@ public sealed class RimUnityPrefabTranslator
                     reasons.Add("subEmitters.dependency");
                 }
                 if (active[i] && particles.enabled && renderer?.enabled != false && classification.Tier != LumenParticleTier.External)
-                    emitter = ConvertEmitter(source.name, particles, renderer, classification.Tier, material, bursts);
+                    emitter = ConvertEmitter(source.name, particles, renderer, classification.Tier, material, trailMaterial, bursts);
                 classifications.Add(new RimUnityNodeTranslation(i, source.id, ParticleComponent, classification.Tier, reasons));
                 ValueData? main = Member(particles.members, "main");
                 // External playback owns deferred lifetime curves; do not evaluate them as native values.
-                duration = MathF.Max(duration, Number(Field(main, "duration"), 5f) +
-                    (Integer(Field(Field(main, "startLifetime"), "mode")) == 2 ? 0 : CurveRange(Field(main, "startLifetime"), 5f).Max));
+                float maxParticleLife = Integer(Field(Field(main, "startLifetime"), "mode")) == 2 ? 0 : CurveRange(Field(main, "startLifetime"), 5f).Max;
+                float extraTrailLife = 0f;
+                if (emitter?.Trails is { DieWithParticles: false } trails)
+                {
+                    float maxSize = CurveRange(Field(main, "startSize"), 1f).Max *
+                        (Enabled(Member(particles.members, "sizeOverLifetime")) ? MathF.Max(0f, CurveRange(Field(Member(particles.members, "sizeOverLifetime"), "size"), 1f).Max) : 1f);
+                    extraTrailLife = maxParticleLife * trails.Lifetime * (trails.SizeAffectsLifetime ? maxSize : 1f);
+                }
+                duration = MathF.Max(duration, Number(Field(main, "duration"), 5f) + maxParticleLife + extraTrailLife);
             }
             RibbonSpec? ribbon = null;
             List<ComponentData> components = source.components ?? new List<ComponentData>();
@@ -253,7 +270,7 @@ public sealed class RimUnityPrefabTranslator
     }
 
     private static EmitterSpec ConvertEmitter(string name, ComponentData particles, ComponentData? renderer,
-        LumenParticleTier tier, MaterialLook material, ParticleBurstSpec[] bursts)
+        LumenParticleTier tier, MaterialLook material, MaterialLook? trailMaterial, ParticleBurstSpec[] bursts)
     {
         ValueData? main = Member(particles.members, "main");
         ValueData? emission = Member(particles.members, "emission");
@@ -344,6 +361,60 @@ public sealed class RimUnityPrefabTranslator
             },
             VelocityStretchFactor = Number(Member(renderer?.members, "velocityScale")),
             LengthScale = Number(Member(renderer?.members, "lengthScale"), 2f), SoftParticleFadeDistance = material.SoftFade,
+            Trails = Enabled(Member(particles.members, "trails")) && trailMaterial is { } tm
+                ? ConvertParticleTrails(particles, Member(particles.members, "trails")!, tm, lifetime.Max, size.Max)
+                : null,
+        };
+    }
+
+    private static ParticleTrailSpec ConvertParticleTrails(ComponentData particles, ValueData trails,
+        MaterialLook trailMaterial, float maxParticleLifetime, float maxStartSize)
+    {
+        ValueData? lifeField = Field(trails, "lifetime");
+        float trailLifetime = lifeField is null || lifeField.kind == "null" ? 1f
+            : lifeField.kind is "number" or "integer" ? Number(lifeField)
+            : Number(Field(lifeField, "constant"), 1f);
+        ValueData? widthField = Field(trails, "widthOverTrail");
+        float baseWidth = 1f;
+        ScalarCurve widthOverTrail = ScalarCurve.Constant(1f);
+        if (widthField is not null && widthField.kind != "null")
+        {
+            if (widthField.kind is "number" or "integer")
+                baseWidth = Number(widthField);
+            else if (Integer(Field(widthField, "mode")) == 0)
+                baseWidth = Number(Field(widthField, "constant"), 1f);
+            else
+                widthOverTrail = ToScalarCurve(widthField, 1f);
+        }
+        bool sizeAffectsLifetime = Boolean(Field(trails, "sizeAffectsLifetime"), false);
+        ValueData? sizeModule = Member(particles.members, "sizeOverLifetime");
+        float maxSize = maxStartSize * (Enabled(sizeModule) ? MathF.Max(0f, CurveRange(Field(sizeModule, "size"), 1f).Max) : 1f);
+        int maxPoints = (int)Math.Clamp(
+            MathF.Ceiling(maxParticleLifetime * trailLifetime * (sizeAffectsLifetime ? maxSize : 1f) * 60f) + 2f,
+            16f, 256f);
+        return new ParticleTrailSpec
+        {
+            Ratio = Number(Field(trails, "ratio"), 1f),
+            Lifetime = trailLifetime,
+            MinVertexDistance = MathF.Max(1e-5f, Number(Field(trails, "minVertexDistance"), 0.2f)),
+            MaxPoints = maxPoints,
+            DieWithParticles = Boolean(Field(trails, "dieWithParticles"), true),
+            WorldSpace = Boolean(Field(trails, "worldSpace"), false),
+            SizeAffectsWidth = Boolean(Field(trails, "sizeAffectsWidth"), true),
+            SizeAffectsLifetime = sizeAffectsLifetime,
+            InheritParticleColor = Boolean(Field(trails, "inheritParticleColor"), true),
+            Width = baseWidth,
+            WidthOverTrail = widthOverTrail,
+            ColorOverTrail = ToColorGradient(Field(trails, "colorOverTrail")),
+            ColorOverLifetime = ToColorGradient(Field(trails, "colorOverLifetime")),
+            TextureKey = trailMaterial.TextureKey,
+            MaterialTint = trailMaterial.Tint,
+            ColorSpace = trailMaterial.ColorSpace,
+            BlendMode = trailMaterial.Blend,
+            TextureMode = Integer(Field(trails, "textureMode")) == 1 ? LumenRibbonTextureMode.Tile : LumenRibbonTextureMode.Stretch,
+            Alignment = LumenRibbonAlignment.View,
+            HdrIntensity = 1f,
+            SoftParticleFadeDistance = trailMaterial.SoftFade,
         };
     }
 

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Numerics;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
@@ -16,9 +17,9 @@ namespace RimLumen.Core.Tests.Demo;
 [LumenTestSuite]
 public static class DemoBuildingsSuite
 {
-    // Ensures: every firework variant passes LumenAssetRules, keeps the launch/burst/sparkle/light node
-    //          structure on the rising origin, and shoots along true +Y (Vertical3D) with (0, -1, 0) gravity and
-    //          floor expiry.
+    // Ensures: every firework variant passes LumenAssetRules, keeps the pure-asset rocket/burst/sparkle/light/crackle
+    //          structure without C# Follow, shoots along true +Y (Vertical3D) with parabolic deceleration to ~10 cells
+    //          at 1.0 s, and uses Death sub-emitters plus floor-expiry bounce physics.
     [LumenFact]
     public static void FireworkVariantsValidateAndShareTheApexStructure()
     {
@@ -30,34 +31,38 @@ public static class DemoBuildingsSuite
             LumenAssetRules.Validate(asset, id);
 
             NativeTestData.Check(asset.EffectId == id, $"{id}: keeps the requested effect id");
-            NativeTestData.Check(asset.Nodes.Length == 5, $"{id}: 5 nodes (trail, burst, sparkle, light, crackle)");
-            NativeTestData.Check(asset.TimelineEvents.Length == 0, $"{id}: bursts are time-driven, not Trigger-driven");
+            NativeTestData.Check(asset.Nodes.Length == 5, $"{id}: 5 nodes (rocket, burst, sparkle, light, crackle)");
+            NativeTestData.Check(asset.TimelineEvents.Length == 0, $"{id}: bursts are Death-driven, not Trigger-driven");
 
-            EffectNodeSpec trailNode = asset.Nodes[0];
-            EmitterSpec trail = trailNode.Emitter!;
-            NativeTestData.Check(trailNode.SpacePlane == LumenSpacePlane.Vertical3D, $"{id}: trail uses Vertical3D");
-            NativeTestData.Check(trailNode.Ribbon is { Mode: LumenRibbonMode.Trail }, $"{id}: the rocket draws a native trail ribbon");
-            NativeTestData.Close(0f, trailNode.LocalPosition.Y, $"{id}: the rocket is the rising origin");
-            NativeTestData.Check(trail.KillBelowFloor, $"{id}: trail particles expire on floor contact");
-            NativeTestData.Check(HasGravityDown(trail), $"{id}: trail gravity pulls toward -Y");
-            NativeTestData.Check(trail.PreferredTier == LumenParticleTier.L1_NativeCpu, $"{id}: trail stays on L1");
-            NativeTestData.Check(trail.Looping == false, $"{id}: trail is a one-shot");
-            NativeTestData.Close(RimLumenDemoEffects.LaunchSeconds, trail.Duration, $"{id}: trail duration");
-            NativeTestData.Check(trail.Bursts.Length == 0, $"{id}: trail emits by rate, not by burst");
+            EffectNodeSpec rocketNode = asset.Nodes[0];
+            EmitterSpec rocket = rocketNode.Emitter!;
+            NativeTestData.Check(rocketNode.Name == "rocket", $"{id}: node 0 is rocket");
+            NativeTestData.Check(rocketNode.SpacePlane == LumenSpacePlane.Vertical3D, $"{id}: rocket uses Vertical3D");
+            NativeTestData.Check(rocketNode.Ribbon is null, $"{id}: rocket uses emitter.Trails rather than node Ribbon");
+            NativeTestData.Close(RimLumenDemoEffects.LaunchHeight, rocketNode.LocalPosition.Y, $"{id}: rocket launches at mouth height");
+            NativeTestData.Check(rocket.PreferredTier == LumenParticleTier.L2_GpuCompute, $"{id}: rocket runs on L2");
+            NativeTestData.Check(rocket.Looping == false && rocket.Shape == LumenShapeKind.Point, $"{id}: one-shot point rocket");
+            NativeTestData.Check(rocket.Bursts.Length == 1 && rocket.Bursts[0].Time == 0f && rocket.Bursts[0].Count == 1,
+                $"{id}: single launch burst at t=0");
+            NativeTestData.Close(RimLumenDemoEffects.LaunchSeconds, rocket.StartLifetimeMin, $"{id}: rocket climb duration");
+            NativeTestData.Close(19.3f, rocket.StartSpeedMin, $"{id}: derived rocket initial speed");
+            NativeTestData.Check(HasGravityDown(rocket) && MathF.Abs(rocket.ForceFields[0].Strength - 19.3f) < 1e-4f,
+                $"{id}: derived rocket gravity pulls down to zero velocity at apex");
+            NativeTestData.Check(rocket.Trails is { DieWithParticles: false, Ratio: 1f },
+                $"{id}: rocket carries per-particle trail that fades out after death");
+            NativeTestData.Check(rocket.SubEmitters.Length == 2
+                && rocket.SubEmitters[0] == new SubEmitterSpec(LumenSubEmitterTrigger.Death, 1, 1800)
+                && rocket.SubEmitters[1] == new SubEmitterSpec(LumenSubEmitterTrigger.Death, 2, 360),
+                $"{id}: rocket triggers burst & sparkle on Death");
 
             EffectNodeSpec burstNode = asset.Nodes[1];
             EmitterSpec burst = burstNode.Emitter!;
             NativeTestData.Check(burstNode.SpacePlane == LumenSpacePlane.Vertical3D, $"{id}: burst uses Vertical3D");
-            NativeTestData.Close(0f, burstNode.LocalPosition.Y, $"{id}: burst rides the rocket to the apex");
-            NativeTestData.Close(0f, burstNode.LocalPosition.Z, $"{id}: apex sits over the launcher, not up-screen");
+            NativeTestData.Close(0f, burstNode.LocalPosition.Y, $"{id}: burst inherits apex world position from rocket Death event");
             NativeTestData.Check(burst.KillBelowFloor, $"{id}: burst sparks expire on floor contact");
             NativeTestData.Check(burst.PreferredTier == LumenParticleTier.L2_GpuCompute, $"{id}: burst runs on L2");
-            NativeTestData.Check(burst.Looping == false, $"{id}: burst is a one-shot");
-            NativeTestData.Check(burst.Bursts.Length == 1, $"{id}: one apex burst");
-            NativeTestData.Close(RimLumenDemoEffects.LaunchSeconds, burst.Bursts[0].Time, $"{id}: burst time at apex");
-            NativeTestData.Check(burst.Bursts[0].Count == 1800, $"{id}: 1800 sparks leave together");
-            NativeTestData.Check(burst.Bursts[0].Time <= burst.Duration, $"{id}: burst time lies inside the emission window");
-            NativeTestData.Close(0f, burst.RateOverTime, $"{id}: burst node does not trickle");
+            NativeTestData.Check(burst.Looping == false && burst.Bursts.Length == 0 && burst.RateOverTime == 0f,
+                $"{id}: burst emits solely via rocket Death sub-emitter");
             NativeTestData.Check(HasGravityDown(burst), $"{id}: L2 burst gravity pulls toward -Y");
             NativeTestData.Check(HasCurl(burst), $"{id}: L2 burst has curl turbulence");
             NativeTestData.Close(8f, burst.HdrIntensity, $"{id}: HDR burst intensity");
@@ -66,12 +71,11 @@ public static class DemoBuildingsSuite
             EffectNodeSpec sparkleNode = asset.Nodes[2];
             EmitterSpec sparkle = sparkleNode.Emitter!;
             NativeTestData.Check(sparkleNode.SpacePlane == LumenSpacePlane.Vertical3D, $"{id}: sparkle core uses Vertical3D");
-            NativeTestData.Close(0f, sparkleNode.LocalPosition.Y, $"{id}: sparkle core rides the rocket");
-            NativeTestData.Check(sparkle.PreferredTier == LumenParticleTier.L1_NativeCpu, $"{id}: sparkle core stays on L1");
-            NativeTestData.Check(sparkle.Bursts.Length == 1, $"{id}: sparkle core fires once");
-            NativeTestData.Check(sparkle.Bursts[0].Time >= RimLumenDemoEffects.LaunchSeconds, $"{id}: sparkle core fires with the shell, not before");
+            NativeTestData.Check(sparkle.PreferredTier == LumenParticleTier.L2_GpuCompute, $"{id}: sparkle core matches rocket L2 tier");
+            NativeTestData.Check(sparkle.Bursts.Length == 0 && sparkle.RateOverTime == 0f,
+                $"{id}: sparkle core emits solely via rocket Death sub-emitter");
 
-            NativeTestData.Close(0f, asset.Nodes[3].LocalPosition.Y, $"{id}: flash rides the rocket");
+            NativeTestData.Close(RimLumenDemoEffects.ApexHeight, asset.Nodes[3].LocalPosition.Y, $"{id}: flash sits at 10-cell apex");
             ScalarCurve dim = asset.Nodes[3].ScreenDim!.StrengthOverTime!;
             for (float t = 0f; t <= RimLumenDemoEffects.LaunchSeconds; t += 0.01f)
                 NativeTestData.Close(0f, CurveEvaluator.Evaluate(dim, t), $"{id}: no dim before the apex (t = {t:F2} s)");
@@ -90,8 +94,6 @@ public static class DemoBuildingsSuite
         NativeTestData.Check(hues[1].X < 0.3f && hues[1].Z > 0.9f, "cyan variant is cool");
         NativeTestData.Check(hues[2].X > 0.9f && hues[2].Z > 0.8f, "magenta variant is warm and blue");
         NativeTestData.Check(hues[0] != hues[1] && hues[1] != hues[2] && hues[0] != hues[2], "the three variants differ");
-        NativeTestData.Close(RimLumenDemoEffects.LaunchHeight, RimLumenDemoEffects.RocketHeight(0f), "the rocket leaves the launcher mouth");
-        NativeTestData.Close(RimLumenDemoEffects.ApexHeight, RimLumenDemoEffects.RocketHeight(RimLumenDemoEffects.LaunchSeconds), "the rocket reaches the apex as the burst fires");
     }
 
     // Ensures: the fountain validates, loops on L2 in both emitters, and keeps the mist on the ground.
@@ -150,8 +152,8 @@ public static class DemoBuildingsSuite
         VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
     }
 
-    // Ensures: the gold firework binds its burst to L2 and its trail/sparkle to L1, and a paused frame
-    //          (DeltaTime = 0) advances the clock by nothing and spawns nothing.
+    // Ensures: the gold firework binds all 4 emitters to L2 (rocket + burst + sparkle + crackle), and a paused
+    //          frame (DeltaTime = 0) advances the clock by nothing and spawns nothing.
     [LumenFact]
     public static void FireworkRoutesToGpuAndFreezesWhilePaused() => WithFeatureBackends(() =>
     {
@@ -162,16 +164,17 @@ public static class DemoBuildingsSuite
 
         using EffectInstanceHandle typed = PlayRocket(service, asset, new Vector3(10f, 0f, 20f));
         VfxAssert.Check(typed.IsAlive && typed.IsEmitting, "firework starts playing");
-        VfxAssert.Equal(2, typed.GpuEmitterCount);
-        VfxAssert.Equal(2, typed.CpuEmitterCount);
+        VfxAssert.Equal(4, typed.GpuEmitterCount);
+        VfxAssert.Equal(0, typed.CpuEmitterCount);
         VfxAssert.Check(service.HasActiveWork, "a playing firework keeps the pipeline active");
 
-        // Vertical3D keeps the node's identity rotation, so local +Y stays world +Y, and the burst starts at the
-        // launcher mouth directly over the launcher.
+        // Vertical3D keeps the node's identity rotation, so local +Y stays world +Y, and the rocket launches at LaunchHeight
+        // directly over the launcher while apex_flash sits statically at ApexHeight.
         Vector3 upAxis = Vector3.TransformNormal(Vector3.UnitY, typed.NodeWorldMatrices[0]);
         VfxAssert.Close(Vector3.UnitY, upAxis);
-        NativeTestData.Close(RimLumenDemoEffects.LaunchHeight, typed.NodeWorldMatrices[1].Translation.Y, "the burst node starts at the launcher mouth");
-        NativeTestData.Close(0f, typed.NodeWorldMatrices[1].Translation.Z - typed.NodeWorldMatrices[0].Translation.Z, "apex has no up-screen offset");
+        NativeTestData.Close(RimLumenDemoEffects.LaunchHeight, typed.NodeWorldMatrices[0].Translation.Y, "the rocket node starts at launcher mouth");
+        NativeTestData.Close(RimLumenDemoEffects.ApexHeight, typed.NodeWorldMatrices[3].Translation.Y, "the flash node sits at 10-cell apex");
+        NativeTestData.Close(0f, typed.NodeWorldMatrices[3].Translation.Z - typed.NodeWorldMatrices[0].Translation.Z, "apex has no up-screen offset");
         NativeTestData.Close(10f, typed.NodeWorldMatrices[0].Translation.X, "effect origin x");
         NativeTestData.Close(20f, typed.NodeWorldMatrices[0].Translation.Z, "effect origin z");
 
@@ -180,9 +183,8 @@ public static class DemoBuildingsSuite
         VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
         VfxAssert.Check(engine.Updates.TrueForAll(update => update.Emitting), "paused frames never stop the emitters");
 
-        for (int i = 0; i < 14; i++) VfxTestData.Step(service, 0.05f);
+        for (int i = 0; i < 22; i++) VfxTestData.Step(service, 0.05f);
         VfxAssert.Check(typed.PlaybackTime > RimLumenDemoEffects.LaunchSeconds, "playback passes the apex");
-        VfxAssert.Check(service.Simulator.LiveParticleCount > 0, "the L1 trail emitted particles");
     });
 
     // Ensures: the fountain plays entirely on L2 and survives a second of playback.
@@ -209,8 +211,8 @@ public static class DemoBuildingsSuite
         VfxAssert.Check(service.HasActiveWork, "the fountain keeps the pipeline active");
     }
 
-    // Ensures: Stop(allowFadeOut: false) tears the GPU instance down immediately, releases the L1 emitters
-    //          and drops the handle, so nothing keeps the pipeline or the simulator busy.
+    // Ensures: Stop(allowFadeOut: false) tears the GPU instance down immediately, releasing all 4 L2 emitters
+    //          and dropping the handle so nothing keeps the pipeline active.
     [LumenFact]
     public static void ImmediateStopReleasesEveryBinding() => WithFeatureBackends(() =>
     {
@@ -221,12 +223,12 @@ public static class DemoBuildingsSuite
 
         ILumenEffectHandle handle = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
         for (int i = 0; i < 10; i++) VfxTestData.Step(service, 0.05f);
-        VfxAssert.Check(service.Simulator.ActiveEmitterCount == 2, "both L1 emitters are alive before the stop");
+        VfxAssert.Equal(4, engine.Creates.Count);
 
         handle.Stop(allowFadeOut: false);
         handle.Dispose();
         VfxAssert.Check(!handle.IsAlive, "an immediate stop kills the handle");
-        VfxAssert.Equal(2, engine.Destroys.Count);
+        VfxAssert.Equal(4, engine.Destroys.Count);
         VfxAssert.Check(engine.Destroys[0].Immediate, "the L2 instance is destroyed immediately");
 
         VfxTestData.Step(service, 0.05f);
@@ -269,57 +271,72 @@ public static class DemoBuildingsSuite
         }
     }
 
-    // Ensures: the apex burst really is a single delayed pulse of EmissionScheduler, not a trickle: 0
-    //          particles for the whole climb, exactly 1800 in the frame that crosses 0.65 s, then 0 again.
+    // Ensures: the rocket node launches its single particle on frame 0 and the burst node has zero scheduled bursts.
     [LumenFact]
     public static void ApexBurstFiresOnceAtTheScheduledFrame()
     {
         EffectAsset asset = RimLumenDemoEffects.CreateFireworkAsset(RimLumenDemoEffects.FireworkGoldId, 0);
-        EmitterSpec burst = asset.Nodes[1].Emitter!;
-        var scheduler = new EmissionScheduler(burst, 1u);
-
-        double beforeApex = 0;
-        for (int i = 0; i < 12; i++) beforeApex += scheduler.Advance(0.05f, emitting: true);
-        VfxAssert.Equal(0, beforeApex);
-
-        double atApex = scheduler.Advance(0.05f, emitting: true);
-        VfxAssert.Equal(1800, atApex);
-
-        double afterApex = 0;
-        for (int i = 0; i < 10; i++) afterApex += scheduler.Advance(0.05f, emitting: true);
-        VfxAssert.Equal(0, afterApex);
-
-        var trail = new EmissionScheduler(asset.Nodes[0].Emitter!, 1u);
-        VfxAssert.Check(trail.Advance(0.1f, emitting: true) > 0, "the launch trail emits by rate from the first frame");
+        var rocketScheduler = new EmissionScheduler(asset.Nodes[0].Emitter!, 1u);
+        VfxAssert.Equal(1, rocketScheduler.Advance(0.05f, emitting: true));
+        VfxAssert.Equal(0, rocketScheduler.Advance(0.05f, emitting: true));
+        VfxAssert.Equal(0, asset.Nodes[1].Emitter!.Bursts.Length);
     }
 
-    // Ensures: played through PlayFirework, the rocket head climbs strictly along +Y over the launcher until the apex and
-    //          then holds there, with no drift along the ground.
+    // Ensures: simulated purely by particle physics without C# Follow, the rocket particle climbs strictly along +Y
+    //          to ~10 cells above ground with velocity decelerating to zero at 1.0 s, emits trail vertices, and dies
+    //          to trigger apex_burst and sparkle_core.
     [LumenFact]
-    public static void LaunchTrailActuallyTravelsAlongPositiveY() => WithFeatureBackends(() =>
+    public static void RocketParticleClimbsParabolicallyToApexAndTriggersDeathTrailAndBurst()
     {
-        var asset = RimLumenDemoEffects.CreateFireworkAsset(RimLumenDemoEffects.FireworkGoldId, 0);
-        var service = VfxTestData.Service(asset);
-        service.GpuEngineProvider = () => new SpyGpuEngine();
+        EffectAsset asset = RimLumenDemoEffects.CreateFireworkAsset(RimLumenDemoEffects.FireworkGoldId, 0);
+        var simulator = new CpuParticleSimulator();
         var launcher = new Vector3(3f, 0f, 5f);
-        using EffectInstanceHandle handle = PlayRocket(service, asset, launcher);
-        float previous = handle.NodeWorldMatrices[0].Translation.Y;
-        for (int i = 0; i < 13; i++)
-        {
-            VfxTestData.Step(service, 0.05f);
-            Vector3 head = handle.NodeWorldMatrices[0].Translation;
-            VfxAssert.Check(head.Y > previous, $"the rocket climbs at {handle.PlaybackTime:F2} s, actual Y={head.Y}");
-            VfxAssert.Close(launcher with { Y = 0f }, head with { Y = 0f });
-            previous = head.Y;
-        }
-        NativeTestData.Close(RimLumenDemoEffects.ApexHeight, previous, "the rocket reaches the apex at LaunchSeconds");
-        VfxTestData.Step(service, 0.05f);
-        NativeTestData.Close(RimLumenDemoEffects.ApexHeight, handle.NodeWorldMatrices[0].Translation.Y, "the rocket holds at the apex");
-    });
+        int rocketId = simulator.AcquireEmitter(asset.Nodes[0].Emitter!,
+            new LumenEmitterTransform(Matrix4x4.CreateTranslation(launcher + asset.Nodes[0].LocalPosition), Quaternion.Identity), 1u);
+        int burstId = simulator.AcquireEmitter(asset.Nodes[1].Emitter!,
+            new LumenEmitterTransform(Matrix4x4.CreateTranslation(launcher), Quaternion.Identity), 2u);
+        int sparkleId = simulator.AcquireEmitter(asset.Nodes[2].Emitter!,
+            new LumenEmitterTransform(Matrix4x4.CreateTranslation(launcher), Quaternion.Identity), 3u);
+        int crackleId = simulator.AcquireEmitter(asset.Nodes[4].Emitter!,
+            new LumenEmitterTransform(Matrix4x4.CreateTranslation(launcher), Quaternion.Identity), 4u);
+        simulator.SetEmitterDisplayState(rocketId, true, null);
+        simulator.SetEmitterDisplayState(burstId, true, null);
+        simulator.SetEmitterDisplayState(sparkleId, true, null);
+        simulator.SetEmitterDisplayState(crackleId, true, null);
+        simulator.BindNodeInstances(new[] { rocketId, burstId, sparkleId, -1, crackleId }, null, Array.Empty<int>());
 
-    // Plays the firework through the same PlayFirework call CompRimLumenDemoEmitter makes.
+        static LumenCaptureContext StepFrame(float dt) => new()
+        {
+            CurrentMapIndex = -1, RendersMap = true, FrameIndex = 1, DeltaTime = dt,
+            ViewportWidth = 640, ViewportHeight = 480,
+            ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
+        };
+
+        simulator.CaptureMainThread(StepFrame(1f / 60f));
+        VfxAssert.Equal(1, simulator.LiveParticleCount);
+        float previousY = simulator.LiveParticles[0].Position.Y;
+        NativeTestData.Close(RimLumenDemoEffects.LaunchHeight, previousY, "rocket spawns at LaunchHeight");
+        for (int step = 0; step < 59; step++)
+        {
+            simulator.CaptureMainThread(StepFrame(1f / 60f));
+            VfxAssert.Equal(1, simulator.LiveParticleCount);
+            CpuParticle p = simulator.LiveParticles[0];
+            VfxAssert.Check(p.Position.Y > previousY, $"rocket still rises before 1.0s (Y={p.Position.Y:F3})");
+            NativeTestData.Close(launcher.X, p.Position.X, "rocket stays over launcher X");
+            NativeTestData.Close(launcher.Z, p.Position.Z, "rocket stays over launcher Z");
+            previousY = p.Position.Y;
+        }
+        VfxAssert.Check(previousY > 9.5f && previousY <= RimLumenDemoEffects.ApexHeight + 0.05f,
+            $"rocket climbs near 10-cell apex before 1.0 s (got Y={previousY:F3})");
+        VfxAssert.Check(simulator.Vertices.Length > 4, "rising rocket leaves trail strip vertices");
+        simulator.CaptureMainThread(StepFrame(2f / 60f));
+        VfxAssert.Check(simulator.LiveParticleCount > 1000, "rocket death triggers apex_burst & sparkle_core");
+        VfxAssert.Check(simulator.Vertices.Length > simulator.LiveParticleCount * 4,
+            "detached rocket trail stays alive right after explosion when DieWithParticles=false");
+    }
+
     private static EffectInstanceHandle PlayRocket(LumenVfxService service, EffectAsset asset, Vector3 launcher) =>
-        (EffectInstanceHandle)RimLumenDemoEffects.PlayFirework(request => service.Play(request), asset.EffectId, 111, launcher);
+        (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId, OriginWorld = launcher });
 
     // The firework's ribbon and screen-dim nodes need their backends registered to play.
     private static void WithFeatureBackends(Action body)

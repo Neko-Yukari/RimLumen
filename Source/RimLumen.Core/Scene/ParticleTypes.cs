@@ -49,6 +49,8 @@ public struct CpuParticle
     // Vertical3D world-space particles: the node's ground position (X, Z) at birth, or the event point for a
     // sub-emitter birth.
     internal Vector2 SpawnAnchorXZ;
+    internal int TrailSlot;
+    internal int TrailLocalSlot;
 }
 
 /// <summary>Contiguous index range sharing texture, blend, soft fade and material colour calculation.</summary>

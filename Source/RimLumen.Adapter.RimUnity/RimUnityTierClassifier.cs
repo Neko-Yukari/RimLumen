@@ -25,8 +25,9 @@ public sealed class RimUnityTierClassifier
     {
         var reasons = new List<string>();
         AddDeferredCurveReasons(particleSystem, reasons);
-        foreach (string module in new[] { "trails", "subEmitters", "collision", "trigger" })
+        foreach (string module in new[] { "subEmitters", "collision", "trigger" })
             if (Enabled(Member(particleSystem.members, module))) reasons.Add(module);
+        AddTrailsReasons(particleSystem, renderer, reasons);
         int renderMode = Integer(Member(renderer?.members, "renderMode"));
         if (renderMode == 4) reasons.Add("renderMode.Mesh");
         else if (renderMode is not (0 or 1 or 2 or 3)) reasons.Add("renderMode." + renderMode);
@@ -222,4 +223,154 @@ public sealed class RimUnityTierClassifier
         var range = CurveRange(value, 0);
         return range.Min != range.Max;
     }
+
+    private static void AddTrailsReasons(ComponentData particleSystem, ComponentData? renderer, List<string> reasons)
+    {
+        ValueData? trails = Member(particleSystem.members, "trails");
+        if (!Enabled(trails)) return;
+        int mode = Integer(Field(trails, "mode"), 0);
+        if (mode == 1) reasons.Add("trails.mode.Ribbon");
+        else if (mode != 0) reasons.Add("trails.mode." + mode);
+
+        float ratio = RawNumber(Field(trails, "ratio"), 1f);
+        if (!float.IsFinite(ratio) || ratio < 0f || ratio > 1f) reasons.Add("trails.ratio.domain");
+
+        float minDist = RawNumber(Field(trails, "minVertexDistance"), 0.2f);
+        if (!float.IsFinite(minDist) || minDist < 0f) reasons.Add("trails.minVertexDistance.domain");
+
+        ValueData? lifetime = Field(trails, "lifetime");
+        if (lifetime is not null && lifetime.kind != "null")
+        {
+            if (lifetime.kind is "number" or "integer" or "specialNumber")
+            {
+                float val = RawNumber(lifetime, 1f);
+                if (!float.IsFinite(val) || val <= 0f) reasons.Add("trails.lifetime.domain");
+            }
+            else
+            {
+                int lMode = Integer(Field(lifetime, "mode"));
+                if (lMode == 2) reasons.Add("trails.lifetime.dualCurve");
+                else if (lMode == 3) reasons.Add("trails.lifetime.variable");
+                else if (lMode == 1) reasons.Add("trails.lifetime.curve");
+                else if (lMode != 0) reasons.Add("trails.lifetime.domain");
+                else
+                {
+                    float val = RawNumber(Field(lifetime, "constant"), 1f);
+                    if (!float.IsFinite(val) || val <= 0f) reasons.Add("trails.lifetime.domain");
+                }
+            }
+        }
+
+        if (Boolean(Field(trails, "generateLightingData"))) reasons.Add("trails.generateLightingData");
+
+        int texMode = Integer(Field(trails, "textureMode"), 0);
+        if (texMode is not (0 or 1)) reasons.Add("trails.textureMode." + texMode);
+
+        AddTrailWidthReasons(Field(trails, "widthOverTrail"), reasons);
+        AddTrailGradientReasons(Field(trails, "colorOverLifetime"), "trails.colorOverLifetime", reasons);
+        AddTrailGradientReasons(Field(trails, "colorOverTrail"), "trails.colorOverTrail", reasons);
+
+        ValueData? trailMaterial = Member(renderer?.members, "trailMaterial");
+        if (trailMaterial is null || trailMaterial.kind != "asset")
+            reasons.Add("trails.trailMaterial.null");
+    }
+
+    private static void AddTrailWidthReasons(ValueData? widthCurve, List<string> reasons)
+    {
+        if (widthCurve is null || widthCurve.kind == "null") return;
+        if (widthCurve.kind is "number" or "integer" or "specialNumber")
+        {
+            float w = RawNumber(widthCurve, 1f);
+            if (!float.IsFinite(w) || w <= 0f) reasons.Add("trails.widthOverTrail.domain");
+            return;
+        }
+        int mode = Integer(Field(widthCurve, "mode"));
+        if (mode == 2) { reasons.Add("trails.widthOverTrail.dualCurve"); return; }
+        if (mode == 3) { reasons.Add("trails.widthOverTrail.variable"); return; }
+        if (mode == 0)
+        {
+            float w = RawNumber(Field(widthCurve, "constant"), 1f);
+            if (!float.IsFinite(w) || w <= 0f) reasons.Add("trails.widthOverTrail.domain");
+            return;
+        }
+        if (mode != 1) { reasons.Add("trails.widthOverTrail.domain"); return; }
+        float mult = RawNumber(Field(widthCurve, "curveMultiplier"), 1f);
+        List<ValueData> keys = Field(Field(widthCurve, "curve"), "keys")?.items ?? new List<ValueData>();
+        if (keys.Count == 0 || !float.IsFinite(mult) || mult < 0f)
+        {
+            reasons.Add("trails.widthOverTrail.domain");
+            return;
+        }
+        if (keys.Any(k => Integer(Field(k, "weightedMode")) != 0))
+        {
+            reasons.Add("trails.widthOverTrail.weighted");
+            return;
+        }
+        foreach (ValueData key in keys)
+        {
+            float t = RawNumber(Field(key, "time"), 0f);
+            float v = RawNumber(Field(key, "value"), 0f);
+            float iTan = RawNumber(Field(key, "inTangent"), 0f);
+            float oTan = RawNumber(Field(key, "outTangent"), 0f);
+            if (!float.IsFinite(t) || t < 0f || t > 1f || !float.IsFinite(v) || v < 0f ||
+                !float.IsFinite(iTan) || !float.IsFinite(oTan))
+            {
+                reasons.Add("trails.widthOverTrail.domain");
+                return;
+            }
+        }
+    }
+
+    private static void AddTrailGradientReasons(ValueData? value, string prefix, List<string> reasons)
+    {
+        if (value is null || value.kind == "null") return;
+        if (value.kind == "vector")
+        {
+            if (!ValidStoredRgba(value.vector)) reasons.Add(prefix + ".domain");
+            return;
+        }
+        int mode = Integer(Field(value, "mode"));
+        if (mode is 2 or 3 or 4) { reasons.Add(prefix + ".random"); return; }
+        if (mode == 0)
+        {
+            ValueData? color = Field(value, "color");
+            if (color is not null && color.kind != "null" && !ValidStoredRgba(color.vector))
+                reasons.Add(prefix + ".domain");
+            return;
+        }
+        if (mode != 1) { reasons.Add(prefix + ".domain"); return; }
+        ValueData? gradient = Field(value, "gradient");
+        if (Integer(Field(gradient, "mode")) == 2)
+        {
+            reasons.Add(prefix + ".perceptualBlend");
+            return;
+        }
+        foreach (ValueData ck in Field(gradient, "colorKeys")?.items ?? new List<ValueData>())
+        {
+            float t = RawNumber(Field(ck, "time"), 0f);
+            ValueData? c = Field(ck, "color");
+            if (!float.IsFinite(t) || t < 0f || t > 1f || (c is not null && c.kind != "null" && !ValidStoredRgba(c.vector)))
+            {
+                reasons.Add(prefix + ".domain");
+                return;
+            }
+        }
+        foreach (ValueData ak in Field(gradient, "alphaKeys")?.items ?? new List<ValueData>())
+        {
+            float t = RawNumber(Field(ak, "time"), 0f);
+            float a = RawNumber(Field(ak, "alpha"), 1f);
+            if (!float.IsFinite(t) || t < 0f || t > 1f || !float.IsFinite(a) || a < 0f || a > 1f)
+            {
+                reasons.Add(prefix + ".domain");
+                return;
+            }
+        }
+    }
+
+    private static bool ValidStoredRgba(float[]? v) =>
+        v is { Length: 3 or 4 } &&
+        float.IsFinite(v[0]) && v[0] >= 0f &&
+        float.IsFinite(v[1]) && v[1] >= 0f &&
+        float.IsFinite(v[2]) && v[2] >= 0f &&
+        (v.Length < 4 || (float.IsFinite(v[3]) && v[3] >= 0f && v[3] <= 1f));
 }

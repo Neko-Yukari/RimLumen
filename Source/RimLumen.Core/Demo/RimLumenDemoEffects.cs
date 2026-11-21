@@ -13,8 +13,9 @@ namespace RimLumen.Core.Demo;
 // Coordinates follow docs/api.md section 2: world +X is east, +Y is altitude and +Z is north (up on
 // screen). Every emitter that should shoot upwards uses Vertical3D: the simulation is true 3D (the Cone
 // axis stays world +Y, GravityDrag runs along (0, -1, 0)) and only the drawn position adapts to the camera.
-// Every Y is height above the ground (Y = 0) in cells: play origins sit on the ground, except the firework's,
-// which rises with the rocket (PlayFirework). KillBelowFloor removes particles that fall back to the ground.
+// Every Y is height above the ground (Y = 0) in cells: all play origins sit on the ground, including the firework
+// rocket which rises purely via particle physics, leaves its per-particle trail, and explodes at the apex via
+// Death sub-emitters. KillBelowFloor removes particles that fall back to the ground.
 internal static class RimLumenDemoEffects
 {
     internal const string FireworkGoldId = "RimLumen.Demo.Firework.Gold";
@@ -30,22 +31,26 @@ internal static class RimLumenDemoEffects
     // Shared by the street lamp's visual pool and CompProperties_RimLumenLogicalLight in the lamp ThingDefs.
     internal const float StreetLampRadius = 5f;
 
+    // Seconds from launch to apex; the rocket's velocity decelerates parabolically to zero here and Death triggers the burst.
+    internal const float LaunchSeconds = 1.0f;
+
+    // Rocket height above the ground at launch (the launcher mouth) and at the apex.
+    internal const float LaunchHeight = 0.35f;
+    internal const float ApexHeight = 10.0f;
+
+    // Derived upward speed (v0 = 2 * deltaH / T) and gravity (g = v0 / T) for ApexHeight at t = LaunchSeconds with v(T) = 0.
+    internal const float RocketStartSpeed = 2f * (ApexHeight - LaunchHeight) / LaunchSeconds;
+    internal const float RocketGravity = RocketStartSpeed / LaunchSeconds;
+
+    // Seconds the launched firework stays visible (1.0 s climb + up to 2.1 s burst lifetime).
+    internal const float FireworkVisibleSeconds = 3.1f;
+
     internal static readonly string[] FireworkEffectIds =
     {
         FireworkGoldId,
         FireworkCyanId,
         FireworkMagentaId,
     };
-
-    // Seconds from launch to apex; the trail stops here, the burst fires here.
-    internal const float LaunchSeconds = 0.65f;
-
-    // Rocket height above the ground at launch (the launcher mouth) and at the apex.
-    internal const float LaunchHeight = 0.35f;
-    internal const float ApexHeight = 4.8f;
-
-    // Seconds the launched firework stays visible (burst particles live at most 2.1 s past the apex).
-    internal const float FireworkVisibleSeconds = 2.75f;
 
     // Burst hue and the ember colour it cools to, per variant (vanilla scene's stored RGB encoding).
     private static readonly Vector4[] FireworkHues =
@@ -89,45 +94,12 @@ internal static class RimLumenDemoEffects
         }
     }
 
-    // Ensures: LaunchHeight at 0 s and ApexHeight from LaunchSeconds on, slowing to zero vertical speed at the apex:
-    //          h = LaunchHeight + (ApexHeight - LaunchHeight) * (1 - (1 - u)^2), u = min(1, seconds / LaunchSeconds).
-    internal static float RocketHeight(float seconds)
-    {
-        float u = MathF.Min(1f, seconds / LaunchSeconds);
-        return LaunchHeight + (ApexHeight - LaunchHeight) * (1f - (1f - u) * (1f - u));
-    }
-
-    // Requires: play is RimLumenApi.Play or Core's LumenVfxService.Play, so an alive handle is an EffectInstanceHandle.
-    // Ensures: plays the firework with a Follow that keeps the origin over launcherGround and lifts it to
-    //          RocketHeight(the handle's own PlaybackTime; 0 while Play builds it). The rocket and the burst schedule
-    //          share that clock, so every node rides the rocket and the bursts fire exactly at the apex.
-    internal static ILumenEffectHandle PlayFirework(Func<LumenPlayRequest, ILumenEffectHandle> play, string effectId,
-        int mapIndex, Vector3 launcherGround)
-    {
-        EffectInstanceHandle? clock = null;
-        ILumenEffectHandle handle = play(new LumenPlayRequest
-        {
-            EffectId = effectId,
-            MapIndex = mapIndex,
-            OriginWorld = launcherGround,
-            Follow = (out Vector3 position, out float rotationDegrees) =>
-            {
-                position = launcherGround + new Vector3(0f, RocketHeight(clock?.PlaybackTime ?? 0f), 0f);
-                rotationDegrees = 0f;
-                return true;
-            },
-            RealTime = false,
-        });
-        if (handle.IsAlive) clock = (EffectInstanceHandle)handle;
-        return handle;
-    }
-
-    // Requires: effectId is non-empty; variantIndex selects hue/ember (wrapped into range); played with PlayFirework.
-    // Ensures: returns a 5-node firework whose nodes all sit at the rising play origin: the rocket's native trail
-    //          ribbon and L1 shed sparks (0..0.65 s), L2 apex burst fired at 0.65 s whose sparks bounce off walls and
-    //          expire under roofs, L1 white-hot sparkle core at the same instant, a point light and a screen dim that
-    //          stay dark until the apex, peak there and are gone by 2.2 s and 1.6 s, and the L2 crackle the sparks
-    //          spawn when they hit a wall or die (in the air, on the floor or under a roof).
+    // Requires: effectId is non-empty; variantIndex selects hue/ember (wrapped into range).
+    // Ensures: returns a pure-asset 5-node L2 firework driven solely by particle physics, per-particle trails and
+    //          Death sub-emitters (no C# Follow height animation): the rocket particle rises parabolically from
+    //          LaunchHeight to ApexHeight over LaunchSeconds, trails its ember wake until velocity reaches zero,
+    //          then dies to spawn the apex burst and sparkle core at the exact apex position while the flash light
+    //          and screen dim peak at LaunchSeconds above the launcher.
     internal static EffectAsset CreateFireworkAsset(string effectId, int variantIndex)
     {
         int variant = variantIndex % FireworkHues.Length;
@@ -137,79 +109,75 @@ internal static class RimLumenDemoEffects
         return new EffectAsset
         {
             EffectId = effectId,
-            DefaultDuration = 2.8f,
+            DefaultDuration = 3.2f,
             Nodes = new[]
             {
-                // 0: the rocket: a native trail ribbon behind the rising origin, plus sparks it sheds until the shell
-                //    bursts. At the apex the head stops, so the ribbon shrinks into it within its Lifetime.
+                // 0: single rising rocket particle with per-particle trail and Death sub-emitters to burst & core.
                 new EffectNodeSpec
                 {
-                    Name = "launch_trail",
+                    Name = "rocket",
                     SpacePlane = LumenSpacePlane.Vertical3D,
-                    Ribbon = new RibbonSpec
-                    {
-                        Mode = LumenRibbonMode.Trail,
-                        Lifetime = 0.4f,
-                        MinVertexDistance = 0.06f,
-                        MaxPoints = 64,
-                        Width = 0.14f,
-                        WidthOverLength = new ScalarCurve(new[]
-                        {
-                            new CurveKey(0f, 1f),
-                            new CurveKey(1f, 0f),
-                        }),
-                        ColorOverLength = new ColorGradient(new[]
-                        {
-                            new ColorStop(0f, new Vector4(1.0f, 0.96f, 0.82f, 1.0f)),
-                            new ColorStop(0.35f, new Vector4(1.0f, 0.70f, 0.28f, 0.85f)),
-                            new ColorStop(1f, new Vector4(0.70f, 0.16f, 0.03f, 0.0f)),
-                        }),
-                        HdrIntensity = 5f,
-                    },
+                    LocalPosition = new Vector3(0f, LaunchHeight, 0f),
                     Emitter = new EmitterSpec
                     {
-                        Name = "launch_trail",
-                        PreferredTier = LumenParticleTier.L1_NativeCpu,
-                        KillBelowFloor = true,
-                        MaxParticles = 400,
+                        Name = "rocket",
+                        PreferredTier = LumenParticleTier.L2_GpuCompute,
+                        MaxParticles = 4,
                         Duration = LaunchSeconds,
                         Looping = false,
                         WorldSpaceSimulation = true,
-                        RateOverTime = 240f,
-                        Shape = LumenShapeKind.Sphere,
-                        ShapeExtents = new Vector3(0.04f, 0.04f, 0.04f),
-                        StartSpeedMin = 0.3f,
-                        StartSpeedMax = 1.5f,
-                        StartLifetimeMin = 0.25f,
-                        StartLifetimeMax = 0.5f,
-                        StartSizeMin = 0.06f,
-                        StartSizeMax = 0.14f,
-                        StartColor = new Vector4(1.0f, 0.90f, 0.65f, 1f),
-                        HdrIntensity = 4.0f,
+                        RateOverTime = 0f,
+                        Bursts = new[] { new ParticleBurstSpec(0f, 1) },
+                        Shape = LumenShapeKind.Point,
+                        StartSpeedMin = RocketStartSpeed,
+                        StartSpeedMax = RocketStartSpeed,
+                        StartLifetimeMin = LaunchSeconds,
+                        StartLifetimeMax = LaunchSeconds,
+                        StartSizeMin = 0.16f,
+                        StartSizeMax = 0.16f,
+                        StartColor = new Vector4(1.0f, 0.96f, 0.82f, 1f),
+                        HdrIntensity = 5.0f,
                         SoftParticleFadeDistance = 0.4f,
-                        BillboardMode = LumenBillboardMode.StretchedVelocity,
-                        VelocityStretchFactor = 0.12f,
-                        LengthScale = 0.6f,
-                        SizeOverLifetime = new ScalarCurve(new[]
-                        {
-                            new CurveKey(0f, 1.0f),
-                            new CurveKey(1f, 0.25f),
-                        }),
-                        ColorOverLifetime = new ColorGradient(new[]
-                        {
-                            new ColorStop(0f, new Vector4(1.0f, 0.96f, 0.82f, 1.0f)),
-                            new ColorStop(0.35f, new Vector4(1.0f, 0.70f, 0.28f, 0.85f)),
-                            new ColorStop(1f, new Vector4(0.70f, 0.16f, 0.03f, 0.0f)),
-                        }),
                         ForceFields = new[]
                         {
                             new ForceFieldSpec(ForceFieldKind.GravityDrag,
-                                new Vector3(0f, -1f, 0f), new Vector3(0.55f, 0f, 0f), 0f, 3.5f),
+                                new Vector3(0f, -1f, 0f), Vector3.Zero, 0f, RocketGravity),
+                        },
+                        Trails = new ParticleTrailSpec
+                        {
+                            Ratio = 1f,
+                            Lifetime = 0.65f,
+                            MinVertexDistance = 0.06f,
+                            MaxPoints = 64,
+                            DieWithParticles = false,
+                            WorldSpace = true,
+                            SizeAffectsWidth = true,
+                            SizeAffectsLifetime = false,
+                            InheritParticleColor = true,
+                            Width = 0.9f,
+                            WidthOverTrail = new ScalarCurve(new[]
+                            {
+                                new CurveKey(0f, 1f),
+                                new CurveKey(1f, 0f),
+                            }),
+                            ColorOverTrail = new ColorGradient(new[]
+                            {
+                                new ColorStop(0f, new Vector4(1.0f, 0.96f, 0.82f, 1.0f)),
+                                new ColorStop(0.35f, new Vector4(1.0f, 0.70f, 0.28f, 0.85f)),
+                                new ColorStop(1f, new Vector4(0.70f, 0.16f, 0.03f, 0.0f)),
+                            }),
+                            HdrIntensity = 5f,
+                            SoftParticleFadeDistance = 0.4f,
+                        },
+                        SubEmitters = new[]
+                        {
+                            new SubEmitterSpec(LumenSubEmitterTrigger.Death, 1, 1800),
+                            new SubEmitterSpec(LumenSubEmitterTrigger.Death, 2, 360),
                         },
                     },
                 },
 
-                // 1: the shell burst, one L2 burst at the apex so 1800 sparks leave together.
+                // 1: the shell burst, spawned at the rocket's Death position at the apex so 1800 sparks leave together.
                 new EffectNodeSpec
                 {
                     Name = "apex_burst",
@@ -224,7 +192,6 @@ internal static class RimLumenDemoEffects
                         Looping = false,
                         WorldSpaceSimulation = true,
                         RateOverTime = 0f,
-                        Bursts = new[] { new ParticleBurstSpec(LaunchSeconds, 1800) },
                         Shape = LumenShapeKind.Sphere,
                         ShapeExtents = new Vector3(0.18f, 0.18f, 0.18f),
                         StartSpeedMin = 6.0f,
@@ -274,7 +241,7 @@ internal static class RimLumenDemoEffects
                     },
                 },
 
-                // 2: a short white-hot core so the burst ignites instead of popping into view.
+                // 2: a short white-hot core spawned at the rocket's Death position so the burst ignites.
                 new EffectNodeSpec
                 {
                     Name = "sparkle_core",
@@ -282,13 +249,12 @@ internal static class RimLumenDemoEffects
                     Emitter = new EmitterSpec
                     {
                         Name = "sparkle_core",
-                        PreferredTier = LumenParticleTier.L1_NativeCpu,
+                        PreferredTier = LumenParticleTier.L2_GpuCompute,
                         MaxParticles = 700,
                         Duration = LaunchSeconds + 0.35f,
                         Looping = false,
                         WorldSpaceSimulation = true,
                         RateOverTime = 0f,
-                        Bursts = new[] { new ParticleBurstSpec(LaunchSeconds + 0.01f, 360) },
                         Shape = LumenShapeKind.Sphere,
                         ShapeExtents = new Vector3(0.30f, 0.30f, 0.30f),
                         StartSpeedMin = 0.6f,
@@ -315,21 +281,21 @@ internal static class RimLumenDemoEffects
                     },
                 },
 
-                // 3: the apex flash and a short background dim that makes the burst pop. Both dark until the shell
-                //    bursts (their curves start at 0).
+                // 3: the apex flash and a short background dim at the 10-cell apex, dark until LaunchSeconds.
                 new EffectNodeSpec
                 {
                     Name = "apex_flash",
+                    LocalPosition = new Vector3(0f, ApexHeight, 0f),
                     ScreenDim = new ScreenDimSpec
                     {
                         Strength = 0.35f,
-                        Duration = 1.6f,
+                        Duration = 1.95f,
                         StrengthOverTime = new ScalarCurve(new[]
                         {
                             new CurveKey(0f, 0f),
                             new CurveKey(LaunchSeconds, 0f),
                             new CurveKey(LaunchSeconds + 0.08f, 1f),
-                            new CurveKey(1.6f, 0f),
+                            new CurveKey(1.95f, 0f),
                         }),
                     },
                     PointLight = new PointLightSpec(
@@ -340,8 +306,8 @@ internal static class RimLumenDemoEffects
                             new CurveKey(0f, 0f),
                             new CurveKey(LaunchSeconds - 0.03f, 0f),
                             new CurveKey(LaunchSeconds + 0.05f, 3.2f),
-                            new CurveKey(1.15f, 1.1f),
-                            new CurveKey(2.2f, 0f),
+                            new CurveKey(1.50f, 1.1f),
+                            new CurveKey(2.55f, 0f),
                         })),
                 },
 

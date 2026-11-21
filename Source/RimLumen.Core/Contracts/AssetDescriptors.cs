@@ -238,6 +238,8 @@ public sealed class EmitterSpec
     public float EnvironmentForceScale { get; init; } = 1f;
     public CollisionSpec Collision { get; init; } = new();
     public SubEmitterSpec[] SubEmitters { get; init; } = Array.Empty<SubEmitterSpec>();
+    // Optional per-particle ribbon trail configuration; null disables trail state, simulation and rendering.
+    public ParticleTrailSpec? Trails { get; init; }
 
     // Texture asset key; null uses alpha = max(0, 1 - dot(radial, radial))², independent of flipbook UV.
     public string? TextureKey { get; init; }

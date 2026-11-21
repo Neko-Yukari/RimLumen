@@ -165,8 +165,13 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
         RimLumenDemoEffects.EnsureRegistered();
         string effectId = RimLumenDemoEffects.FireworkEffectIds[
             variantCursor++ % RimLumenDemoEffects.FireworkEffectIds.Length];
-        ILumenEffectHandle handle = RimLumenDemoEffects.PlayFirework(request => RimLumenApi.Play(request), effectId,
-            parent.Map.uniqueID, EffectOrigin);
+        ILumenEffectHandle handle = RimLumenApi.Play(new LumenPlayRequest
+        {
+            EffectId = effectId,
+            MapIndex = parent.Map.uniqueID,
+            OriginWorld = EffectOrigin,
+            RealTime = false,
+        });
         if (!handle.IsAlive) return;
 
         launches.Add(new ActiveLaunch(handle));
@@ -209,7 +214,7 @@ public sealed class CompRimLumenDemoEmitter : ThingComp
         fountainActive = true;
     }
 
-    // Ensures: retires fireworks that have shown their whole 2.75 s arc; Stop(true) lets the last embers
+    // Ensures: retires fireworks that have shown their whole 3.1 s arc; Stop(true) lets the last embers
     //          and the light fade finish on the service instead of cutting them off.
     private void AdvanceLaunches()
     {

@@ -35,11 +35,29 @@ internal static class FileTests
                 new AssetRecord { id = "localblob", name = "Local", path = "Effects/Local", file = "blobs/" + Hex + ".json.gz", type = "Prefab" },
                 new AssetRecord { id = "plain", name = "Plain", path = "Effects/Plain", file = "prefab.json.gz", type = "Prefab" },
                 new AssetRecord { id = "material", name = "Material", path = "Materials/Test", file = "material.json.gz", type = "Material" },
+                new AssetRecord { id = "trail-mat", name = "TrailMaterial", path = "Materials/Trail", file = "trail-mat.json.gz", type = "Material" },
+                new AssetRecord { id = "trail-tex", name = "TrailTex", path = "Textures/Trail", file = "trail-tex.rutex", type = "Texture2D" },
+                new AssetRecord { id = "trailed", name = "Trailed", path = "Effects/Trailed", file = "trailed.json.gz", type = "Prefab" },
             ]
         };
         File.WriteAllText(Path.Combine(temp.Root, "catalog.json"), JsonSerializer.Serialize(manifest, Json));
         WriteGzipJson(Path.Combine(temp.Root, "prefab.json.gz"), Prefab(Particles()));
         WriteGzipJson(Path.Combine(temp.Root, "material.json.gz"), new ResourceData { type = "Material", name = "Gzip resource", colorSpace = "Linear" });
+        WriteGzipJson(Path.Combine(temp.Root, "trail-mat.json.gz"), new ResourceData
+        {
+            type = "Material",
+            members = [Member("_MainTex", new ValueData { kind = "asset", text = "trail-tex" })],
+        });
+        ComponentData trailedParticles = Particles();
+        trailedParticles.members.Add(Member("trails", Data(("enabled", Number(1)))));
+        PrefabData trailedPrefab = Prefab(trailedParticles);
+        trailedPrefab.nodes[0].components.Add(new ComponentData
+        {
+            id = "renderer",
+            type = "RimUnity.ParticleSystemRenderer",
+            members = [Member("trailMaterial", new ValueData { kind = "asset", text = "trail-mat" })],
+        });
+        WriteGzipJson(Path.Combine(temp.Root, "trailed.json.gz"), trailedPrefab);
 
         var provider = new RimUnityAssetProvider();
         provider.RegisterPackageRoot("Test.Package", temp.Root);
@@ -50,6 +68,9 @@ internal static class FileTests
         Check.True(provider.TryResolveEffect("EFFECTS/LOCAL", out var localAsset) && localAsset is not null, "case and local gzip blob");
         Check.Equal(64, localAsset!.Nodes[0].Emitter!.MaxParticles, "local blob content");
         Check.True(provider.TryResolveEffect("effects\\plain", out _), "backslash alias and gzip prefab");
+        Check.True(provider.TryResolveEffect("Effects/Trailed", out var trailedAsset) && trailedAsset is not null, "trailed prefab resolution");
+        Check.Equal("trail-tex", trailedAsset!.Nodes[0].Emitter!.Trails!.TextureKey, "trail texture key");
+        Check.True(provider.Textures.ResolvedTextureKeys.Contains("trail-tex"), "provider registers emitter trail TextureKey");
         var catalog = new RimUnityPackageCatalog("Test.Package", temp.Root, _ => owner);
         ResourceData material = catalog.ReadResource("material");
         Check.Equal("Gzip resource", material.name, "gzip resource name");

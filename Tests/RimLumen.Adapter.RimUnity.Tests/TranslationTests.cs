@@ -30,8 +30,9 @@ internal static class TranslationTests
         var peak = classifier.Classify(peakParticles, null);
         Check.Equal(LumenParticleTier.L2_GpuCompute, peak.Tier, "peak concurrent threshold");
         Check.Reasons(["peakConcurrent >= L2ParticleThreshold"], peak.Reasons, "peak reasons");
-        foreach (string module in new[] { "trails", "subEmitters", "collision", "trigger" })
+        foreach (string module in new[] { "subEmitters", "collision", "trigger" })
             AssertFallback(module, Data(("enabled", Number(1))), module);
+        AssertFallback("trails", Data(("enabled", Number(1))), "trails.trailMaterial.null");
         var mesh = new ComponentData { id = "renderer", type = "RimUnity.ParticleSystemRenderer", members = [Member("renderMode", Number(4))] };
         var meshResult = classifier.Classify(small, mesh);
         Check.Equal(LumenParticleTier.External, meshResult.Tier, "mesh tier");
@@ -59,7 +60,7 @@ internal static class TranslationTests
         Check.Reasons(["emission.bursts.count.variable"], classifier.Classify(probabilistic, null).Reasons, "random burst count external");
         var combined = Particles();
         foreach (string module in new[] { "trails", "subEmitters", "collision", "trigger" }) combined.members.Add(Member(module, Data(("enabled", Number(1)))));
-        Check.Reasons(["trails", "subEmitters", "collision", "trigger", "renderMode.Mesh"], classifier.Classify(combined, mesh).Reasons, "all blockers retained");
+        Check.Reasons(["trails.trailMaterial.null", "subEmitters", "collision", "trigger", "renderMode.Mesh"], classifier.Classify(combined, mesh).Reasons, "all blockers retained");
         Console.WriteLine("MATRIX small32=L1 highCurlVortex=L2 peak200=L2; structural=5; conservative=6; all-blockers=5 reasons");
     }
 
@@ -677,5 +678,169 @@ internal static class TranslationTests
         Check.Near(.5f, middle.Y, "green half"); Check.Near(.25f, middle.Z, "blue half"); Check.Near(.6f, middle.W, "independent alpha keys");
         Check.Near(.5f, GradientEvaluator.Evaluate(colors, .25f).X, "HDR gradient quarter");
         Check.Near(2f, GradientEvaluator.Evaluate(colors, 1).X, "HDR end unclamped");
+    }
+
+    internal static void TrailsNativeTranslation()
+    {
+        // Case 1: full supported PerParticle trail + trailMaterial with explicit curve/gradient/Linear material.
+        var particles = Particles(max: 16, rate: 4, lifetime: 2f);
+        particles.members.Add(Member("trails", Data(
+            ("enabled", Number(1)),
+            ("mode", Number(0)),
+            ("ratio", Number(0.5f)),
+            ("lifetime", Constant(0.75f)),
+            ("minVertexDistance", Number(0f)), // 0 clamps to 1e-5f matching TrailRenderer
+            ("dieWithParticles", Number(0)),
+            ("sizeAffectsWidth", Number(0)),
+            ("sizeAffectsLifetime", Number(1)),
+            ("inheritParticleColor", Number(0)),
+            ("generateLightingData", Number(0)),
+            ("widthOverTrail", Data(("mode", Number(1)), ("curveMultiplier", Number(0.4f)),
+                ("curve", Data(("keys", Array(Key(0, 1, 0), Key(1, 0, 0))))))),
+            ("colorOverTrail", Vector(1, 0.8f, 0.4f, 0.9f)),
+            ("colorOverLifetime", Vector(0.5f, 1, 0.5f, 0.6f)),
+            ("textureMode", Number(1)))));
+        var prefab = Prefab(particles);
+        prefab.nodes[0].components.Add(new ComponentData
+        {
+            id = "renderer",
+            type = "RimUnity.ParticleSystemRenderer",
+            members = [Member("trailMaterial", new ValueData { kind = "asset", text = "trail-mat" })]
+        });
+        var material = new ResourceData
+        {
+            type = "Material",
+            colorSpace = "Linear",
+            members =
+            [
+                Member("shader", new ValueData { kind = "asset", text = "trail-shader" }),
+                Member("_Color", Vector(2f, 0.9f, 0.7f, 0.8f)),
+                Member("_MainTex", new ValueData { kind = "asset", text = "trail-tex" }),
+                Member("_SoftParticlesNearFadeDistance", Number(0.25f))
+            ]
+        };
+        var shader = new ShaderData { blend = true, dstColor = "One" };
+        var asset = new RimUnityPrefabTranslator().Translate("trails.native", prefab,
+            id => id == "trail-mat" ? material : null, _ => shader, out var report);
+        Check.Equal(LumenParticleTier.L1_NativeCpu, report.Nodes.Single().Tier, "supported PerParticle trails translate natively");
+        Check.Reasons([], report.Nodes.Single().Reasons, "native trails produce no fallback reasons");
+        ParticleTrailSpec trails = asset.Nodes[0].Emitter!.Trails!;
+        Check.Near(0.5f, trails.Ratio, "ratio");
+        Check.Near(0.75f, trails.Lifetime, "lifetime");
+        Check.Near(1e-5f, trails.MinVertexDistance, "minVertexDistance zero clamps to 1e-5");
+        Check.Equal(false, trails.DieWithParticles, "dieWithParticles");
+        // Decompiled RimUnity.dll TrailersModule.worldSpace defaults false when omitted:
+        Check.Equal(false, trails.WorldSpace, "omitted RimUnity worldSpace defaults false");
+        Check.Equal(false, trails.SizeAffectsWidth, "sizeAffectsWidth");
+        Check.Equal(true, trails.SizeAffectsLifetime, "sizeAffectsLifetime");
+        Check.Equal(false, trails.InheritParticleColor, "inheritParticleColor");
+        Check.Near(1f, trails.Width, "curve widthOverTrail uses Width=1");
+        Check.Near(0.4f, CurveEvaluator.Evaluate(trails.WidthOverTrail, 0f), "widthOverTrail start");
+        Check.Equal(LumenRibbonTextureMode.Tile, trails.TextureMode, "textureMode");
+        Check.Equal(LumenBlendMode.Additive, trails.BlendMode, "blendMode from trailMaterial shader");
+        Check.Equal(LumenColorSpace.Linear, trails.ColorSpace, "Linear trail material retained");
+        Check.Equal(new Vector4(2f, 0.9f, 0.7f, 0.8f), trails.MaterialTint, "materialTint from trailMaterial");
+        Check.Equal("trail-tex", trails.TextureKey, "trail TextureKey");
+        Check.Near(0.25f, trails.SoftParticleFadeDistance, "softFade");
+        // MaxPoints = clamp(ceil(2 * 0.75 * 1 * 60) + 2, 16, 256) = 92
+        Check.Equal(92, trails.MaxPoints, "derived MaxPoints");
+        RimLumen.Core.Api.RimLumenApi.RegisterEffect(asset);
+
+        // Case 2: high particle count routes PerParticle trails to L2_GpuCompute natively.
+        var big = Particles(max: 256, rate: 40, lifetime: 1f);
+        big.members.Add(Member("trails", Data(("enabled", Number(1)), ("worldSpace", Number(1)))));
+        var bigPrefab = Prefab(big);
+        bigPrefab.nodes[0].components.Add(new ComponentData
+        {
+            id = "renderer", type = "RimUnity.ParticleSystemRenderer",
+            members = [Member("trailMaterial", new ValueData { kind = "asset", text = "trail-mat" })]
+        });
+        var bigAsset = new RimUnityPrefabTranslator().Translate("trails.l2", bigPrefab,
+            id => id == "trail-mat" ? material : null, _ => shader, out var bigReport);
+        Check.Equal(LumenParticleTier.L2_GpuCompute, bigReport.Nodes.Single().Tier, "high-count PerParticle trails route to L2");
+        Check.True(bigAsset.Nodes[0].Emitter!.Trails!.WorldSpace, "explicit worldSpace=1 maps true");
+
+        // Case 3: null-kind trail gradients default to white (1,1,1,1), and huge finite durations saturate MaxPoints to 256 without int overflow.
+        var hugeNull = Particles(max: 32, rate: 8, lifetime: 1e10f);
+        hugeNull.members.Add(Member("trails", Data(
+            ("enabled", Number(1)),
+            ("lifetime", Constant(1e10f)),
+            ("colorOverTrail", new ValueData { kind = "null" }),
+            ("colorOverLifetime", new ValueData { kind = "null" }))));
+        var hugePrefab = Prefab(hugeNull);
+        hugePrefab.nodes[0].components.Add(new ComponentData
+        {
+            id = "renderer", type = "RimUnity.ParticleSystemRenderer",
+            members = [Member("trailMaterial", new ValueData { kind = "asset", text = "trail-mat" })]
+        });
+        var hugeAsset = new RimUnityPrefabTranslator().Translate("trails.hugeNull", hugePrefab,
+            id => id == "trail-mat" ? material : null, _ => shader, out _);
+        ParticleTrailSpec hugeTrails = hugeAsset.Nodes[0].Emitter!.Trails!;
+        Check.Equal(Vector4.One, hugeTrails.ColorOverTrail.Stops.Single().Rgba, "null-kind colorOverTrail defaults to opaque white");
+        Check.Equal(Vector4.One, hugeTrails.ColorOverLifetime.Stops.Single().Rgba, "null-kind colorOverLifetime defaults to opaque white");
+        Check.Equal(256, hugeTrails.MaxPoints, "huge finite lifetime saturates MaxPoints at 256 without int overflow");
+    }
+
+    internal static void TrailsExternalFallbackReasons()
+    {
+        var trailMaterial = new ComponentData
+        {
+            id = "renderer", type = "RimUnity.ParticleSystemRenderer",
+            members = [Member("trailMaterial", new ValueData { kind = "asset", text = "mat" })]
+        };
+        var okMat = new ResourceData { type = "Material", members = [Member("_Color", Vector(1, 1, 1, 1))] };
+
+        void RejectTrail(ValueData trails, string expectedReason, ComponentData? rendererOverride = null)
+        {
+            var particles = Particles();
+            particles.members.Add(Member("trails", trails));
+            var prefab = Prefab(particles);
+            if (rendererOverride is not null) prefab.nodes[0].components.Add(rendererOverride);
+            var asset = new RimUnityPrefabTranslator().Translate("trails.reject", prefab, _ => okMat, _ => null, out var report);
+            Check.Equal(LumenParticleTier.External, report.Nodes.Single().Tier, "unsupported trail must route External: " + expectedReason);
+            Check.True(report.Nodes.Single().Reasons.Contains(expectedReason),
+                $"Expected reason '{expectedReason}', got [{string.Join(", ", report.Nodes.Single().Reasons)}]");
+            Check.True(asset.Nodes[0].Emitter is null, "External node must not emit native emitter");
+        }
+
+        RejectTrail(Data(("enabled", Number(1))), "trails.trailMaterial.null");
+        RejectTrail(Data(("enabled", Number(1)), ("mode", Number(1))), "trails.mode.Ribbon", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("ratio", Number(1.2f))), "trails.ratio.domain", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("minVertexDistance", Number(-0.1f))), "trails.minVertexDistance.domain", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("lifetime", Data(("mode", Number(2))))), "trails.lifetime.dualCurve", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("lifetime", Data(("mode", Number(3))))), "trails.lifetime.variable", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("lifetime", Curve(1, 2))), "trails.lifetime.curve", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("lifetime", Constant(0))), "trails.lifetime.domain", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("widthOverTrail", Data(("mode", Number(2))))), "trails.widthOverTrail.dualCurve", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("widthOverTrail", Data(("mode", Number(3))))), "trails.widthOverTrail.variable", trailMaterial);
+        var weightedKey = Data(("time", Number(0)), ("value", Number(1)), ("weightedMode", Number(1)));
+        var weightedCurve = Data(("mode", Number(1)), ("curveMultiplier", Number(1)), ("curve", Data(("keys", Array(weightedKey)))));
+        RejectTrail(Data(("enabled", Number(1)), ("widthOverTrail", weightedCurve)),
+            "trails.widthOverTrail.weighted", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("colorOverLifetime", Data(("mode", Number(3))))), "trails.colorOverLifetime.random", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("colorOverTrail", Data(("mode", Number(1)), ("gradient", Data(("mode", Number(2))))))),
+            "trails.colorOverTrail.perceptualBlend", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("textureMode", Number(2))), "trails.textureMode.2", trailMaterial);
+        RejectTrail(Data(("enabled", Number(1)), ("generateLightingData", Number(1))), "trails.generateLightingData", trailMaterial);
+
+        // Disabled trails with unsupported fields and no trailMaterial still stay native!
+        var disabledParticles = Particles();
+        disabledParticles.members.Add(Member("trails", Data(("enabled", Number(0)), ("mode", Number(1)), ("ratio", Number(9)))));
+        new RimUnityPrefabTranslator().Translate("trails.disabled", Prefab(disabledParticles), _ => okMat, _ => null, out var disabledReport);
+        Check.Equal(LumenParticleTier.L1_NativeCpu, disabledReport.Nodes.Single().Tier, "disabled trails module does not reject native");
+
+        // Invalid trailMaterial._Color domain falls back External with material[id]._Color.domain even over L2 threshold.
+        var bigP = Particles(max: 256);
+        bigP.members.Add(Member("trails", Data(("enabled", Number(1)))));
+        var badPrefab = Prefab(bigP);
+        badPrefab.nodes[0].components.Add(new ComponentData
+        {
+            id = "renderer", type = "RimUnity.ParticleSystemRenderer",
+            members = [Member("trailMaterial", new ValueData { kind = "asset", text = "bad-trail-mat" })]
+        });
+        var badMat = new ResourceData { type = "Material", members = [Member("_Color", Vector(1, 1, 1, 2))] };
+        new RimUnityPrefabTranslator().Translate("trails.badmat", badPrefab, _ => badMat, _ => null, out var badReport);
+        Check.Equal(LumenParticleTier.External, badReport.Nodes.Single().Tier, "bad trailMaterial tint forces External");
+        Check.Reasons(["material[bad-trail-mat]._Color.domain"], badReport.Nodes.Single().Reasons, "bad trailMaterial removes L2 threshold reason");
     }
 }

@@ -36,6 +36,7 @@ public static class VfxContractParitySuite
             Nodes = new[]
             {
                 new EffectNodeSpec { Name = "plain", Emitter = new EmitterSpec { Name = "plain" } },
+                new EffectNodeSpec { Name = "plainTrail", Emitter = new EmitterSpec { Name = "plainTrail", Trails = new ParticleTrailSpec() } },
                 new EffectNodeSpec { Name = "trail", Ribbon = new RibbonSpec { Mode = LumenRibbonMode.Trail, Lifetime = 1f, MinVertexDistance = 0.1f, MaxPoints = 8 } },
                 new EffectNodeSpec { Name = "haze", Distortion = new DistortionSpec { Kind = LumenDistortionKind.HeatHaze, Radius = 2f, Strength = 0.1f, Frequency = 1f } },
                 new EffectNodeSpec { Name = "dim", ScreenDim = new ScreenDimSpec { Strength = 0.4f } },
@@ -44,12 +45,14 @@ public static class VfxContractParitySuite
         EffectAsset json = LumenJsonAssetLoader.Parse("""
             { "effectId": "vfx.defaults", "nodes": [
               { "name": "plain", "emitter": {} },
+              { "name": "plainTrail", "emitter": { "trails": {} } },
               { "name": "trail", "ribbon": { "mode": "Trail", "lifetime": 1, "minVertexDistance": 0.1, "maxPoints": 8 } },
               { "name": "haze", "distortion": { "kind": "HeatHaze", "radius": 2, "strength": 0.1, "frequency": 1 } },
               { "name": "dim", "screenDim": { "strength": 0.4 } } ] }
             """);
         EffectAsset xml = Xml("vfx.defaults",
             "<li><name>plain</name><emitter /></li>",
+            "<li><name>plainTrail</name><emitter><trails /></emitter></li>",
             "<li><name>trail</name><ribbon><mode>Trail</mode><lifetime>1</lifetime><minVertexDistance>0.1</minVertexDistance><maxPoints>8</maxPoints></ribbon></li>",
             "<li><name>haze</name><distortion><kind>HeatHaze</kind><radius>2</radius><strength>0.1</strength><frequency>1</frequency></distortion></li>",
             "<li><name>dim</name><screenDim><strength>0.4</strength></screenDim></li>");
@@ -165,6 +168,23 @@ public static class VfxContractParitySuite
     [LumenFact] public static void RejectsUnknownRibbonTextureMode() => RejectJson(Ribbon(Beam("\"textureMode\": 4")), "ribbon.textureMode", "unknown LumenRibbonTextureMode");
     [LumenFact] public static void RejectsUnknownRibbonAlignment() => RejectJson(Ribbon(Beam("\"alignment\": 4")), "ribbon.alignment", "unknown LumenRibbonAlignment");
 
+    // F2. Particle trails
+    [LumenFact] public static void RejectsTrailRatioAboveOne() => RejectJson(ParticleTrails("\"ratio\": 1.1"), "trails.ratio", "[0,1]");
+    [LumenFact] public static void RejectsNegativeTrailRatio() => RejectJson(ParticleTrails("\"ratio\": -0.1"), "trails.ratio", "[0,1]");
+    [LumenFact] public static void RejectsNonPositiveTrailLifetime() => RejectJson(ParticleTrails("\"lifetime\": 0"), "trails.lifetime", "> 0");
+    [LumenFact] public static void RejectsNonPositiveTrailMinVertexDistance() => RejectJson(ParticleTrails("\"minVertexDistance\": 0"), "trails.minVertexDistance", "> 0");
+    [LumenFact] public static void RejectsTrailMaxPointsBelowTwo() => RejectJson(ParticleTrails("\"maxPoints\": 1"), "trails.maxPoints", "[2, 256]");
+    [LumenFact] public static void RejectsTrailMaxPointsAbove256() => RejectJson(ParticleTrails("\"maxPoints\": 257"), "trails.maxPoints", "[2, 256]");
+    [LumenFact] public static void RejectsNonPositiveParticleTrailWidth() => RejectJson(ParticleTrails("\"width\": 0"), "trails.width", "> 0");
+    [LumenFact] public static void RejectsNegativeWidthOverTrail() => RejectJson(ParticleTrails("\"widthOverTrail\": [[0, -1]]"), "trails.widthOverTrail[0]", ">= 0");
+    [LumenFact] public static void RejectsColorOverTrailAlphaAboveOne() => RejectJson(ParticleTrails("\"colorOverTrail\": [[0, [1,1,1,2]]]"), "trails.colorOverTrail[0].color", "alpha");
+    [LumenFact] public static void RejectsColorOverLifetimeNegativeRgb() => RejectJson(ParticleTrails("\"colorOverLifetime\": [[0, [-1,1,1,1]]]"), "trails.colorOverLifetime[0].color", ">= 0");
+    [LumenFact] public static void RejectsInvalidParticleTrailMaterialTint() => RejectJson(ParticleTrails("\"materialTint\": [1,1,1,1.5]"), "trails.materialTint", "alpha");
+    [LumenFact] public static void RejectsNegativeParticleTrailHdr() => RejectJson(ParticleTrails("\"hdrIntensity\": -1"), "trails.hdrIntensity", ">= 0");
+    [LumenFact] public static void RejectsNegativeParticleTrailSoftFade() => RejectJson(ParticleTrails("\"softParticleFadeDistance\": -1"), "trails.softParticleFadeDistance", ">= 0");
+    [LumenFact] public static void RejectsUnknownParticleTrailField() => RejectJson(ParticleTrails("\"bogus\": 1"), "unknown property 'bogus'", "");
+    [LumenFact] public static void RejectsUnknownParticleTrailXmlEnums() => RejectXml("<li><name>fx</name><emitter><trails><alignment>9</alignment></trails></emitter></li>", "trails.alignment", "unknown LumenRibbonAlignment");
+
     // G. Interaction events
     [LumenFact] public static void RejectsCursorSwipeWithoutPositiveMinSpeed() => RejectAssetJson("\"interactionEvents\": [{ \"trigger\": \"CursorSwipe\", \"eventName\": \"slash\", \"radius\": 2 }]", "interactionEvents[0].minCursorSpeed", "> 0");
     [LumenFact] public static void RejectsCursorEventWithExplosionStrength() => RejectAssetJson("\"interactionEvents\": [{ \"trigger\": \"CursorEnter\", \"eventName\": \"enter\", \"radius\": 2, \"minExplosionStrength\": 10 }]", "interactionEvents[0].minExplosionStrength", "not used");
@@ -195,6 +215,7 @@ public static class VfxContractParitySuite
     private static string Haze(string fields) => $"\"kind\": \"HeatHaze\", \"frequency\": 1, {fields}";
     private static string ScreenDim(string fields) => $"{{ \"name\": \"fx\", \"screenDim\": {{ {fields} }} }}";
     private static string Ribbon(string fields) => $"{{ \"name\": \"fx\", \"ribbon\": {{ {fields} }} }}";
+    private static string ParticleTrails(string fields) => $"{{ \"name\": \"fx\", \"emitter\": {{ \"trails\": {{ {fields} }} }} }}";
     private static string Trail(string fields) => $"\"mode\": \"Trail\", \"lifetime\": 1, \"minVertexDistance\": 0.1, {fields}";
     private static string Beam(string fields) => $"\"mode\": \"Beam\", \"endAtTarget\": true, \"segments\": 1, {fields}";
 
@@ -285,6 +306,19 @@ public static class VfxContractParitySuite
                     Collision = new CollisionSpec { Mode = LumenCollisionMode.Bounce, Bounce = 0.4f, Dampen = 0.2f, LifetimeLoss = 0.1f, KillUnderRoof = true },
                     SubEmitters = new[] { new SubEmitterSpec(LumenSubEmitterTrigger.Collision, 1, 3, 0.5f, LumenSubEmitterInherit.Color | LumenSubEmitterInherit.Size) },
                     ForceFields = new[] { new ForceFieldSpec(ForceFieldKind.RingWave, new Vector3(1f, 0f, 2f), new Vector3(4f, 0.5f, 0f), 6f, -2f) },
+                    Trails = new ParticleTrailSpec
+                    {
+                        Ratio = 0.5f, Lifetime = 0.75f, MinVertexDistance = 0.15f, MaxPoints = 24,
+                        DieWithParticles = false, WorldSpace = false, SizeAffectsWidth = false,
+                        SizeAffectsLifetime = true, InheritParticleColor = false, Width = 0.4f,
+                        WidthOverTrail = new ScalarCurve(new[] { new CurveKey(0f, 1f), new CurveKey(1f, 0.2f) }),
+                        ColorOverTrail = new ColorGradient(new[] { new ColorStop(0f, new Vector4(1f, 0.8f, 0.4f, 1f)), new ColorStop(1f, new Vector4(0.5f, 0.1f, 0f, 0f)) }),
+                        ColorOverLifetime = new ColorGradient(new[] { new ColorStop(0f, new Vector4(1f, 1f, 1f, 0.8f)), new ColorStop(1f, new Vector4(1f, 0.5f, 0.5f, 0.2f)) }),
+                        TextureKey = "Lumen/ParticleTrail", MaterialTint = new Vector4(0.8f, 0.7f, 0.6f, 0.9f),
+                        ColorSpace = LumenColorSpace.Linear, BlendMode = LumenBlendMode.Premultiplied,
+                        TextureMode = LumenRibbonTextureMode.Tile, Alignment = LumenRibbonAlignment.Ground,
+                        HdrIntensity = 3.5f, SoftParticleFadeDistance = 0.2f,
+                    },
                 },
             },
             new EffectNodeSpec { Name = "spark", Emitter = new EmitterSpec { Name = "spark", EnvironmentChannels = LumenEnvironmentChannel.None } },
@@ -375,7 +409,16 @@ public static class VfxContractParitySuite
               "rateOverTime": 5, "environmentChannels": "Cursor", "environmentForceScale": 0.5,
               "collision": { "mode": "Bounce", "bounce": 0.4, "dampen": 0.2, "lifetimeLoss": 0.1, "killUnderRoof": true },
               "subEmitters": [{ "trigger": "Collision", "targetNodeIndex": 1, "count": 3, "probability": 0.5, "inherit": "Color, Size" }],
-              "forceFields": [{ "kind": "RingWave", "centerOrAxis": [1,0,2], "parameters": [4,0.5,0], "radius": 6, "strength": -2 }] } },
+              "forceFields": [{ "kind": "RingWave", "centerOrAxis": [1,0,2], "parameters": [4,0.5,0], "radius": 6, "strength": -2 }],
+              "trails": { "ratio": 0.5, "lifetime": 0.75, "minVertexDistance": 0.15, "maxPoints": 24,
+                  "dieWithParticles": false, "worldSpace": false, "sizeAffectsWidth": false,
+                  "sizeAffectsLifetime": true, "inheritParticleColor": false, "width": 0.4,
+                  "widthOverTrail": [[0,1],[1,0.2]],
+                  "colorOverTrail": [[0,[1,0.8,0.4,1]],[1,[0.5,0.1,0,0]]],
+                  "colorOverLifetime": [[0,[1,1,1,0.8]],[1,[1,0.5,0.5,0.2]]],
+                  "textureKey": "Lumen/ParticleTrail", "materialTint": [0.8,0.7,0.6,0.9],
+                  "colorSpace": "Linear", "blendMode": "Premultiplied", "textureMode": "Tile",
+                  "alignment": "Ground", "hdrIntensity": 3.5, "softParticleFadeDistance": 0.2 } } },
           { "name": "spark", "emitter": { "environmentChannels": "None" } },
           { "name": "ring", "distortion": { "kind": "RingWave", "radius": 4, "strength": 0.3, "thickness": 0.5, "speed": 6, "duration": 0.8,
               "strengthOverTime": [[0,1],[0.8,0]] } },
@@ -451,7 +494,17 @@ public static class VfxContractParitySuite
         "<lifetimeLoss>0.1</lifetimeLoss><killUnderRoof>true</killUnderRoof></collision><subEmitters><li><trigger>Collision</trigger>" +
         "<targetNodeIndex>1</targetNodeIndex><count>3</count><probability>0.5</probability><inherit>Color, Size</inherit></li></subEmitters>" +
         "<forceFields><li><kind>RingWave</kind><centerOrAxis>(1,0,2)</centerOrAxis><parameters>(4,0.5,0)</parameters><radius>6</radius>" +
-        "<strength>-2</strength></li></forceFields></emitter></li>",
+        "<strength>-2</strength></li></forceFields>" +
+        "<trails><ratio>0.5</ratio><lifetime>0.75</lifetime><minVertexDistance>0.15</minVertexDistance><maxPoints>24</maxPoints>" +
+        "<dieWithParticles>false</dieWithParticles><worldSpace>false</worldSpace><sizeAffectsWidth>false</sizeAffectsWidth>" +
+        "<sizeAffectsLifetime>true</sizeAffectsLifetime><inheritParticleColor>false</inheritParticleColor><width>0.4</width>" +
+        "<widthOverTrail><li><time>0</time><value>1</value></li><li><time>1</time><value>0.2</value></li></widthOverTrail>" +
+        "<colorOverTrail><li><time>0</time><color>(1,0.8,0.4,1)</color></li><li><time>1</time><color>(0.5,0.1,0,0)</color></li></colorOverTrail>" +
+        "<colorOverLifetime><li><time>0</time><color>(1,1,1,0.8)</color></li><li><time>1</time><color>(1,0.5,0.5,0.2)</color></li></colorOverLifetime>" +
+        "<textureKey>Lumen/ParticleTrail</textureKey><materialTint>(0.8,0.7,0.6,0.9)</materialTint>" +
+        "<colorSpace>Linear</colorSpace><blendMode>Premultiplied</blendMode><textureMode>Tile</textureMode>" +
+        "<alignment>Ground</alignment><hdrIntensity>3.5</hdrIntensity><softParticleFadeDistance>0.2</softParticleFadeDistance></trails>" +
+        "</emitter></li>",
         "<li><name>spark</name><emitter><environmentChannels>None</environmentChannels></emitter></li>",
         "<li><name>ring</name><distortion><kind>RingWave</kind><radius>4</radius><strength>0.3</strength><thickness>0.5</thickness>" +
         "<speed>6</speed><duration>0.8</duration><strengthOverTime><li><time>0</time><value>1</value></li><li><time>0.8</time><value>0</value></li>" +

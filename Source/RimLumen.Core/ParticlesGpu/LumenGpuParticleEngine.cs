@@ -43,17 +43,41 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         public bool GpuBurstCarry;
         public uint ResetVersion;
         public readonly List<GpuExplicitBurst> ExplicitBursts = new();
+        public float MaxObservedSizeScale = 1f;
+        public float MaxInheritedSizeFactor = 1f;
+        public TrailState? Trail;
+    }
+
+    private sealed class TrailState
+    {
+        public required EmitterSlotRange HeaderSlots;
+        public required EmitterSlotRange PointSlots;
+        public required EmitterSlotRange MapSlots;
+        // 128 samples: [0..63] = WidthOverTrail / ColorOverTrail; [64..127] = Constant(1) / ColorOverLifetime.
+        public required GpuCurveSample[] Curves;
+        public required uint RandomSeed;
     }
 
     private readonly record struct PendingClear(EmitterSlotRange Range, ulong? EnqueuedFrame = null);
     private readonly record struct InFlightGpuDt(int InstanceId, float Dt, ulong FrameIndex);
 
     private readonly int capacity;
+    private readonly int trailHeaderCapacity;
+    private readonly int trailPointCapacity;
+    private readonly int trailMapCapacity;
     private readonly EmitterSlotAllocator allocator;
+    private EmitterSlotAllocator? trailHeaderAllocator;
+    private EmitterSlotAllocator? trailPointAllocator;
+    private EmitterSlotAllocator? trailMapAllocator;
     private readonly Dictionary<int, Instance> instances = new();
     private readonly List<ParticleEmitterFrame> captureRows = new();
+    private readonly List<ParticleTrailEmitterFrame> captureTrailRows = new();
     private readonly List<EmitterSlotRange> captureClears = new();
+    private readonly List<EmitterSlotRange> captureTrailHeaderClears = new();
+    private readonly List<EmitterSlotRange> captureTrailMapClears = new();
     private readonly List<PendingClear> pendingClears = new();
+    private readonly List<PendingClear> pendingTrailHeaderClears = new();
+    private readonly List<PendingClear> pendingTrailMapClears = new();
     private readonly Dictionary<int, float> pendingGpuDts = new();
     private readonly List<InFlightGpuDt> inFlightGpuDts = new();
     private readonly List<int> staleGpuDtIds = new();
@@ -72,9 +96,18 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
     internal ParticleFrame? CapturedFrame => captured;
 
     public LumenGpuParticleEngine(int capacity = EmitterSlotAllocator.DefaultCapacity)
+        : this(capacity, ParticleTrailMath.DefaultHeaderCapacity, ParticleTrailMath.DefaultPointCapacity, ParticleTrailMath.DefaultMapCapacity) { }
+
+    internal LumenGpuParticleEngine(int capacity, int trailHeaderCapacity, int trailPointCapacity, int trailMapCapacity)
     {
         if (capacity <= 0) throw new ArgumentOutOfRangeException(nameof(capacity));
+        if (trailHeaderCapacity <= 0) throw new ArgumentOutOfRangeException(nameof(trailHeaderCapacity));
+        if (trailPointCapacity <= 0) throw new ArgumentOutOfRangeException(nameof(trailPointCapacity));
+        if (trailMapCapacity <= 0) throw new ArgumentOutOfRangeException(nameof(trailMapCapacity));
         this.capacity = capacity;
+        this.trailHeaderCapacity = trailHeaderCapacity;
+        this.trailPointCapacity = trailPointCapacity;
+        this.trailMapCapacity = trailMapCapacity;
         allocator = new EmitterSlotAllocator(capacity);
     }
 
@@ -86,7 +119,9 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         {
             if (disposed) return false;
             if (instances.Count != 0) return true;
-            lock (lifecycleGate) return particles is not null && HasUnqueuedClears();
+            lock (lifecycleGate)
+                return (particles is not null && HasUnqueuedClears(pendingClears))
+                    || (trailHeaders is not null && (HasUnqueuedClears(pendingTrailHeaderClears) || HasUnqueuedClears(pendingTrailMapClears)));
         }
     }
 
@@ -103,15 +138,58 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         GpuCurveAtlasPacker.Pack(spec.SizeOverLifetime, spec.ColorOverLifetime, curves);
         int id = checked(nextId++);
         EmitterSlotRange range = allocator.Allocate(spec.MaxParticles);
+        TrailState? trailState = null;
+        if (spec.Trails is { } trailSpec)
+        {
+            trailHeaderAllocator ??= new EmitterSlotAllocator(trailHeaderCapacity);
+            trailPointAllocator ??= new EmitterSlotAllocator(trailPointCapacity);
+            trailMapAllocator ??= new EmitterSlotAllocator(trailMapCapacity);
+            EmitterSlotRange? headers = null, points = null, maps = null;
+            try
+            {
+                headers = trailHeaderAllocator.Allocate(ParticleTrailMath.ComputeHeaderCapacity(spec));
+                points = trailPointAllocator.Allocate(ParticleTrailMath.ComputePointCapacity(spec));
+                maps = trailMapAllocator.Allocate(spec.MaxParticles);
+            }
+            catch
+            {
+                if (maps is { } m) trailMapAllocator.Free(m);
+                if (points is { } p) trailPointAllocator.Free(p);
+                if (headers is { } h) trailHeaderAllocator.Free(h);
+                allocator.Free(range);
+                throw;
+            }
+            var trailCurves = new GpuCurveSample[GpuCurveAtlasPacker.SamplesPerRow * 2];
+            GpuCurveAtlasPacker.Pack(trailSpec.WidthOverTrail, trailSpec.ColorOverTrail,
+                trailCurves.AsSpan(0, GpuCurveAtlasPacker.SamplesPerRow));
+            GpuCurveAtlasPacker.Pack(ScalarCurve.Constant(1f), trailSpec.ColorOverLifetime,
+                trailCurves.AsSpan(GpuCurveAtlasPacker.SamplesPerRow, GpuCurveAtlasPacker.SamplesPerRow));
+            uint tSeed = ParticleTrailMath.Hash(emissionSeed ^ unchecked((uint)id * 0x9E3779B9u) ^ 0x517CC1B7u);
+            trailState = new TrailState
+            {
+                HeaderSlots = headers.Value,
+                PointSlots = points.Value,
+                MapSlots = maps.Value,
+                Curves = trailCurves,
+                RandomSeed = tSeed == 0u ? 1u : tSeed,
+            };
+        }
         instances.Add(id, new Instance
         {
             Id = id, Spec = spec, Slots = range, Scheduler = scheduler,
             StateSlot = freeStateSlots.Count != 0 ? freeStateSlots.Pop() : stateSlotCount++,
-            Curves = curves, Transform = initialTransform, MapIndex = mapIndex, RealTime = realTime
+            Curves = curves, Transform = initialTransform, MapIndex = mapIndex, RealTime = realTime,
+            MaxObservedSizeScale = ParticleAppearanceMath.SizeScale(initialTransform.World),
+            Trail = trailState,
         });
         lock (lifecycleGate)
         {
-            SubtractPendingClears(range);
+            SubtractPendingClears(pendingClears, range);
+            if (trailState is not null)
+            {
+                SubtractPendingClears(pendingTrailHeaderClears, trailState.HeaderSlots);
+                SubtractPendingClears(pendingTrailMapClears, trailState.MapSlots);
+            }
             System.Threading.Volatile.Write(ref idleRequested, false);
             idleStartedAt = null;
         }
@@ -152,6 +230,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!instances.TryGetValue(instanceId, out Instance? instance)) return;
         instance.Transform = transform;
+        instance.MaxObservedSizeScale = MathF.Max(instance.MaxObservedSizeScale, ParticleAppearanceMath.SizeScale(transform.World));
         instance.Intensity = intensityMultiplier;
         instance.RateMultiplier = rateMultiplier;
         if (instance.State == InstanceState.Emitting)
@@ -159,6 +238,34 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
             instance.Emitting = emitting;
             instance.Activated |= emitting;
         }
+    }
+
+    private float PeakDisplayParticleSize(Instance instance)
+        => instance.Spec.StartSizeMax * ParticleTrailMath.PeakCurveSize(instance.Curves)
+            * instance.MaxObservedSizeScale * LiveInheritedSizeFactor(instance);
+
+    private float LiveInheritedSizeFactor(Instance instance)
+    {
+        float factor = instance.MaxInheritedSizeFactor;
+        foreach (int sourceId in instance.Sources)
+        {
+            if (!instances.TryGetValue(sourceId, out Instance? source)) continue;
+            for (int i = 0; i < source.Targets.Length; i++)
+                if (source.Targets[i] == instance.Id && (source.Spec.SubEmitters[i].Inherit & LumenSubEmitterInherit.Size) != 0)
+                    factor = MathF.Max(factor, PeakDisplayParticleSize(source));
+        }
+        return factor;
+    }
+
+    private double DrainDuration(Instance instance)
+    {
+        if (instance.Spec.Trails is not { DieWithParticles: false } trails)
+            return instance.Spec.StartLifetimeMax;
+        float scaleFactor = trails.SizeAffectsLifetime
+            ? instance.MaxObservedSizeScale * LiveInheritedSizeFactor(instance)
+            : 1f;
+        return instance.Spec.StartLifetimeMax + ParticleTrailMath.MaxTrailLifetimeSeconds(
+            instance.Spec, instance.Curves, scaleFactor);
     }
 
     // Requires: main thread.
@@ -171,7 +278,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         else if (instance.State == InstanceState.Emitting)
         {
             instance.State = InstanceState.Draining;
-            instance.DrainRemaining = instance.Spec.StartLifetimeMax;
+            instance.DrainRemaining = DrainDuration(instance);
         }
         instance.Emitting = false;
     }
@@ -231,10 +338,13 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
             return;
         }
         var rows = captureRows;
+        var trailRows = captureTrailRows;
         var clears = captureClears;
+        var trailHeaderClears = captureTrailHeaderClears;
+        var trailMapClears = captureTrailMapClears;
         var removed = captureRemoved;
         var fields = captureFields;
-        rows.Clear(); clears.Clear(); removed.Clear(); fields.Clear();
+        rows.Clear(); trailRows.Clear(); clears.Clear(); trailHeaderClears.Clear(); trailMapClears.Clear(); removed.Clear(); fields.Clear();
         captureMaps.Clear(); captureLinks.Clear(); captureBursts.Clear(); rowByInstance.Clear(); mapOffsets.Clear();
         int cellCount = 0;
         ParticleEnvironment.BeginFrame(in context);
@@ -254,13 +364,21 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 instance.DrainRemaining -= hostDt;
                 // A target can receive new particles until all sources finish; then it gets a full final lifetime.
                 if (instance.NewBurstPending || instance.Sources.Count != 0)
-                    instance.DrainRemaining = instance.Spec.StartLifetimeMax;
+                    instance.DrainRemaining = DrainDuration(instance);
             }
             instance.NewBurstPending = false;
             if (instance.State == InstanceState.Remove ||
                 (instance.State == InstanceState.Draining && (instance.Targets.Length == 0 ? instance.DrainRemaining <= 0 : drainedBeforeFrame)))
             {
                 clears.Add(instance.Slots);
+                if (instance.Trail is { } deadTrail)
+                {
+                    trailHeaderClears.Add(deadTrail.HeaderSlots);
+                    trailMapClears.Add(deadTrail.MapSlots);
+                    trailHeaderAllocator!.Free(deadTrail.HeaderSlots);
+                    trailPointAllocator!.Free(deadTrail.PointSlots);
+                    trailMapAllocator!.Free(deadTrail.MapSlots);
+                }
                 removed.Add(instance.Id);
                 allocator.Free(instance.Slots);
                 continue;
@@ -372,6 +490,35 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
             rows.Add(new ParticleEmitterFrame(instance.Id, parameters, instance.Curves, spec.TextureKey, spec.BlendMode,
                 instance.MapIndex, instance.IsVertical3D, spec.KillBelowFloor)
                 { MaterialTint = spec.MaterialTint, ColorSpace = spec.ColorSpace });
+            if (spec.Trails is { } trailSpec && instance.Trail is { } trail)
+            {
+                uint trailFlags =
+                    (trailSpec.DieWithParticles ? 1u : 0u) |
+                    ((spec.WorldSpaceSimulation || trailSpec.WorldSpace) ? 2u : 0u) |
+                    (trailSpec.SizeAffectsWidth ? 4u : 0u) |
+                    (trailSpec.SizeAffectsLifetime ? 8u : 0u) |
+                    (trailSpec.InheritParticleColor ? 16u : 0u) |
+                    (instance.IsVertical3D ? 32u : 0u) |
+                    (spec.WorldSpaceSimulation ? 64u : 0u);
+                var trailParameters = new GpuTrailEmitterParams
+                {
+                    World = Matrix4x4.Transpose(instance.Transform.World),
+                    Ranges = new Vector4(trail.HeaderSlots.Offset, trail.HeaderSlots.Capacity, trail.PointSlots.Offset, instance.Slots.Offset),
+                    PointsAndCurve = new Vector4(trailSpec.MaxPoints, 0f, trailSpec.Ratio, trailSpec.Lifetime),
+                    Params = new Vector4(trailSpec.MinVertexDistance, trailSpec.Width, trailSpec.SoftParticleFadeDistance,
+                        ParticleAppearanceMath.SizeScale(instance.Transform.World)),
+                    Appearance = new Vector4((float)trailSpec.TextureMode, (float)trailSpec.Alignment, trailSpec.HdrIntensity, instance.Intensity),
+                    DepthAndParticle = new Vector4(instance.DepthReferenceZ.HasValue ? 1f : 0f,
+                        instance.DepthReferenceZ.GetValueOrDefault(), instance.Slots.Capacity, row),
+                    MapBase = (uint)trail.MapSlots.Offset,
+                    Flags = trailFlags,
+                    BankCount = (uint)ParticleTrailMath.ComputeBankCount(trailSpec),
+                    RandomSeed = trail.RandomSeed,
+                };
+                trailRows.Add(new ParticleTrailEmitterFrame(instance.Id, row, trailParameters, trail.Curves,
+                    trailSpec.TextureKey, trailSpec.BlendMode, instance.MapIndex, trailSpec.MaxPoints, instance.IsVertical3D)
+                    { MaterialTint = trailSpec.MaterialTint, ColorSpace = trailSpec.ColorSpace });
+            }
             eventCapacity += ownEventCapacity;
         }
         // Links are grouped by target so one GPU invocation owns its carry and consumes every source event.
@@ -397,6 +544,14 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         }
         foreach (int id in removed)
         {
+            Instance source = instances[id];
+            for (int i = 0; i < source.Targets.Length; i++)
+                if ((source.Spec.SubEmitters[i].Inherit & LumenSubEmitterInherit.Size) != 0
+                    && instances.TryGetValue(source.Targets[i], out Instance? child))
+                    child.MaxInheritedSizeFactor = MathF.Max(child.MaxInheritedSizeFactor, PeakDisplayParticleSize(source));
+        }
+        foreach (int id in removed)
+        {
             foreach (int target in instances[id].Targets)
                 if (instances.TryGetValue(target, out Instance? child)) child.Sources.Remove(id);
             // A reused index is reinitialised by the new instance's first-frame flag (State.z) on the GPU.
@@ -417,7 +572,9 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                     if (!instances.ContainsKey(id)) staleGpuDtIds.Add(id);
                 foreach (int id in staleGpuDtIds) pendingGpuDts.Remove(id);
             }
-            foreach (EmitterSlotRange range in clears) AddPendingClear(range);
+            foreach (EmitterSlotRange range in clears) AddPendingClear(pendingClears, range);
+            foreach (EmitterSlotRange range in trailHeaderClears) AddPendingClear(pendingTrailHeaderClears, range);
+            foreach (EmitterSlotRange range in trailMapClears) AddPendingClear(pendingTrailMapClears, range);
             foreach (Instance live in instances.Values)
                 pendingGpuDts[live.Id] = (pendingGpuDts.TryGetValue(live.Id, out float prior) ? prior : 0f) + live.LastHostDt;
             if (!rendersMap)
@@ -433,9 +590,9 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
                 parameters.State.X = pendingGpuDts[id];
                 rows[row] = rows[row] with { Parameters = parameters };
             }
-            clears.Clear();
-            foreach (PendingClear pending in pendingClears)
-                if (pending.EnqueuedFrame is null) clears.Add(pending.Range);
+            CollectUnqueuedClears(pendingClears, clears);
+            CollectUnqueuedClears(pendingTrailHeaderClears, trailHeaderClears);
+            CollectUnqueuedClears(pendingTrailMapClears, trailMapClears);
         }
         captured = new ParticleFrame(
             context,
@@ -448,59 +605,89 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
             SubLinks = captureLinks.Count == 0 ? Array.Empty<GpuSubLink>() : captureLinks.ToArray(),
             ExplicitBursts = captureBursts.Count == 0 ? Array.Empty<GpuExplicitBurst>() : captureBursts.ToArray(),
             EventCapacity = eventCapacity,
-            StateSlotCount = stateSlotCount
+            StateSlotCount = stateSlotCount,
+            TrailEmitters = trailRows.Count == 0 ? Array.Empty<ParticleTrailEmitterFrame>() : trailRows.ToArray(),
+            TrailHeaderClears = trailHeaderClears.Count == 0 ? Array.Empty<EmitterSlotRange>() : trailHeaderClears.ToArray(),
+            TrailMapClears = trailMapClears.Count == 0 ? Array.Empty<EmitterSlotRange>() : trailMapClears.ToArray(),
         };
-        System.Threading.Volatile.Write(ref idleRequested, rows.Count == 0);
+        System.Threading.Volatile.Write(ref idleRequested, rows.Count == 0 && trailRows.Count == 0);
     }
 
-    private bool HasUnqueuedClears()
+    private static bool HasUnqueuedClears(List<PendingClear> list)
     {
-        for (int i = 0; i < pendingClears.Count; i++)
-            if (pendingClears[i].EnqueuedFrame is null) return true;
+        for (int i = 0; i < list.Count; i++)
+            if (list[i].EnqueuedFrame is null) return true;
         return false;
+    }
+
+    private static void CollectUnqueuedClears(List<PendingClear> list, List<EmitterSlotRange> destination)
+    {
+        destination.Clear();
+        foreach (PendingClear pending in list)
+            if (pending.EnqueuedFrame is null) destination.Add(pending.Range);
     }
 
     private void ClearPendingGpuState()
     {
         pendingClears.Clear();
+        pendingTrailHeaderClears.Clear();
+        pendingTrailMapClears.Clear();
         pendingGpuDts.Clear();
         inFlightGpuDts.Clear();
     }
 
-    private void AddPendingClear(EmitterSlotRange range)
+    private static void AddPendingClear(List<PendingClear> list, EmitterSlotRange range)
     {
         int start = range.Offset, end = start + range.Capacity;
         int insertAt = 0;
-        for (int i = 0; i < pendingClears.Count;)
+        for (int i = 0; i < list.Count;)
         {
-            PendingClear existing = pendingClears[i];
+            PendingClear existing = list[i];
             int exStart = existing.Range.Offset, exEnd = exStart + existing.Range.Capacity;
             if (existing.EnqueuedFrame is null && exEnd >= start && exStart <= end)
             {
                 start = Math.Min(start, exStart);
                 end = Math.Max(end, exEnd);
-                pendingClears.RemoveAt(i);
+                list.RemoveAt(i);
                 continue;
             }
             if (exStart < start) insertAt = i + 1;
             i++;
         }
-        pendingClears.Insert(insertAt, new PendingClear(new EmitterSlotRange(start, end - start)));
+        list.Insert(insertAt, new PendingClear(new EmitterSlotRange(start, end - start)));
     }
 
-    private void SubtractPendingClears(EmitterSlotRange allocated)
+    private static void SubtractPendingClears(List<PendingClear> list, EmitterSlotRange allocated)
     {
         int cutStart = allocated.Offset, cutEnd = cutStart + allocated.Capacity;
-        for (int i = pendingClears.Count - 1; i >= 0; i--)
+        for (int i = list.Count - 1; i >= 0; i--)
         {
-            PendingClear existing = pendingClears[i];
+            PendingClear existing = list[i];
             int exStart = existing.Range.Offset, exEnd = exStart + existing.Range.Capacity;
             if (exEnd <= cutStart || exStart >= cutEnd) continue;
-            pendingClears.RemoveAt(i);
+            list.RemoveAt(i);
             if (exEnd > cutEnd)
-                pendingClears.Insert(i, existing with { Range = new EmitterSlotRange(cutEnd, exEnd - cutEnd) });
+                list.Insert(i, existing with { Range = new EmitterSlotRange(cutEnd, exEnd - cutEnd) });
             if (exStart < cutStart)
-                pendingClears.Insert(i, existing with { Range = new EmitterSlotRange(exStart, cutStart - exStart) });
+                list.Insert(i, existing with { Range = new EmitterSlotRange(exStart, cutStart - exStart) });
+        }
+    }
+
+    private static void StampEnqueuedClears(List<PendingClear> list, ulong frameIndex)
+    {
+        for (int i = 0; i < list.Count; i++)
+            if (list[i].EnqueuedFrame is null)
+                list[i] = list[i] with { EnqueuedFrame = frameIndex };
+    }
+
+    private static void RestoreEnqueuedClears(List<PendingClear> list, ulong frameIndex)
+    {
+        for (int i = list.Count - 1; i >= 0; i--)
+        {
+            if (list[i].EnqueuedFrame != frameIndex) continue;
+            EmitterSlotRange range = list[i].Range;
+            list.RemoveAt(i);
+            AddPendingClear(list, range);
         }
     }
 
@@ -508,9 +695,9 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
     {
         lock (lifecycleGate)
         {
-            for (int i = 0; i < pendingClears.Count; i++)
-                if (pendingClears[i].EnqueuedFrame is null)
-                    pendingClears[i] = pendingClears[i] with { EnqueuedFrame = frameIndex };
+            StampEnqueuedClears(pendingClears, frameIndex);
+            StampEnqueuedClears(pendingTrailHeaderClears, frameIndex);
+            StampEnqueuedClears(pendingTrailMapClears, frameIndex);
             foreach (KeyValuePair<int, float> entry in pendingGpuDts)
                 if (entry.Value > 0f)
                     inFlightGpuDts.Add(new InFlightGpuDt(entry.Key, entry.Value, frameIndex));
@@ -523,6 +710,8 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
         lock (lifecycleGate)
         {
             pendingClears.RemoveAll(clear => clear.EnqueuedFrame == frameIndex);
+            pendingTrailHeaderClears.RemoveAll(clear => clear.EnqueuedFrame == frameIndex);
+            pendingTrailMapClears.RemoveAll(clear => clear.EnqueuedFrame == frameIndex);
             inFlightGpuDts.RemoveAll(step => step.FrameIndex == frameIndex);
         }
     }
@@ -531,13 +720,9 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
     {
         lock (lifecycleGate)
         {
-            for (int i = pendingClears.Count - 1; i >= 0; i--)
-            {
-                if (pendingClears[i].EnqueuedFrame != frameIndex) continue;
-                EmitterSlotRange range = pendingClears[i].Range;
-                pendingClears.RemoveAt(i);
-                AddPendingClear(range);
-            }
+            RestoreEnqueuedClears(pendingClears, frameIndex);
+            RestoreEnqueuedClears(pendingTrailHeaderClears, frameIndex);
+            RestoreEnqueuedClears(pendingTrailMapClears, frameIndex);
             for (int i = inFlightGpuDts.Count - 1; i >= 0; i--)
             {
                 InFlightGpuDt step = inFlightGpuDts[i];
@@ -581,4 +766,17 @@ internal sealed record ParticleFrame(LumenCaptureContext Context, ParticleEmitte
     internal int EventCapacity { get; init; }
     // Persistent BurstState entries required: one past the highest state index in use.
     internal int StateSlotCount { get; init; }
+    internal ParticleTrailEmitterFrame[] TrailEmitters { get; init; } = Array.Empty<ParticleTrailEmitterFrame>();
+    internal EmitterSlotRange[] TrailHeaderClears { get; init; } = Array.Empty<EmitterSlotRange>();
+    internal EmitterSlotRange[] TrailMapClears { get; init; } = Array.Empty<EmitterSlotRange>();
+}
+
+internal readonly record struct ParticleTrailEmitterFrame(int InstanceId, int ParticleRow, GpuTrailEmitterParams Parameters,
+    GpuCurveSample[] Curves, string? TextureKey, LumenBlendMode Blend, int MapIndex, int MaxPoints, bool IsVertical3D)
+{
+    internal Vector4 MaterialTint { get; init; } = Vector4.One;
+    internal LumenColorSpace ColorSpace { get; init; }
+
+    internal bool IsVisibleOnMap(int currentMapIndex) =>
+        MapIndex < 0 || currentMapIndex < 0 || MapIndex == currentMapIndex;
 }

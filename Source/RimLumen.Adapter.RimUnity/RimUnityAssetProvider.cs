@@ -43,6 +43,7 @@ public sealed class RimUnityAssetProvider : ILumenAssetProvider
         foreach (var node in asset.Nodes)
         {
             if (node.Emitter?.TextureKey is { Length: > 0 } emitterKey) Textures.ResolveTextureKey(catalog, emitterKey);
+            if (node.Emitter?.Trails?.TextureKey is { Length: > 0 } trailKey) Textures.ResolveTextureKey(catalog, trailKey);
             if (node.Ribbon?.TextureKey is { Length: > 0 } ribbonKey) Textures.ResolveTextureKey(catalog, ribbonKey);
         }
         return true;

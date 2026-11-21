@@ -31,18 +31,24 @@ internal sealed class ParticleGpuDrawResources : IDisposable
     private static readonly int VerticalPropertyId = Shader.PropertyToID("_LumenVertical");
     private static readonly int TexturePropertyId = Shader.PropertyToID("_LumenParticleTexture");
     private static readonly int SceneDepthPropertyId = Shader.PropertyToID("_LumenSceneDepth");
-    private static readonly int ParticlesPropertyId = Shader.PropertyToID("_LumenParticles");
-    private static readonly int EmittersPropertyId = Shader.PropertyToID("_LumenEmitters");
-    private static readonly int CurvesPropertyId = Shader.PropertyToID("_LumenCurves");
+    private static readonly int ParticlesPropertyId = Shader.PropertyToID(GpuParticleProperties.Particles);
+    private static readonly int EmittersPropertyId = Shader.PropertyToID(GpuParticleProperties.Emitters);
+    private static readonly int CurvesPropertyId = Shader.PropertyToID(GpuParticleProperties.Curves);
+    private static readonly int TrailHeadersPropertyId = Shader.PropertyToID(GpuTrailProperties.Headers);
+    private static readonly int TrailPointsPropertyId = Shader.PropertyToID(GpuTrailProperties.Points);
+    private static readonly int TrailEmittersPropertyId = Shader.PropertyToID(GpuTrailProperties.Emitters);
 
     private const int MaxActiveMaterials = 128;
 
     private readonly Mesh quad;
     private readonly ParticleMeshShaders shaders;
+    private ParticleMeshShaders? trailShaders;
+    private readonly Mesh?[] trailMeshes = new Mesh?[ParticleTrailMath.StripBuckets.Length];
     private readonly int retirementAge;
     // Cached materials keep only static state (shader + textures); the emitter index is a per-draw
     // DrawProperty, so two emitters sharing a texture and blend share one material.
     private readonly Dictionary<(LumenBlendMode Blend, Texture Texture), CachedMaterial> materials = new();
+    private readonly Dictionary<(LumenBlendMode Blend, Texture Texture), CachedMaterial> trailMaterials = new();
     private readonly HashSet<(LumenBlendMode Blend, Texture Texture)> frameKeys = new();
     private readonly List<(LumenBlendMode Blend, Texture Texture)> retired = new();
     private bool overflowLogged;
@@ -68,10 +74,13 @@ internal sealed class ParticleGpuDrawResources : IDisposable
     }
 
     // One compute set per frame: particle/emitter/field/dead-block storage buffers.
-    internal static unsafe VkDescriptorPool CreateComputePool(DeviceEx device)
+    internal static VkDescriptorPool CreateComputePool(DeviceEx device, int descriptorCount = 10)
+        => CreatePool(device, descriptorCount);
+
+    private static unsafe VkDescriptorPool CreatePool(DeviceEx device, int descriptorCount)
     {
         VkDescriptorPoolSize* sizes = stackalloc VkDescriptorPoolSize[1];
-        sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageBuffer, DescriptorCount = 10 };
+        sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageBuffer, DescriptorCount = descriptorCount };
         return device.CreateDescriptorPool(new VkDescriptorPoolCreateInfo
         {
             MaxSets = 1, PoolSizeCount = 1, PoolSizes = sizes
@@ -104,7 +113,7 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         Texture sceneDepth, Texture[] textures, bool[] texturePresent, bool[] textureSrgb, List<FinalDrawItem> draws,
         DrawItemFactory maker, DrawPropertyArena arena, int queueOrder, ulong frameIndex)
     {
-        if (disposed || snapshot.Emitters.Length == 0) return;
+        if (disposed || (snapshot.Emitters.Length == 0 && snapshot.TrailEmitters.Length == 0)) return;
         CameraBillboardBasis.Extract(snapshot.Context.ViewMatrix, out Vector3 right, out Vector3 up, out float yScaleRatio);
         Matrix4x4 projection = snapshot.Context.ProjectionMatrix;
         var depthUv = new Vector4(1f / snapshot.Context.ViewportWidth, 1f / snapshot.Context.ViewportHeight, 0, 0);
@@ -113,7 +122,10 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         var projectionPacked = new Vector4(projection.M33, projection.M34, projection.M43, projection.M44);
         float topDown2D = CameraBillboardBasis.IsStraightTopDown2D(right, up, yScaleRatio) ? 1f : 0f;
         float vanillaMoteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
-        RetireStale(frameIndex);
+        float depthLift = CameraBillboardBasis.NorthBehindLift(vanillaMoteY);
+        float linearBlendFlag = snapshot.Context.ColorBlendSpace == LumenColorBlendSpace.Linear ? 1f : 0f;
+        RetireStale(materials, frameIndex);
+        RetireStale(trailMaterials, frameIndex);
         frameKeys.Clear();
         for (int i = 0; i < snapshot.Emitters.Length; i++)
         {
@@ -123,21 +135,15 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             if (instances <= 0) continue;
             Texture texture = textures[i];
             bool present = texturePresent[i];
-            Material? material = MaterialFor(emitter.Blend, present ? texture : Texture2D.whiteTexture, sceneDepth, frameIndex);
+            Material? material = MaterialFor(materials, shaders, "RimLumen.L2",
+                emitter.Blend, present ? texture : Texture2D.whiteTexture, sceneDepth, frameIndex);
             if (material is null) continue;
             Span<DrawProperty> properties = arena.Allocate(8, out DrawPropertyRange range);
-            properties[0] = DrawProperty.Vector(DrawPropertyId, new Vector4(i, present ? 1f : 0f, 1f,
-                emitter.Blend == LumenBlendMode.AlphaBlend ? 0f : 1f));
-            properties[1] = DrawProperty.Vector(CameraRightPropertyId, cameraRight);
-            properties[2] = DrawProperty.Vector(CameraUpPropertyId, cameraUp);
-            properties[3] = DrawProperty.Vector(ProjectionPropertyId, projectionPacked);
-            properties[4] = DrawProperty.Vector(DepthUvPropertyId, depthUv);
-            properties[5] = DrawProperty.Vector(VerticalPropertyId,
-                new Vector4(emitter.IsVertical3D ? 1f : 0f, topDown2D, vanillaMoteY, CameraBillboardBasis.NorthBehindLift(vanillaMoteY)));
+            PackCommonDrawProperties(properties, i, present, emitter.Blend, cameraRight, cameraUp, projectionPacked, depthUv,
+                emitter.IsVertical3D, topDown2D, vanillaMoteY, depthLift);
             properties[6] = DrawProperty.Vector(TintPropertyId, emitter.MaterialTint);
             properties[7] = DrawProperty.Vector(ColorPropertyId,
-                new Vector4(emitter.ColorSpace == LumenColorSpace.Linear ? 1f : 0f, textureSrgb[i] ? 1f : 0f,
-                    snapshot.Context.ColorBlendSpace == LumenColorBlendSpace.Linear ? 1f : 0f, 0f));
+                new Vector4(emitter.ColorSpace == LumenColorSpace.Linear ? 1f : 0f, textureSrgb[i] ? 1f : 0f, linearBlendFlag, 0f));
             InstancedDrawInfo instancing = resources.DrawInstances(i, instances);
             var command = new MeshDrawCommand(quad, material, range, Matrix4x4.Identity, 0,
                 RimLumenRenderHost.LumenRenderPassId, instancing);
@@ -145,6 +151,55 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             if (draw is null) continue;
             draws.Add(draw);
         }
+
+        if (snapshot.TrailEmitters.Length == 0 || resources.TrailEmitters is null) return;
+        trailShaders ??= ParticleMeshShaders.Create("RimLumen.L2Trail",
+            "Particles/ParticleTrail.vert.glsl", "Particles/ParticleTrail.frag.glsl", depthTest: false);
+        for (int t = 0; t < snapshot.TrailEmitters.Length; t++)
+        {
+            ParticleTrailEmitterFrame trailEmitter = snapshot.TrailEmitters[t];
+            if (!trailEmitter.IsVisibleOnMap(snapshot.Context.CurrentMapIndex)) continue;
+            int headerInstances = (int)trailEmitter.Parameters.Ranges.Y;
+            if (headerInstances <= 0) continue;
+            Texture texture = resources.TrailTextures[t];
+            bool present = resources.TrailTexturePresent[t];
+            Material? material = MaterialFor(trailMaterials, trailShaders, "RimLumen.L2Trail",
+                trailEmitter.Blend, present ? texture : Texture2D.whiteTexture, sceneDepth, frameIndex);
+            if (material is null) continue;
+            Span<DrawProperty> properties = arena.Allocate(8, out DrawPropertyRange range);
+            PackCommonDrawProperties(properties, t, present, trailEmitter.Blend, cameraRight, cameraUp, projectionPacked, depthUv,
+                trailEmitter.IsVertical3D, topDown2D, vanillaMoteY, depthLift);
+            properties[6] = DrawProperty.Vector(TintPropertyId, trailEmitter.MaterialTint);
+            properties[7] = DrawProperty.Vector(ColorPropertyId,
+                new Vector4(trailEmitter.ColorSpace == LumenColorSpace.Linear ? 1f : 0f, resources.TrailTextureSrgb[t] ? 1f : 0f, linearBlendFlag, 0f));
+            InstancedDrawInfo instancing = resources.DrawTrailInstances(t, headerInstances);
+            var command = new MeshDrawCommand(MeshForStrip(trailEmitter.MaxPoints), material, range, Matrix4x4.Identity, 0,
+                RimLumenRenderHost.LumenRenderPassId, instancing);
+            FinalDrawItem? draw = maker.TryMake(in command, arena, UnityEngine.Shader.GlobalKeywordKey,
+                queueOrder + snapshot.Emitters.Length + t);
+            if (draw is null) continue;
+            draws.Add(draw);
+        }
+    }
+
+    private static void PackCommonDrawProperties(Span<DrawProperty> properties, int row, bool texturePresent, LumenBlendMode blend,
+        Vector4 cameraRight, Vector4 cameraUp, Vector4 projectionPacked, Vector4 depthUv, bool isVertical3D,
+        float topDown2D, float vanillaMoteY, float depthLift)
+    {
+        properties[0] = DrawProperty.Vector(DrawPropertyId, new Vector4(row, texturePresent ? 1f : 0f, 1f,
+            blend == LumenBlendMode.AlphaBlend ? 0f : 1f));
+        properties[1] = DrawProperty.Vector(CameraRightPropertyId, cameraRight);
+        properties[2] = DrawProperty.Vector(CameraUpPropertyId, cameraUp);
+        properties[3] = DrawProperty.Vector(ProjectionPropertyId, projectionPacked);
+        properties[4] = DrawProperty.Vector(DepthUvPropertyId, depthUv);
+        properties[5] = DrawProperty.Vector(VerticalPropertyId,
+            new Vector4(isVertical3D ? 1f : 0f, topDown2D, vanillaMoteY, depthLift));
+    }
+
+    private Mesh MeshForStrip(int maxPoints)
+    {
+        int bucket = ParticleTrailMath.StripBucketIndex(maxPoints);
+        return trailMeshes[bucket] ??= CreateStripMesh(ParticleTrailMath.StripBuckets[bucket]);
     }
 
     internal static InstanceStorageBinding[] CreateStorageBindings(GpuComputeBuffer particles,
@@ -155,13 +210,24 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         new InstanceStorageBinding(CurvesPropertyId, curves)
     };
 
+    internal static InstanceStorageBinding[] CreateTrailStorageBindings(GpuComputeBuffer trailHeaders,
+        GpuComputeBuffer trailPoints, GpuComputeBuffer trailEmitters, GpuComputeBuffer curves) => new[]
+    {
+        new InstanceStorageBinding(TrailHeadersPropertyId, trailHeaders),
+        new InstanceStorageBinding(TrailPointsPropertyId, trailPoints),
+        new InstanceStorageBinding(TrailEmittersPropertyId, trailEmitters),
+        new InstanceStorageBinding(CurvesPropertyId, curves)
+    };
+
     // Static state only: emitter index, camera vectors and depth UVs are per-draw DrawProperties.
-    private Material? MaterialFor(LumenBlendMode blend, Texture texture, Texture sceneDepth, ulong frameIndex)
+    private Material? MaterialFor(Dictionary<(LumenBlendMode Blend, Texture Texture), CachedMaterial> cache,
+        ParticleMeshShaders shaderSet, string namePrefix, LumenBlendMode blend, Texture texture,
+        Texture sceneDepth, ulong frameIndex)
     {
         var key = (blend, texture);
-        if (materials.TryGetValue(key, out CachedMaterial cached))
+        if (cache.TryGetValue(key, out CachedMaterial cached))
         {
-            materials[key] = cached with { LastUsedFrame = frameIndex };
+            cache[key] = cached with { LastUsedFrame = frameIndex };
             frameKeys.Add(key);
             return cached.Material;
         }
@@ -176,36 +242,32 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         }
         Shader shader = blend switch
         {
-            LumenBlendMode.Additive => shaders.Additive,
-            LumenBlendMode.AlphaBlend => shaders.Alpha,
-            LumenBlendMode.Premultiplied => shaders.Premultiplied,
+            LumenBlendMode.Additive => shaderSet.Additive,
+            LumenBlendMode.AlphaBlend => shaderSet.Alpha,
+            LumenBlendMode.Premultiplied => shaderSet.Premultiplied,
             _ => throw new ArgumentOutOfRangeException(nameof(blend), blend, "Unknown L2 blend mode.")
         };
-        var material = new Material(shader, $"RimLumen.L2.{blend}.{texture.Name}");
+        var material = new Material(shader, $"{namePrefix}.{blend}.{texture.Name}");
         material.SetTexture(TexturePropertyId, texture);
         // The proxy mirrors the current submission slot's R32_SFLOAT snapshot; its backing image follows
         // target rebuilds, and the engine re-resolves the descriptor when the allocation changes.
         material.SetTexture(SceneDepthPropertyId, sceneDepth);
-        materials[key] = new CachedMaterial(material, frameIndex);
+        cache[key] = new CachedMaterial(material, frameIndex);
         frameKeys.Add(key);
         return material;
     }
 
-    // Frame-safety: a capture's draws are consumed by at most FramesInFlight submitted frames, so a material
-    // unused for more than 2*FramesInFlight+2 capture indices cannot be referenced by an in-flight frame.
-    // Material.Dispose only unregisters the binding (Waylith Material.cs:1273-1280 → MaterialBindingCache),
-    // it frees no GPU object, so even a straggler reference would stay valid.
-    private void RetireStale(ulong frameIndex)
+    private void RetireStale(Dictionary<(LumenBlendMode Blend, Texture Texture), CachedMaterial> cache, ulong frameIndex)
     {
-        if (materials.Count == 0) return;
+        if (cache.Count == 0) return;
         retired.Clear();
-        foreach (KeyValuePair<(LumenBlendMode Blend, Texture Texture), CachedMaterial> pair in materials)
+        foreach (KeyValuePair<(LumenBlendMode Blend, Texture Texture), CachedMaterial> pair in cache)
             if (frameIndex >= pair.Value.LastUsedFrame && frameIndex - pair.Value.LastUsedFrame > (ulong)retirementAge)
                 retired.Add(pair.Key);
         foreach ((LumenBlendMode Blend, Texture Texture) key in retired)
         {
-            materials[key].Material.Dispose();
-            materials.Remove(key);
+            cache[key].Material.Dispose();
+            cache.Remove(key);
         }
     }
 
@@ -242,6 +304,50 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         return mesh;
     }
 
+    private static Mesh CreateStripMesh(int segments)
+    {
+        Mesh mesh = new() { DebugName = $"RimLumen.L2TrailStrip.{segments}" };
+        MeshDataArray data = Mesh.AllocateWritableMeshData(1);
+        bool applied = false;
+        try
+        {
+            int centreCount = segments + 1;
+            MeshData writable = data[0];
+            writable.SetVertexBufferParams(2 * centreCount, new[]
+            {
+                new VertexAttribute(VertexAttributeSemantic.Position, VertexAttributeFormat.Float32, 3, 0, 0)
+            });
+            Span<Vector3> positions = writable.GetVertexData<Vector3>().AsSpan();
+            for (int i = 0; i < centreCount; i++)
+            {
+                positions[2 * i] = new Vector3(i, -1f, 0f);
+                positions[2 * i + 1] = new Vector3(i, 1f, 0f);
+            }
+            writable.SetIndexBufferParams(6 * segments, MeshIndexFormat.UInt32);
+            Span<uint> indices = writable.GetIndexData<uint>().AsSpan();
+            for (int i = 0; i < segments; i++)
+            {
+                uint minus = (uint)(2 * i), plus = minus + 1, nextMinus = minus + 2, nextPlus = minus + 3;
+                int idx = i * 6;
+                indices[idx] = minus;
+                indices[idx + 1] = plus;
+                indices[idx + 2] = nextPlus;
+                indices[idx + 3] = minus;
+                indices[idx + 4] = nextPlus;
+                indices[idx + 5] = nextMinus;
+            }
+            writable.subMeshCount = 1;
+            writable.SetSubMesh(0, new SubMesh(0, 6 * segments));
+            Mesh.ApplyAndDisposeWritableMeshData(data, mesh);
+            applied = true;
+        }
+        finally
+        {
+            if (!applied) data.Dispose();
+        }
+        return mesh;
+    }
+
     // Requires: main thread after the render thread went idle (LumenGpuParticleEngine.DisposeGpu).
     public void Dispose()
     {
@@ -249,9 +355,16 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         disposed = true;
         foreach (CachedMaterial cached in materials.Values) cached.Material.Dispose();
         materials.Clear();
+        foreach (CachedMaterial cached in trailMaterials.Values) cached.Material.Dispose();
+        trailMaterials.Clear();
         frameKeys.Clear();
         retired.Clear();
         quad.Dispose();
+        for (int i = 0; i < trailMeshes.Length; i++)
+        {
+            trailMeshes[i]?.Dispose();
+            trailMeshes[i] = null;
+        }
     }
 
     // Per-capture vector state is never stored here: see AppendDraws/DrawPropertyArena.
@@ -262,36 +375,53 @@ internal sealed class ParticleGpuFrame : IDisposable
 {
     private readonly DeviceEx device;
     internal readonly VkDescriptorPool Pool;
+    internal readonly VkDescriptorPool? TrailPool;
     internal readonly GpuComputeBuffer Emitters, Fields, Curves, MapCells, Events, SubLinks, ExplicitBursts;
-    internal readonly int EmitterCapacity, FieldCapacity, CellCapacity, EventCapacity, LinkCapacity, BurstCapacity;
+    internal readonly GpuComputeBuffer? TrailEmitters, TrailHeaders, TrailPoints, ParticleToTrail;
+    internal readonly int EmitterCapacity, FieldCapacity, CellCapacity, EventCapacity, LinkCapacity, BurstCapacity, TrailEmitterCapacity;
     internal readonly ParticleEmitterFrame[] SimulationEmitters;
     internal readonly Texture[] Textures;
     internal readonly bool[] TexturePresent;
     internal readonly bool[] TextureSrgb;
+    internal readonly Texture[] TrailTextures;
+    internal readonly bool[] TrailTexturePresent;
+    internal readonly bool[] TrailTextureSrgb;
     internal readonly GpuComputeBuffer[] ComputeBuffers;
+    internal readonly GpuComputeBuffer[]? TrailComputeBuffers;
     internal GpuComputeBuffer BurstStates => ComputeBuffers[6];
     private readonly GpuEmitterParams[] parameters;
+    private readonly GpuTrailEmitterParams[] trailParameters;
     private RimLumen.Core.Scene.ParticleMapGrid[] uploadedMaps = Array.Empty<RimLumen.Core.Scene.ParticleMapGrid>();
     private readonly int[] curveInstanceIds;
+    private readonly int[] trailCurveInstanceIds;
     private readonly InstanceStorageBinding[] storageBindings;
+    private readonly InstanceStorageBinding[]? trailStorageBindings;
     private readonly InstancedDrawInfo?[] instancing;
+    private readonly InstancedDrawInfo?[] trailInstancing;
 
     internal static long EmitterBufferBytes(int emitterCapacity) => (long)emitterCapacity * Marshal.SizeOf<GpuEmitterParams>();
 
     internal ParticleGpuFrame(EngineApplication app, ParticleFrame snapshot, int emitterCount,
-        GpuComputeBuffer particles, GpuComputeBuffer deadBlocks, GpuComputeBuffer burstStates)
+        GpuComputeBuffer particles, GpuComputeBuffer deadBlocks, GpuComputeBuffer burstStates,
+        GpuComputeBuffer? trailHeaders = null, GpuComputeBuffer? trailPoints = null, GpuComputeBuffer? particleToTrail = null)
     {
         device = app.Device;
+        bool hasTrailCompute = trailHeaders is not null && trailPoints is not null && particleToTrail is not null;
         EmitterCapacity = Math.Max(1, emitterCount);
         FieldCapacity = Math.Max(1, snapshot.Fields.Length);
         CellCapacity = Math.Max(1, snapshot.CellCount);
         EventCapacity = Math.Max(1, snapshot.EventCapacity);
         LinkCapacity = Math.Max(1, snapshot.SubLinks.Length);
         BurstCapacity = Math.Max(1, snapshot.ExplicitBursts.Length);
+        TrailEmitterCapacity = hasTrailCompute ? Math.Max(1, snapshot.TrailEmitters.Length) : 0;
+        TrailHeaders = trailHeaders;
+        TrailPoints = trailPoints;
+        ParticleToTrail = particleToTrail;
         Pool = ParticleGpuDrawResources.CreateComputePool(device);
         Emitters = GpuComputeBuffer.Create(device, app.GraphicsDevice!.Allocator, "Lumen.Emitters", EmitterBufferBytes(EmitterCapacity));
         Fields = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Fields", (long)FieldCapacity * 48);
-        Curves = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Curves", (long)EmitterCapacity * 64 * 32);
+        Curves = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.Curves",
+            ((long)EmitterCapacity + 2L * TrailEmitterCapacity) * 64 * 32);
         MapCells = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.CollisionCells", (long)CellCapacity * 4);
         Events = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.SubEvents", (long)EventCapacity * Marshal.SizeOf<GpuSubEvent>(), deviceLocal: true);
         SubLinks = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.SubLinks", (long)LinkCapacity * 32);
@@ -306,6 +436,34 @@ internal sealed class ParticleGpuFrame : IDisposable
         ComputeBuffers = new[] { particles, Emitters, Fields, deadBlocks, MapCells, Events, burstStates, SubLinks, Curves, ExplicitBursts };
         storageBindings = ParticleGpuDrawResources.CreateStorageBindings(particles, Emitters, Curves);
         instancing = new InstancedDrawInfo?[EmitterCapacity];
+
+        if (hasTrailCompute)
+        {
+            TrailPool = ParticleGpuDrawResources.CreateComputePool(device, 7);
+            TrailEmitters = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator, "Lumen.TrailEmitters",
+                (long)TrailEmitterCapacity * Marshal.SizeOf<GpuTrailEmitterParams>());
+            TrailTextures = new Texture[TrailEmitterCapacity];
+            TrailTexturePresent = new bool[TrailEmitterCapacity];
+            TrailTextureSrgb = new bool[TrailEmitterCapacity];
+            trailParameters = new GpuTrailEmitterParams[TrailEmitterCapacity];
+            trailCurveInstanceIds = new int[TrailEmitterCapacity];
+            Array.Fill(trailCurveInstanceIds, -1);
+            TrailComputeBuffers = new[]
+            {
+                particles, Emitters, Curves, trailHeaders!, trailPoints!, TrailEmitters, particleToTrail!
+            };
+            trailStorageBindings = ParticleGpuDrawResources.CreateTrailStorageBindings(trailHeaders!, trailPoints!, TrailEmitters, Curves);
+            trailInstancing = new InstancedDrawInfo?[TrailEmitterCapacity];
+        }
+        else
+        {
+            TrailTextures = Array.Empty<Texture>();
+            TrailTexturePresent = Array.Empty<bool>();
+            TrailTextureSrgb = Array.Empty<bool>();
+            trailParameters = Array.Empty<GpuTrailEmitterParams>();
+            trailCurveInstanceIds = Array.Empty<int>();
+            trailInstancing = Array.Empty<InstancedDrawInfo?>();
+        }
     }
 
     internal InstancedDrawInfo DrawInstances(int row, int count)
@@ -313,6 +471,14 @@ internal sealed class ParticleGpuFrame : IDisposable
         InstancedDrawInfo? draw = instancing[row];
         if (draw is null) instancing[row] = draw = InstancedDrawInfo.Direct(count, storageBindings);
         else draw.ReconfigureDirect(count, storageBindings);
+        return draw;
+    }
+
+    internal InstancedDrawInfo DrawTrailInstances(int row, int count)
+    {
+        InstancedDrawInfo? draw = trailInstancing[row];
+        if (draw is null) trailInstancing[row] = draw = InstancedDrawInfo.Direct(count, trailStorageBindings!);
+        else draw.ReconfigureDirect(count, trailStorageBindings!);
         return draw;
     }
 
@@ -346,12 +512,33 @@ internal sealed class ParticleGpuFrame : IDisposable
         }
         if (frame.SubLinks.Length > 0) SubLinks.Upload<GpuSubLink>(frame.SubLinks);
         if (frame.ExplicitBursts.Length > 0) ExplicitBursts.Upload<GpuExplicitBurst>(frame.ExplicitBursts);
+        if (TrailPool is { } tPool && TrailEmitters is not null)
+        {
+            device.ResetDescriptorPool(tPool, 0);
+            for (int t = 0; t < frame.TrailEmitters.Length; t++)
+            {
+                ParticleTrailEmitterFrame trail = frame.TrailEmitters[t];
+                int curveRow = EmitterCapacity + 2 * t;
+                GpuTrailEmitterParams tp = trail.Parameters;
+                tp.PointsAndCurve.Y = curveRow;
+                trailParameters[t] = tp;
+                if (trailCurveInstanceIds[t] != trail.InstanceId)
+                {
+                    Curves.Upload<GpuCurveSample>(trail.Curves, (long)curveRow * 64 * 32);
+                    trailCurveInstanceIds[t] = trail.InstanceId;
+                }
+            }
+            if (frame.TrailEmitters.Length > 0)
+                TrailEmitters.Upload<GpuTrailEmitterParams>(trailParameters.AsSpan(0, frame.TrailEmitters.Length));
+        }
     }
 
     public void Dispose()
     {
         device.DestroyDescriptorPool(Pool, device.VkAllocator);
+        if (TrailPool is { } tPool) device.DestroyDescriptorPool(tPool, device.VkAllocator);
         Emitters.Dispose(); Fields.Dispose(); Curves.Dispose();
         MapCells.Dispose(); Events.Dispose(); SubLinks.Dispose(); ExplicitBursts.Dispose();
+        TrailEmitters?.Dispose();
     }
 }

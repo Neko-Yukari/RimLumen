@@ -530,6 +530,146 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 
 `subEmitters` 默认为空。每项的 `trigger` 为 `Death` 或 `Collision`，`targetNodeIndex` 指向另一个带 emitter 的节点，目标的 `rateOverTime` 必须为 0、不能有 `bursts`，且 `preferredTier` 相同；关系图不得有环。`count` 必填且非负，`probability` 默认 1、范围 `[0,1]`，每事件抽一次；`inherit` 默认 `None`，可组合 `Color`、`Size`。子粒子在事件位置出生，继承值乘以自身出生值；容量不足的请求不补发。
 
+#### 粒子拖尾（`emitter.trails` / `ParticleTrailSpec`）
+
+粒子发射器可通过可空的 `trails`（C# `EmitterSpec.Trails`，JSON `"trails"`，XML `<trails>`）为每个粒子生成独立尾迹；省略（`null`）时不分配任何 L1/L2 拖尾缓冲或计算与绘制开销。语义对齐 Unity Shuriken `Trails` 模块（0 = 头部/粒子端，1 = 尾端）：
+
+| 字段 | 默认 | 边界与说明 |
+| --- | --- | --- |
+| `ratio` | `1` | 有限 `[0, 1]`，出生粒子获得拖尾的比例，按确定性 PRNG 判定。 |
+| `lifetime` | `1` | 有限 `> 0`，**占所属粒子寿命的倍率**：每点寿命为 `particleLifetime × lifetime × (sizeAffectsLifetime ? particleSize : 1)`（区别于节点 Ribbon 的秒数）。 |
+| `minVertexDistance` | `0.2` | 有限 `> 0`（格），相对上一个记录点至少移动该距离才追加新历史点。 |
+| `maxPoints` | `32` | 整数 `[2, 256]`，每条尾迹环形历史点容量（不含实时头部）；写满时覆盖最旧点。 |
+| `dieWithParticles` | `true` | `true` 在粒子死亡同帧清除尾迹；`false` 在死亡位置补录末点并冻结尺寸/颜色后脱离粒子，持续老化回缩至消散。 |
+| `worldSpace` | `true` | `EmitterSpec.WorldSpaceSimulation == false` 时生效：`true` 在世界空间记录历史点，`false` 随节点局部变换。世界模拟发射器始终在世界空间记录。 |
+| `sizeAffectsWidth` / `sizeAffectsLifetime` | `true` / `false` | 是否乘算粒子当前显示尺寸到基准宽度 / 新点寿命。 |
+| `inheritParticleColor` | `true` | 是否乘算粒子当前颜色（`StartColor × ColorOverLifetime`）。 |
+| `width` | `1` | 有限 `> 0`（格），基准宽度倍率；最终宽度为 `width × widthOverTrail(t) × size`。 |
+| `widthOverTrail` | 常数 `1` | 沿尾迹归一化长度 `[0, 1]`（0 = 头，1 = 尾）的 Hermite 曲线，值和倍率有限非负。 |
+| `colorOverTrail` / `colorOverLifetime` | 常数白 `(1,1,1,1)` | 存储色渐变：前者按尾迹归一化长度 `[0, 1]`，后者按所属粒子归一化寿命 `[0, 1]`（脱离粒子时冻结在死亡时刻的寿命比；自然耗尽为 `1`）。 |
+| `textureKey` / `materialTint` / `colorSpace` | `null` / `(1,1,1,1)` / `Stored` | 拖尾独立纹理、材质 tint 与材质颜色计算空间（`textureKey` 为空时跨宽使用柔和圆盘软边，不复用粒子图集）。 |
+| `blendMode` / `textureMode` / `alignment` | `Additive` / `Stretch` / `View` | 混合模式、纹理平铺（`Stretch` / `Tile`）与朝向（`View` / `Ground`）。 |
+| `hdrIntensity` / `softParticleFadeDistance` | `1` / `0.5` | 有限 `>= 0` 的独立 HDR 增益与软粒子深度羽化格数。 |
+
+已知边界与资源上限：
+
+- **L2 GPU 池容量与溢出回收规则**：首个启用 `trails` 的 L2 发射器按需懒分配固定全局池（`32,768` 条尾迹头 / `524,288` 个点 / `32,768` 条粒子映射，共约 18.625 MB 显存，全部释放并空闲 30 秒后回收）；耗尽时抛出 `ParticlePoolExhaustedException` 并使本次 `Play` 节流警告后返回空句柄。当 `dieWithParticles = false` 时，每个发射器按 `clamp(1 + ceil(lifetime), 2, 4)` 申请多倍头槽（Bank 0 专属于当前槽位粒子的在役/最新尾迹，Bank 1..N-1 为溢出区）：先尝试自身 Bank 0 与自身溢出槽，再在溢出区线性探测最多 **64**（`MaxLinearProbe = 64`）个槽位；若溢出区全部写满，则确定性回收自身 Bank 0 中旧脱离尾迹的头槽，保证新建粒子拖尾不会静默丢失且避免全池扫描阻塞计算管线。
+- **地图卸载与非地图渲染帧**：`Map.Dispose` 与 `Stop(false)` 立即清理粒子与全部活跃/脱离尾迹；`LumenCaptureContext.RendersMap == false`（世界地图等非地图帧）期间，L1 与 L2 均照常推进时间、老化与待清理队列，但不提交任何几何或绘制。
+
+纯 JSON 烟花示例（单颗火箭粒子借助重力抛物线升至 10 格顶点，依靠 `trails` 拖出尾迹，寿命归零时通过 `Death` 子发射器引爆主星与核心闪光，无需任何 C# `Follow`）：
+
+```json
+{
+  "effectId": "Examples.Firework.ParticleTrail",
+  "defaultDuration": 3.2,
+  "nodes": [
+    {
+      "name": "rocket",
+      "spacePlane": "Vertical3D",
+      "localPosition": [0, 0.35, 0],
+      "emitter": {
+        "preferredTier": "L2_GpuCompute",
+        "maxParticles": 4,
+        "duration": 1.0,
+        "looping": false,
+        "worldSpaceSimulation": true,
+        "rateOverTime": 0,
+        "bursts": [[0, 1]],
+        "shape": "Point",
+        "startLifetime": 1.0,
+        "startSpeed": 19.3,
+        "startSize": 0.16,
+        "startColor": [1.0, 0.96, 0.82, 1.0],
+        "hdrIntensity": 5.0,
+        "forceFields": [
+          { "kind": "GravityDrag", "centerOrAxis": [0, -1, 0], "parameters": [0, 0, 0], "radius": 0, "strength": 19.3 }
+        ],
+        "trails": {
+          "ratio": 1.0,
+          "lifetime": 0.65,
+          "minVertexDistance": 0.06,
+          "maxPoints": 64,
+          "dieWithParticles": false,
+          "width": 0.9,
+          "widthOverTrail": [[0, 1.0], [1, 0.0]],
+          "colorOverTrail": [
+            [0.0, [1.0, 0.96, 0.82, 1.0]],
+            [0.35, [1.0, 0.70, 0.28, 0.85]],
+            [1.0, [0.70, 0.16, 0.03, 0.0]]
+          ],
+          "hdrIntensity": 5.0,
+          "softParticleFadeDistance": 0.4
+        },
+        "subEmitters": [
+          { "trigger": "Death", "targetNodeIndex": 1, "count": 900, "probability": 1.0 },
+          { "trigger": "Death", "targetNodeIndex": 2, "count": 240, "probability": 1.0 }
+        ]
+      }
+    },
+    {
+      "name": "apex_burst",
+      "spacePlane": "Vertical3D",
+      "emitter": {
+        "preferredTier": "L2_GpuCompute",
+        "maxParticles": 1000,
+        "duration": 1.3,
+        "looping": false,
+        "worldSpaceSimulation": true,
+        "rateOverTime": 0,
+        "killBelowFloor": true,
+        "shape": "Sphere",
+        "shapeExtents": [0.18, 0.18, 0.18],
+        "startLifetimeMin": 1.1,
+        "startLifetimeMax": 2.1,
+        "startSpeedMin": 6.0,
+        "startSpeedMax": 14.5,
+        "startSizeMin": 0.09,
+        "startSizeMax": 0.22,
+        "startColor": [1, 1, 1, 1],
+        "hdrIntensity": 8.0,
+        "billboardMode": "StretchedVelocity",
+        "velocityStretchFactor": 0.12,
+        "forceFields": [
+          { "kind": "GravityDrag", "centerOrAxis": [0, -1, 0], "parameters": [0.55, 0, 0], "radius": 0, "strength": 5.4 }
+        ],
+        "collision": { "mode": "Bounce", "bounce": 0.4, "dampen": 0.25, "lifetimeLoss": 0.15, "killUnderRoof": true }
+      }
+    },
+    {
+      "name": "sparkle_core",
+      "spacePlane": "Vertical3D",
+      "emitter": {
+        "preferredTier": "L2_GpuCompute",
+        "maxParticles": 300,
+        "duration": 1.35,
+        "looping": false,
+        "worldSpaceSimulation": true,
+        "rateOverTime": 0,
+        "shape": "Sphere",
+        "shapeExtents": [0.30, 0.30, 0.30],
+        "startLifetimeMin": 0.5,
+        "startLifetimeMax": 1.0,
+        "startSpeedMin": 0.6,
+        "startSpeedMax": 3.8,
+        "startSizeMin": 0.14,
+        "startSizeMax": 0.32,
+        "startColor": [1, 1, 1, 1],
+        "hdrIntensity": 12.0
+      }
+    },
+    {
+      "name": "apex_flash",
+      "localPosition": [0, 10.0, 0],
+      "pointLight": {
+        "glowRadius": 9.0,
+        "color": [1.0, 0.62, 0.16],
+        "intensityOverTime": [[0, 0], [0.97, 0], [1.05, 3.2], [1.50, 1.1], [2.55, 0]]
+      }
+    }
+  ]
+}
+```
+
 ### 4. 扭曲节点
 
 节点的 `distortion` 投影到地面。`kind` 必填，可为 `RingWave`、`Ripple`、`HeatHaze`；`radius` 和 `strength` 必填，有限且大于 0，单位为格。`thickness` 是半宽，`speed` 是格/秒，`frequency` 是每格频率，`duration` 为秒，均默认 0；`strengthOverTime` 是节点重启后秒数上的 Hermite 曲线，端点保持，默认倍率 1，关键帧和倍率有限非负。
@@ -768,7 +908,7 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 });
 ```
 
-- **关于坐标 Y 与什么时候可以传真实高度**：`Thing.DrawPos.y`、`ToVector3ShiftedWithAltitude(...)` 和 `Altitudes.AltitudeFor(...)` 得到的都是《环世界》的 2D 绘制排序层高度，**绝对不要直接传给 `OriginWorld.Y` 或 `Follow` 返回的 `pos.Y`**。地面固定特效请把 `Y` 设为 `0f`（需要抬高发射口或光源高度时，写在节点自身的 `localPosition.y` 或 XML `<heightOffset>` 上）。只有当**播放原点本身处于空中真实物理高度**（例如升空中的烟花弹体、飞行投射物、按格数算出的浮空高度）时，才在 `OriginWorld.Y` 或 `Follow` 回调返回的 `pos.Y` 中传入实际的离地格数。
+- **关于坐标 Y 与什么时候可以传真实高度**：`Thing.DrawPos.y`、`ToVector3ShiftedWithAltitude(...)` 和 `Altitudes.AltitudeFor(...)` 得到的都是《环世界》的 2D 绘制排序层高度，**绝对不要直接传给 `OriginWorld.Y` 或 `Follow` 返回的 `pos.Y`**。地面固定特效请把 `Y` 设为 `0f`（需要抬高发射口或光源高度时，写在节点自身的 `localPosition.y` 或 XML `<heightOffset>` 上；升空烟花也可直接用纯资产里的初速度、`GravityDrag`、`emitter.trails` 与 `Death` 子发射器写出，无需 C# `Follow`）。只有当**播放原点本身需要紧跟外部空中实体**（例如移动中的飞行投射物、由宿主驱动坐标的悬浮载具）时，才在 `OriginWorld.Y` 或 `Follow` 回调返回的 `pos.Y` 中传入实际的离地格数。
 - `LumenPlayRequest.DepthReferenceZ` 以世界格为单位提供遮罩参考 Z。`Play` 将其记录为相对 `OriginWorld` 的 Z 偏移，因此参考线随 `Follow` 移动。节点声明了 `depthMask` 而请求没有参考值时，`Play` 抛出 `ArgumentException`。
 - `LumenPlayRequest.InteractionEvents` 可为单次播放附加 `InteractionEventSpec[]` 规则（`Play` 入口一次性校验，违例抛 `ArgumentException`），在资产自身 `InteractionEvents` 之后按顺序求值，无需克隆或修改共享 `EffectAsset`。
 - 如果 `EffectId` 不存在，`Play` 返回 `IsAlive == false` 的空句柄，句柄方法无效果；每个服务实例对同一 ID 只记录一次 `Log.Warning`。资产存在但被校验拒绝时也返回空句柄，沿用注册表的校验错误，不追加“未知 ID”警告。
@@ -1107,8 +1247,8 @@ min(S, s_d)
 
 当游戏同时启用 `Chezhou.RimUnity` 时，`RimLumen.Adapter.RimUnity` 会读取其导出的 `catalog.json`、预制体 JSON（含 `.json.gz`）和 `.rutex` 贴图，并将粒子节点按功能自动分流：
 
-- **转入原生 HDR / GPU（或 CPU）**：受支持的基础形状及其形状局部位置、旋转、缩放（TRS）、曲线、渐变、贴图、序列帧、周期发射及受概率控制的计划脉冲。
-- **保留在原 RimUnity 播放器混播（`External`）**：节点启用了 `trails`、`subEmitters`（含子发射器依赖）、`collision`、`trigger`、`renderMode.Mesh` 或未知 `renderMode`、超出原生颜色范围的材质 `_Color`、线性 `velocityOverLifetime`、`rotationOverLifetime`、变化曲线 `forceOverLifetime`、任何启用的 `lights` 模块（含 `ratio = 1`），以及动态圆弧 / 半径模式、align、变化速度 / 力 / 旋转曲线、双曲线随机、几何或形状纹理等尚未覆盖的功能。
+- **转入原生 HDR / GPU（或 CPU）**：受支持的基础形状及其形状局部位置、旋转、缩放（TRS）、曲线、渐变、贴图、序列帧、周期发射、受概率控制的计划脉冲，以及 `mode = PerParticle` 的粒子 `trails` 模块（配合 `renderer.trailMaterial`，`worldSpace` 按 RimUnity 默认值 `false` 读取，`MaxPoints` 按 `clamp(ceil(maxParticleLifetime * trailLifetime * (sizeAffectsLifetime ? maxSize : 1) * 60) + 2, 16, 256)` 推导，贴图通过 `RimUnityAssetProvider` 注册）。
+- **保留在原 RimUnity 播放器混播（`External`）**：节点启用了 `subEmitters`（含子发射器依赖）、`collision`、`trigger`、`renderMode.Mesh` 或未知 `renderMode`、超出原生颜色范围的材质 `_Color`、线性 `velocityOverLifetime`、`rotationOverLifetime`、变化曲线 `forceOverLifetime`、任何启用的 `lights` 模块（含 `ratio = 1`）、`trails` 的不支持选项（如 `trails.mode.Ribbon` / `trails.mode.<n>`、`trails.ratio.domain`、`trails.minVertexDistance.domain`、`trails.lifetime.dualCurve` / `.variable` / `.curve` / `.domain`、`trails.widthOverTrail.dualCurve` / `.variable` / `.weighted` / `.domain`、`trails.colorOverLifetime` 或 `trails.colorOverTrail` 的 `.random` / `.perceptualBlend` / `.domain`、`trails.textureMode.<n>`、`trails.generateLightingData`、`trails.trailMaterial.null` 以及 `trailMaterial` 的 `_Color.domain`），以及动态圆弧 / 半径模式、align、变化速度 / 力 / 旋转曲线、双曲线随机、几何或形状纹理等尚未覆盖的功能。
 
 导入脉冲的计划时间须严格小于系统 `Duration`。`cycleCount=0` 时，每个系统循环都从同一本地相位重新重复，即使间隔不能整除时长。一个发射器所有脉冲定义展开后的发生次数合计最多 4096；超限时整个发射器转 External 并给出原因，不截断。间隔非有限时转 External；重复时，间隔 `<=0` 也转 External。单次脉冲允许有限的非正间隔，但不使用该间隔。无效计划原因是 `emission.bursts.schedule.domain`，总次数超限原因是 `emission.bursts.occurrenceLimit`。曲线分流只检查启用的模块及有效轴；禁用 emission 中保存的曲线不参与判定。启用 `main.startSize3D`、`main.startRotation3D` 或非零 `startRotation` 时转 External，原因分别为 `main.startSize3D`、`main.startRotation3D`、`main.startRotation`；启用的 `rateOverDistance` 双曲线原因是 `emission.rateOverDistance.dualCurve`。未启用的 3D 轴字段不触发拒绝，初始旋转和 3D 尺寸的原生支持仍延期。
 

@@ -43,6 +43,8 @@ internal static class Program
             ("Resident native ribbon until Stop", () => RibbonTranslationTests.ResidentRibbon(false)),
             ("Resident native ribbon with finite particles", () => RibbonTranslationTests.ResidentRibbon(true)),
             ("Ribbon External reasons", RibbonTranslationTests.RibbonFallbackReasons),
+            ("Per-particle trails native translation", TranslationTests.TrailsNativeTranslation),
+            ("Per-particle trails External fallback reasons", TranslationTests.TrailsExternalFallbackReasons),
             ("Catalog required, gzip payloads, aliases, shared owner and traversal", FileTests.Catalog),
             ("RimUnity same-root reload refreshes catalogs and translations", FileTests.Reload),
             ("RUTX DXT1/BC7 mips, gzip and malformed payloads", FileTests.Textures),
