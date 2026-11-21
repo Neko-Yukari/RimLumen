@@ -85,9 +85,10 @@ public sealed class LumenDistortionBackend : ILumenNodeFeatureBackend, ILumenFra
         if (instance.Clock.IsDrained(instance.Spec.Duration)) instances.Remove(instanceId);
     }
 
-    // Ensures: one additive quad per visible instance of context.CurrentMapIndex, in this frame's draw submission.
+    // Ensures: one additive quad per visible instance of context.CurrentMapIndex when context.RendersMap is true.
     public void CaptureMainThread(in LumenCaptureContext context)
     {
+        if (!context.RendersMap) return;
         CameraBillboardBasis.Extract(context.ViewMatrix, out Vector3 right, out Vector3 up, out float yScaleRatio);
         bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(right, up, yScaleRatio);
         Vector3 groundUp = CameraBillboardBasis.GroundUp(up);

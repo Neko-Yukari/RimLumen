@@ -58,9 +58,10 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         if (snapshot.Context.FrameIndex != context.FrameIndex)
             throw new InvalidOperationException("Compute and capture frame indices differ.");
         captured = null;
-        if (snapshot.Emitters.Length == 0) return;
+        if (snapshot.Emitters.Length == 0 && snapshot.Clears.Length == 0) return;
         lock (lifecycleGate)
         {
+            if (snapshot.Emitters.Length == 0 && particles is null) return;
             if (application is null)
             {
                 application = EngineApplication.Instance;
@@ -99,6 +100,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
                 gpu.Textures[i] = texture ?? Texture2D.whiteTexture;
                 Texture.EnsureSampledReady(gpu.Textures[i]);
             }
+            MarkFrameEnqueued(snapshot.Context.FrameIndex);
             pendingFrames.Enqueue(new ParticleQueuedFrame(snapshot, gpu.Textures, gpu.TexturePresent, gpu));
         }
     }
@@ -204,6 +206,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         GpuComputeBuffer states = resources.BurstStates;
         lock (lifecycleGate)
         {
+            CompleteRecordedFrame(snapshot.Context.FrameIndex);
             if (!ReferenceEquals(recordedBurstStates, states))
             {
                 // Frames record in capture order and buffers only grow, so every older buffer is done after this copy.
@@ -403,7 +406,8 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
     private void RetireFrame(RenderFrame frame)
     {
         ulong number = unchecked((ulong)frame.Timing.FrameNumber);
-        pendingFrames.Retire(number);
+        if (pendingFrames.TryTake(number, out _))
+            RestoreDroppedFrame(number);
     }
 
     private void ReleaseOnFrameStart()
@@ -425,6 +429,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
                 application!.Device.WaitIdle();
                 ReleaseGpu(application.Device);
             }
+            ClearPendingGpuState();
             application!.FrameRenderer.RenderThreadFrameStarting -= ReleaseOnFrameStart;
             application.FrameRenderer.RenderThreadFrameEnded -= RetireFrame;
             application = null;

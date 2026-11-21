@@ -99,9 +99,10 @@ public sealed class LumenScreenDimBackend : ILumenNodeFeatureBackend, ILumenFram
         return 1f - uncovered;
     }
 
-    // Ensures: one full-screen quad in this frame's draw submission when Coverage(context.CurrentMapIndex) > 0, else nothing.
+    // Ensures: one full-screen quad in this frame's draw submission when context.RendersMap and Coverage(context.CurrentMapIndex) > 0.
     public void CaptureMainThread(in LumenCaptureContext context)
     {
+        if (!context.RendersMap) return;
         float coverage = Coverage(context.CurrentMapIndex);
         if (coverage <= 0f) return;
         material ??= new Material(ParticleMeshShaders.CreateSingle("RimLumen.ScreenDim", VertexFile, FragmentFile,

@@ -1327,7 +1327,7 @@ void main()
 
 `ILumenFrameContributor` 按帧依序调用：主线程 `CaptureMainThread(LumenCaptureContext)` 捕获不可变输入，主线程 `EnqueuePreCompute(LumenComputeContext)` 提交计算，再由渲染线程 `RecordBufferBarriers(LumenBarrierContext)` 在 HDR pass 前记录屏障，最后在 HDR pass 内调用 `RecordHdrDraws(LumenHdrDrawContext)`。空闲的 `HasActiveWork` 允许跳过工作；`RequiresDirectHdrPass` 在捕获后由主线程读取，默认 false，需要直接绘制时返回 true；路由网格绘制单独计数。
 
-以 `FrameIndex` 关联捕获和录制，录制可能滞后或帧被丢弃；`SubmissionFrameIndex` 只是循环资源槽。上下文不是 GPU 二进制布局。渲染线程借用的帧、纹理只在回调内有效，不可保留或释放，也不可读取游戏主线程 API。捕获上下文提供地图 ID、时间、相机矩阵和视口；计算上下文提供帧与时钟；屏障上下文提供帧命令缓冲；绘制上下文提供 HDR 目标、可空深度和相机数据。Core 服务、CPU 模拟器、GPU 引擎及扭曲和 Ribbon 后端均注册贡献者；适配器的外部播放器也使用贡献者。管线回调异常会触发渲染熔断并记录错误。
+以 `FrameIndex` 关联捕获和录制，录制可能滞后或帧被丢弃；`SubmissionFrameIndex` 只是循环资源槽。上下文不是 GPU 二进制布局。渲染线程借用的帧、纹理只在回调内有效，不可保留或释放，也不可读取游戏主线程 API。捕获上下文提供地图 ID、时间、相机矩阵、视口与本帧地图渲染锁存值 `RendersMap`（对象构造初值为 `true`，`default` 零值为 `false`；世界图层、无标准窗口的长事件或生成地图期间为 `false`，此时管线仍对活动贡献者调用 `CaptureMainThread` 推进状态与时钟，但不调用 `EnqueuePreCompute` 与后续录制回调，第三方贡献者在 `false` 时应只推进状态而不提交绘制或做 GPU 暂存）；计算上下文提供帧与时钟；屏障上下文提供帧命令缓冲；绘制上下文提供 HDR 目标、可空深度和相机数据。Core 服务、CPU 模拟器、GPU 引擎及扭曲和 Ribbon 后端均注册贡献者；适配器的外部播放器也使用贡献者。管线回调异常会触发渲染熔断并记录错误。
 
 主线程 `CaptureMainThread` 期间，自定义粒子后端或适配器可通过 `LumenHostRegistry.GetEnvironmentForces(int mapIndex, LumenEnvironmentChannel channels)` 与 `LumenHostRegistry.GetCursors(int mapIndex)` 只读读取本帧已冻结的世界空间环境力切片 `ReadOnlySpan<LumenEnvironmentForce>`（含 `Channel`、`Shape`、`CenterWorld`、`Radius`、`Strength`、`WaveRadius`、`ShellHalfThickness`）与活动光标快照 `ReadOnlySpan<LumenCursorSnapshot>`（含地面 `PositionXZ`、屏幕高度速度向量 `ScreenVelocity` 与标量 `Speed`）；无活动源或光标时返回空切片。
 

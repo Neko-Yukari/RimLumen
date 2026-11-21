@@ -308,6 +308,31 @@ public static class RibbonBackendSuite
         Equal(0L, GC.GetAllocatedBytesForCurrentThread() - before);
     }
 
+    [LumenFact]
+    public static void BuildSkipsGeometryWhenMapIsNotRenderedWhileUpdateStillAdvancesAndDrains()
+    {
+        var backend = new LumenRibbonBackend();
+        int id = Play(backend, Trail(lifetime: 1f, minVertexDistance: 0.5f, maxPoints: 8));
+        backend.UpdateInstance(id, Frame(new Vector3(0f, 0f, 0f), dt: 0.1f));
+        backend.UpdateInstance(id, Frame(new Vector3(1f, 0f, 0f), dt: 0.1f));
+        Build(backend);
+        Equal(4, backend.Vertices.Length);
+
+        backend.DestroyInstance(id, immediate: false);
+        backend.UpdateInstance(id, Frame(new Vector3(1f, 0f, 0f), active: false, dt: 0.5f));
+        backend.Build(new LumenCaptureContext
+        {
+            CurrentMapIndex = 1, RendersMap = false, FrameIndex = 2, DeltaTime = 0.5f, ViewportWidth = 100, ViewportHeight = 100,
+            ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
+        });
+        Check(backend.Vertices.IsEmpty && backend.Indices.IsEmpty && backend.SubBatches.Count == 0,
+            $"RendersMap=false must build no ribbon geometry (got vertices={backend.Vertices.Length}, batches={backend.SubBatches.Count}).");
+        Check(backend.IsInstanceAlive(id), "Draining trail remains alive before its 1.0 s lifetime elapses.");
+
+        backend.UpdateInstance(id, Frame(new Vector3(1f, 0f, 0f), active: false, dt: 0.6f));
+        Check(!backend.IsInstanceAlive(id), "Trail clock continues advancing and drains out while RendersMap=false.");
+    }
+
     private static RibbonSpec Trail(float lifetime, float minVertexDistance, int maxPoints) => new()
     {
         Mode = LumenRibbonMode.Trail, Lifetime = lifetime, MinVertexDistance = minVertexDistance, MaxPoints = maxPoints,

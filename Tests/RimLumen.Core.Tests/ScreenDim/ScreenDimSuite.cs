@@ -83,6 +83,26 @@ public static class ScreenDimSuite
     }
 
     [LumenFact]
+    public static void UnrenderedMapCaptureSubmitsNoDrawsWhileTimedDimDrains()
+    {
+        var backend = new LumenScreenDimBackend();
+        int timed = backend.CreateInstance(Node(new ScreenDimSpec { Strength = 0.8f, Duration = 1f }), Frame(7, false, 0f), realTime: false, seed: 1);
+        backend.RestartInstance(timed);
+        backend.UpdateInstance(timed, Frame(7, true, 0.4f));
+        var unrendered = new LumenCaptureContext
+        {
+            CurrentMapIndex = 7, RendersMap = false, FrameIndex = 1, DeltaTime = 0.4f, ViewportWidth = 64, ViewportHeight = 64,
+            ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
+        };
+        backend.CaptureMainThread(in unrendered);
+        Check(backend.IsInstanceAlive(timed), "visible dim remains alive while RendersMap=false skips draw submission");
+        backend.DestroyInstance(timed, immediate: false);
+        backend.UpdateInstance(timed, Frame(7, false, 0.6f));
+        backend.CaptureMainThread(unrendered with { FrameIndex = 2 });
+        Check(!backend.IsInstanceAlive(timed) && !backend.HasActiveWork, "timed dim finishes draining across RendersMap=false frames");
+    }
+
+    [LumenFact]
     public static void ScreenDimShadersCompileThroughRealSlang()
     {
         DistortionSuite.WithSlangLoaded(() =>
