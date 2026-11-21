@@ -47,4 +47,45 @@
   <RimLumen_SourceBuiltIn>内置</RimLumen_SourceBuiltIn>
   <RimLumen_SourceMod>模组：{0}</RimLumen_SourceMod>
   <RimLumen_SourceLocal>本地</RimLumen_SourceLocal>
+  <RimLumen_PreviewWindowTitle>RimLumen 特效预览</RimLumen_PreviewWindowTitle>
+  <RimLumen_PreviewResolveId>按 ID 查找</RimLumen_PreviewResolveId>
+  <RimLumen_PreviewResolveIdTip>按搜索框中的精确特效 ID 解析（可用于查找外部提供方如 RimUnity 导入的特效）。</RimLumen_PreviewResolveIdTip>
+  <RimLumen_PreviewReloadAssets>重载特效资产</RimLumen_PreviewReloadAssets>
+  <RimLumen_PreviewReloadAssetsTip>重新扫描所有已启用模组的 .lumen.json 文件并刷新已加载的 LumenEffectDef 快照。</RimLumen_PreviewReloadAssetsTip>
+  <RimLumen_PreviewStopAll>全部停止 ({0})</RimLumen_PreviewStopAll>
+  <RimLumen_PreviewStopAllTip>立即停止并释放本窗口播放的所有预览实例。</RimLumen_PreviewStopAllTip>
+  <RimLumen_PreviewClearError>清除错误</RimLumen_PreviewClearError>
+  <RimLumen_PreviewEffectListHeader>已注册特效 ({0}/{1})</RimLumen_PreviewEffectListHeader>
+  <RimLumen_PreviewNoMatches>没有匹配的特效。</RimLumen_PreviewNoMatches>
+  <RimLumen_PreviewSelectPrompt>从左侧选择一个特效以预览。</RimLumen_PreviewSelectPrompt>
+  <RimLumen_PreviewMissingAfterReload>特效“{0}”在重载后不可用（可能已被移除或校验失败）。修复文件后可再次重载。</RimLumen_PreviewMissingAfterReload>
+  <RimLumen_PreviewSourceLine>来源：{0}</RimLumen_PreviewSourceLine>
+  <RimLumen_PreviewSourceCode>代码注册 (C#)</RimLumen_PreviewSourceCode>
+  <RimLumen_PreviewSourceExternal>外部提供方 / RimUnity ({0})</RimLumen_PreviewSourceExternal>
+  <RimLumen_PreviewAssetStats>节点：{0}  |  默认时长：{1}s  |  模式：{2}  |  交互规则：{3}</RimLumen_PreviewAssetStats>
+  <RimLumen_PreviewPlaybackLooping>循环</RimLumen_PreviewPlaybackLooping>
+  <RimLumen_PreviewPlaybackOneShot>一次性</RimLumen_PreviewPlaybackOneShot>
+  <RimLumen_PreviewInteractionHint>鼠标交互规则（interactionEvents）会在未遮挡地图上的预览实例自动生效。</RimLumen_PreviewInteractionHint>
+  <RimLumen_PreviewLastOrigin>上次预览坐标：({0}, 0, {1})</RimLumen_PreviewLastOrigin>
+  <RimLumen_PreviewRequiresMap>当前没有打开地图，无法在地图上播放预览。</RimLumen_PreviewRequiresMap>
+  <RimLumen_PreviewPlayAtCamera>在镜头中心播放</RimLumen_PreviewPlayAtCamera>
+  <RimLumen_PreviewPickMapPos>点地图选位置</RimLumen_PreviewPickMapPos>
+  <RimLumen_PreviewPickingMapPos>点击地图选点中…</RimLumen_PreviewPickingMapPos>
+  <RimLumen_PreviewPickMapHint>左键点击地图格子播放特效（右键或 Esc 取消）</RimLumen_PreviewPickMapHint>
+  <RimLumen_PreviewReplay>重新播放</RimLumen_PreviewReplay>
+  <RimLumen_PreviewFadeOutCurrent>淡出停止当前</RimLumen_PreviewFadeOutCurrent>
+  <RimLumen_PreviewRealTime>实时播放（忽略游戏暂停）</RimLumen_PreviewRealTime>
+  <RimLumen_PreviewRealTimeTip>开启后预览实例按真实时间推进；关闭时严格跟随游戏时钟（游戏暂停时定格）。</RimLumen_PreviewRealTimeTip>
+  <RimLumen_PreviewPausedHint>游戏当前已暂停：非实时特效会定格在首帧，可取消暂停或勾选“实时播放”。</RimLumen_PreviewPausedHint>
+  <RimLumen_PreviewStatesHeader>状态机 ({0})</RimLumen_PreviewStatesHeader>
+  <RimLumen_PreviewCurrentState>当前状态：{0}</RimLumen_PreviewCurrentState>
+  <RimLumen_PreviewCurrentStateDraining>当前状态：{0}（收尾淡出中）</RimLumen_PreviewCurrentStateDraining>
+  <RimLumen_PreviewCurrentStateNone>当前状态：未播放或已结束</RimLumen_PreviewCurrentStateNone>
+  <RimLumen_PreviewStateTagInitial>初始</RimLumen_PreviewStateTagInitial>
+  <RimLumen_PreviewStateTagLoop>循环</RimLumen_PreviewStateTagLoop>
+  <RimLumen_PreviewStateTagStop>收尾</RimLumen_PreviewStateTagStop>
+  <RimLumen_PreviewReloadSummary>上次重载：载入 {0} 个 JSON 文件，失败 {1} 个。</RimLumen_PreviewReloadSummary>
+  <RimLumen_PreviewReloadFailedSeeLog>有 {0} 个文件重载失败，请查看游戏日志了解详情。</RimLumen_PreviewReloadFailedSeeLog>
+  <RimLumen_PreviewResolveNotFound>未找到或无法校验特效“{0}”。若存在解析报错请查看上方或游戏日志。</RimLumen_PreviewResolveNotFound>
+  <RimLumen_PreviewPlayReturnedInactive>播放“{0}”返回了未激活句柄（可能被提供方拒绝或粒子池已满）。</RimLumen_PreviewPlayReturnedInactive>
 </LanguageData>
