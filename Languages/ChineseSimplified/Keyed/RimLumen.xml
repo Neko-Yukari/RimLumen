@@ -47,4 +47,20 @@
   <RimLumen_SourceBuiltIn>内置</RimLumen_SourceBuiltIn>
   <RimLumen_SourceMod>模组：{0}</RimLumen_SourceMod>
   <RimLumen_SourceLocal>本地</RimLumen_SourceLocal>
+  <RimLumen_PreviewWindowTitle>RimLumen 特效预览</RimLumen_PreviewWindowTitle>
+  <RimLumen_PreviewReloadAssets>重载特效资产</RimLumen_PreviewReloadAssets>
+  <RimLumen_PreviewStopAll>全部停止 ({0})</RimLumen_PreviewStopAll>
+  <RimLumen_PreviewEffectListHeader>已注册特效 ({0}/{1})</RimLumen_PreviewEffectListHeader>
+  <RimLumen_PreviewNoMatches>没有匹配的特效。</RimLumen_PreviewNoMatches>
+  <RimLumen_PreviewSelectPrompt>从左侧选择一个特效以预览。</RimLumen_PreviewSelectPrompt>
+  <RimLumen_PreviewMissingAfterReload>特效“{0}”在重载后不可用（可能已被移除或校验失败）。修复文件后可再次重载。</RimLumen_PreviewMissingAfterReload>
+  <RimLumen_PreviewSourceLine>来源：{0}</RimLumen_PreviewSourceLine>
+  <RimLumen_PreviewSourceCode>代码注册 (C#)</RimLumen_PreviewSourceCode>
+  <RimLumen_PreviewPlayAtCamera>在镜头中心播放</RimLumen_PreviewPlayAtCamera>
+  <RimLumen_PreviewPickMapPos>点地图选位置</RimLumen_PreviewPickMapPos>
+  <RimLumen_PreviewPickingMapPos>点击地图选点中…</RimLumen_PreviewPickingMapPos>
+  <RimLumen_PreviewPickMapHint>左键点击地图格子播放特效（右键或 Esc 取消）</RimLumen_PreviewPickMapHint>
+  <RimLumen_PreviewReplay>重新播放</RimLumen_PreviewReplay>
+  <RimLumen_PreviewStatesHeader>状态机 ({0})</RimLumen_PreviewStatesHeader>
+  <RimLumen_PreviewReloadFailedSeeLog>有 {0} 个文件重载失败，请查看游戏日志了解详情。</RimLumen_PreviewReloadFailedSeeLog>
 </LanguageData>

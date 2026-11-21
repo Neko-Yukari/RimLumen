@@ -47,4 +47,20 @@
   <RimLumen_SourceBuiltIn>Built-in</RimLumen_SourceBuiltIn>
   <RimLumen_SourceMod>Mod: {0}</RimLumen_SourceMod>
   <RimLumen_SourceLocal>Local</RimLumen_SourceLocal>
+  <RimLumen_PreviewWindowTitle>RimLumen Effect Preview</RimLumen_PreviewWindowTitle>
+  <RimLumen_PreviewReloadAssets>Reload Assets</RimLumen_PreviewReloadAssets>
+  <RimLumen_PreviewStopAll>Stop All ({0})</RimLumen_PreviewStopAll>
+  <RimLumen_PreviewEffectListHeader>Registered Effects ({0}/{1})</RimLumen_PreviewEffectListHeader>
+  <RimLumen_PreviewNoMatches>No matching effects.</RimLumen_PreviewNoMatches>
+  <RimLumen_PreviewSelectPrompt>Select an effect on the left to preview it.</RimLumen_PreviewSelectPrompt>
+  <RimLumen_PreviewMissingAfterReload>Effect '{0}' is unavailable after reload (removed or failed validation). Fix the file and reload again.</RimLumen_PreviewMissingAfterReload>
+  <RimLumen_PreviewSourceLine>Source: {0}</RimLumen_PreviewSourceLine>
+  <RimLumen_PreviewSourceCode>Code registration (C#)</RimLumen_PreviewSourceCode>
+  <RimLumen_PreviewPlayAtCamera>Play at Camera Center</RimLumen_PreviewPlayAtCamera>
+  <RimLumen_PreviewPickMapPos>Pick Position on Map</RimLumen_PreviewPickMapPos>
+  <RimLumen_PreviewPickingMapPos>Picking on Map...</RimLumen_PreviewPickingMapPos>
+  <RimLumen_PreviewPickMapHint>Click a map cell to play the effect (right-click or Esc to cancel)</RimLumen_PreviewPickMapHint>
+  <RimLumen_PreviewReplay>Replay</RimLumen_PreviewReplay>
+  <RimLumen_PreviewStatesHeader>State Machine ({0})</RimLumen_PreviewStatesHeader>
+  <RimLumen_PreviewReloadFailedSeeLog>{0} file(s) failed to reload; see the game log for details.</RimLumen_PreviewReloadFailedSeeLog>
 </LanguageData>

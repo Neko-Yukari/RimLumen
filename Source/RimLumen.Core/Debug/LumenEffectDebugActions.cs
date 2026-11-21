@@ -15,6 +15,20 @@ public static class LumenEffectDebugActions
 {
     private static readonly List<ILumenEffectHandle> PlayedHandles = new();
 
+    [DebugAction("RimLumen", "Effect preview window...", allowedGameStates = AllowedGameStates.PlayingOnMap)]
+    public static void OpenEffectPreviewWindow()
+    {
+        LumenSceneBootstrap.EnsureInitialized();
+        LumenEffectPreviewWindow? existing = Find.WindowStack.WindowOfType<LumenEffectPreviewWindow>();
+        if (existing is not null)
+        {
+            Find.WindowStack.Notify_ClickedInsideWindow(existing);
+            return;
+        }
+
+        Find.WindowStack.Add(new LumenEffectPreviewWindow());
+    }
+
     [DebugAction("RimLumen", "Play native effects at mouse...", allowedGameStates = AllowedGameStates.PlayingOnMap)]
     public static void PlayEffectAtMouse()
     {
