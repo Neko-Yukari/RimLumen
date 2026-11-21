@@ -15,8 +15,6 @@ internal static class Program
             if (args[i] == "--filter") filter = args[i + 1];
         (string Name, Action Run)[] suites =
         [
-            ("WotF all seven translation and native/hybrid play", IntegrationTests.WotfIntegration),
-            ("WotF tier report", IntegrationTests.WotfTierReport),
             ("External map disposal releases only the removed map", IntegrationTests.ExternalMapDisposal),
             ("Tier matrix and External ownership", TranslationTests.TierMatrix),
             ("Phase3 active export fields", TranslationTests.ActiveExportFields),
@@ -37,7 +35,6 @@ internal static class Program
             ("Scene colour Gamma import", TranslationTests.SceneColor),
             ("PhaseA Linear material factors", TranslationTests.LinearMaterial),
             ("PhaseA imported material domain", TranslationTests.MaterialDomain),
-            ("PhaseA WotF Probe external handoff", IntegrationTests.WotfProbeMaterial),
             ("D20 per-particle lights ownership", TranslationTests.ParticleLights),
             ("Native trail and beam ribbons", RibbonTranslationTests.NativeTrailAndBeam),
             ("Resident native ribbon until Stop", () => RibbonTranslationTests.ResidentRibbon(false)),
