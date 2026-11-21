@@ -34,10 +34,13 @@ public sealed class LumenVfxService : ILumenVfxService, ILumenFrameContributor
         public void Trigger(string name) { }
         public void GoTo(string stateName) { }
         public void SetParam(string name, float value) { }
+        public void SetLightIntensity(float intensity) { }
+        public void SetLightColor(System.Numerics.Vector3 colorRgb) { }
         public void Stop(bool allowFadeOut = true) { }
         public void Dispose() { }
         // Never raised: the handle is dead before anyone can subscribe.
         public event Action<string>? Notify { add { } remove { } }
+        public event Action<LumenInteractionNotification>? InteractionNotify { add { } remove { } }
         public event Action<string>? StateChanged { add { } remove { } }
         public event Action? Finished { add { } remove { } }
     }

@@ -59,6 +59,12 @@ public sealed class RimUnityHybridVfxService : ILumenVfxService
             remove => native.Notify -= value;
         }
 
+        public event Action<LumenInteractionNotification>? InteractionNotify
+        {
+            add => native.InteractionNotify += value;
+            remove => native.InteractionNotify -= value;
+        }
+
         public event Action<string>? StateChanged
         {
             add => native.StateChanged += value;
@@ -82,6 +88,16 @@ public sealed class RimUnityHybridVfxService : ILumenVfxService
         {
             try { native.SetParam(name, value); }
             finally { external.SetParam(name, value); }
+        }
+        public void SetLightIntensity(float intensity)
+        {
+            native.SetLightIntensity(intensity);
+            external.SetLightIntensity(intensity);
+        }
+        public void SetLightColor(System.Numerics.Vector3 colorRgb)
+        {
+            native.SetLightColor(colorRgb);
+            external.SetLightColor(colorRgb);
         }
         public void Stop(bool allowFadeOut = true)
         {

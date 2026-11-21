@@ -20,7 +20,12 @@ namespace RimLumen.Core.Scene;
 public sealed class EffectInstanceHandle : ILumenEffectHandle
 {
     private enum PlaybackState { Playing, Draining, Dead }
-    private enum EventKind : byte { Notify, StateChanged, Finished }
+    private enum EventKind : byte { Notify, InteractionNotify, StateChanged, Finished }
+    private readonly record struct PendingEvent(
+        EventKind Kind,
+        string? Name,
+        LumenInteractionTrigger Trigger = default,
+        LumenCursorSource Cursor = default);
     private readonly LumenVfxService owner;
     private readonly EffectAsset asset;
     private readonly EffectStateGraph graph;
@@ -44,11 +49,13 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     // its backend instance id (-1 = unbound).
     private readonly ILumenNodeFeatureBackend?[] featureBackends;
     private readonly int[][] featureIds;
-    private readonly Queue<(EventKind Kind, string? Name)> pendingEvents = new();
+    private readonly Queue<PendingEvent> pendingEvents = new();
     private readonly Dictionary<string, float> parameters = new(StringComparer.Ordinal)
     {
         ["intensity"] = 1f, ["rate"] = 1f, ["scale"] = 1f,
     };
+    private float lightIntensity = 1f;
+    private Vector3? lightColor;
     private PlaybackState state;
     private int currentState = -1;
     private double stateTime;
@@ -86,6 +93,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         public float DwellSeconds;
         public bool WasInside;
         public bool WasSwiping;
+        public LumenCursorSource LastInsideCursor;
         public uint Seen0, Seen1, Seen2, Seen3, Seen4, Seen5, Seen6, Seen7;
 
         public readonly uint GetSeen(byte slot) => slot switch
@@ -246,6 +254,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     }
 
     public event Action<string>? Notify;
+    public event Action<LumenInteractionNotification>? InteractionNotify;
     public event Action<string>? StateChanged;
     public event Action? Finished;
 
@@ -290,6 +299,31 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         if ((name == "rate" || name == "intensity") && (!float.IsFinite(value) || value < 0f))
             throw new ArgumentOutOfRangeException(nameof(value), value, $"{name} must be finite and nonnegative.");
         if (IsAlive) parameters[name] = value;
+    }
+
+    public void SetLightIntensity(float intensity)
+    {
+        ValidateLightIntensity(intensity);
+        if (IsAlive) lightIntensity = intensity;
+    }
+
+    public void SetLightColor(Vector3 colorRgb)
+    {
+        ValidateLightColor(colorRgb);
+        if (IsAlive) lightColor = colorRgb;
+    }
+
+    internal static void ValidateLightIntensity(float intensity)
+    {
+        if (!float.IsFinite(intensity) || intensity < 0f)
+            throw new ArgumentOutOfRangeException(nameof(intensity), intensity, "Light intensity must be finite and nonnegative.");
+    }
+
+    internal static void ValidateLightColor(Vector3 colorRgb)
+    {
+        if (!float.IsFinite(colorRgb.X) || !float.IsFinite(colorRgb.Y) || !float.IsFinite(colorRgb.Z) ||
+            colorRgb.X < 0f || colorRgb.X > 1f || colorRgb.Y < 0f || colorRgb.Y > 1f || colorRgb.Z < 0f || colorRgb.Z > 1f)
+            throw new ArgumentOutOfRangeException(nameof(colorRgb), colorRgb, "Light color RGB components must be finite and in [0, 1].");
     }
 
     // Ensures: allowFadeOut == true: when the asset declares a StopState, enters it (unless it is already the
@@ -388,9 +422,19 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             var pending = pendingEvents.Dequeue();
             switch (pending.Kind)
             {
-                case EventKind.Notify: Notify?.Invoke(pending.Name!); break;
-                case EventKind.StateChanged: StateChanged?.Invoke(pending.Name!); break;
-                default: Finished?.Invoke(); break;
+                case EventKind.Notify:
+                    Notify?.Invoke(pending.Name!);
+                    break;
+                case EventKind.InteractionNotify:
+                    Notify?.Invoke(pending.Name!);
+                    InteractionNotify?.Invoke(new LumenInteractionNotification(pending.Name!, pending.Trigger, pending.Cursor));
+                    break;
+                case EventKind.StateChanged:
+                    StateChanged?.Invoke(pending.Name!);
+                    break;
+                default:
+                    Finished?.Invoke();
+                    break;
             }
         }
     }
@@ -457,7 +501,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             if (entered.NodeMask[i]) RestartNode(i, frameDelta);
             else DeactivateNode(i, frameDelta);
         }
-        if (entered.Name is { } name) pendingEvents.Enqueue((EventKind.StateChanged, name));
+        if (entered.Name is { } name) pendingEvents.Enqueue(new PendingEvent(EventKind.StateChanged, name));
     }
 
     // Ensures: the node emits again from the start of its own schedule (burst times, Duration and rate measured
@@ -527,7 +571,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             }
         }
         RemoveLights();
-        pendingEvents.Enqueue((EventKind.Finished, null));
+        pendingEvents.Enqueue(new PendingEvent(EventKind.Finished, null));
     }
 
     // Pushed at creation, and every frame for a depth-masked node so its reference follows the origin. Each backend
@@ -578,7 +622,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
     private void FireEvent(TimelineEventSpec timelineEvent)
     {
         EmitNodePulse(timelineEvent.TargetNodeIndex);
-        if (timelineEvent.Notify) pendingEvents.Enqueue((EventKind.Notify, timelineEvent.EventName));
+        if (timelineEvent.Notify) pendingEvents.Enqueue(new PendingEvent(EventKind.Notify, timelineEvent.EventName));
     }
 
     private void EmitNodePulse(int node)
@@ -598,6 +642,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
 
     private void ReleaseCursorSubscription()
     {
+        Array.Clear(interactionStates);
         if (!subscribedCursorEvents) return;
         subscribedCursorEvents = false;
         ParticleEnvironment.UnregisterCursorSubscriber(request.MapIndex);
@@ -699,6 +744,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                 rs.WasInside = false;
                 rs.WasSwiping = false;
                 rs.DwellSeconds = 0f;
+                rs.LastInsideCursor = default;
                 continue;
             }
 
@@ -725,7 +771,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                     rs.SetSeen(pulse.Slot, pulse.Id);
                     if (rs.CooldownRemaining <= 0f)
                     {
-                        FireInteractionRule(in rule, ref rs);
+                        FireInteractionRule(in rule, ref rs, LumenCursorSource.None);
                         if (state != PlaybackState.Playing) break;
                         bool stillMatches = rule.StateIndex >= 0 ? currentState == rule.StateIndex : !stopRequested;
                         if (!stillMatches)
@@ -733,6 +779,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                             rs.WasInside = false;
                             rs.WasSwiping = false;
                             rs.DwellSeconds = 0f;
+                            rs.LastInsideCursor = default;
                             break;
                         }
                     }
@@ -742,15 +789,22 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
 
             bool anyInside = false;
             bool matchInside = false;
+            LumenCursorSource firstInsideCursor = default;
+            LumenCursorSource matchingCursor = default;
             for (int c = 0; c < cursors.Length; c++)
             {
                 ref readonly LumenCursorSnapshot cur = ref cursors[c];
                 if (Vector2.DistanceSquared(cur.PositionXZ, anchorXZ) <= rule.RadiusSq)
                 {
-                    anyInside = true;
+                    if (!anyInside)
+                    {
+                        anyInside = true;
+                        firstInsideCursor = cur.Source;
+                    }
                     if (SpeedMatches(cur.Speed, in rule))
                     {
                         matchInside = true;
+                        matchingCursor = cur.Source;
                         break;
                     }
                 }
@@ -763,17 +817,19 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                     bool entered = !rs.WasInside && anyInside;
                     rs.WasInside = anyInside;
                     if (entered && matchInside && rs.CooldownRemaining <= 0f)
-                        FireInteractionRule(in rule, ref rs);
+                        FireInteractionRule(in rule, ref rs, matchingCursor);
                     break;
                 }
                 case LumenInteractionTrigger.CursorExit:
                 {
                     bool exited = rs.WasInside && !anyInside;
+                    LumenCursorSource priorCursor = rs.LastInsideCursor;
                     rs.WasInside = anyInside;
-                    if (exited && rs.CooldownRemaining <= 0f)
+                    rs.LastInsideCursor = anyInside ? (matchInside ? matchingCursor : firstInsideCursor) : default;
+                    if (exited && rs.CooldownRemaining <= 0f &&
+                        TryResolveExitCursor(cursors, priorCursor, in rule, out LumenCursorSource exitCursor))
                     {
-                        bool exitSpeedOk = cursors.IsEmpty ? rule.MinCursorSpeed == 0f : AnySpeedMatches(cursors, in rule);
-                        if (exitSpeedOk) FireInteractionRule(in rule, ref rs);
+                        FireInteractionRule(in rule, ref rs, exitCursor);
                     }
                     break;
                 }
@@ -785,7 +841,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                         if (rs.DwellSeconds >= rule.HoldSeconds && rs.CooldownRemaining <= 0f)
                         {
                             rs.DwellSeconds = 0f;
-                            FireInteractionRule(in rule, ref rs);
+                            FireInteractionRule(in rule, ref rs, matchingCursor);
                         }
                     }
                     else
@@ -799,38 +855,83 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
                     bool rising = !rs.WasSwiping && matchInside;
                     rs.WasSwiping = matchInside;
                     if (rising && rs.CooldownRemaining <= 0f)
-                        FireInteractionRule(in rule, ref rs);
+                        FireInteractionRule(in rule, ref rs, matchingCursor);
                     break;
                 }
             }
         }
     }
 
-    private void FireInteractionRule(in CompiledInteractionRule rule, ref InteractionRuleState rs)
+    private void FireInteractionRule(in CompiledInteractionRule rule, ref InteractionRuleState rs, LumenCursorSource cursor)
     {
         rs.CooldownRemaining = rule.CooldownSeconds;
         if (rule.GoToStateIndex >= 0 && !stopRequested)
             EnterState(rule.GoToStateIndex, frameDelta: 0f);
         EmitNodePulse(rule.TargetNodeIndex);
         if (rule.Notify)
-            pendingEvents.Enqueue((EventKind.Notify, rule.EventName));
+            pendingEvents.Enqueue(new PendingEvent(EventKind.InteractionNotify, rule.EventName, rule.Trigger, cursor));
     }
 
     private static bool SpeedMatches(float speed, in CompiledInteractionRule rule)
         => speed >= rule.MinCursorSpeed && (rule.MaxCursorSpeed is null || speed <= rule.MaxCursorSpeed.Value);
 
-    private static bool AnySpeedMatches(ReadOnlySpan<LumenCursorSnapshot> cursors, in CompiledInteractionRule rule)
+    private static bool TryResolveExitCursor(
+        ReadOnlySpan<LumenCursorSnapshot> cursors,
+        LumenCursorSource priorCursor,
+        in CompiledInteractionRule rule,
+        out LumenCursorSource exitCursor)
     {
+        if (cursors.IsEmpty)
+        {
+            if (rule.MinCursorSpeed == 0f)
+            {
+                exitCursor = priorCursor;
+                return true;
+            }
+            exitCursor = default;
+            return false;
+        }
+
+        bool anySpeedMatch = false;
+        LumenCursorSource firstSpeedMatch = default;
+        bool priorPresent = false;
         for (int i = 0; i < cursors.Length; i++)
-            if (SpeedMatches(cursors[i].Speed, in rule)) return true;
-        return false;
+        {
+            bool speedOk = SpeedMatches(cursors[i].Speed, in rule);
+            if (speedOk && !anySpeedMatch)
+            {
+                anySpeedMatch = true;
+                firstSpeedMatch = cursors[i].Source;
+            }
+            if (cursors[i].Source == priorCursor)
+            {
+                priorPresent = true;
+                if (speedOk)
+                {
+                    exitCursor = priorCursor;
+                    return true;
+                }
+            }
+        }
+
+        if (!anySpeedMatch)
+        {
+            exitCursor = default;
+            return false;
+        }
+
+        exitCursor = !priorPresent && rule.MinCursorSpeed == 0f && priorCursor != default
+            ? priorCursor
+            : firstSpeedMatch;
+        return true;
     }
 
-    // Ensures: a node's light colour this frame is ColorRgb * intensity * fade * (IntensityOverTime is null ? 1 :
-    //          Evaluate(IntensityOverTime, seconds since the node's last restart)); fade is 1 while the node emits and
-    //          falls linearly to 0 over LightFadeSeconds after it stops, when the light turns off.
+    // Ensures: a node's light colour this frame is (lightColor ?? ColorRgb) * (intensity * lightIntensity * fade *
+    //          (IntensityOverTime is null ? 1 : Evaluate(IntensityOverTime, seconds since the node's last restart)));
+    //          fade is 1 while the node emits and falls linearly to 0 over LightFadeSeconds after it stops.
     private void UpdateLights(float intensity)
     {
+        float combinedIntensity = intensity * lightIntensity;
         for (int i = 0; i < asset.Nodes.Length; i++)
         {
             if (asset.Nodes[i].PointLight is not { } spec) continue;
@@ -840,7 +941,8 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
             if (!lightOn[i]) continue;
             float curve = spec.IntensityOverTime is { } overTime
                 ? CurveEvaluator.Evaluate(overTime, playbackTime - nodeActivatedAt[i]) : 1f;
-            lightRgb[i] = spec.ColorRgb * (intensity * fade * curve);
+            Vector3 color = lightColor ?? spec.ColorRgb;
+            lightRgb[i] = color * (combinedIntensity * fade * curve);
         }
     }
 
@@ -872,7 +974,7 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         if (CpuEmitterCount == 0 && GpuEmitterCount == 0 && LightCount == 0 && FeatureInstanceCount() == 0)
         {
             state = PlaybackState.Dead;
-            pendingEvents.Enqueue((EventKind.Finished, null));
+            pendingEvents.Enqueue(new PendingEvent(EventKind.Finished, null));
         }
     }
 

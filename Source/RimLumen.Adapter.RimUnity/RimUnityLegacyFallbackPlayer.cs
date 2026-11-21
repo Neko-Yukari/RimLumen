@@ -162,8 +162,22 @@ public sealed class RimUnityLegacyFallbackPlayer : IRimUnityExternalPlayer
         public void GoTo(string stateName) { }
 
         public event Action<string>? Notify { add { } remove { } }
+        public event Action<LumenInteractionNotification>? InteractionNotify { add { } remove { } }
         public event Action<string>? StateChanged { add { } remove { } }
         public event Action? Finished;
+
+        public void SetLightIntensity(float intensity)
+        {
+            if (!float.IsFinite(intensity) || intensity < 0f)
+                throw new ArgumentOutOfRangeException(nameof(intensity), intensity, "Light intensity must be finite and nonnegative.");
+        }
+
+        public void SetLightColor(System.Numerics.Vector3 colorRgb)
+        {
+            if (!float.IsFinite(colorRgb.X) || !float.IsFinite(colorRgb.Y) || !float.IsFinite(colorRgb.Z) ||
+                colorRgb.X < 0f || colorRgb.X > 1f || colorRgb.Y < 0f || colorRgb.Y > 1f || colorRgb.Z < 0f || colorRgb.Z > 1f)
+                throw new ArgumentOutOfRangeException(nameof(colorRgb), colorRgb, "Light color RGB components must be finite and in [0, 1].");
+        }
 
         public void SetParam(string name, float value)
         {

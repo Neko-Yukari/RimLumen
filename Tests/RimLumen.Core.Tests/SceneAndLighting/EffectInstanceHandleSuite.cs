@@ -447,6 +447,102 @@ public static class EffectInstanceHandleSuite
         VfxAssert.Equal(0, service.LiveHandleCount);
     }
 
+    [LumenFact]
+    public static void SetLightIntensityAndColorControlPointLightsWithoutAffectingParticles()
+    {
+        var asset = new EffectAsset
+        {
+            EffectId = "b3.light-runtime-override",
+            Nodes = new[]
+            {
+                new EffectNodeSpec
+                {
+                    Name = "glow",
+                    Emitter = VfxTestData.Emitter(tier: LumenParticleTier.L1_NativeCpu),
+                    PointLight = new PointLightSpec(4f, new Vector3(0.2f, 0.5f, 1.0f),
+                        new ScalarCurve(new[] { new RimLumen.Core.Contracts.CurveKey(0f, 0.5f), new RimLumen.Core.Contracts.CurveKey(1f, 0.5f) })),
+                },
+                new EffectNodeSpec
+                {
+                    Name = "gpu_sparks",
+                    Emitter = VfxTestData.Emitter(tier: LumenParticleTier.L2_GpuCompute),
+                },
+            },
+        };
+        var service = VfxTestData.Service(asset);
+        var gpu = new SpyGpuEngine();
+        service.GpuEngineProvider = () => gpu;
+        using var handle = service.Play(new LumenPlayRequest
+        {
+            MapIndex = 111,
+            EffectId = asset.EffectId,
+            OriginWorld = new Vector3(10f, 1f, 20f),
+        });
+
+        // Baseline: curve = 0.5, intensity = 1, lightIntensity = 1 -> Light = (0.1, 0.25, 0.5); L1 & L2 particle intensity = 1.
+        VfxTestData.Step(service, 0.25f, currentMapIndex: 111);
+        VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(Vector4.One, service.Simulator.Vertices[0].Color);
+        VfxAssert.Equal(1f, service.Simulator.Vertices[0].HdrGain);
+        VfxAssert.Equal(1f, gpu.Updates[^1].Intensity);
+        VfxAssert.Close(new Vector3(0.1f, 0.25f, 0.5f), service.Lights[0].Light);
+
+        // SetLightIntensity(3f) scales only point light (0.5 * 3 = 1.5 -> (0.3, 0.75, 1.5)), leaving L1 & L2 particles untouched.
+        handle.SetLightIntensity(3f);
+        VfxTestData.Step(service, 0.25f, currentMapIndex: 111);
+        VfxAssert.Equal(Vector4.One, service.Simulator.Vertices[0].Color);
+        VfxAssert.Equal(1f, service.Simulator.Vertices[0].HdrGain);
+        VfxAssert.Equal(1f, gpu.Updates[^1].Intensity);
+        VfxAssert.Close(new Vector3(0.3f, 0.75f, 1.5f), service.Lights[0].Light);
+
+        // SetLightColor((1.0, 0.2, 0.0)) replaces base light colour (even when authored R was 0.2 and B was 1.0),
+        // combined with curve (0.5) * lightIntensity (3) * intensity (2) = 3.0 -> Light = (3.0, 0.6, 0.0); L1/L2 particles take only intensity = 2.
+        handle.SetParam("intensity", 2f);
+        handle.SetLightColor(new Vector3(1f, 0.2f, 0f));
+        VfxTestData.Step(service, 0.25f, currentMapIndex: 111);
+        VfxAssert.Equal(Vector4.One, service.Simulator.Vertices[0].Color);
+        VfxAssert.Equal(2f, service.Simulator.Vertices[0].HdrGain);
+        VfxAssert.Equal(2f, gpu.Updates[^1].Intensity);
+        VfxAssert.Close(new Vector3(3f, 0.6f, 0f), service.Lights[0].Light);
+
+        // Invalid inputs throw ArgumentOutOfRangeException at entry without mutating stored light intensity/colour.
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetLightIntensity(-0.1f));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetLightIntensity(float.NaN));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetLightIntensity(float.PositiveInfinity));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetLightColor(new Vector3(-0.01f, 0.5f, 0.5f)));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetLightColor(new Vector3(0.5f, 1.01f, 0.5f)));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetLightColor(new Vector3(0.5f, 0.5f, float.NaN)));
+        VfxTestData.Step(service, 0f, currentMapIndex: 111);
+        VfxAssert.Close(new Vector3(3f, 0.6f, 0f), service.Lights[0].Light);
+
+        // Setting lightIntensity to 0 or lightColor to black suppresses light pool collection while particles remain alive.
+        handle.SetLightIntensity(0f);
+        VfxTestData.Step(service, 0f, currentMapIndex: 111);
+        VfxAssert.Equal(0, service.Lights.Count);
+        VfxAssert.Check(service.Simulator.LiveParticleCount > 0, "Particles remain unaffected when light intensity is zeroed");
+
+        handle.SetLightIntensity(2f);
+        handle.SetLightColor(Vector3.Zero);
+        VfxTestData.Step(service, 0f, currentMapIndex: 111);
+        VfxAssert.Equal(0, service.Lights.Count);
+        VfxAssert.Equal(2f, gpu.Updates[^1].Intensity);
+
+        // Dead handles still validate inputs at entry and treat valid calls as safe no-ops; inert handles are total no-ops.
+        handle.Dispose();
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetLightIntensity(-1f));
+        VfxAssert.Throws<ArgumentOutOfRangeException>(() => handle.SetLightColor(new Vector3(2f, 0f, 0f)));
+        handle.SetLightIntensity(5f);
+        handle.SetLightColor(Vector3.One);
+        VfxAssert.Equal(0, service.Lights.Count);
+
+        using ILumenEffectHandle inert = service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = "missing.effect" });
+        inert.SetLightIntensity(-1f);
+        inert.SetLightColor(new Vector3(0f, -1f, 0f));
+        inert.SetLightIntensity(1f);
+        inert.SetLightColor(Vector3.One);
+        VfxAssert.Equal(0, service.Lights.Count);
+    }
+
     private static EffectAsset LitAsset(string id, TimelineEventSpec[]? timelineEvents = null) => new()
     {
         EffectId = id, Nodes = new[]
