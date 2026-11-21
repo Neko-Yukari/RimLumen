@@ -9,7 +9,7 @@ This manual is for mod authors creating visual effects and post-processing packs
 Choose one of the following three approaches based on your needs:
 
 1. **Data-Only Effect Definitions (no DLL reference required)**: Add `NekoYukari.RimLumen` to `modDependencies` / `loadAfter` in your mod's `About/About.xml`, then author XML `LumenEffectDef` or `.lumen.json` effect files.
-2. **C# Playback & Dynamic Registration**: Reference `RimLumen.Core.dll` (located at `1.7/Assemblies/RimLumen.Core.dll` in this mod) in your C# project and play or register effects via `RimLumen.Core.Api.RimLumenApi`.
+2. **C# Playback & Dynamic Registration**: Reference `RimLumen.Core.dll` (located at `1.7/Assemblies/RimLumen.Core.dll` in this mod) and the game assemblies in a `.NET 10` (`net10.0`) C# project, build using RimWorld's bundled `Moddev` .NET 10 SDK, and play or register effects via `RimLumen.Core.Api.RimLumenApi` (see Chapter 6, "Project Setup and Build Guide").
 3. **Programmable ShaderPacks (no DLL reference required)**: Place `pack.json` and GLSL `#version 450` fragment shaders under `1.7/ShaderPacks/<PackFolder>/` in your mod to declare custom post-processing passes, render targets, persistent history buffers, and live player sliders.
 
 ---
@@ -203,11 +203,14 @@ An effect is made of named states, and exactly one state plays at a time. A stat
 
 **Root fields**: `initialState` is the state entered on play, defaulting to `states[0]`; `LumenPlayRequest.InitialState` overrides it for a single play. `stopState` is the outro entered by `Stop(true)`; it must end on its own (no `loop`, no `next`). Without it, `Stop(true)` starts fading out at once.
 
-**Entering a state** (the initial state, `next`, `GoTo`, including `GoTo` of the current state, which re-enters it):
+**Entering a state** (the initial state, `next`, `GoTo`, re-entering the current state via `GoTo(current)`, and `interactionEvents[].goToState`) (**even when a node was already active in the previous state — this is intentional design**):
 
 1. The state clock resets to zero and `StateChanged(name)` is raised once.
-2. Every node of the state restarts its own emission schedule: `bursts` times, the emitter `duration` and `rateOverTime` all count from the moment of entry. L1 (CPU) and L2 (GPU) behave identically.
-3. Every other node stops new emission; its live particles finish their lifetime and its point light fades out over `0.25s`.
+2. **Every node belonging to the state restarts from scratch**:
+   - Particle emission schedules: `bursts` times, emitter `duration`, `rateOverTime` scheduling, and shared density carry / probability RNG all start from entry time (particles already in flight finish their remaining lifetime). L1 (CPU) and L2 (GPU) behave identically.
+   - Point lights & node features: the `pointLight.intensityOverTime` curve clock (`nodeActivatedAt`) restarts from `0` seconds; `distortion` and `screenDim` reset their `duration` / `strengthOverTime` clocks; `ribbon` `Trail` clears existing points and resets elapsed time, while `Beam` resets its noise clock.
+   - To keep a point light steady or continuous across state changes, place it on a separate handle that does not transition states, or adjust a single state dynamically with `SetLightIntensity` / `SetLightColor`.
+3. Every other node stops activating immediately: particle emitters stop new emission and let live particles finish their lifetime; point lights fade out over `0.25s`; `Trail` stops recording new points and lets existing points age out over `lifetime`; `Beam` hides immediately; `distortion` / `screenDim` with `duration > 0` finish their already-started `duration` (`duration == 0` hides immediately).
 
 Emission pause is distinct from game pause: after an emitter's first activation, its emission schedule clock advances while emission is disabled for both looping and non-looping emitters. Planned bursts crossed during that interval are skipped without catch-up, while live particles continue simulating. A never-activated node remains at emission time 0. Explicit Restart resets the clock, density carry, and probability RNG while retaining already accepted pending bursts. Global game pause still uses `dt=0`; `SetParam("rate", 0)` pauses continuous emission only and does not affect authored bursts.
 
@@ -241,7 +244,7 @@ A loop state fires its events again every `duration` cycle, and events with `tim
 | `state` | `null` | `null` applies in any playing state before `Stop(true)`; non-null restricts evaluation to while that named state is playing |
 | `goToState` | `null` | When non-null and before `Stop(true)`, enters that state first upon firing (same semantics as `GoTo`), before `targetNodeIndex` and `Notify` |
 | `targetNodeIndex` | `-1` | When not `-1`, emits one pulse on that node (same rule as `timelineEvents[].targetNodeIndex`) |
-| `notify` | `false` | When `true`, firing raises `ILumenEffectHandle.Notify(eventName)` |
+| `notify` | `false` | When `true`, firing raises `ILumenEffectHandle.Notify(eventName)` and `ILumenEffectHandle.InteractionNotify(LumenInteractionNotification)` with trigger and cursor source details |
 
 - **Lazy host mouse sampling**: Whenever an active handle on the current map declares any `Cursor*` rule (or a `FollowHostMouse` source lease is active), the host samples the mouse ground position (`Y = 0`) once at the start of main-thread capture if not obscured by UI (`!MouseObscuredNow`) and inside map bounds, allowing pure `.lumen.json` / XML assets to react to the cursor without C#. With no active sources and no `Cursor*` subscribers, neither mouse nor window state is read.
 - **Screen-space cursor speed & EMA smoothing**: Cursor velocity is measured in isotropic screen heights per real second (`vh/s`)—both X and Y screen-pixel deltas are divided by viewport pixel height `ViewportHeight` (`Screen.height`), i.e., `v_vh = v_px / ViewportHeight = v_uiPx × UIScale / ViewportHeight` (traversing one full screen height in `1` real second equals `1.0`). This unit is invariant to camera zoom, screen resolution, and UI scale. Each active cursor independently smooths velocity with a first-order EMA (`tau = 0.05 s`, `alpha = 1 - exp(-dt_real / 0.05)`): first appearance or re-entry after UI occlusion/off-map starts at speed `0`; `dt_real <= 1e-5 s` holds the previous velocity; frame hitches `dt_real > 0.25 s` reset velocity to `0`.
@@ -375,6 +378,92 @@ Legacy XML keys are rejected too: `<startColorLinear>` is renamed to `<startColo
 </Defs>
 ```
 
+The following two snippets show complete XML usage for **smoke size/alpha fade over lifetime** and for **`<distortion>` and `<screenDim>` nodes**:
+
+```xml
+<!-- Example A: Particle size growth and alpha fade over lifetime (AlphaBlend smoke) -->
+<Defs>
+  <RimLumen.Core.Assets.LumenEffectDef>
+    <defName>MySmokeFade</defName>
+    <defaultDuration>3.0</defaultDuration>
+    <nodes>
+      <li>
+        <name>smoke</name>
+        <spacePlane>Vertical3D</spacePlane>
+        <heightOffset>0.2</heightOffset>
+        <emitter>
+          <maxParticles>128</maxParticles>
+          <duration>2.0</duration>
+          <looping>false</looping>
+          <rateOverTime>24</rateOverTime>
+          <startLifetimeMin>1.8</startLifetimeMin>
+          <startLifetimeMax>2.6</startLifetimeMax>
+          <startSpeedMin>0.35</startSpeedMin>
+          <startSpeedMax>0.65</startSpeedMax>
+          <startSizeMin>0.35</startSizeMin>
+          <startSizeMax>0.55</startSizeMax>
+          <startColor>(0.55, 0.55, 0.58, 0.45)</startColor>
+          <blendMode>AlphaBlend</blendMode>
+          <shape>Cone</shape>
+          <coneAngleDegrees>14</coneAngleDegrees>
+          <sizeOverLifetime>
+            <li><time>0</time><value>0.6</value></li>
+            <li><time>0.5</time><value>1.25</value></li>
+            <li><time>1</time><value>1.8</value></li>
+          </sizeOverLifetime>
+          <colorOverLifetime>
+            <li><time>0</time><color>(1, 1, 1, 0)</color></li>
+            <li><time>0.2</time><color>(1, 1, 1, 1)</color></li>
+            <li><time>1</time><color>(1, 1, 1, 0)</color></li>
+          </colorOverLifetime>
+        </emitter>
+      </li>
+    </nodes>
+  </RimLumen.Core.Assets.LumenEffectDef>
+</Defs>
+```
+
+```xml
+<!-- Example B: Combining Distortion (RingWave) and ScreenDim nodes in XML -->
+<Defs>
+  <RimLumen.Core.Assets.LumenEffectDef>
+    <defName>MyShockwaveAndDim</defName>
+    <defaultDuration>1.0</defaultDuration>
+    <nodes>
+      <li>
+        <name>shockwave</name>
+        <distortion>
+          <kind>RingWave</kind>
+          <radius>6</radius>
+          <strength>0.45</strength>
+          <thickness>0.75</thickness>
+          <speed>12</speed>
+          <duration>0.6</duration>
+          <strengthOverTime>
+            <li><time>0</time><value>1</value></li>
+            <li><time>0.6</time><value>0</value></li>
+          </strengthOverTime>
+        </distortion>
+      </li>
+      <li>
+        <name>dim</name>
+        <screenDim>
+          <strength>0.5</strength>
+          <duration>0.8</duration>
+          <strengthOverTime>
+            <li><time>0</time><value>0</value></li>
+            <li><time>0.12</time><value>1</value></li>
+            <li><time>0.8</time><value>0</value></li>
+          </strengthOverTime>
+        </screenDim>
+      </li>
+    </nodes>
+  </RimLumen.Core.Assets.LumenEffectDef>
+</Defs>
+```
+
+> Tip: Unused `<distortion>` fields for the chosen `<kind>` must remain `0` (for example, omit `<frequency>` for `RingWave`, and omit `<thickness>` and `<speed>` for `HeatHaze`); see section 5.4.
+
 ---
 
 ## 5. Enums and Force Fields Reference
@@ -389,6 +478,7 @@ Legacy XML keys are rejected too: `<startColorLinear>` is renamed to `<startColo
 - **`LumenEnvironmentChannel`**: `[Flags]` bitmask: `None` (`0`), `Explosion` (`1`), `Cursor` (`2`).
 - **`LumenEnvironmentForceShape`**: `HorizontalRadial` (`0`, ground XZ linear falloff) / `SphericalRadial` (`1`, 3D spherical linear falloff) / `SphericalWave` (`2`, expanding 3D spherical shell wave, pulses only).
 - **`LumenInteractionTrigger`**: `CursorEnter` (`0`) / `CursorExit` (`1`) / `CursorStay` (`2`) / `CursorSwipe` (`3`) / `Explosion` (`4`).
+- **`LumenCursorSourceKind`**: `None` (`0`, non-cursor triggers such as `Explosion`) / `HostMouse` (`1`, real host mouse) / `ModCursor` (`2`, mod-created world-space cursor via `CreateCursor` / `CreateEnvironmentSource`).
 
 ### Shapes and probabilistic bursts
 
@@ -450,6 +540,16 @@ A node's `distortion` projects onto the ground. Required `kind` is `RingWave`, `
 
 Unused fields must be 0; `duration = 0` means while the node is active. See section 6.5 for screen writes and compositing.
 
+```json
+{ "name": "shock", "distortion": { "kind": "RingWave", "radius": 6, "strength": 0.45, "thickness": 0.75, "speed": 12, "duration": 0.6, "strengthOverTime": [[0, 1], [0.6, 0]] } }
+```
+
+```xml
+<li><name>shock</name><distortion><kind>RingWave</kind><radius>6</radius><strength>0.45</strength><thickness>0.75</thickness><speed>12</speed><duration>0.6</duration>
+  <strengthOverTime><li><time>0</time><value>1</value></li><li><time>0.6</time><value>0</value></li></strengthOverTime>
+</distortion></li>
+```
+
 ### 5. Ribbon Nodes
 
 A node may contain both `emitter` and `ribbon`. Required `mode` is `Trail`, following the node, or `Beam`, connecting an endpoint. Trail requires finite positive `lifetime` and `minVertexDistance` and `maxPoints > 1`. It records points after the distance threshold, drops the oldest at capacity, and interpolates its lifetime cutoff. Restart clears points; fade-out lets points expire and immediate stop removes them.
@@ -488,24 +588,140 @@ Dimming affects content under the HDR layer at the queue-3152 composite; vanilla
 
 > Threading rule: Every method on `RimLumenApi` and `LumenTextureRegistry` **must be called on the game main thread**.
 
+#### Project Setup and Build Guide (.NET 10 SDK)
+
+RimLumen targets **`net10.0`**. Running a system-default .NET 9 (or older) `dotnet` CLI fails with `error NETSDK1045: The current .NET SDK does not support targeting .NET 10.0`. **You must build your mod assembly with the portable .NET 10 SDK bundled inside RimWorld 1.7's `Moddev` directory**.
+
+Minimal compilable `.csproj` (matching this repository's `Directory.Build.props` and `Source/RimLumen.Core/RimLumen.Core.csproj`; add `<Reference Include="Waylith">` from `$(GameRoot)/Waylith.dll` if your mod calls `LumenTextureRegistry.Register` or accesses `Waylith.Rendering` types directly):
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <OutputPath>1.7/Assemblies/</OutputPath>
+    <GameRoot Condition="'$(GameRoot)' == ''">E:/SteamLibrary/steamapps/common/RimWorld</GameRoot>
+    <RimLumenRoot Condition="'$(RimLumenRoot)' == ''">$(GameRoot)/Mods/RimLumen</RimLumenRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="RimLumen.Core">
+      <HintPath>$(RimLumenRoot)/1.7/Assemblies/RimLumen.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(GameRoot)/Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RimWorld">
+      <HintPath>$(GameRoot)/RimWorld.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityStubs">
+      <HintPath>$(GameRoot)/UnityStubs.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
+```
+
+PowerShell build command:
+
+```powershell
+$dotnet = "E:/SteamLibrary/steamapps/common/RimWorld/Moddev/tools/dotnet/dotnet.exe"
+$env:DOTNET_MULTILEVEL_LOOKUP = '0'
+& $dotnet build MyRimLumenMod.csproj -c Release --nologo /warnaserror
+```
+
 ### 1. Capability Queries and Dynamic Asset Registration
 
 ```csharp
+using System.Numerics;
 using RimLumen.Core.Api;
 using RimLumen.Core.Contracts;
+// Alias CurveKey when Verse is also in scope to avoid ambiguity with Verse.CurveKey
+using CurveKey = RimLumen.Core.Contracts.CurveKey;
 
 bool ready = RimLumenApi.IsReady;
 LumenCapabilities caps = RimLumenApi.Capabilities;
 // caps.IsHdrActive / IsSceneDepthAvailable / IsGpuComputeAvailable / MaxGpuParticlesPerFrame
 
-RimLumenApi.RegisterEffect(myEffectAsset); // Registers or replaces an asset with the same EffectId
-bool exists = RimLumenApi.TryGetEffect("Author.MyMod:Spells/Fireball", out EffectAsset? asset);
+// Dynamically build and register a full effect asset (validated at registration; treat asset and nested arrays as immutable afterward)
+var bloodSparks = new EffectAsset
+{
+    EffectId = "Author.MyMod:BloodSparks",
+    DefaultDuration = 1.2f,
+    Nodes = new[]
+    {
+        new EffectNodeSpec
+        {
+            Name = "sparks",
+            SpacePlane = LumenSpacePlane.Vertical3D,
+            LocalPosition = new Vector3(0f, 0.5f, 0f),
+            Emitter = new EmitterSpec
+            {
+                Name = "sparks",
+                PreferredTier = LumenParticleTier.L2_GpuCompute,
+                MaxParticles = 128,
+                Duration = 1.0f,
+                Looping = false,
+                WorldSpaceSimulation = false, // Local simulation: particles move with Follow below
+                RateOverTime = 0f,
+                Bursts = new[] { new ParticleBurstSpec(Time: 0f, Count: 28) },
+                Shape = LumenShapeKind.Sphere,
+                ShapeExtents = new Vector3(0.18f, 0.18f, 0.18f),
+                StartLifetimeMin = 0.4f,
+                StartLifetimeMax = 0.8f,
+                StartSpeedMin = 1.5f,
+                StartSpeedMax = 3.5f,
+                StartSizeMin = 0.08f,
+                StartSizeMax = 0.16f,
+                StartColor = new Vector4(0.95f, 0.12f, 0.10f, 1f),
+                HdrIntensity = 2.5f,
+                KillBelowFloor = true,
+                SizeOverLifetime = new ScalarCurve(new[]
+                {
+                    new CurveKey(0f, 1f),
+                    new CurveKey(1f, 0f),
+                }),
+                ColorOverLifetime = new ColorGradient(new[]
+                {
+                    new ColorStop(0f, new Vector4(1f, 1f, 1f, 1f)),
+                    new ColorStop(1f, new Vector4(0.6f, 0.05f, 0.05f, 0f)),
+                }),
+                ForceFields = new[]
+                {
+                    new ForceFieldSpec(ForceFieldKind.GravityDrag,
+                        CenterOrAxis: new Vector3(0f, -1f, 0f),
+                        Parameters: new Vector3(0.8f, 0f, 0f),
+                        Radius: 0f,
+                        Strength: 6f),
+                },
+            },
+            PointLight = new PointLightSpec(
+                GlowRadius: 3.5f,
+                ColorRgb: new Vector3(1f, 0.25f, 0.15f),
+                IntensityOverTime: new ScalarCurve(new[]
+                {
+                    new CurveKey(0f, 1.2f),
+                    new CurveKey(0.4f, 0f),
+                })),
+        },
+    },
+};
+
+RimLumenApi.RegisterEffect(bloodSparks); // Registers or replaces an asset with the same EffectId
+bool exists = RimLumenApi.TryGetEffect("Author.MyMod:BloodSparks", out EffectAsset? asset);
 ```
 
 ### 2. Playback API
 
 ```csharp
-// 1. Play at map cell center (most common)
+// 1. Play at map cell center (most common; OriginWorld.Y is automatically 0)
 ILumenEffectHandle handle = RimLumenApi.PlayAtCell(
     effectId: "Author.MyMod:Spells/Fireball",
     map: pawn.Map,
@@ -514,11 +730,11 @@ ILumenEffectHandle handle = RimLumenApi.PlayAtCell(
     rotationDegrees: 0f,
     realTime: false);
 
-// 2. Play at world position (note Vector3 is System.Numerics.Vector3)
+// 2. Play at world position (note Vector3 is System.Numerics.Vector3; Y is height above ground in cells, use 0f on the ground)
 ILumenEffectHandle handle2 = RimLumenApi.Play(
     effectId: "MyFireball",
     map: map,
-    originWorld: new System.Numerics.Vector3(x, y, z),
+    originWorld: new System.Numerics.Vector3(x, 0f, z),
     scale: 1.2f,
     rotationDegrees: 90f,
     realTime: false);
@@ -540,7 +756,8 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
             return false; // Returning false freezes at the last known transform instead of snapping back
         }
         var p = pawn.DrawPos;
-        pos = new System.Numerics.Vector3(p.x, p.y, p.z);
+        // Pass 0f for ground-anchored tracking; never pass p.y (Thing.DrawPos.y is a 2D draw-altitude layer, not height in cells)
+        pos = new System.Numerics.Vector3(p.x, 0f, p.z);
         yaw = pawn.Rotation.AsAngle;
         return true;
     },
@@ -549,9 +766,18 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 });
 ```
 
+- **World Y vs. RimWorld draw altitude**: `Thing.DrawPos.y`, `ToVector3ShiftedWithAltitude(...)`, and `Altitudes.AltitudeFor(...)` are 2D draw-sorting layer altitudes — **never pass them to `OriginWorld.Y` or `Follow`'s `pos.Y`**. For ground-level things or pawns, keep `Y = 0f` and put any fixed vertical offset on the node (`localPosition.y` / XML `<heightOffset>`). Pass a real non-zero `Y` only when the **play origin itself is elevated in physical cells above the ground** (for example a rising rocket, an airborne projectile, or a chest/muzzle height measured in map cells).
 - `LumenPlayRequest.DepthReferenceZ` supplies the mask reference as world Z in cells. Play records it as a Z offset from `OriginWorld`, so it moves with `Follow`. If a node declares `depthMask` and the request has no reference, `Play` throws `ArgumentException`.
 - `LumenPlayRequest.InteractionEvents` optionally attaches per-play `InteractionEventSpec[]` rules (validated once at `Play`, throwing `ArgumentException` on invalid entries) evaluated in order after the asset's own `InteractionEvents`, without cloning or mutating the shared `EffectAsset`.
 - If `EffectId` does not exist, `Play` returns an inert handle with `IsAlive == false` whose methods are no-ops, and logs `Log.Warning` once per ID per service instance. An asset rejected by validation also returns an inert handle; it retains the registry's validation error without adding an "unknown ID" warning.
+
+#### Local Simulation (`WorldSpaceSimulation = false`) vs. `Follow`
+
+`Follow` updates the root's `OriginWorld` and yaw each frame, and different node types and simulation spaces respond differently:
+
+- **Particle nodes — World-space simulation (`WorldSpaceSimulation = true`, default)**: `Follow` moves only the emitter's spawn transform; **already-emitted particles stay in world space** and do not follow subsequent motion (ideal for projectile trails or running dust). Under the vanilla 2D camera, world-space particles anchor `Vertical3D` at the node's ground XZ at birth.
+- **Particle nodes — Local-space simulation (`WorldSpaceSimulation = false`)**: Particle positions and velocities live in node-local space, so **live particles translate, rotate, and scale with `Follow` every frame** (ideal for shields, on-body hit sparks, and orbiting halos). Emitter `ForceFields` evaluate in node-local space; world environment forces (`Explosion` / `Cursor`) and wall collisions transform into local space when the node matrix is invertible (and are skipped when noninvertible, such as zero scale). Under 2D cameras, `Vertical3D` uses the node's current ground XZ.
+- **Non-particle nodes**: `pointLight` pools and `distortion` always follow the node's current world position; `Ribbon` `Trail` records historical world points (only the head follows the node while the tail stays behind), and `Beam` (`EndLocal`) translates and rotates rigidly with the node.
 
 ### 3. Handle Controls (`ILumenEffectHandle`)
 
@@ -561,13 +787,49 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 | `void Trigger(string name)` | Fires every timeline event with that name now, whatever its state and time (target-node pulse, `Notify`), and restarts the emission schedule of every node with that name until the next state entry decides again; the current state is unchanged. Unmatched names do nothing; no effect after fading out or death. L1 and L2 behave identically. |
 | `void GoTo(string stateName)` | Enters that state now (going to the current state restarts it). On an asset-backed handle, an undeclared state name always throws `ArgumentException`, including after `Stop(true)`, while draining, or once dead; a declared state is entered only while playing before `Stop(true)`, otherwise it has no effect. `Stop(false)` tears down immediately; `GoTo` on an inert handle is always a no-op. |
 | `event Action<string> Notify` | Raised with the event name when a timeline event or environment interaction event with `notify: true` fires (on its time, on an interaction trigger, or through `Trigger`). |
+| `event Action<LumenInteractionNotification>? InteractionNotify` | Raised with `LumenInteractionNotification(EventName, Trigger, Cursor)` when an environment interaction event with `notify: true` fires, identifying the trigger and `LumenCursorSource` (interaction events only; timeline events and `Trigger` never raise it; zero overhead with no subscribers and no cursors). |
 | `event Action<string> StateChanged` | Raised with the state name each time a declared state is entered, including the initial state. |
-| `event Action Finished` | Raised once when `IsAlive` becomes `false`, for any reason (played out, `Stop`, `Dispose`). |
-| `void SetParam(string name, float value)` | Updates runtime scalar parameters. Three built-in names take effect immediately: `intensity` (scales particle and light brightness), `rate` (scales only continuous L1 and L2 emission, not `bursts`; must be finite and nonnegative or throws `ArgumentOutOfRangeException`; zero pauses only continuous emission), and `scale` (multiplies root scale). Other names are stored without affecting simulation. |
+| `event Action Finished` | Raised once when `IsAlive` becomes `false`, for any reason (played out, `Stop`, `Dispose`, or map disposal). |
+| `void SetParam(string name, float value)` | Updates runtime scalar parameters. Three built-in names take effect immediately: `intensity` (scales both particle and point-light brightness), `rate` (scales only continuous L1 and L2 emission, not `bursts`; must be finite and nonnegative or throws `ArgumentOutOfRangeException`; zero pauses only continuous emission), and `scale` (multiplies root scale). Other names are stored without affecting simulation. |
+| `void SetLightIntensity(float intensity)` | Adjusts the runtime intensity multiplier for this handle's visual point lights only (final light scales by `intensity` param × this multiplier × fade × `intensityOverTime` curve), **without affecting particles, distortion, ribbons, or screen dim**. Must be finite and `>= 0` (unbounded above; `0` suppresses pool drawing); throws `ArgumentOutOfRangeException` before mutation on invalid input. Inert handles no-op; dead `EffectInstanceHandle` instances still validate input then no-op. |
+| `void SetLightColor(Vector3 colorRgb)` | Overrides the base RGB colour of this handle's visual point lights (replacing `PointLightSpec.ColorRgb`), **without affecting particles**. Each RGB component must be finite in `[0, 1]`; throws `ArgumentOutOfRangeException` before mutation on invalid input. Inert handles no-op; dead `EffectInstanceHandle` instances still validate input then no-op. |
 | `void Stop(bool allowFadeOut = true)` | When `true`: if the asset has a `stopState`, enters it and plays it to its end; then stops new emission, fades point lights over `0.25s`, and lets live particles finish their lifetime before reclamation. Without a `stopState` the fade starts at once. When `false`, immediately destroys all particles and lights. Repeated calls do nothing. |
-| `void Dispose()` | Equivalent to `Stop(false)`, idempotent. Always dispose long-lived handles in `Thing.DeSpawn` or when a map is destroyed. |
+| `void Dispose()` | Equivalent to `Stop(false)`, idempotent. Dispose long-lived handles when their host thing is removed on a live map (e.g., `Thing.DeSpawn`); map unload cleans up automatically (see below). |
 
-All three events are raised on the main thread from the per-frame advance, in the order they happened, so calling `GoTo` or `Stop` from a handler never re-enters the playback that raised it: the call takes effect at once (the nodes of the state being left stop new emission on that same frame), and the events it causes are raised on the next frame. After `Stop(false)` or `Dispose`, `Finished` is raised on the next frame. RimUnity compatibility playback (`External`) has no states or timeline events: `Notify` and `StateChanged` come only from the native RimLumen part, and `Finished` is raised once both parts have ended.
+All events (including `InteractionNotify`) are raised on the main thread from the per-frame advance, in the order they happened, so calling `GoTo` or `Stop` from a handler never re-enters the playback that raised it: the call takes effect at once (the nodes of the state being left stop new emission on that same frame), and the events it causes are raised on the next frame. After `Stop(false)` or `Dispose`, `Finished` is raised on the next frame. RimUnity compatibility playback (`External`) has no states or timeline events: `Notify`, `InteractionNotify`, and `StateChanged` come only from the native RimLumen part, and `Finished` is raised once both parts have ended.
+
+#### Identifying Cursor Sources (`InteractionNotify`)
+
+`LumenCursorSource` (`Kind`, `Source`, `IsHostMouse`, `IsModCursor`) identifies what triggered an interaction event:
+
+- Real host mouse (including while a `CreateMouseForce` lease is active): `Kind == LumenCursorSourceKind.HostMouse` (`IsHostMouse == true`, `Source == null`).
+- Mod-created world cursor (`CreateCursor` or a non-host-mouse `CreateEnvironmentSource`): `Kind == LumenCursorSourceKind.ModCursor` (`IsModCursor == true`), with `Source` holding the originating `ILumenEnvironmentSource` instance; even `CursorExit` caused by disposing or obscuring an inside cursor preserves attribution to that cursor.
+- Explosion triggers (`LumenInteractionTrigger.Explosion`): `Cursor == LumenCursorSource.None` (`Kind == LumenCursorSourceKind.None`, `Source == null`).
+
+```csharp
+handle.InteractionNotify += info =>
+{
+    // React only to the real host mouse, ignoring custom mod cursors from CreateCursor
+    if (!info.Cursor.IsHostMouse) return;
+    if (info.EventName == "cursorEnter")
+        mouseForce = RimLumenApi.CreateMouseForce(map, radius: 3f, strength: -6f);
+    else if (info.EventName == "cursorExit")
+    {
+        mouseForce?.Dispose();
+        mouseForce = null;
+    }
+};
+```
+
+#### Map Unload Lifecycle (`Map.Dispose`)
+
+- **Automatic immediate release**: When a map is disposed (`Map.Dispose`), RimLumen's prefix hooks immediately call `Dispose()` (equivalent to `Stop(allowFadeOut: false)`, **no fade-out**) on every native effect handle and every RimUnity `External` handle bound to that map, while also freeing that map's collision field, occlusion field, transient pulses, sustained sources, and cursor state. **Effects on other maps are unaffected** and keep playing.
+- **No manual map-unload cleanup needed**: Modders only need to dispose long-lived handles when their host object is removed on a live map (such as `ThingComp.PostDeSpawn` / `PostDestroy`); you do not need a map-destruction hook to prevent leaks on map unload, and calling `Dispose()` again is safely idempotent.
+- **Calling handle members after map-unload release**:
+  - `IsAlive` immediately becomes `false`, and `Finished` fires once on the next main-thread frame (if subscribed).
+  - `Stop(...)`, `Dispose()`, and `Trigger(...)` are safe no-ops.
+  - `GoTo(stateName)` is a no-op for declared states and still throws `ArgumentException` for undeclared state names on asset-backed native handles (`External` handles always no-op).
+  - `SetParam(...)`, `SetLightIntensity(...)`, and `SetLightColor(...)` still validate entry arguments (`ArgumentOutOfRangeException` on invalid values such as negative/non-finite `rate`, `intensity`, `SetLightIntensity`, or out-of-range `SetLightColor`), and are silent no-ops for valid inputs without mutating state.
 
 ---
 
@@ -1329,7 +1591,7 @@ This chapter is for asset adapters and custom backend authors. Content mods usin
 
 Pair capture and recording by `FrameIndex`: recording may lag or a frame may be dropped. `SubmissionFrameIndex` is only the rotating resource slot. Contexts are not binary GPU layouts. Frames and textures borrowed by render-thread callbacks must not be retained or disposed, and game main-thread APIs must not be accessed there. Capture carries map ID, clocks, camera matrices and viewport; compute carries frame and clocks; barriers carry the frame command buffer; draw carries the HDR target, nullable depth and camera data. Core service, CPU simulator, GPU engine, distortion and ribbon backends register contributors; the adapter's external player also uses one. Pipeline callback exceptions trip the render fail-safe and are logged.
 
-During main-thread `CaptureMainThread`, custom particle backends and adapters can call `LumenHostRegistry.GetEnvironmentForces(int mapIndex, LumenEnvironmentChannel channels)` and `LumenHostRegistry.GetCursors(int mapIndex)` to read the current frame's frozen world-space forces `ReadOnlySpan<LumenEnvironmentForce>` (`Channel`, `Shape`, `CenterWorld`, `Radius`, `Strength`, `WaveRadius`, `ShellHalfThickness`) and active cursor snapshots `ReadOnlySpan<LumenCursorSnapshot>` (`PositionXZ`, screen-height velocity `ScreenVelocity`, scalar `Speed`); empty spans are returned when none are active.
+During main-thread `CaptureMainThread`, custom particle backends and adapters can call `LumenHostRegistry.GetEnvironmentForces(int mapIndex, LumenEnvironmentChannel channels)` and `LumenHostRegistry.GetCursors(int mapIndex)` to read the current frame's frozen world-space forces `ReadOnlySpan<LumenEnvironmentForce>` (`Channel`, `Shape`, `CenterWorld`, `Radius`, `Strength`, `WaveRadius`, `ShellHalfThickness`) and active cursor snapshots `ReadOnlySpan<LumenCursorSnapshot>` (`PositionXZ`, screen-height velocity `ScreenVelocity`, scalar `Speed`, and `Source` of type `LumenCursorSource`); empty spans are returned when none are active.
 
 ### 3. GPU Particles and Node Backends
 

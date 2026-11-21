@@ -9,7 +9,7 @@
 按接入需求，可以选以下三种方式之一：
 
 1. **纯数据特效定义（不需要引用 DLL）**：在你的模组 `About/About.xml` 中把 `NekoYukari.RimLumen` 加入 `modDependencies` / `loadAfter`，然后编写 XML `LumenEffectDef` 或 `.lumen.json` 特效文件。
-2. **C# 调用播放（只读名称或动态造特效）**：在你的 C# 项目引用 `RimLumen.Core.dll`（位于本模组 `1.7/Assemblies/RimLumen.Core.dll`），通过 `RimLumen.Core.Api.RimLumenApi` 播放或注册特效。
+2. **C# 调用播放（只读名称或动态造特效）**：在你的 `.NET 10`（`net10.0`）C# 项目中引用 `RimLumen.Core.dll`（位于本模组 `1.7/Assemblies/RimLumen.Core.dll`）及游戏程序集，使用游戏 `Moddev` 自带的 .NET 10 SDK 编译，并通过 `RimLumen.Core.Api.RimLumenApi` 播放或注册特效（详见第六章「项目配置与编译指引」）。
 3. **可编程光影包（ShaderPacks，不需要引用 DLL）**：在模组 `1.7/ShaderPacks/<PackFolder>/` 下编写 `pack.json` 与 GLSL `#version 450` 片段着色器，声明自定义后处理 Pass、渲染目标、历史缓冲与玩家实时滑杆。
 
 ---
@@ -203,11 +203,14 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 
 **根字段**：`initialState` 是播放时进入的状态，默认 `states[0]`；`LumenPlayRequest.InitialState` 可在单次播放时覆盖它。`stopState` 是 `Stop(true)` 进入的收尾状态，它必须能自行结束（不能 `loop`，也不能写 `next`）；不写时 `Stop(true)` 立即开始淡出。
 
-**进入状态**（包括初始状态、`next`、`GoTo`，以及 `GoTo` 当前状态的重入）时：
+**进入状态**（包括初始状态、`next`、`GoTo`、重入当前状态 `GoTo(current)`，以及 `interactionEvents[].goToState`）时（**即使某个节点在上一个状态中也已经激活，这是有意的设计行为**）：
 
 1. 状态时钟归零，并触发一次 `StateChanged(name)`。
-2. 属于该状态的节点从头开始自己的发射计划：`bursts` 的时刻、发射器 `duration` 与 `rateOverTime` 都从进入时刻起算。L1（CPU）与 L2（GPU）行为一致。
-3. 不属于该状态的节点停止新发射，已发出的粒子跑完寿命，点光在 `0.25s` 内淡出。
+2. 属于该状态的**每一个节点都会从头重启**：
+   - 粒子发射计划：`bursts` 的时刻、发射器 `duration`、`rateOverTime` 调度以及共享密度余量/概率随机状态都从进入时刻起算（已发射到空中的粒子继续跑完各自寿命）。L1（CPU）与 L2（GPU）行为一致。
+   - 点光与节点特征：`pointLight.intensityOverTime` 曲线时钟（激活时刻 `nodeActivatedAt`）从 `0` 秒重新起算；`distortion` 与 `screenDim` 的 `duration` / `strengthOverTime` 时钟归零重播；`ribbon` 的 `Trail` 清空已有拖尾点并重置时间，`Beam` 重置噪声时钟。
+   - 若需要跨状态保持常亮或连续亮度的点光，请将其拆到无需跨状态切换的独立播放句柄，或在单状态内搭配 `SetLightIntensity` / `SetLightColor` 运行时调节。
+3. 不属于该状态的节点立即停止激活：粒子发射器停止新发射并让空中粒子跑完寿命；点光在 `0.25s` 内线性淡出；`Trail` 停止采集新点并等待既有点随 `lifetime` 过期；`Beam` 立即停止绘制；`duration > 0` 的 `distortion` / `screenDim` 会继续跑完本轮已启动的 `duration`（`duration == 0` 则立即关闭）。
 
 发射暂停不等于游戏暂停：发射器首次激活后，即使停止新发射，循环和非循环发射器的发射计划时钟仍随时间推进；期间跨过的计划脉冲直接跳过，不补发，已有粒子继续模拟。从未激活的节点仍停在发射时间 0。显式 Restart 重置时钟、密度余量和概率随机状态，保留已接受的待发脉冲。游戏全局暂停仍使用 `dt=0`；`SetParam("rate", 0)` 只暂停连续发射，不影响已编写的脉冲。
 
@@ -241,7 +244,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
 | `state` | `null` | `null` 表示在 `Stop(true)` 之前的任意播放状态生效；非 `null` 仅在该命名状态播放期间生效 |
 | `goToState` | `null` | 非 `null` 且未进入 `Stop(true)` 收尾态时，触发瞬间先进入该状态（等同 `GoTo`），随后再执行节点脉冲与 `Notify` |
 | `targetNodeIndex` | `-1` | 非 `-1` 时向该节点补发一次脉冲（规则同 `timelineEvents[].targetNodeIndex`） |
-| `notify` | `false` | `true` 时触发后回调 `ILumenEffectHandle.Notify(eventName)` |
+| `notify` | `false` | `true` 时触发后回调 `ILumenEffectHandle.Notify(eventName)`，并同步触发带触发器与指针来源信息的 `ILumenEffectHandle.InteractionNotify(LumenInteractionNotification)` |
 
 - **懒采样宿主鼠标**：当当前地图存在声明了 `Cursor*` 事件的存活播放句柄（或 `FollowHostMouse` 持续力源租约）时，宿主在主线程捕获起点采样一次未受 UI 窗口遮挡（`!MouseObscuredNow`）且位于地图边界内的鼠标地面坐标（`Y = 0`），因此纯 `.lumen.json` / XML 资产无需编写 C# 即可响应鼠标。无活动力源且无 `Cursor*` 订阅时，不读取鼠标或窗口状态。
 - **屏幕速度单位与指数平滑（EMA）**：光标速度在各向同性的屏幕高度坐标系中计算——屏幕像素位移 `(Δx_px, Δy_px)` 的两个分量均除以当前视口像素高度 `ViewportHeight`（`Screen.height`），即 `v_vh = v_px / ViewportHeight = v_uiPx × UIScale / ViewportHeight`（例如以 `1` 秒纵向划满整个屏幕高度或横向划过等于屏幕高度的距离，速度均为 `1.0`）。该单位与镜头缩放、分辨率和游戏 UI 缩放倍率无关。每个活动指针独立做一阶指数平滑（时间常数 `tau = 0.05 s`，`alpha = 1 - exp(-dt_real / 0.05)`）：首次出现或因 UI 遮挡 / 移出地图后重入的首帧速度为 `0`；`dt_real <= 1e-5 s` 时保持上一帧速度；帧间隔 `dt_real > 0.25 s`（长卡顿或切回窗口）时速度重置为 `0`。
@@ -375,6 +378,92 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 </Defs>
 ```
 
+以下两个片段补充展示了**烟雾随寿命尺寸放大与淡出**，以及 **`<distortion>` 与 `<screenDim>`** 在 XML 中的完整写法：
+
+```xml
+<!-- 示例 A：粒子尺寸与颜色/透明度随寿命变化（AlphaBlend 烟雾淡出） -->
+<Defs>
+  <RimLumen.Core.Assets.LumenEffectDef>
+    <defName>MySmokeFade</defName>
+    <defaultDuration>3.0</defaultDuration>
+    <nodes>
+      <li>
+        <name>smoke</name>
+        <spacePlane>Vertical3D</spacePlane>
+        <heightOffset>0.2</heightOffset>
+        <emitter>
+          <maxParticles>128</maxParticles>
+          <duration>2.0</duration>
+          <looping>false</looping>
+          <rateOverTime>24</rateOverTime>
+          <startLifetimeMin>1.8</startLifetimeMin>
+          <startLifetimeMax>2.6</startLifetimeMax>
+          <startSpeedMin>0.35</startSpeedMin>
+          <startSpeedMax>0.65</startSpeedMax>
+          <startSizeMin>0.35</startSizeMin>
+          <startSizeMax>0.55</startSizeMax>
+          <startColor>(0.55, 0.55, 0.58, 0.45)</startColor>
+          <blendMode>AlphaBlend</blendMode>
+          <shape>Cone</shape>
+          <coneAngleDegrees>14</coneAngleDegrees>
+          <sizeOverLifetime>
+            <li><time>0</time><value>0.6</value></li>
+            <li><time>0.5</time><value>1.25</value></li>
+            <li><time>1</time><value>1.8</value></li>
+          </sizeOverLifetime>
+          <colorOverLifetime>
+            <li><time>0</time><color>(1, 1, 1, 0)</color></li>
+            <li><time>0.2</time><color>(1, 1, 1, 1)</color></li>
+            <li><time>1</time><color>(1, 1, 1, 0)</color></li>
+          </colorOverLifetime>
+        </emitter>
+      </li>
+    </nodes>
+  </RimLumen.Core.Assets.LumenEffectDef>
+</Defs>
+```
+
+```xml
+<!-- 示例 B：在 XML 中组合 Distortion（RingWave 冲击波）与 ScreenDim（全屏压暗）节点 -->
+<Defs>
+  <RimLumen.Core.Assets.LumenEffectDef>
+    <defName>MyShockwaveAndDim</defName>
+    <defaultDuration>1.0</defaultDuration>
+    <nodes>
+      <li>
+        <name>shockwave</name>
+        <distortion>
+          <kind>RingWave</kind>
+          <radius>6</radius>
+          <strength>0.45</strength>
+          <thickness>0.75</thickness>
+          <speed>12</speed>
+          <duration>0.6</duration>
+          <strengthOverTime>
+            <li><time>0</time><value>1</value></li>
+            <li><time>0.6</time><value>0</value></li>
+          </strengthOverTime>
+        </distortion>
+      </li>
+      <li>
+        <name>dim</name>
+        <screenDim>
+          <strength>0.5</strength>
+          <duration>0.8</duration>
+          <strengthOverTime>
+            <li><time>0</time><value>0</value></li>
+            <li><time>0.12</time><value>1</value></li>
+            <li><time>0.8</time><value>0</value></li>
+          </strengthOverTime>
+        </screenDim>
+      </li>
+    </nodes>
+  </RimLumen.Core.Assets.LumenEffectDef>
+</Defs>
+```
+
+> 提示：`<distortion>` 不同 `<kind>` 未使用的字段必须保持 `0`（例如 `RingWave` 不写 `<frequency>`，`HeatHaze` 不写 `<thickness>` 与 `<speed>`），详见第五章第 4 节。
+
 ---
 
 ## 五、枚举与物理力场参考
@@ -389,6 +478,7 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 - **`LumenEnvironmentChannel`**：`[Flags]` 位掩码：`None`（`0`）、`Explosion`（`1`）、`Cursor`（`2`）。
 - **`LumenEnvironmentForceShape`**：`HorizontalRadial`（`0`，地面 XZ 线性衰减）/ `SphericalRadial`（`1`，三维球面线性衰减）/ `SphericalWave`（`2`，向外扩张的三维球壳波，仅用于瞬态脉冲）。
 - **`LumenInteractionTrigger`**：`CursorEnter`（`0`）/ `CursorExit`（`1`）/ `CursorStay`（`2`）/ `CursorSwipe`（`3`）/ `Explosion`（`4`）。
+- **`LumenCursorSourceKind`**：`None`（`0`，非指针事件如 `Explosion`）/ `HostMouse`（`1`，宿主真实鼠标）/ `ModCursor`（`2`，模组通过 `CreateCursor` / `CreateEnvironmentSource` 创建的自定义世界指针）。
 
 ### 形状与概率脉冲
 
@@ -450,6 +540,16 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 
 未使用字段必须为 0；`duration = 0` 表示节点活动期间持续。屏幕写入与合成见第六章第 5 节。
 
+```json
+{ "name": "shock", "distortion": { "kind": "RingWave", "radius": 6, "strength": 0.45, "thickness": 0.75, "speed": 12, "duration": 0.6, "strengthOverTime": [[0, 1], [0.6, 0]] } }
+```
+
+```xml
+<li><name>shock</name><distortion><kind>RingWave</kind><radius>6</radius><strength>0.45</strength><thickness>0.75</thickness><speed>12</speed><duration>0.6</duration>
+  <strengthOverTime><li><time>0</time><value>1</value></li><li><time>0.6</time><value>0</value></li></strengthOverTime>
+</distortion></li>
+```
+
 ### 5. Ribbon 节点
 
 节点可同时包含 `emitter` 和 `ribbon`。`mode` 必填：`Trail` 跟随节点，`Beam` 连接端点。Trail 要求 `lifetime`、`minVertexDistance` 有限且大于 0，`maxPoints > 1`；距离达到阈值时记录点，超容量丢弃最旧点，尾部按寿命截断插值。重启清点；淡出停止后点逐渐过期，立即停止则移除。
@@ -488,24 +588,140 @@ Beam 要求 `endLocal`（节点局部坐标）或 `endAtTarget` 恰选一项、`
 
 > 线程约束：`RimLumenApi` 与 `LumenTextureRegistry` 的所有方法均**必须在游戏主线程调用**。
 
+#### 项目配置与编译指引（.NET 10 SDK）
+
+RimLumen 编译目标为 **`net10.0`**。如果在本机直接运行默认的 .NET 9（或更低）`dotnet` CLI，MSBuild 会报错 `error NETSDK1045: 当前 .NET SDK 不支持面向 .NET 10.0`。**必须使用《环世界》1.7 `Moddev` 目录自带的便携版 .NET 10 SDK** 编译你的模组程序集。
+
+最小可编译 `.csproj`（按本仓库 `Directory.Build.props` 与 `Source/RimLumen.Core/RimLumen.Core.csproj` 实测配置；如需使用 `LumenTextureRegistry.Register` 等 `Waylith.Rendering` 类型，可按同样方式补充引用 `$(GameRoot)/Waylith.dll`）：
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <OutputPath>1.7/Assemblies/</OutputPath>
+    <GameRoot Condition="'$(GameRoot)' == ''">E:/SteamLibrary/steamapps/common/RimWorld</GameRoot>
+    <RimLumenRoot Condition="'$(RimLumenRoot)' == ''">$(GameRoot)/Mods/RimLumen</RimLumenRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="RimLumen.Core">
+      <HintPath>$(RimLumenRoot)/1.7/Assemblies/RimLumen.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(GameRoot)/Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RimWorld">
+      <HintPath>$(GameRoot)/RimWorld.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityStubs">
+      <HintPath>$(GameRoot)/UnityStubs.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
+```
+
+PowerShell 构建命令：
+
+```powershell
+$dotnet = "E:/SteamLibrary/steamapps/common/RimWorld/Moddev/tools/dotnet/dotnet.exe"
+$env:DOTNET_MULTILEVEL_LOOKUP = '0'
+& $dotnet build MyRimLumenMod.csproj -c Release --nologo /warnaserror
+```
+
 ### 1. 状态查询与动态资产注册
 
 ```csharp
+using System.Numerics;
 using RimLumen.Core.Api;
 using RimLumen.Core.Contracts;
+// 若同一文件同时引入了 Verse，用别名避免与 Verse.CurveKey 冲突
+using CurveKey = RimLumen.Core.Contracts.CurveKey;
 
 bool ready = RimLumenApi.IsReady;
 LumenCapabilities caps = RimLumenApi.Capabilities;
 // caps.IsHdrActive / IsSceneDepthAvailable / IsGpuComputeAvailable / MaxGpuParticlesPerFrame
 
-RimLumenApi.RegisterEffect(myEffectAsset); // 运行时注册或覆盖同 EffectId 的资产
-bool exists = RimLumenApi.TryGetEffect("Author.MyMod:Spells/Fireball", out EffectAsset? asset);
+// 动态构造并注册完整特效资产（注册时立刻校验结构；注册后请将资产及其嵌套数组视为不可变）
+var bloodSparks = new EffectAsset
+{
+    EffectId = "Author.MyMod:BloodSparks",
+    DefaultDuration = 1.2f,
+    Nodes = new[]
+    {
+        new EffectNodeSpec
+        {
+            Name = "sparks",
+            SpacePlane = LumenSpacePlane.Vertical3D,
+            LocalPosition = new Vector3(0f, 0.5f, 0f),
+            Emitter = new EmitterSpec
+            {
+                Name = "sparks",
+                PreferredTier = LumenParticleTier.L2_GpuCompute,
+                MaxParticles = 128,
+                Duration = 1.0f,
+                Looping = false,
+                WorldSpaceSimulation = false, // 局部模拟：下面配合 Follow 时粒子随目标一起移动
+                RateOverTime = 0f,
+                Bursts = new[] { new ParticleBurstSpec(Time: 0f, Count: 28) },
+                Shape = LumenShapeKind.Sphere,
+                ShapeExtents = new Vector3(0.18f, 0.18f, 0.18f),
+                StartLifetimeMin = 0.4f,
+                StartLifetimeMax = 0.8f,
+                StartSpeedMin = 1.5f,
+                StartSpeedMax = 3.5f,
+                StartSizeMin = 0.08f,
+                StartSizeMax = 0.16f,
+                StartColor = new Vector4(0.95f, 0.12f, 0.10f, 1f),
+                HdrIntensity = 2.5f,
+                KillBelowFloor = true,
+                SizeOverLifetime = new ScalarCurve(new[]
+                {
+                    new CurveKey(0f, 1f),
+                    new CurveKey(1f, 0f),
+                }),
+                ColorOverLifetime = new ColorGradient(new[]
+                {
+                    new ColorStop(0f, new Vector4(1f, 1f, 1f, 1f)),
+                    new ColorStop(1f, new Vector4(0.6f, 0.05f, 0.05f, 0f)),
+                }),
+                ForceFields = new[]
+                {
+                    new ForceFieldSpec(ForceFieldKind.GravityDrag,
+                        CenterOrAxis: new Vector3(0f, -1f, 0f),
+                        Parameters: new Vector3(0.8f, 0f, 0f),
+                        Radius: 0f,
+                        Strength: 6f),
+                },
+            },
+            PointLight = new PointLightSpec(
+                GlowRadius: 3.5f,
+                ColorRgb: new Vector3(1f, 0.25f, 0.15f),
+                IntensityOverTime: new ScalarCurve(new[]
+                {
+                    new CurveKey(0f, 1.2f),
+                    new CurveKey(0.4f, 0f),
+                })),
+        },
+    },
+};
+
+RimLumenApi.RegisterEffect(bloodSparks); // 运行时注册或覆盖同 EffectId 的资产
+bool exists = RimLumenApi.TryGetEffect("Author.MyMod:BloodSparks", out EffectAsset? asset);
 ```
 
 ### 2. 播放接口
 
 ```csharp
-// 1. 按格子中心播放（最常用）
+// 1. 按格子中心播放（最常用，OriginWorld.Y 自动置 0）
 ILumenEffectHandle handle = RimLumenApi.PlayAtCell(
     effectId: "Author.MyMod:Spells/Fireball",
     map: pawn.Map,
@@ -514,11 +730,11 @@ ILumenEffectHandle handle = RimLumenApi.PlayAtCell(
     rotationDegrees: 0f,
     realTime: false);
 
-// 2. 按世界坐标播放（注意 Vector3 为 System.Numerics.Vector3）
+// 2. 按世界坐标播放（注意 Vector3 为 System.Numerics.Vector3；Y 为离地高度格数，贴地传 0f）
 ILumenEffectHandle handle2 = RimLumenApi.Play(
     effectId: "MyFireball",
     map: map,
-    originWorld: new System.Numerics.Vector3(x, y, z),
+    originWorld: new System.Numerics.Vector3(x, 0f, z),
     scale: 1.2f,
     rotationDegrees: 90f,
     realTime: false);
@@ -540,7 +756,8 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
             return false; // 返回 false 时保持最后已知位置（冻结位置而不弹回原点）
         }
         var p = pawn.DrawPos;
-        pos = new System.Numerics.Vector3(p.x, p.y, p.z);
+        // 贴地跟随时 Y 固定传 0f；切勿直接传 p.y（p.y 是《环世界》2D 绘制排序层高度，不是离地格数）
+        pos = new System.Numerics.Vector3(p.x, 0f, p.z);
         yaw = pawn.Rotation.AsAngle;
         return true;
     },
@@ -549,9 +766,18 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 });
 ```
 
+- **关于坐标 Y 与什么时候可以传真实高度**：`Thing.DrawPos.y`、`ToVector3ShiftedWithAltitude(...)` 和 `Altitudes.AltitudeFor(...)` 得到的都是《环世界》的 2D 绘制排序层高度，**绝对不要直接传给 `OriginWorld.Y` 或 `Follow` 返回的 `pos.Y`**。地面固定特效请把 `Y` 设为 `0f`（需要抬高发射口或光源高度时，写在节点自身的 `localPosition.y` 或 XML `<heightOffset>` 上）。只有当**播放原点本身处于空中真实物理高度**（例如升空中的烟花弹体、飞行投射物、按格数算出的浮空高度）时，才在 `OriginWorld.Y` 或 `Follow` 回调返回的 `pos.Y` 中传入实际的离地格数。
 - `LumenPlayRequest.DepthReferenceZ` 以世界格为单位提供遮罩参考 Z。`Play` 将其记录为相对 `OriginWorld` 的 Z 偏移，因此参考线随 `Follow` 移动。节点声明了 `depthMask` 而请求没有参考值时，`Play` 抛出 `ArgumentException`。
 - `LumenPlayRequest.InteractionEvents` 可为单次播放附加 `InteractionEventSpec[]` 规则（`Play` 入口一次性校验，违例抛 `ArgumentException`），在资产自身 `InteractionEvents` 之后按顺序求值，无需克隆或修改共享 `EffectAsset`。
 - 如果 `EffectId` 不存在，`Play` 返回 `IsAlive == false` 的空句柄，句柄方法无效果；每个服务实例对同一 ID 只记录一次 `Log.Warning`。资产存在但被校验拒绝时也返回空句柄，沿用注册表的校验错误，不追加“未知 ID”警告。
+
+#### 局部模拟（`WorldSpaceSimulation = false`）与 `Follow` 跟随的关系
+
+`Follow` 每帧更新根节点的 `OriginWorld` 与朝向偏航 `RotationDegrees`，但不同节点与模拟空间对 `Follow` 的响应不同：
+
+- **粒子节点 — 世界空间模拟（`WorldSpaceSimulation = true`，默认）**：`Follow` 只移动发射口和节点矩阵；**已经出生的粒子留在世界空间独立飞行**，不会跟着移动目标走（适合移动弹体尾迹、奔跑扬尘）。在原版 2D 相机下，世界空间粒子的 `Vertical3D` 地面锚点锁定在出生帧节点所在的地面 XZ。
+- **粒子节点 — 局部空间模拟（`WorldSpaceSimulation = false`）**：粒子坐标和速度保存在节点局部空间，**已发出的粒子也会每帧跟随 `Follow` 一起平移、旋转并随 `Scale` 缩放**（适合护盾罩、角色受击贴身火花、环绕光环）。此时发射器自身的 `ForceFields` 也在节点局部空间求值；世界环境力（`Explosion` / `Cursor`）与墙体碰撞会在节点世界矩阵可逆时自动逆变换回局部空间求值（遇到零缩放等不可逆矩阵时跳过环境力与碰撞）。2D 相机下 `Vertical3D` 锚点跟随节点当前的地面 XZ。
+- **非粒子节点**：`pointLight` 光池与 `distortion` 扭曲始终跟随节点当前世界位置；`Ribbon` 的 `Trail` 按节点移动记录历史世界点（头部跟节点、尾部留在原地形成轨迹），`EndLocal` 模式的 `Beam` 随节点一起刚性平移和旋转。
 
 ### 3. 句柄控制（`ILumenEffectHandle`）
 
@@ -561,13 +787,49 @@ ILumenEffectHandle handle3 = RimLumenApi.Play(new LumenPlayRequest
 | `void Trigger(string name)` | 立即触发所有同名时间轴事件（不论所属状态与时间：目标节点脉冲、`Notify`），并让同名节点从头开始发射计划，直到下一次进入状态时重新决定；不改变当前状态。名字无匹配时无效果；淡出后与死亡后无效果。L1 与 L2 行为一致。 |
 | `void GoTo(string stateName)` | 立即进入该状态（重入当前状态即重启它）。对绑定资产的句柄，未声明的状态名始终抛 `ArgumentException`，即使已调用 `Stop(true)`、正在排空或已经死亡；声明过的状态只在播放中且未调用 `Stop(true)` 时进入，否则无效果。`Stop(false)` 立即销毁；空句柄的 `GoTo` 始终无效果。 |
 | `event Action<string> Notify` | `notify: true` 的时间轴事件或环境交互事件触发时回调事件名（按时间、交互条件或经 `Trigger`）。 |
+| `event Action<LumenInteractionNotification>? InteractionNotify` | 当 `notify: true` 的环境交互事件触发时回调，载荷 `LumenInteractionNotification(EventName, Trigger, Cursor)` 携带触发类型与指针来源 `LumenCursorSource`（仅针对交互事件，时间轴事件与 `Trigger` 不触发此事件；无订阅者与无光标时零开销）。 |
 | `event Action<string> StateChanged` | 每次进入声明过的状态时回调状态名，包括初始状态。 |
-| `event Action Finished` | `IsAlive` 变为 `false` 时回调一次，无论原因（播完、`Stop`、`Dispose`）。 |
-| `void SetParam(string name, float value)` | 实时修改运行时参数。当前内置三个立即生效的参数名：`intensity`（缩放粒子和点光亮度）、`rate`（只缩放 L1 与 L2 的连续发射速率，不缩放 `bursts`；须为有限的非负值，否则抛 `ArgumentOutOfRangeException`；0 只暂停连续发射）、`scale`（乘算根节点缩放）。其他名字会被记录下来但不会影响模拟。 |
+| `event Action Finished` | `IsAlive` 变为 `false` 时回调一次，无论原因（播完、`Stop`、`Dispose` 或所属地图卸载）。 |
+| `void SetParam(string name, float value)` | 实时修改运行时参数。当前内置三个立即生效的参数名：`intensity`（同时缩放粒子和点光亮度）、`rate`（只缩放 L1 与 L2 的连续发射速率，不缩放 `bursts`；须为有限的非负值，否则抛 `ArgumentOutOfRangeException`；0 只暂停连续发射）、`scale`（乘算根节点缩放）。其他名字会被记录下来但不会影响模拟。 |
+| `void SetLightIntensity(float intensity)` | 运行时单独调整本句柄所有视觉点光的强度倍率（最终光强乘算 `intensity` 参数 × 本倍率 × 淡出系数 × `intensityOverTime` 曲线），**不影响粒子、扭曲、Ribbon 或全屏压暗**。须为有限且 `>= 0` 的值（无上限，`0` 时跳过光池绘制），非法值在修改前抛出 `ArgumentOutOfRangeException`。空句柄无操作；已死亡句柄先做入口校验再无操作。 |
+| `void SetLightColor(Vector3 colorRgb)` | 运行时单独覆盖本句柄所有视觉点光的基础 RGB 颜色（替代资产中声明的 `PointLightSpec.ColorRgb`），**不影响粒子**。三个分量须全部有限且在 `[0, 1]` 内，非法值在修改前抛出 `ArgumentOutOfRangeException`。空句柄无操作；已死亡句柄先做入口校验再无操作。 |
 | `void Stop(bool allowFadeOut = true)` | `true` 时：资产有 `stopState` 则进入它并播完；随后停止新发射、点光在 `0.25s` 内淡出、空中粒子跑完寿命后回收。没有 `stopState` 时立即开始淡出。`false` 时立刻切断所有粒子与点光。重复调用无效果。 |
-| `void Dispose()` | 等价于 `Stop(false)`，幂等。在 `Thing.DeSpawn` 或地图销毁时务必调用，避免长期持有句柄。 |
+| `void Dispose()` | 等价于 `Stop(false)`，幂等。在存活地图上的宿主物体销毁或移除时（例如 `Thing.DeSpawn`）请主动调用以释放长生命周期特效；地图卸载时引擎会自动回收（见下文）。 |
 
-三个事件都在主线程的每帧推进中按发生顺序派发，所以在回调里调用 `GoTo` 或 `Stop` 不会重入正在派发的播放：调用立即生效（离开的状态的节点在当帧就停止新发射），由它引起的事件在下一帧派发。`Stop(false)` 与 `Dispose` 之后的 `Finished` 在下一帧派发。RimUnity 兼容播放（`External`）没有状态与时间轴事件：`Notify` 与 `StateChanged` 只来自 RimLumen 原生部分，`Finished` 在两部分都结束后触发。
+所有事件（包括 `InteractionNotify`）都在主线程的每帧推进中按发生顺序派发，所以在回调里调用 `GoTo` 或 `Stop` 不会重入正在派发的播放：调用立即生效（离开的状态的节点在当帧就停止新发射），由它引起的事件在下一帧派发。`Stop(false)` 与 `Dispose` 之后的 `Finished` 在下一帧派发。RimUnity 兼容播放（`External`）没有状态与时间轴事件：`Notify`、`InteractionNotify` 与 `StateChanged` 只来自 RimLumen 原生部分，`Finished` 在两部分都结束后触发。
+
+#### 识别光标来源示例（`InteractionNotify`）
+
+`LumenCursorSource`（`Kind`、`Source`、`IsHostMouse`、`IsModCursor`）区分触发交互事件的来源：
+
+- 真实宿主鼠标（包括存在 `CreateMouseForce` 租约时）：`Kind == LumenCursorSourceKind.HostMouse`（`IsHostMouse == true`，`Source == null`）。
+- 模组自建世界指针（`CreateCursor` 或非宿主鼠标的 `CreateEnvironmentSource`）：`Kind == LumenCursorSourceKind.ModCursor`（`IsModCursor == true`），`Source` 为对应的 `ILumenEnvironmentSource` 实例，可用于精确识别特定指针句柄；即使该指针在圈内被 `Dispose()` 或移出地图触发 `CursorExit`，依然能正确归属到原指针。
+- 爆炸交互事件（`LumenInteractionTrigger.Explosion`）：`Cursor == LumenCursorSource.None`（`Kind == LumenCursorSourceKind.None`，`Source == null`）。
+
+```csharp
+handle.InteractionNotify += info =>
+{
+    // 只响应真实宿主鼠标，忽略其他模组用 CreateCursor 创建的自定义指针
+    if (!info.Cursor.IsHostMouse) return;
+    if (info.EventName == "cursorEnter")
+        mouseForce = RimLumenApi.CreateMouseForce(map, radius: 3f, strength: -6f);
+    else if (info.EventName == "cursorExit")
+    {
+        mouseForce?.Dispose();
+        mouseForce = null;
+    }
+};
+```
+
+#### 地图卸载（`Map.Dispose`）生命周期
+
+- **自动立即释放**：当某张地图卸载（`Map.Dispose`）时，RimLumen 会在前缀钩子中自动对该地图上的全部原生特效句柄以及 RimUnity `External` 句柄立即执行 `Dispose()`（等价于 `Stop(allowFadeOut: false)`，**立即释放而不淡出**），同时清理该地图的碰撞网格、遮挡数据、瞬态脉冲、持续力源与光标状态。**其他地图上的特效完全不受影响**，继续正常播放。
+- **无需手写卸图钩子**：作者只需要在存活地图上的物体移除/停用逻辑（如 `ThingComp.PostDeSpawn` / `PostDestroy`）中清理长生命周期句柄，不需要专门为了防止卸图泄漏而编写地图销毁监听；即便在多处重复调用 `Dispose()` 也是幂等安全的。
+- **卸图释放后再调用句柄的行为**：
+  - `IsAlive` 立即变为 `false`，`Finished` 在下一主线程帧触发一次（若此前已订阅）。
+  - `Stop(...)`、`Dispose()`、`Trigger(...)` 均为安全无操作。
+  - `GoTo(stateName)`：传入已声明状态名时为安全无操作；传入资产未声明的状态名仍按契约抛出 `ArgumentException`（`External` 句柄始终无操作）。
+  - `SetParam(...)`、`SetLightIntensity(...)`、`SetLightColor(...)`：公开入口仍先执行参数范围校验（例如 `SetParam("rate", -1f)`、`SetLightIntensity(-1f)` 或 `SetLightColor` 越界仍抛 `ArgumentOutOfRangeException`），合法参数静默无操作且不改写状态。
 
 ---
 
@@ -1329,7 +1591,7 @@ void main()
 
 以 `FrameIndex` 关联捕获和录制，录制可能滞后或帧被丢弃；`SubmissionFrameIndex` 只是循环资源槽。上下文不是 GPU 二进制布局。渲染线程借用的帧、纹理只在回调内有效，不可保留或释放，也不可读取游戏主线程 API。捕获上下文提供地图 ID、时间、相机矩阵和视口；计算上下文提供帧与时钟；屏障上下文提供帧命令缓冲；绘制上下文提供 HDR 目标、可空深度和相机数据。Core 服务、CPU 模拟器、GPU 引擎及扭曲和 Ribbon 后端均注册贡献者；适配器的外部播放器也使用贡献者。管线回调异常会触发渲染熔断并记录错误。
 
-主线程 `CaptureMainThread` 期间，自定义粒子后端或适配器可通过 `LumenHostRegistry.GetEnvironmentForces(int mapIndex, LumenEnvironmentChannel channels)` 与 `LumenHostRegistry.GetCursors(int mapIndex)` 只读读取本帧已冻结的世界空间环境力切片 `ReadOnlySpan<LumenEnvironmentForce>`（含 `Channel`、`Shape`、`CenterWorld`、`Radius`、`Strength`、`WaveRadius`、`ShellHalfThickness`）与活动光标快照 `ReadOnlySpan<LumenCursorSnapshot>`（含地面 `PositionXZ`、屏幕高度速度向量 `ScreenVelocity` 与标量 `Speed`）；无活动源或光标时返回空切片。
+主线程 `CaptureMainThread` 期间，自定义粒子后端或适配器可通过 `LumenHostRegistry.GetEnvironmentForces(int mapIndex, LumenEnvironmentChannel channels)` 与 `LumenHostRegistry.GetCursors(int mapIndex)` 只读读取本帧已冻结的世界空间环境力切片 `ReadOnlySpan<LumenEnvironmentForce>`（含 `Channel`、`Shape`、`CenterWorld`、`Radius`、`Strength`、`WaveRadius`、`ShellHalfThickness`）与活动光标快照 `ReadOnlySpan<LumenCursorSnapshot>`（含地面 `PositionXZ`、屏幕高度速度向量 `ScreenVelocity`、标量 `Speed` 与来源 `Source`）；无活动源或光标时返回空切片。
 
 ### 3. GPU 粒子与节点后端
 
