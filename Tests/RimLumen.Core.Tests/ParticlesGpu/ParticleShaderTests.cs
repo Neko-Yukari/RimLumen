@@ -10,10 +10,12 @@ using RimLumen.Core.ParticlesGpu;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Lighting;
+using RimLumen.Core.Rendering;
 using RimLumen.Core.Scene;
 using Waylith.Assets;
 using Waylith.Graphics.Meshes;
 using Waylith.Rendering;
+using Waylith.Rendering.Compute;
 
 namespace RimLumen.Core.Tests.ParticlesGpu;
 
@@ -597,6 +599,163 @@ public static class ParticleShaderTests
             (0, VertexAttributeSemantic.Position, true)
         }), "Trail graphics expects one required Position attribute at location 0.");
     });
+
+    [LumenFact]
+    public static void ParticleShadersRegisterOnceAndFeedWaylithWarmupPlan()
+    {
+        EnsureTestShaderDirectories();
+        ParticleMeshShaders.EnsureParticleShadersRegistered();
+        ParticleMeshShaders l1 = ParticleMeshShaders.GetOrCreateL1();
+        ParticleMeshShaders l2 = ParticleMeshShaders.GetOrCreateL2Billboard();
+        ParticleMeshShaders l2Trail = ParticleMeshShaders.GetOrCreateL2Trail();
+        Require(ReferenceEquals(l1, ParticleMeshShaders.GetOrCreateL1()), "L1 shaders must reuse one singleton set.");
+        Require(ReferenceEquals(l2, ParticleMeshShaders.GetOrCreateL2Billboard()), "L2 billboard shaders must reuse one singleton set.");
+        Require(ReferenceEquals(l2Trail, ParticleMeshShaders.GetOrCreateL2Trail()), "L2 trail shaders must reuse one singleton set.");
+
+        (string Key, Shader Expected)[] expectedShaders =
+        {
+            ("RimLumen.L1-additive", l1.Additive),
+            ("RimLumen.L1-alpha", l1.Alpha),
+            ("RimLumen.L1-premultiplied", l1.Premultiplied),
+            ("RimLumen.L2-additive", l2.Additive),
+            ("RimLumen.L2-alpha", l2.Alpha),
+            ("RimLumen.L2-premultiplied", l2.Premultiplied),
+            ("RimLumen.L2Trail-additive", l2Trail.Additive),
+            ("RimLumen.L2Trail-alpha", l2Trail.Alpha),
+            ("RimLumen.L2Trail-premultiplied", l2Trail.Premultiplied),
+        };
+        foreach ((string key, Shader expected) in expectedShaders)
+        {
+            Require(ShaderRegistry.TryResolve(key, out Shader? resolved) && ReferenceEquals(resolved, expected),
+                $"ShaderRegistry must resolve '{key}' to the singleton instance.");
+            Require(resolved!.ShaderPath == string.Empty,
+                $"Particle shader '{key}' must leave ShaderPath empty so blend modes do not collide in ShadersByPath.");
+        }
+
+        ShaderWarmupPlan plan = ShaderVariantEnumerator.Enumerate(
+            Array.Empty<ShaderKeywordContribution>(), Array.Empty<string>());
+        foreach ((string file, RuntimeShaderStage stage) in new[]
+        {
+            ("Particles/L1ParticleQuad.vert.glsl", RuntimeShaderStage.Vertex),
+            ("Particles/L1ParticleQuad.frag.glsl", RuntimeShaderStage.Fragment),
+            ("Particles/ParticleBillboard.vert.glsl", RuntimeShaderStage.Vertex),
+            ("Particles/ParticleBillboard.frag.glsl", RuntimeShaderStage.Fragment),
+            ("Particles/ParticleTrail.vert.glsl", RuntimeShaderStage.Vertex),
+            ("Particles/ParticleTrail.frag.glsl", RuntimeShaderStage.Fragment),
+        })
+        {
+            Require(plan.Graphics.Any(x => string.Equals(x.SourceFile, file, StringComparison.Ordinal) && x.Stage == stage),
+                $"Waylith warmup plan must include '{file}' ({stage}).");
+        }
+    }
+
+    [LumenFact]
+    public static void ParticleGpuDrawResourcesPrebuildsAllTrailStripMeshesBeforeFirstDraw()
+    {
+        EnsureTestShaderDirectories();
+        int uploadCount = 0;
+        void OnUpload(Mesh _) => uploadCount++;
+        Mesh.UploadRequested += OnUpload;
+        try
+        {
+            using var drawResources = new ParticleGpuDrawResources(3);
+            Require(uploadCount == 1 + ParticleTrailMath.StripBuckets.Length,
+                $"ParticleGpuDrawResources construction must prebuild quad + {ParticleTrailMath.StripBuckets.Length} strip meshes (got {uploadCount} uploads).");
+
+            uploadCount = 0;
+            foreach (int maxPoints in new[] { 2, 8, 9, 16, 32, 64, 128, 256 })
+            {
+                int bucket = ParticleTrailMath.StripBuckets[ParticleTrailMath.StripBucketIndex(maxPoints)];
+                Mesh strip = drawResources.MeshForStrip(maxPoints);
+                Require(strip.VertexCount == (bucket + 1) * 2 && strip.IndexCount == bucket * 6,
+                    $"Strip bucket {bucket} geometry count mismatch.");
+            }
+            Require(uploadCount == 0, "First trail MeshForStrip lookup must not trigger lazy mesh creation/upload.");
+
+            Mesh beforeClear = drawResources.MeshForStrip(64);
+            drawResources.ClearMaterials();
+            Require(uploadCount == 0 && ReferenceEquals(beforeClear, drawResources.MeshForStrip(64)),
+                "ClearMaterials must retain prebuilt trail strip meshes without re-uploading.");
+        }
+        finally
+        {
+            Mesh.UploadRequested -= OnUpload;
+        }
+    }
+
+    [LumenFact]
+    public static void TrailComputeDescriptorsAndPushConstantsMatchHostSpec()
+    {
+        EnsureTestShaderDirectories();
+        CheckComputeShaderContract(LumenGpuParticleEngine.SimShaderPath, LumenGpuParticleEngine.SimBindings, "ParticleSim");
+        CheckComputeShaderContract(LumenGpuParticleEngine.TrailSimShaderPath, LumenGpuParticleEngine.TrailSimBindings, "ParticleTrailSim");
+    }
+
+    private static void CheckComputeShaderContract(string shaderRelativePath, ComputeBinding[] bindings, string label)
+    {
+        string source = ShaderSourceLoader.ReadShaderSource(shaderRelativePath);
+        int[] shaderBindings = Regex.Matches(source, @"layout\s*\([^)]*\bbinding\s*=\s*(\d+)\b[^)]*\)\s*(?:readonly\s+|writeonly\s+)?buffer\b")
+            .Select(m => int.Parse(m.Groups[1].Value))
+            .OrderBy(x => x)
+            .ToArray();
+        int[] hostBindings = bindings.Select(b => (int)b.Binding).OrderBy(x => x).ToArray();
+        Require(shaderBindings.Length == hostBindings.Length && shaderBindings.SequenceEqual(hostBindings)
+            && bindings.All(b => b.Type == ComputeBindingType.StorageBuffer),
+            $"{label} C# ComputeBinding spec does not match GLSL storage buffer bindings.");
+
+        Match pushBlock = Regex.Match(source, @"layout\s*\(\s*push_constant\s*\)\s*uniform\s+\w+\s*\{(?<body>[^}]+)\}");
+        Require(pushBlock.Success, $"{label} missing layout(push_constant) uniform block.");
+        int pushBytes = Regex.Matches(pushBlock.Groups["body"].Value, @"\b(vec4|uvec4|ivec4|mat4|float|uint|int)\s+\w+\s*;")
+            .Sum(m => m.Groups[1].Value switch { "mat4" => 64, "vec4" or "uvec4" or "ivec4" => 16, _ => 4 });
+        Require(pushBytes == LumenGpuParticleEngine.ComputePushConstantBytes,
+            $"{label} GLSL push_constant size ({pushBytes} B) does not match host ComputePushConstantBytes ({LumenGpuParticleEngine.ComputePushConstantBytes} B).");
+    }
+
+    [LumenFact]
+    public static void L1ParticleBatchRendererAndRibbonShareSingletonL1ShadersWithoutLazyDrawCreation()
+    {
+        EnsureTestShaderDirectories();
+        ParticleMeshShaders singleton = ParticleMeshShaders.GetOrCreateL1();
+        using var depth = new BorrowedRenderTexture();
+        using var r1 = new L1ParticleBatchRenderer(depth, 3);
+        using var r2 = new L1ParticleBatchRenderer(depth, 3);
+        var shadersField = typeof(L1ParticleBatchRenderer).GetField("shaders",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Require(shadersField is not null, "L1ParticleBatchRenderer must keep a shaders field initialized at construction.");
+        object? r1Shaders = shadersField!.GetValue(r1);
+        object? r2Shaders = shadersField.GetValue(r2);
+        Require(ReferenceEquals(r1Shaders, singleton) && ReferenceEquals(r2Shaders, singleton),
+            "Separate L1ParticleBatchRenderer instances (main L1 + Ribbon) must share the singleton L1 ParticleMeshShaders at construction.");
+        Require(ShaderRegistry.AllShaders.Count(x => x.Key.StartsWith("RimLumen.L1-", StringComparison.Ordinal)) == 3,
+            "ShaderRegistry must hold exactly 3 singleton RimLumen.L1 blend shaders.");
+
+        string root = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Source", "RimLumen.Core"));
+        string l1Source = File.ReadAllText(Path.Combine(root, "Rendering", "L1ParticleBatchRenderer.cs"));
+        string drawSource = File.ReadAllText(Path.Combine(root, "ParticlesGpu", "ParticleGpuDrawResources.cs"));
+        string gpuSource = File.ReadAllText(Path.Combine(root, "ParticlesGpu", "LumenGpuParticleEngine.Gpu.cs"));
+        Require(!l1Source.Contains("shaders ??=", StringComparison.Ordinal),
+            "L1ParticleBatchRenderer must initialize singleton shaders at construction, not lazily in AppendDraws.");
+        Require(!drawSource.Contains("trailShaders ??=", StringComparison.Ordinal)
+            && !drawSource.Contains("trailMeshes[bucket] ??=", StringComparison.Ordinal),
+            "ParticleGpuDrawResources must not lazily create trail shaders or strip meshes during draw.");
+        Match releaseMethod = Regex.Match(gpuSource, @"private void ReleaseGpu\([^\)]*\)\s*\{[\s\S]*?\r?\n    \}");
+        Require(releaseMethod.Success, "Expected ReleaseGpu method.");
+        string releaseBody = releaseMethod.Value;
+        Require(releaseBody.Contains("drawResources?.ClearMaterials();", StringComparison.Ordinal)
+            && !releaseBody.Contains("drawResources?.Dispose()", StringComparison.Ordinal)
+            && !Regex.IsMatch(releaseBody, @"\btrailKernel\s*=\s*null\s*;"),
+            "ReleaseGpu must free VRAM pools/materials while retaining prebuilt static drawResources and compute kernels.");
+    }
+
+    private static void EnsureTestShaderDirectories()
+    {
+        string shaderRoot = Path.GetFullPath(Path.Combine(ShaderDirectory(), ".."));
+        ShaderSourceLoader.RegisterShaderSourceDirectory(shaderRoot);
+        string buildProperties = Path.GetFullPath(Path.Combine(shaderRoot, "..", "..", "Directory.Build.props"));
+        string gameRoot = Environment.GetEnvironmentVariable("GameRoot")
+            ?? XDocument.Load(buildProperties).Descendants("GameRoot").Single().Value;
+        ShaderSourceLoader.RegisterShaderSourceDirectory(Path.Combine(gameRoot, "Rendering", "Shaders"));
+    }
 
     private static void WithRuntimeSlang(Action<string> check)
     {

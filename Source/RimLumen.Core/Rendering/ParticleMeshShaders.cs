@@ -11,6 +11,10 @@ namespace RimLumen.Core.Rendering;
 internal sealed class ParticleMeshShaders
 {
     private const int ParticleRenderQueue = 3200;
+    private static readonly object CacheGate = new();
+    private static ParticleMeshShaders? l1;
+    private static ParticleMeshShaders? l2Billboard;
+    private static ParticleMeshShaders? l2Trail;
 
     internal ParticleMeshShaders(Shader additive, Shader alpha, Shader premultiplied)
     {
@@ -22,6 +26,46 @@ internal sealed class ParticleMeshShaders
     internal Shader Additive { get; }
     internal Shader Alpha { get; }
     internal Shader Premultiplied { get; }
+
+    internal static void EnsureParticleShadersRegistered()
+    {
+        GetOrCreateL1();
+        GetOrCreateL2Billboard();
+        GetOrCreateL2Trail();
+    }
+
+    internal static ParticleMeshShaders GetOrCreateL1() =>
+        GetOrCreateCached(ref l1, "RimLumen.L1", "Particles/L1ParticleQuad.vert.glsl",
+            "Particles/L1ParticleQuad.frag.glsl", depthTest: true);
+
+    internal static ParticleMeshShaders GetOrCreateL2Billboard() =>
+        GetOrCreateCached(ref l2Billboard, "RimLumen.L2", "Particles/ParticleBillboard.vert.glsl",
+            "Particles/ParticleBillboard.frag.glsl", depthTest: false);
+
+    internal static ParticleMeshShaders GetOrCreateL2Trail() =>
+        GetOrCreateCached(ref l2Trail, "RimLumen.L2Trail", "Particles/ParticleTrail.vert.glsl",
+            "Particles/ParticleTrail.frag.glsl", depthTest: false);
+
+    private static ParticleMeshShaders GetOrCreateCached(ref ParticleMeshShaders? slot, string keyPrefix,
+        string vertexFile, string fragmentFile, bool depthTest)
+    {
+        lock (CacheGate)
+        {
+            if (slot is null)
+            {
+                slot = Create(keyPrefix, vertexFile, fragmentFile, depthTest);
+                RegisterSet(slot);
+            }
+            return slot;
+        }
+    }
+
+    private static void RegisterSet(ParticleMeshShaders set)
+    {
+        ShaderRegistry.Register(set.Additive);
+        ShaderRegistry.Register(set.Alpha);
+        ShaderRegistry.Register(set.Premultiplied);
+    }
 
     // Requires: shader paths relative to a registered shader directory; every blend mode gets the same
     //           stages and pipeline state and differs only in BlendState.
@@ -88,7 +132,7 @@ internal sealed class ParticleMeshShaders
         // The explicit PipelineState is authoritative; MeshPipelineCache hardcodes GreaterOrEqual for
         // every mesh pipeline, matching the reverse-Z depth the particle shaders were written against.
         PipelineState state = new(blend, new DepthState(depthTest, Write: false), FaceCull.None);
-        return new Shader(name, vertexFile, definition, keywords: null, materialLayout, state,
+        return new Shader(name, string.Empty, definition, keywords: null, materialLayout, state,
             iconShaderKey: null, vertexInputLayout: vertexInput);
     }
 

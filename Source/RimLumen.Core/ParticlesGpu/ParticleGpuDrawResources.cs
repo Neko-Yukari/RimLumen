@@ -42,8 +42,8 @@ internal sealed class ParticleGpuDrawResources : IDisposable
 
     private readonly Mesh quad;
     private readonly ParticleMeshShaders shaders;
-    private ParticleMeshShaders? trailShaders;
-    private readonly Mesh?[] trailMeshes = new Mesh?[ParticleTrailMath.StripBuckets.Length];
+    private readonly ParticleMeshShaders trailShaders;
+    private readonly Mesh[] trailMeshes;
     private readonly int retirementAge;
     // Cached materials keep only static state (shader + textures); the emitter index is a per-draw
     // DrawProperty, so two emitters sharing a texture and blend share one material.
@@ -58,9 +58,10 @@ internal sealed class ParticleGpuDrawResources : IDisposable
     {
         retirementAge = 2 * Math.Max(1, framesInFlight) + 2;
         quad = CreateQuad();
+        trailMeshes = CreateAllStripMeshes();
         // The occlusion test lives in the fragment shader, so the pipeline runs without a depth test.
-        shaders = ParticleMeshShaders.Create("RimLumen.L2", "Particles/ParticleBillboard.vert.glsl",
-            "Particles/ParticleBillboard.frag.glsl", depthTest: false);
+        shaders = ParticleMeshShaders.GetOrCreateL2Billboard();
+        trailShaders = ParticleMeshShaders.GetOrCreateL2Trail();
     }
 
     internal static VkDescriptorSetLayoutBinding Binding(int binding, VkDescriptorType type, VkShaderStageFlags stages) => new()
@@ -153,8 +154,6 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         }
 
         if (snapshot.TrailEmitters.Length == 0 || resources.TrailEmitters is null) return;
-        trailShaders ??= ParticleMeshShaders.Create("RimLumen.L2Trail",
-            "Particles/ParticleTrail.vert.glsl", "Particles/ParticleTrail.frag.glsl", depthTest: false);
         for (int t = 0; t < snapshot.TrailEmitters.Length; t++)
         {
             ParticleTrailEmitterFrame trailEmitter = snapshot.TrailEmitters[t];
@@ -196,10 +195,14 @@ internal sealed class ParticleGpuDrawResources : IDisposable
             new Vector4(isVertical3D ? 1f : 0f, topDown2D, vanillaMoteY, depthLift));
     }
 
-    private Mesh MeshForStrip(int maxPoints)
+    internal Mesh MeshForStrip(int maxPoints) => trailMeshes[ParticleTrailMath.StripBucketIndex(maxPoints)];
+
+    private static Mesh[] CreateAllStripMeshes()
     {
-        int bucket = ParticleTrailMath.StripBucketIndex(maxPoints);
-        return trailMeshes[bucket] ??= CreateStripMesh(ParticleTrailMath.StripBuckets[bucket]);
+        Mesh[] meshes = new Mesh[ParticleTrailMath.StripBuckets.Length];
+        for (int i = 0; i < meshes.Length; i++)
+            meshes[i] = CreateStripMesh(ParticleTrailMath.StripBuckets[i]);
+        return meshes;
     }
 
     internal static InstanceStorageBinding[] CreateStorageBindings(GpuComputeBuffer particles,
@@ -348,23 +351,26 @@ internal sealed class ParticleGpuDrawResources : IDisposable
         return mesh;
     }
 
-    // Requires: main thread after the render thread went idle (LumenGpuParticleEngine.DisposeGpu).
-    public void Dispose()
+    // Drops cached Materials when idle-releasing GPU pools while retaining prebuilt quad and strip meshes.
+    internal void ClearMaterials()
     {
-        if (disposed) return;
-        disposed = true;
         foreach (CachedMaterial cached in materials.Values) cached.Material.Dispose();
         materials.Clear();
         foreach (CachedMaterial cached in trailMaterials.Values) cached.Material.Dispose();
         trailMaterials.Clear();
         frameKeys.Clear();
         retired.Clear();
+    }
+
+    // Requires: main thread after the render thread went idle (LumenGpuParticleEngine.DisposeGpu).
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true;
+        ClearMaterials();
         quad.Dispose();
         for (int i = 0; i < trailMeshes.Length; i++)
-        {
-            trailMeshes[i]?.Dispose();
-            trailMeshes[i] = null;
-        }
+            trailMeshes[i].Dispose();
     }
 
     // Per-capture vector state is never stored here: see AppendDraws/DrawPropertyArena.

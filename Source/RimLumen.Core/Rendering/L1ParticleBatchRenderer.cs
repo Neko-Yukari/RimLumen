@@ -51,7 +51,7 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
     private readonly List<(LumenBlendMode Blend, Texture Texture)> frameKeys = new();
     private readonly List<(LumenBlendMode Blend, Texture Texture)> retired = new();
     private readonly List<StagedBatch> staged = new();
-    private ParticleMeshShaders? shaders;
+    private readonly ParticleMeshShaders shaders;
     private Vector4 depthParams = new(0.3f, 1000f, 1f, 1f);
     private Vector4 projectionPacked = new(1f, 0f, 0f, 1f);
     private ulong stagedFrameIndex = ulong.MaxValue;
@@ -66,6 +66,7 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
     {
         this.sceneDepth = sceneDepth;
         retirementAge = 2 * Math.Max(1, framesInFlight) + 2;
+        shaders = ParticleMeshShaders.GetOrCreateL1();
         mesh.MarkDynamic();
     }
 
@@ -147,8 +148,6 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
                 staged.Clear();
                 return;
             }
-            shaders ??= ParticleMeshShaders.Create("RimLumen.L1", "Particles/L1ParticleQuad.vert.glsl",
-                "Particles/L1ParticleQuad.frag.glsl", depthTest: true);
             RetireStale(frameIndex);
             frameKeys.Clear();
             for (int i = 0; i < staged.Count; i++)
@@ -198,9 +197,9 @@ internal sealed class L1ParticleBatchRenderer : IDisposable
         }
         Shader shader = (batch.BlendMode switch
         {
-            LumenBlendMode.Additive => shaders!.Additive,
-            LumenBlendMode.AlphaBlend => shaders!.Alpha,
-            LumenBlendMode.Premultiplied => shaders!.Premultiplied,
+            LumenBlendMode.Additive => shaders.Additive,
+            LumenBlendMode.AlphaBlend => shaders.Alpha,
+            LumenBlendMode.Premultiplied => shaders.Premultiplied,
             _ => throw new ArgumentOutOfRangeException(nameof(batch), batch.BlendMode, "Unknown L1 blend mode.")
         });
         var material = new Material(shader, $"RimLumen.L1.{batch.BlendMode}.{batch.Texture.Name}");

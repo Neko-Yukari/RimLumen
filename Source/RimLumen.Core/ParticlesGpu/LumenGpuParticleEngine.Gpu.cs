@@ -41,6 +41,35 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
     private const double GpuIdleRetentionSeconds = 30;
     private bool idleRequested;
     private long? idleStartedAt;
+    internal const string SimShaderPath = "Particles/ParticleSim.comp.glsl";
+    internal const string TrailSimShaderPath = "Particles/ParticleTrailSim.comp.glsl";
+    internal const int ComputePushConstantBytes = 16;
+
+    internal static readonly ComputeBinding[] SimBindings =
+    {
+        new(0, ComputeBindingType.StorageBuffer),
+        new(1, ComputeBindingType.StorageBuffer),
+        new(2, ComputeBindingType.StorageBuffer),
+        new(3, ComputeBindingType.StorageBuffer),
+        new(4, ComputeBindingType.StorageBuffer),
+        new(5, ComputeBindingType.StorageBuffer),
+        new(6, ComputeBindingType.StorageBuffer),
+        new(7, ComputeBindingType.StorageBuffer),
+        new(8, ComputeBindingType.StorageBuffer),
+        new(9, ComputeBindingType.StorageBuffer)
+    };
+
+    internal static readonly ComputeBinding[] TrailSimBindings =
+    {
+        new(0, ComputeBindingType.StorageBuffer),
+        new(1, ComputeBindingType.StorageBuffer),
+        new(2, ComputeBindingType.StorageBuffer),
+        new(3, ComputeBindingType.StorageBuffer),
+        new(4, ComputeBindingType.StorageBuffer),
+        new(5, ComputeBindingType.StorageBuffer),
+        new(6, ComputeBindingType.StorageBuffer)
+    };
+
     private EngineApplication? application;
     private readonly object lifecycleGate = new();
     private VkDescriptorSetLayout computeLayout;
@@ -150,8 +179,37 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         RecordSimulation(context.Frame, frame.Snapshot, frame.Gpu);
     }
 
+    // Preloads particle/trail compute kernels, registers mesh shaders, and builds static quad/strip meshes
+    // during host initialization without allocating VRAM particle/trail pools or subscribing frame hooks.
+    internal void InitializeStaticGpuResources(EngineApplication app)
+    {
+        if (app.GraphicsDevice is null || app.RenderContext is null) return;
+        lock (lifecycleGate)
+        {
+            if (disposed) return;
+            ParticleMeshShaders.EnsureParticleShadersRegistered();
+            kernel ??= LoadSimKernel();
+            trailKernel ??= LoadTrailSimKernel();
+            drawResources ??= new ParticleGpuDrawResources(app.RenderContext.FramesInFlight);
+        }
+    }
+
+    private static ComputeKernel LoadSimKernel() =>
+        ComputeKernelCache.Load(SimShaderPath, "main", SimBindings, ComputePushConstantBytes);
+
+    private static ComputeKernel LoadTrailSimKernel() =>
+        ComputeKernelCache.Load(TrailSimShaderPath, "main", TrailSimBindings, ComputePushConstantBytes);
+
+    private static VkDescriptorSetLayoutBinding[] StorageDescriptorBindings(int count)
+    {
+        var bindings = new VkDescriptorSetLayoutBinding[count];
+        for (int i = 0; i < count; i++)
+            bindings[i] = ParticleGpuDrawResources.Binding(i, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit);
+        return bindings;
+    }
+
     // Requires: main thread with a live graphics device.
-    // Ensures: creates the device objects exactly once (particle buffer, quad mesh + materials, frame slots,
+    // Ensures: creates the device objects exactly once (particle buffer, quad/strip meshes + shaders, frame slots,
     //   compute layout/kernel). Returns false when the host has no graphics device yet.
     private bool EnsureGpu()
     {
@@ -163,34 +221,10 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             "Lumen.Particles", (long)capacity * 64, VkBufferUsageFlags.TransferSrcBit, deviceLocal: true);
         deadBlocks = GpuComputeBuffer.Create(device, app.GraphicsDevice.Allocator,
             "Lumen.ParticleDeadBlocks", ParticleSimulationDispatch.ScratchBytes(capacity), deviceLocal: true);
-        drawResources = new ParticleGpuDrawResources(app.RenderContext.FramesInFlight);
+        drawResources ??= new ParticleGpuDrawResources(app.RenderContext.FramesInFlight);
         frameSlots = new ParticleGpuFrame?[2 * app.RenderContext.FramesInFlight + 2];
-        computeLayout = ParticleGpuDrawResources.CreateLayout(device, new[]
-        {
-            ParticleGpuDrawResources.Binding(0, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(1, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(2, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(3, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(4, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(5, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(6, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(7, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(8, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(9, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit)
-        });
-        kernel = ComputeKernelCache.Load("Particles/ParticleSim.comp.glsl", "main", new[]
-        {
-            new ComputeBinding(0, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(1, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(2, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(3, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(4, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(5, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(6, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(7, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(8, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(9, ComputeBindingType.StorageBuffer)
-        }, 16);
+        computeLayout = ParticleGpuDrawResources.CreateLayout(device, StorageDescriptorBindings(SimBindings.Length));
+        kernel ??= LoadSimKernel();
         return true;
     }
 
@@ -207,26 +241,8 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
             (long)trailPointCapacity * Marshal.SizeOf<GpuTrailPoint>(), deviceLocal: true);
         particleToTrail = GpuComputeBuffer.Create(device, allocator, "Lumen.ParticleToTrail",
             (long)trailMapCapacity * sizeof(uint), deviceLocal: true);
-        trailComputeLayout = ParticleGpuDrawResources.CreateLayout(device, new[]
-        {
-            ParticleGpuDrawResources.Binding(0, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(1, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(2, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(3, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(4, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(5, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit),
-            ParticleGpuDrawResources.Binding(6, VkDescriptorType.StorageBuffer, VkShaderStageFlags.ComputeBit)
-        });
-        trailKernel = ComputeKernelCache.Load("Particles/ParticleTrailSim.comp.glsl", "main", new[]
-        {
-            new ComputeBinding(0, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(1, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(2, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(3, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(4, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(5, ComputeBindingType.StorageBuffer),
-            new ComputeBinding(6, ComputeBindingType.StorageBuffer)
-        }, 16);
+        trailComputeLayout = ParticleGpuDrawResources.CreateLayout(device, StorageDescriptorBindings(TrailSimBindings.Length));
+        trailKernel ??= LoadTrailSimKernel();
     }
 
     // Requires: main thread under lifecycleGate, device resources exist.
@@ -686,8 +702,7 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
     {
         foreach (ParticleGpuFrame? slot in frameSlots) slot?.Dispose();
         frameSlots = Array.Empty<ParticleGpuFrame?>();
-        drawResources?.Dispose();
-        drawResources = null;
+        drawResources?.ClearMaterials();
         particles?.Dispose();
         particles = null;
         deadBlocks?.Dispose();
@@ -708,7 +723,6 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         particleToTrail = null;
         if (!trailComputeLayout.IsNull()) device.DestroyDescriptorSetLayout(trailComputeLayout, device.VkAllocator);
         trailComputeLayout = default;
-        trailKernel = null;
         initializedInstances.Clear();
         initializedTrailInstances.Clear();
         liveInstanceIds.Clear();
@@ -717,12 +731,16 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
 
     private void DisposeGpu()
     {
-        if (particles is not null)
+        if (particles is not null || drawResources is not null)
         {
             EngineApplication app = EngineApplication.Instance;
             app.WaitForRenderThreadIdle();
             app.Device.WaitIdle();
-            ReleaseGpu(app.Device);
+            if (particles is not null) ReleaseGpu(app.Device);
+            drawResources?.Dispose();
+            drawResources = null;
+            kernel = null;
+            trailKernel = null;
         }
         if (application is not null)
         {
