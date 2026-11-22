@@ -247,7 +247,7 @@ button[aria-pressed='true'] {
   border-radius: 5px;
   border: 1px solid var(--border-subtle);
   background-color: rgba(13, 16, 21, 0.86);
-  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--ink-primary);

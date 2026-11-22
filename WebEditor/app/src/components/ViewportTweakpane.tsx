@@ -44,7 +44,7 @@ export function ViewportTweakpane({ paramsRef, onParamChange, paneApiRef }: View
     simFolder.addBinding(p, 'density', { label: '粒子密度', min: 0.1, max: 1.0, step: 0.05 }).on('change', (ev) => {
       onParamChange('density', ev.value);
     });
-    simFolder.addBinding(p, 'exposure', { label: 'HDR 曝光', min: 0.25, max: 2.5, step: 0.05 }).on('change', (ev) => {
+    simFolder.addBinding(p, 'exposure', { label: 'HDR 曝光', min: 0.1, max: 2.5, step: 0.05 }).on('change', (ev) => {
       onParamChange('exposure', ev.value);
     });
     simFolder.addBinding(p, 'intensity', { label: '强度倍率', min: 0, max: 4, step: 0.1 }).on('change', (ev) => {

@@ -16,6 +16,8 @@ interface CodeEditorPaneProps {
   onUserEdit: (nextText: string) => void;
 }
 
+const MONO_FONT_STACK = "ui-monospace, 'Cascadia Code', Consolas, monospace";
+
 const editorTheme = EditorView.theme(
   {
     '&': {
@@ -23,20 +25,23 @@ const editorTheme = EditorView.theme(
       color: '#E6ECF5',
       height: '100%',
       fontSize: '13px',
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+      fontFamily: MONO_FONT_STACK,
     },
     '.cm-scroller': {
       overflow: 'auto',
       lineHeight: '1.55',
+      fontFamily: MONO_FONT_STACK,
     },
     '.cm-content': {
       caretColor: '#E5A93C',
       padding: '10px 0',
+      fontFamily: MONO_FONT_STACK,
     },
     '.cm-gutters': {
       backgroundColor: '#12161E',
       color: '#67748A',
       borderRight: '1px solid #2B3240',
+      fontFamily: MONO_FONT_STACK,
     },
     '.cm-activeLineGutter': {
       backgroundColor: '#1B212E',

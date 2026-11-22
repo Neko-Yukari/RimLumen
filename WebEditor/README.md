@@ -27,7 +27,7 @@ pwsh -NoProfile -File WebEditor/build-editor.ps1
 pwsh -NoProfile -File WebEditor/serve-editor.ps1
 ```
 
-执行后在浏览器访问 `http://127.0.0.1:4173/` 即可使用。
+执行后在浏览器访问 `http://127.0.0.1:4173/editor/` 即可使用。
 
 若只改前端 UI 界面并做热更新开发，也可在 `WebEditor/app/` 下运行 `npm run dev`（前提是已跑过一次 `build-editor.ps1` 生成 `public/wasm/`）。
 

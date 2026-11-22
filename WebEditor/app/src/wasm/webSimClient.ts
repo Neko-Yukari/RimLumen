@@ -51,7 +51,8 @@ export class WebSimClient {
   }
 
   private static async createInternal(): Promise<WebSimClient> {
-    const dotnetUrl = new URL('./wasm/_framework/dotnet.js', window.location.href).href;
+    const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
+    const dotnetUrl = new URL(`${baseUrl}wasm/_framework/dotnet.js`, window.location.origin).href;
     const mod = (await import(/* @vite-ignore */ dotnetUrl)) as {
       dotnet: {
         withDiagnosticTracing(enabled: boolean): {

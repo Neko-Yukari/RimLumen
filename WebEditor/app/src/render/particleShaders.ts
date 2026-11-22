@@ -43,7 +43,6 @@ uniform vec4 uLumenDraw;
 uniform vec4 uLumenMaterialTint;
 // x: Linear material calculation (1 vs Stored 0), y: resolved texture is sRGB (1 vs 0)
 uniform vec4 uLumenColor;
-uniform float uExposure;
 uniform sampler2D uParticleTexture;
 
 in vec2 vUv;
@@ -87,7 +86,7 @@ vec4 lumenParticleStoredColor(vec4 vertex, vec4 tint, vec4 texel, bool linearMat
     return vec4(rgb, vertex.a * tint.a * texel.a);
 }
 
-// 1.7/Shaders/Particles/L1ParticleQuad.frag.glsl:35-65 (depth feather omitted without scene depth)
+// 1.7/Shaders/Particles/L1ParticleQuad.frag.glsl:35-65 (outputs linear HDR into Three.js HalfFloat target)
 void main() {
     vec4 texel = uLumenDraw.x > 0.5
         ? texture(uParticleTexture, vUv)
@@ -104,10 +103,9 @@ void main() {
         discard;
     }
 
-    // Stored-encoding preview over a dark backdrop: multiply RGB by authored HdrGain and viewport exposure.
-    c.rgb *= vHdrGain * uExposure;
-    // Soft Reinhard-style highlight knee so high HDR gains show core color gradient cleanly in 8-bit preview.
-    c.rgb = c.rgb / (1.0 + c.rgb * 0.12);
+    // 1.7/Shaders/RimLumen/RimLumenColorSpace.glsl:22-25: decode stored RGB to linear HDR before additive blend;
+    // Three.js HalfFloat target + OutputPass built-in tone mapping handle highlight compression & sRGB encode.
+    c.rgb = lumenDecodeStored(c.rgb) * vHdrGain;
     if (uLumenDraw.y > 0.5) {
         c.rgb *= c.a;
     }
@@ -141,6 +139,14 @@ uniform vec3 uLightColor;
 in vec2 vLocalUv;
 out vec4 outColor;
 
+vec3 lumenDecodeStored(vec3 storedRgb) {
+    return mix(
+        pow(max(storedRgb + 0.055, vec3(0.0)) / 1.055, vec3(2.4)),
+        storedRgb / 12.92,
+        lessThanEqual(storedRgb, vec3(0.04045))
+    );
+}
+
 void main() {
     float rSq = dot(vLocalUv, vLocalUv);
     if (rSq >= 1.0) {
@@ -148,8 +154,9 @@ void main() {
     }
     float q = 1.0 - rSq;
     float w = q * q;
-    // Approximate pool glow against dark preview floor without clipping saturated hues.
-    vec3 glow = uLightColor * (w * 0.65);
-    outColor = vec4(glow, 1.0);
+    float peak = max(uLightColor.r, max(uLightColor.g, uLightColor.b));
+    float scale = max(peak, 1.0);
+    vec3 linLight = peak > 1e-5 ? lumenDecodeStored(uLightColor / scale) * scale : vec3(0.0);
+    outColor = vec4(linLight * (w * 0.45), 1.0);
 }
 `;

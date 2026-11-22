@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import type { DistortionInfo, PointLightInfo, StepFrameResult, SubBatchInfo } from '../wasm/types';
 import {
   L1_PARTICLE_FRAGMENT_SHADER,
@@ -37,6 +40,10 @@ const FLOATS_PER_VERTEX = 14; // 56 bytes: pos(3) + uv(2) + color(4) + radialUvG
 
 export class RimLumenViewport {
   private readonly renderer: THREE.WebGLRenderer;
+  private readonly hdrTarget: THREE.WebGLRenderTarget;
+  private readonly composer: EffectComposer;
+  private readonly renderPass: RenderPass;
+  private readonly outputPass: OutputPass;
   private readonly scene: THREE.Scene;
   private readonly orthoCamera: THREE.OrthographicCamera;
   private readonly perspCamera: THREE.PerspectiveCamera;
@@ -64,7 +71,6 @@ export class RimLumenViewport {
   private readonly resizeObserver: ResizeObserver;
 
   private cameraMode: CameraMode = '3d';
-  private exposure = 1.0;
   private showHelpers = true;
   private width = 640;
   private height = 480;
@@ -80,12 +86,27 @@ export class RimLumenViewport {
     });
     this.renderer.setClearColor(0x0d1015, 1);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.AgXToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
 
     this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x0d1015);
 
     this.orthoCamera = new THREE.OrthographicCamera(-12, 12, 9, -9, 0.3, 500);
     this.perspCamera = new THREE.PerspectiveCamera(45, 4 / 3, 0.1, 500);
     this.activeCamera = this.perspCamera;
+
+    this.hdrTarget = new THREE.WebGLRenderTarget(this.width, this.height, {
+      type: THREE.HalfFloatType,
+      depthBuffer: true,
+    });
+    this.composer = new EffectComposer(this.renderer, this.hdrTarget);
+    this.renderPass = new RenderPass(this.scene, this.activeCamera);
+    // Let WebGLBackground clear using scene.background inside LinearSRGBColorSpace after OutputPass returns.
+    this.renderPass.clear = false;
+    this.outputPass = new OutputPass();
+    this.composer.addPass(this.renderPass);
+    this.composer.addPass(this.outputPass);
 
     this.controls2D = new OrbitControls(this.orthoCamera, canvas);
     this.controls2D.enableRotate = false;
@@ -196,7 +217,7 @@ export class RimLumenViewport {
   }
 
   setExposure(exposure: number): void {
-    this.exposure = Math.max(0.05, exposure);
+    this.renderer.toneMappingExposure = Math.max(0.05, exposure);
   }
 
   setShowGrid(show: boolean): void {
@@ -308,7 +329,7 @@ export class RimLumenViewport {
     // Node ribbon / beam stream
     this.uploadAndBindStream(this.ribStream, frame.ribBatches, ribVertBytes, ribIdxBytes, 12);
 
-    this.renderer.render(this.scene, this.activeCamera);
+    this.composer.render();
   }
 
   dispose(): void {
@@ -337,6 +358,10 @@ export class RimLumenViewport {
     }
     this.textures.clear();
     this.fallbackWhiteTex.dispose();
+    this.outputPass.dispose();
+    this.renderPass.dispose();
+    this.composer.dispose();
+    this.hdrTarget.dispose();
     this.renderer.dispose();
   }
 
@@ -352,6 +377,7 @@ export class RimLumenViewport {
       this.controls3D.enabled = true;
       this.activeControls = this.controls3D;
     }
+    this.renderPass.camera = this.activeCamera;
   }
 
   private handleResize(cssW: number, cssH: number, pixelW: number, pixelH: number): void {
@@ -359,6 +385,8 @@ export class RimLumenViewport {
     this.height = cssH;
     this.renderer.setPixelRatio(1);
     this.renderer.setSize(pixelW, pixelH, false);
+    this.composer.setPixelRatio(1);
+    this.composer.setSize(pixelW, pixelH);
     this.perspCamera.aspect = cssW / cssH;
     this.perspCamera.updateProjectionMatrix();
     this.updateOrthoFrustum();
@@ -459,7 +487,6 @@ export class RimLumenViewport {
         uLumenDraw: { value: new THREE.Vector4(0, 1, 0, 0) },
         uLumenMaterialTint: { value: new THREE.Vector4(1, 1, 1, 1) },
         uLumenColor: { value: new THREE.Vector4(0, 1, 0, 0) },
-        uExposure: { value: this.exposure },
         uParticleTexture: { value: this.fallbackWhiteTex },
       },
     });
@@ -500,7 +527,6 @@ export class RimLumenViewport {
       0,
       0,
     );
-    mat.uniforms.uExposure.value = this.exposure;
     mat.uniforms.uParticleTexture.value = texEntry ? texEntry.texture : this.fallbackWhiteTex;
 
     if (batch.blendMode === 'Additive') {
