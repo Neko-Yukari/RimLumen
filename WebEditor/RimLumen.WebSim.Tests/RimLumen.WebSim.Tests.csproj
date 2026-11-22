@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <Import Project="..\RimLumen.WebSim\RimLumen.WebSim.Core.props" />
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="WebDirectXmlLoaderRulesSuite.cs" />
+    <Compile Include="XmlJsonParitySuite.cs" />
+    <Compile Include="WebSimEngineSuite.cs" />
+  </ItemGroup>
+</Project>
