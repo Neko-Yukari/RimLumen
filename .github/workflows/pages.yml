@@ -46,7 +46,7 @@ jobs:
           cache-dependency-path: WebEditor/app/package-lock.json
 
       - name: Install .NET WASM workload
-        run: dotnet workload install wasm-tools
+        run: dotnet workload install wasm-tools wasm-tools-net10
 
       - name: Run WebEditor offline parity & simulation tests
         run: dotnet run --project WebEditor/RimLumen.WebSim.Tests/RimLumen.WebSim.Tests.csproj -c Release
