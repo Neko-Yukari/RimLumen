@@ -1,0 +1,82 @@
+<Project>
+  <PropertyGroup>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);CS0414;CS0169</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Contracts -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Contracts\AssetDescriptors.cs" Link="RimLumen.Core\Contracts\AssetDescriptors.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Contracts\VfxFeatureContracts.cs" Link="RimLumen.Core\Contracts\VfxFeatureContracts.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Contracts\LumenEmitterTransform.cs" Link="RimLumen.Core\Contracts\LumenEmitterTransform.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Contracts\LumenNodeFeatureContracts.cs" Link="RimLumen.Core\Contracts\LumenNodeFeatureContracts.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Contracts\LumenPlayContracts.cs" Link="RimLumen.Core\Contracts\LumenPlayContracts.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Contracts\LumenPlayMap.cs" Link="RimLumen.Core\Contracts\LumenPlayMap.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Contracts\LumenCapabilities.cs" Link="RimLumen.Core\Contracts\LumenCapabilities.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Contracts\RenderPipelineContracts.cs" Link="RimLumen.Core\Contracts\RenderPipelineContracts.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Contracts\LumenHostRegistry.cs" Link="RimLumen.Core\Contracts\LumenHostRegistry.cs" />
+
+    <!-- Assets -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Assets\CurveEvaluator.cs" Link="RimLumen.Core\Assets\CurveEvaluator.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Assets\GradientEvaluator.cs" Link="RimLumen.Core\Assets\GradientEvaluator.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Assets\InMemoryAssetCatalog.cs" Link="RimLumen.Core\Assets\InMemoryAssetCatalog.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Assets\LumenAssetValidationCache.cs" Link="RimLumen.Core\Assets\LumenAssetValidationCache.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Assets\LumenNativeAssets.cs" Link="RimLumen.Core\Assets\LumenNativeAssets.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Assets\LumenNativeAssets.VfxContracts.cs" Link="RimLumen.Core\Assets\LumenNativeAssets.VfxContracts.cs" />
+
+    <!-- ParticlesGpu pure math/schedulers -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\ParticlesGpu\EmissionScheduler.cs" Link="RimLumen.Core\ParticlesGpu\EmissionScheduler.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\ParticlesGpu\EmitterSlotAllocator.cs" Link="RimLumen.Core\ParticlesGpu\EmitterSlotAllocator.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\ParticlesGpu\GpuCurveAtlasPacker.cs" Link="RimLumen.Core\ParticlesGpu\GpuCurveAtlasPacker.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\ParticlesGpu\GpuParticleStructs.cs" Link="RimLumen.Core\ParticlesGpu\GpuParticleStructs.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\ParticlesGpu\ParticleTrailMath.cs" Link="RimLumen.Core\ParticlesGpu\ParticleTrailMath.cs" />
+
+    <!-- Environment -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Environment\CursorVelocityMath.cs" Link="RimLumen.Core\Environment\CursorVelocityMath.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Environment\ParticleEnvironmentMath.cs" Link="RimLumen.Core\Environment\ParticleEnvironmentMath.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Environment\ParticleEnvironment.cs" Link="RimLumen.Core\Environment\ParticleEnvironment.cs" />
+
+    <!-- Scene -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\CpuParticleSimulator.cs" Link="RimLumen.Core\Scene\CpuParticleSimulator.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\EffectInstanceHandle.cs" Link="RimLumen.Core\Scene\EffectInstanceHandle.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\EffectStateGraph.cs" Link="RimLumen.Core\Scene\EffectStateGraph.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\LumenSceneBootstrap.cs" Link="RimLumen.Core\Scene\LumenSceneBootstrap.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\LumenVfxService.cs" Link="RimLumen.Core\Scene\LumenVfxService.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\NodeFeatureClock.cs" Link="RimLumen.Core\Scene\NodeFeatureClock.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\ParticleAppearanceMath.cs" Link="RimLumen.Core\Scene\ParticleAppearanceMath.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\ParticleBillboardMath.cs" Link="RimLumen.Core\Scene\ParticleBillboardMath.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\ParticleCollisionMath.cs" Link="RimLumen.Core\Scene\ParticleCollisionMath.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\ParticleEmissionBudget.cs" Link="RimLumen.Core\Scene\ParticleEmissionBudget.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\ParticleForceMath.cs" Link="RimLumen.Core\Scene\ParticleForceMath.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\ParticleShapeSampler.cs" Link="RimLumen.Core\Scene\ParticleShapeSampler.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\ParticleShapeTransform.cs" Link="RimLumen.Core\Scene\ParticleShapeTransform.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\ParticleSubEmitterMath.cs" Link="RimLumen.Core\Scene\ParticleSubEmitterMath.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\ParticleTypes.cs" Link="RimLumen.Core\Scene\ParticleTypes.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Scene\SpacePlaneTransform.cs" Link="RimLumen.Core\Scene\SpacePlaneTransform.cs" />
+
+    <!-- Rendering & Ribbons & Distortion -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Rendering\CameraBillboardBasis.cs" Link="RimLumen.Core\Rendering\CameraBillboardBasis.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Ribbons\LumenRibbonBackend.cs" Link="RimLumen.Core\Ribbons\LumenRibbonBackend.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Ribbons\RibbonStripGeometry.cs" Link="RimLumen.Core\Ribbons\RibbonStripGeometry.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Distortion\DistortionTimeline.cs" Link="RimLumen.Core\Distortion\DistortionTimeline.cs" />
+
+    <!-- Lighting (pure math & occlusion data structs required by VisualPointLight) -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Lighting\VisualPointLight.cs" Link="RimLumen.Core\Lighting\VisualPointLight.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Lighting\Casters\CasterMesh.cs" Link="RimLumen.Core\Lighting\Casters\CasterMesh.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Lighting\Casters\ObjectShadow.cs" Link="RimLumen.Core\Lighting\Casters\ObjectShadow.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Lighting\Casters\ShadowChannels.cs" Link="RimLumen.Core\Lighting\Casters\ShadowChannels.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Lighting\Casters\Silhouette.cs" Link="RimLumen.Core\Lighting\Casters\Silhouette.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Lighting\Occlusion\LightTransport.cs" Link="RimLumen.Core\Lighting\Occlusion\LightTransport.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Lighting\Occlusion\OcclusionMap.cs" Link="RimLumen.Core\Lighting\Occlusion\OcclusionMap.cs" />
+
+    <!-- Demo effects -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\Source\RimLumen.Core\Demo\RimLumenDemoEffects.cs" Link="RimLumen.Core\Demo\RimLumenDemoEffects.cs" />
+
+    <!-- Pure C# WebSim modules shared with WebSim.Tests -->
+    <Compile Include="$(MSBuildThisFileDirectory)WebHostShims.cs" Link="WebSim\WebHostShims.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)WebNodeBackends.cs" Link="WebSim\WebNodeBackends.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)WebDirectXmlLoader.cs" Link="WebSim\WebDirectXmlLoader.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)WebEffectSerializer.cs" Link="WebSim\WebEffectSerializer.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)WebSimEngine.cs" Link="WebSim\WebSimEngine.cs" />
+  </ItemGroup>
+</Project>
