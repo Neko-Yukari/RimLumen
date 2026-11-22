@@ -132,6 +132,7 @@ public static class RimLumenRenderHost
 
         RimLumenMapHooks.Arm();
         ShaderSourceLoader.RegisterShaderSourceDirectory(Path.Combine(modRootDirectory, "1.7", "Shaders"));
+        ParticleMeshShaders.EnsureParticleShadersRegistered();
         byte passId = RenderPassRegistry.Register("RimLumenHdr");
         // UnityStubs LayerMask allocates named layers at 16..31; vanilla uses Default=0.
         // Reserve 15 in the otherwise unnamed 1..15 range without Unity/RimUnity coupling.

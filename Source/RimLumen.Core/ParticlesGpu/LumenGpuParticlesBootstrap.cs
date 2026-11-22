@@ -30,6 +30,8 @@ internal static class LumenGpuParticlesBootstrap
             ShaderSourceLoader.RegisterShaderSourceDirectory(Path.GetFullPath(Path.Combine(assemblyDirectory, "..", "Shaders")));
             LumenSceneBootstrap.EnsureInitialized();
             engine = new LumenGpuParticleEngine();
+            if (EngineApplication.Instance is { GraphicsDevice: not null, RenderContext: not null } app)
+                engine.InitializeStaticGpuResources(app);
             LumenHostRegistry.RegisterGpuParticleEngine(engine);
             EngineApplication.Instance.BeforeGraphicsShutdown += Shutdown;
             EngineApplication.Instance.OnShutdown += Quiesce;
