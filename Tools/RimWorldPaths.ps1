@@ -2,9 +2,16 @@
 # Sets $env:RIMWORLD_DIR to the result so MSBuild (Directory.Build.props GameRoot) sees the same directory.
 # ASCII-only and PowerShell 5.1 compatible because pack-release.ps1 dot-sources it.
 function Resolve-RimWorldDir([string]$Explicit) {
+    $given = $Explicit
+    if (-not $given) { $given = $env:RIMWORLD_DIR }
+    if ($given) {
+        if (-not (Test-Path -LiteralPath (Join-Path $given 'Assembly-CSharp.dll'))) {
+            throw "RimWorld not found at '$given' (no Assembly-CSharp.dll)."
+        }
+        $env:RIMWORLD_DIR = $given
+        return $given
+    }
     $candidates = @()
-    if ($Explicit) { $candidates += $Explicit }
-    if ($env:RIMWORLD_DIR) { $candidates += $env:RIMWORLD_DIR }
     $steam = (Get-ItemProperty -Path 'HKCU:\Software\Valve\Steam' -Name SteamPath -ErrorAction SilentlyContinue).SteamPath
     if ($steam) {
         $vdf = Join-Path $steam 'steamapps/libraryfolders.vdf'
