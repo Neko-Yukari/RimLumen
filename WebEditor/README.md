@@ -5,7 +5,7 @@
 ## 前置环境
 
 - **Node.js** >= 20（及 `npm`）
-- **.NET 10 SDK** + `wasm-tools` 工作负载（与仓库 `Tools/build.ps1` 所用游戏便携 SDK 完全隔离；若安装了独立目录 `C:\Users\81004\AppData\Local\rimlumen-dotnet-wasm`，构建脚本会自动优先选用，否则使用 `DOTNET_ROOT` 或系统 `dotnet`）。
+- **.NET 10 SDK** + `wasm-tools` 工作负载（与仓库 `Tools/build.ps1` 所用游戏便携 SDK 完全隔离；若安装了独立目录 `%LOCALAPPDATA%\rimlumen-dotnet-wasm`，构建脚本会自动优先选用，否则使用 `DOTNET_ROOT` 或系统 `dotnet`）。
 
 ## 构建与本地打开方式
 
