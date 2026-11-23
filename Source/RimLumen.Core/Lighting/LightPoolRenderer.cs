@@ -50,7 +50,6 @@ internal sealed class LightPoolRenderer : IDisposable
     private ulong stagedFrameIndex = ulong.MaxValue;
     private ulong preparedFrameIndex = ulong.MaxValue;
     private OcclusionFrame prepared;
-    private bool preparedOcclusion;
     private CasterChunks casters = null!;
     private bool objectShadows;
     // [0] reads FirstMask, [1] LaterMask.
@@ -94,21 +93,12 @@ internal sealed class LightPoolRenderer : IDisposable
         this.objectShadows = objectShadows;
         FrameSunChannel = takeover && objectShadows ? SunChannel : Vector4.Zero;
         if (!takeover && (stagedFrameIndex != frameIndex || staged.Count == 0)) return;
-        preparedOcclusion = NeedsOcclusion(staged, takeover);
-        if (preparedOcclusion) prepared = OcclusionField.Capture(map, out casters);
+        prepared = OcclusionField.Capture(map, out casters);
         preparedFrameIndex = frameIndex;
     }
 
     // ShadowSlot.Selector of the takeover sun on this frame (LightingTakeover.Rebind); zero without object shadows.
     internal Vector4 FrameSunChannel { get; private set; }
-
-    internal static bool NeedsOcclusion(IReadOnlyList<VisualPointLight> lights, bool takeover)
-    {
-        if (takeover) return true;
-        for (int i = 0; i < lights.Count; i++)
-            if (lights[i].CastShadows) return true;
-        return false;
-    }
 
     internal static Vector4 EncodeLightUniform(VisualPointLight light) => new(light.Light, light.CastShadows ? 1f : 0f);
 
@@ -128,7 +118,7 @@ internal sealed class LightPoolRenderer : IDisposable
             return 0;
         }
         materials ??= CreatePoolMaterials();
-        if (preparedOcclusion) UploadOcclusion(prepared);
+        UploadOcclusion(prepared);
         bool sun = takeover && objectShadows;
         ShadowSlot[] slots = ShadowChannels.Assign(staged, objectShadows, sun);
         float altitude = AltitudeLayer.LightingOverlay.AltitudeFor();

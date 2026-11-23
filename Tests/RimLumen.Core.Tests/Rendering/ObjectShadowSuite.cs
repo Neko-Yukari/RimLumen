@@ -171,7 +171,9 @@ public static class ObjectShadowSuite
         var lights = Enumerable.Range(0, 60).Select(_ => new Vector3(random.Next(0, 80) + 0.5f, random.Next(0, 80) + 0.5f, random.Next(2, 13))).ToList();
         foreach (bool sun in new[] { false, true })
         {
-            ShadowSlot[] slots = ShadowChannels.Assign(lights, sun);
+            ShadowSlot[] slots = ShadowChannels.Assign(
+                lights.Select(l => new VisualPointLight(l.X, 1f, l.Y, l.Z, Vector3.One, VisualPointLightKind.Effect)).ToList(),
+                objectShadows: true, sun);
             Equal(lights.Count, slots.Length);
             for (int i = 0; i < lights.Count; i++)
             {
@@ -210,10 +212,6 @@ public static class ObjectShadowSuite
 
         ShadowSlot[] disabled = ShadowChannels.Assign([shadowed, unshadowed], objectShadows: false, sun: false);
         Require(!disabled[0].HasChannel && !disabled[1].HasChannel, "Global objectShadows=false disables all channels.");
-
-        Require(!LightPoolRenderer.NeedsOcclusion([unshadowed], takeover: false), "Unshadowed-only lights need no occlusion without takeover.");
-        Require(LightPoolRenderer.NeedsOcclusion([unshadowed], takeover: true), "Takeover still needs occlusion.");
-        Require(LightPoolRenderer.NeedsOcclusion([unshadowed, shadowed], takeover: false), "Any shadowed light needs occlusion.");
 
         Equal(new Vector4(color, 1f), LightPoolRenderer.EncodeLightUniform(shadowed));
         Equal(new Vector4(color, 0f), LightPoolRenderer.EncodeLightUniform(unshadowed));
