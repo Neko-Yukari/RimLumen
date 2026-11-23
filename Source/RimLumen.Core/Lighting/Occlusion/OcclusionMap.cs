@@ -3,7 +3,7 @@ using System.Numerics;
 
 namespace RimLumen.Core.Lighting.Occlusion;
 
-// Texel layout of the occlusion map (design .scratch/design/lighting-takeover.md 1.1). Shared by the C# reference
+// Texel layout of the occlusion map: 4x4 texels per cell, 4 channels. Shared by the C# reference
 // (LightTransport) and RimLumenOcclusion.glsl; change both together.
 internal static class OcclusionLayout
 {

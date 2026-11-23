@@ -372,9 +372,8 @@ public static class ShaderPackCatalogTests
     private static void WithSlangLoaded(Action action)
     {
         string repoRoot = RepoRoot();
-        string buildProperties = Path.Combine(repoRoot, "Directory.Build.props");
-        string gameRoot = Environment.GetEnvironmentVariable("GameRoot")
-            ?? XDocument.Load(buildProperties).Descendants("GameRoot").Single().Value;
+        string gameRoot = Environment.GetEnvironmentVariable("RIMWORLD_DIR")
+            ?? throw new InvalidOperationException("RIMWORLD_DIR is not set; run Tools/test-offline.ps1.");
         string nativePath = Path.Combine(gameRoot, "slang.dll");
         nint ResolveSlang(Assembly assembly, string name)
         {

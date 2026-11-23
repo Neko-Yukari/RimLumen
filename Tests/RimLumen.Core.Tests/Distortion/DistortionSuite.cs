@@ -253,8 +253,8 @@ public static class DistortionSuite
 
     internal static void WithSlangLoaded(Action action)
     {
-        string gameRoot = Environment.GetEnvironmentVariable("GameRoot")
-            ?? XDocument.Load(Path.Combine(RepoRoot(), "Directory.Build.props")).Descendants("GameRoot").Single().Value;
+        string gameRoot = Environment.GetEnvironmentVariable("RIMWORLD_DIR")
+            ?? throw new InvalidOperationException("RIMWORLD_DIR is not set; run Tools/test-offline.ps1.");
         string nativePath = Path.Combine(gameRoot, "slang.dll");
         nint ResolveSlang(Assembly assembly, string name)
         {

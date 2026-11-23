@@ -3,7 +3,7 @@
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
-    [string]$DotnetExe = 'E:/SteamLibrary/steamapps/common/RimWorld/Moddev/tools/dotnet/dotnet.exe',
+    [string]$DotnetExe = '',
     [switch]$Clean
 )
 
@@ -11,9 +11,8 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $sln = Join-Path $repoRoot 'RimLumen.sln'
 
-if (-not (Test-Path -LiteralPath $DotnetExe)) {
-    throw "Portable .NET 10 SDK not found at: $DotnetExe"
-}
+. (Join-Path $PSScriptRoot 'RimWorldPaths.ps1')
+$DotnetExe = Resolve-RimWorldDotnet $DotnetExe (Resolve-RimWorldDir '')
 
 $env:DOTNET_CLI_HOME = Join-Path $env:LOCALAPPDATA 'Temp/opencode/rimlumen-dotnet-home'
 $env:DOTNET_NOLOGO = '1'

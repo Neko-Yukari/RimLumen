@@ -422,9 +422,8 @@ public static class ParticleShaderTests
     [LumenFact]
     public static void LightPoolShaderMatchesSceneDefaultStageAndMaterialContract()
     {
-        string buildProperties = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Directory.Build.props"));
-        string gameRoot = Environment.GetEnvironmentVariable("GameRoot")
-            ?? XDocument.Load(buildProperties).Descendants("GameRoot").Single().Value;
+        string gameRoot = Environment.GetEnvironmentVariable("RIMWORLD_DIR")
+            ?? throw new InvalidOperationException("RIMWORLD_DIR is not set; run Tools/test-offline.ps1.");
         string vertex = File.ReadAllText(Path.Combine(gameRoot, "Rendering", "Shaders", LightPoolRenderer.VertexFile));
         string fragmentPath = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", LightPoolRenderer.AccumulateFile));
         string fragment = ShaderSourceLoader.ReadShaderSource(fragmentPath);
@@ -473,9 +472,8 @@ public static class ParticleShaderTests
     [LumenFact]
     public static void LiftedSunShadowsKeepVanillaMaterialLayoutAndVaryings()
     {
-        string buildProperties = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Directory.Build.props"));
-        string gameRoot = Environment.GetEnvironmentVariable("GameRoot")
-            ?? XDocument.Load(buildProperties).Descendants("GameRoot").Single().Value;
+        string gameRoot = Environment.GetEnvironmentVariable("RIMWORLD_DIR")
+            ?? throw new InvalidOperationException("RIMWORLD_DIR is not set; run Tools/test-offline.ps1.");
         string vanillaShaders = Path.Combine(gameRoot, "Data", "Core", "Shaders", "Map");
         MaterialLayout Layout(string path) =>
             ShaderMetadataParser.ExtractMaterialLayout(ShaderSourceLoader.ReadShaderSource(path), Path.GetFileName(path));
@@ -753,9 +751,8 @@ public static class ParticleShaderTests
     {
         string shaderRoot = Path.GetFullPath(Path.Combine(ShaderDirectory(), ".."));
         ShaderSourceLoader.RegisterShaderSourceDirectory(shaderRoot);
-        string buildProperties = Path.GetFullPath(Path.Combine(shaderRoot, "..", "..", "Directory.Build.props"));
-        string gameRoot = Environment.GetEnvironmentVariable("GameRoot")
-            ?? XDocument.Load(buildProperties).Descendants("GameRoot").Single().Value;
+        string gameRoot = Environment.GetEnvironmentVariable("RIMWORLD_DIR")
+            ?? throw new InvalidOperationException("RIMWORLD_DIR is not set; run Tools/test-offline.ps1.");
         ShaderSourceLoader.RegisterShaderSourceDirectory(Path.Combine(gameRoot, "Rendering", "Shaders"));
     }
 
@@ -763,9 +760,8 @@ public static class ParticleShaderTests
     {
         // Brutal.Slang.PInvoke explicitly calls NativeLibrary.Load, then installs its own DllImportResolver.
         // The load-context event handles that explicit load without competing with its resolver or copying locked DLLs.
-        string buildProperties = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Directory.Build.props"));
-        string gameRoot = Environment.GetEnvironmentVariable("GameRoot")
-            ?? XDocument.Load(buildProperties).Descendants("GameRoot").Single().Value;
+        string gameRoot = Environment.GetEnvironmentVariable("RIMWORLD_DIR")
+            ?? throw new InvalidOperationException("RIMWORLD_DIR is not set; run Tools/test-offline.ps1.");
         string nativePath = Path.Combine(gameRoot, "slang.dll");
         nint ResolveSlang(System.Reflection.Assembly assembly, string name)
         {

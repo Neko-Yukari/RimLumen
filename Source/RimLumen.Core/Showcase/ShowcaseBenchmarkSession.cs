@@ -20,7 +20,7 @@ using Waylith.UnityCompat;
 namespace RimLumen.Core.Showcase;
 
 // Real-device L2 GPU particle ladder. Tiers, warmup, the 60 measured frames per tier, the workload asset
-// and the statistics are fixed so a run stays comparable with earlier results under .scratch/bench-results.
+// and the statistics are fixed so a run stays comparable with earlier runs.
 // Headless only: entered from RimLumenStartup's #if !RIMLUMEN_SHIP_RELEASE block through
 // "-rimlumen-showcase-bench=<jsonPath>" and driven by Tools/launch-showcase.ps1 -Benchmark.
 internal static class ShowcaseBenchmarkSession

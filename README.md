@@ -1,11 +1,10 @@
 # RimLumen
 
-RimWorld 1.7（Waylith / Vulkan）的**旁路叠加（sidecar/overlay）HDR 视效增强层**、可编程后处理光影包宿主与 GPU Compute 粒子框架——**并非接管全图的 HDR 替换管线**。
-A **sidecar/overlay HDR VFX enhancement layer**, programmable post-processing ShaderPack host, and GPU compute particle framework for RimWorld 1.7 (Waylith / Vulkan) — **not** a full-map HDR takeover.
+RimWorld 1.7（Waylith / Vulkan）的**旁路叠加（sidecar/overlay）HDR 视效增强层**、可编程后处理光影包宿主与 GPU Compute 粒子框架。
+A **sidecar/overlay HDR VFX enhancement layer**, programmable post-processing ShaderPack host, and GPU compute particle framework for RimWorld 1.7 (Waylith / Vulkan).
 
-- **原版管线保持原样 / Vanilla pipeline untouched**：原版地形、建筑、殖民者与 `LightOverlay` 仍留在 Waylith 原生 8-bit `UNorm` 管线中，因此 RimLumen 可与 RimIris、IsoRim Waylith 和 RimUnity ScreenEfx 自然兼容。 / Vanilla terrain, buildings, pawns, and `LightOverlay` stay untouched in Waylith's native 8-bit `UNorm` pipeline, keeping RimLumen naturally compatible with RimIris, IsoRim Waylith, and RimUnity ScreenEfx.
+- **原版管线保持原样 / Vanilla pipeline untouched**：原版地形、建筑、殖民者与 `LightOverlay` 仍留在 Waylith 原生 8-bit `UNorm` 管线中，因此 RimLumen 可与 RimIris、IsoRim Waylith 和 RimUnity ScreenEfx 自然兼容。可选的「接管地图照明与日影」默认关闭；开启后与 RimIris 已知不兼容，IsoRim 3D 视图下自动关闭。 / Vanilla terrain, buildings, pawns, and `LightOverlay` stay untouched in Waylith's native 8-bit `UNorm` pipeline, keeping RimLumen naturally compatible with RimIris, IsoRim Waylith, and RimUnity ScreenEfx. The optional map lighting and sun shadow takeover is off by default; when on it is known to be incompatible with RimIris, and it turns itself off in IsoRim's 3D view.
 - **旁路 `RGBA16F` 浮点层与分段队列合成 / Sidecar `RGBA16F` layer & segmented queue compositing**：真正的 `RGBA16F` 浮点渲染在 RimLumen 的旁路 HDR 层执行（原生 L1/L2 粒子、拷贝符合条件的原版/模组加法发光，以及 `0–7` 级 HDR Bloom），并在分段地图渲染队列边界回填合成，使屋顶、迷雾和下游模组调色仍可自然作用于画面。 / True `RGBA16F` floating-point rendering runs in RimLumen's sidecar HDR layer (native L1/L2 particles, copied qualifying vanilla/mod additive glows, and `0–7` mip HDR bloom), composited back at segmented map render-queue boundaries so roofs, fog, and downstream mod color grading still apply naturally.
-- **无需 HDR 显示器 / No HDR display required**：这里的 HDR 指游戏内部的高动态范围渲染，最终色调映射回普通画面输出——不需要 HDR 显示器，也不需要开启 Windows HDR，能运行 RimWorld 1.7 的 Vulkan 驱动即可。 / HDR here means internal high-dynamic-range rendering, tone-mapped back to a standard image: no HDR monitor or Windows HDR needed, and no driver requirement beyond what RimWorld 1.7's Vulkan renderer already needs.
 
 ## 模组作者 / Modders
 
@@ -16,11 +15,19 @@ A **sidecar/overlay HDR VFX enhancement layer**, programmable post-processing Sh
 | Soft Particles | 读取场景深度的软粒子 / depth-aware soft particles (`R32SFloat`) |
 | L2 | Vulkan Compute 粒子（力场模拟 + `InstancedDrawInfo.Direct` 实例化绘制）/ Vulkan compute simulation + instanced drawing |
 | L1 | 原生 CPU 粒子（贴图、Flipbook 序列帧、速度拉伸）/ native CPU particles (textures, flipbooks, velocity stretch) |
+| 拖尾 / Trails | L1 与 L2 均支持逐粒子拖尾，配合死亡子发射器可纯资产写出升空后在顶点炸开的烟花 / per-particle trails on both L1 and L2; with death sub-emitters, an asset alone can launch a rocket that bursts at its apex |
 | Vertical3D | 朝天真 3D 物理模拟，自动适配原版 2D 与 `IsoRim Waylith` 3D 视角 / skyward 3D simulation adapting across vanilla 2D and 3D views like `IsoRim Waylith` |
 | 点光 / Point lights | 效果节点上的纯视觉光池（渲染队列 `3101`），不写入原版 `GlowGrid`、不影响游戏逻辑；需要逻辑照明且不想显示原版八角形光斑的自定义建筑可挂载 RimLumen 的纯逻辑照明 `ThingComp` / purely visual light pools (queue `3101`) on effect nodes, never written to vanilla `GlowGrid`; custom buildings needing gameplay lighting without vanilla octagonal overlays can attach RimLumen's pure-logical light `ThingComp` |
+| 遮挡与投影 / Occlusion & shadows | 点光受墙、门、岩石遮挡，有高度的物体按贴图轮廓投影（光影包 `objectShadows` 开关）；点光 `castShadows: false` 时不受任何遮挡也不投影 / point lights are occluded by walls, doors and rock, and height-bearing things cast sprite-silhouette shadows (ShaderPack `objectShadows`); `castShadows: false` makes a light ignore all occlusion and cast no shadows |
 
 三种原生接入方式 / three entry points：XML `LumenEffectDef`、`1.7/Data/RimLumen/**/*.lumen.json`、C# `RimLumenApi`。
 可选 `Chezhou.RimUnity` 桥接位于 `1.7/Compat/RimUnity`，仅在该模组启用时加载（`LoadFolders.xml` 的 `IfModActive`）/ optional bridge, loaded only when that mod is active.
+
+完整 API：[`docs/api.md`](docs/api.md)（中文）/ [`docs/api.en.md`](docs/api.en.md)（English）。
+
+制作工具 / Authoring tools：
+- 游戏内预览 / In-game preview：开发者模式下从调试动作的 RimLumen 分类打开，可搜索、播放、切换状态，重载资产后立即重播 / in Dev Mode, open it from the RimLumen debug-action category to search, play and switch states, replaying after asset reloads.
+- 网页编辑器 / Web editor：<https://neko-yukari.github.io/RimLumen/editor/>，免开游戏编辑 `.lumen.json` 或 XML `LumenEffectDef` 并实时预览，使用与游戏相同的核心解析、模拟与校验代码；不还原游戏内光照、遮挡与后期效果。源码在 [`WebEditor/`](WebEditor/) / edit `.lumen.json` or XML `LumenEffectDef` with live preview without launching the game, using the same core parser, simulation and validation; in-game lighting, occlusion and post-processing are not reproduced. Source in `WebEditor/`.
 
 ## 玩家 / Players
 
@@ -31,7 +38,8 @@ Plug and play: eligible vanilla and third-party additive glows automatically get
   - `EnhanceVanillaAdditiveGlow`（默认开 / default on）：无其他 RimLumen 特效播放且当前光影包不重写场景时，关闭后画面与不装本模组逐像素一致 / off = pixel-identical only when no RimLumen effects are active and the active pack does not rewrite the scene
   - `ParticleDensityScale`（0.1 – 1.0，默认 1.0 / default 1.0）：粒子密度 / particle density
   - `ShaderPacks`：切包、实时参数滑杆、热重载（Reload）、重扫目录（Rescan）与重置默认 / pack selector, live sliders, hot reload, rescan, and reset
-  - `EnableDemoBuildings`（默认关 / default off）：启用娱乐演示建筑（烟花发射器、粒子喷泉与三盏照明对照路灯）/ enable demo Joy buildings (Firework Launcher, Particle Fountain, and three lighting-comparison Street Lamps)
+  - 接管地图照明与日影（默认关 / default off）：替换地图照明和日影的画面，游戏逻辑光照数值不变 / replaces the visuals of map lighting and sun shadows; gameplay light levels are unchanged
+  - `EnableDemoBuildings`（默认关 / default off）：启用娱乐演示建筑（烟花发射器、粒子喷泉、扭曲塔与三盏照明对照路灯）/ enable demo Joy buildings (Firework Launcher, Particle Fountain, Distortion Pylon, and three lighting-comparison Street Lamps)
 
 内置渲染异常熔断机制。 / Includes an automatic rendering fail-safe.
 
@@ -132,7 +140,8 @@ Keys are camelCase and case-insensitive; `//` comments and trailing commas are a
 
 ## 构建与发布 / Build and release
 
-使用本机便携版 .NET 10 SDK（`Tools/build.ps1` 自动定位），需要 PowerShell 7：
+需要 PowerShell 7 和已安装的 RimWorld 1.7，以及工坊订阅的 Harmony（编译引用）。脚本先读环境变量 `RIMWORLD_DIR`，未设置时在各 Steam 库中查找 RimWorld，并使用游戏自带的便携 .NET 10 SDK（`Moddev/tools/dotnet`）；找不到时报错。直接用 `dotnet` 或 IDE 构建时须先设置 `RIMWORLD_DIR`。
+Requires PowerShell 7, an installed RimWorld 1.7 and the Workshop Harmony subscription (compile reference). The scripts read `RIMWORLD_DIR`, otherwise search your Steam libraries for RimWorld, and use the game's bundled .NET 10 SDK (`Moddev/tools/dotnet`); they fail if none is found. Set `RIMWORLD_DIR` when building with plain `dotnet` or an IDE.
 
 ```powershell
 pwsh -NoProfile -File Tools/build.ps1                 # 构建 / build
@@ -144,3 +153,7 @@ pwsh -NoProfile -File Tools/launch-showcase.ps1       # 启动六站演示场景
 
 `pack-release.ps1` 只输出可上传内容：`About/`、`LoadFolders.xml`、`Languages/`、`README.md`、`docs/api.md`、剥离展示脚手架后的两个 dll（无 pdb）、`1.7/Defs`、`1.7/Textures`、`1.7/ShaderPacks`、`1.7/Shaders/Particles`、`PostFx` 与 `RimLumen`；不含源码、测试；结束时自检并打印文件数与字节数。
 `launch-showcase.ps1` 会在已有 RimWorld 进程时拒绝启动。
+
+## 许可证 / License
+
+[MIT](LICENSE)。部分粒子与条带公式移植自 RimUnity（MIT），见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) / portions are adapted from RimUnity (MIT); see `THIRD_PARTY_NOTICES.md`.

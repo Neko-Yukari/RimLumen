@@ -1,7 +1,7 @@
 ﻿#requires -Version 7.0
 [CmdletBinding()]
 param(
-    [string]$RimWorldDir = 'E:\SteamLibrary\steamapps\common\RimWorld',
+    [string]$RimWorldDir = '',
     [string]$CaptureAndQuit = '',
     [string]$Benchmark = '',
     [string]$ValidationSave = '',
@@ -19,6 +19,9 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
 $OutputEncoding = [Console]::OutputEncoding
+
+. (Join-Path $PSScriptRoot 'RimWorldPaths.ps1')
+$RimWorldDir = Resolve-RimWorldDir $RimWorldDir
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $junction = Join-Path $RimWorldDir 'Mods/RimLumen'
