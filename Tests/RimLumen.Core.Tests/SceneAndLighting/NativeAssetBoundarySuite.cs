@@ -130,6 +130,13 @@ public static class NativeAssetBoundarySuite
         => RejectJson("\"pointLight\": { \"color\": [1.1,0,0] }", "color", "[0,1]");
 
     [LumenFact]
+    public static void D8PointLightCastShadowsMustBeBoolean()
+    {
+        RejectJson("\"pointLight\": { \"castShadows\": \"false\" }", "castShadows", "true/false");
+        RejectJson("\"pointLight\": { \"castShadows\": 0 }", "castShadows", "true/false");
+    }
+
+    [LumenFact]
     public static void D8XmlUsesSharedValidation()
         => RejectXml(new LumenNodeXml { emitter = new LumenEmitterXml { duration = 0f } }, "duration", "> 0");
 

@@ -48,25 +48,23 @@ public static class ShaderPackTests
         Equal(16, Marshal.SizeOf<Vector4>());
         WithSlangLoaded(() =>
         {
-            CheckCompiledPackParams("Atmospheric/FogPass.frag.glsl");
-            CheckCompiledPackParams("Atmospheric/Composite.frag.glsl");
-            CheckCompiledPackParams("Cinematic/Composite.frag.glsl");
+            CheckCompiledPackParams("Foggy/FogPass.frag.glsl");
+            CheckCompiledPackParams("Foggy/Composite.frag.glsl");
             CheckCompiledPackParams("Crisp/Composite.frag.glsl");
-            CheckCompiledPackParams("Vibrant/Composite.frag.glsl");
         });
     }
 
     [LumenFact]
-    public static void AtmosphericFogPassSamplesLightSumAtItsManifestBinding()
+    public static void FoggyFogPassSamplesLightSumAtItsManifestBinding()
     {
         string packsRoot = Path.Combine(RepoRoot(), "1.7", "ShaderPacks");
-        ShaderPackEntry entry = ShaderPackCatalog.ScanRoots([(packsRoot, "built-in")]).Single(p => p.Id == "atmospheric");
+        ShaderPackEntry entry = ShaderPackCatalog.ScanRoots([(packsRoot, "built-in")]).Single(p => p.Id == "foggy");
         ShaderPackGraphValidator.PlannedPass fog = ShaderPackGraphValidator.ExecutionPlan.Compile(entry.Spec).Passes[0];
         Equal("FogPass.frag.glsl", Path.GetFileName(fog.FragmentShaderPath));
         uint binding = (uint)fog.Inputs.Single(input => input.Kind == ShaderPackGraphValidator.InputKind.LightSum).Binding;
         WithSlangLoaded(() =>
         {
-            List<uint[]> instructions = CompileInstructions("Atmospheric/FogPass.frag.glsl");
+            List<uint[]> instructions = CompileInstructions("Foggy/FogPass.frag.glsl");
             // OpDecorate Binding / DescriptorSet 0 -> OpVariable -> OpTypePointer -> OpTypeSampledImage.
             uint variable = instructions.Single(x => x[0] == 71 && x[2] == 33 && x[3] == binding &&
                 instructions.Any(set => set[0] == 71 && set[1] == x[1] && set[2] == 34 && set[3] == 0))[1];
@@ -77,19 +75,19 @@ public static class ShaderPackTests
     }
 
     [LumenFact]
-    public static void AtmosphericValidatesCompilesAndReadsNoDepth()
+    public static void FoggyValidatesCompilesAndReadsNoDepth()
     {
-        // Vanilla Cutout sprites write depth, so a depth test in Atmospheric fired on every wall, rock and plant pixel.
+        // Vanilla Cutout sprites write depth, so a depth test in Foggy fired on every wall, rock and plant pixel.
         string packsRoot = Path.Combine(RepoRoot(), "1.7", "ShaderPacks");
-        ShaderPackEntry entry = ShaderPackCatalog.ScanRoots([(packsRoot, "built-in")]).Single(p => p.Id == "atmospheric");
+        ShaderPackEntry entry = ShaderPackCatalog.ScanRoots([(packsRoot, "built-in")]).Single(p => p.Id == "foggy");
         IReadOnlyList<ShaderPackGraphValidator.PlannedPass> passes = ShaderPackGraphValidator.ExecutionPlan.Compile(entry.Spec).Passes;
-        Require(!entry.Spec.RequiresSceneDepth, "Atmospheric must not request scene depth.");
+        Require(!entry.Spec.RequiresSceneDepth, "Foggy must not request scene depth.");
         Require(passes.All(pass => pass.Inputs.All(input => input.Kind != ShaderPackGraphValidator.InputKind.Depth)),
-            "No Atmospheric pass may declare a depth input.");
+            "No Foggy pass may declare a depth input.");
         WithSlangLoaded(() =>
         {
             foreach (ShaderPackGraphValidator.PlannedPass pass in passes)
-                CompileInstructions("Atmospheric/" + Path.GetFileName(pass.FragmentShaderPath));
+                CompileInstructions("Foggy/" + Path.GetFileName(pass.FragmentShaderPath));
         });
     }
 

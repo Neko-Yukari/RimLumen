@@ -543,6 +543,34 @@ public static class EffectInstanceHandleSuite
         VfxAssert.Equal(0, service.Lights.Count);
     }
 
+    [LumenFact]
+    public static void PointLightCastShadowsPropagatesToVisualPointLight()
+    {
+        var asset = new EffectAsset
+        {
+            EffectId = "lights.castShadows",
+            Nodes = new[]
+            {
+                new EffectNodeSpec
+                {
+                    Name = "shadowed",
+                    PointLight = new PointLightSpec(5f, new Vector3(1f, 0.5f, 0f)),
+                },
+                new EffectNodeSpec
+                {
+                    Name = "unshadowed",
+                    PointLight = new PointLightSpec(5f, new Vector3(0f, 0.5f, 1f), CastShadows: false),
+                },
+            },
+        };
+        var service = VfxTestData.Service(asset);
+        using var handle = (EffectInstanceHandle)service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId });
+        VfxTestData.Step(service, 0.05f, currentMapIndex: 111);
+        VfxAssert.Equal(2, service.Lights.Count);
+        VfxAssert.Check(service.Lights[0].CastShadows, "Default point light must cast shadows.");
+        VfxAssert.Check(!service.Lights[1].CastShadows, "Point light with CastShadows=false must propagate false.");
+    }
+
     private static EffectAsset LitAsset(string id, TimelineEventSpec[]? timelineEvents = null) => new()
     {
         EffectId = id, Nodes = new[]

@@ -220,7 +220,8 @@ public sealed partial class LumenEffectDef : Def
         return new PointLightSpec(
             xml.radiusCells,
             new Vector3(color.X, color.Y, color.Z),
-            intensity);
+            intensity,
+            xml.castShadows);
     }
 
     private static ParticleBurstSpec[] ToBursts(List<LumenBurstXml>? bursts, string path)
@@ -478,6 +479,7 @@ public sealed class LumenPointLightXml
     }
     public float radiusCells = 5f;
     public float intensity = 1f;
+    public bool castShadows = true;
     public List<LumenCurveKeyXml>? intensityOverTime;
 }
 
@@ -946,7 +948,7 @@ public static partial class LumenJsonAssetLoader
 
     private static readonly string[] PointLightProperties =
     {
-        "glowRadius", "color", "intensity", "intensityOverTime",
+        "glowRadius", "color", "intensity", "intensityOverTime", "castShadows",
     };
 
     private static readonly string[] BurstProperties = { "time", "count", "probability" };
@@ -1097,7 +1099,7 @@ public static partial class LumenJsonAssetLoader
             overTime = ScalarCurve.Constant(intensity);
         }
 
-        return new PointLightSpec(scope.Float("glowRadius", 5f), rgb, overTime);
+        return new PointLightSpec(scope.Float("glowRadius", 5f), rgb, overTime, scope.Bool("castShadows", true));
     }
 
     private static ScalarCurve Multiply(ScalarCurve curve, float factor) =>

@@ -443,8 +443,10 @@ public static class ParticleShaderTests
             && fragment.Contains("float q = max(0.0, 1.0 - dot(d, d));", StringComparison.Ordinal)
             && fragment.Contains("falloff = q * q;", StringComparison.Ordinal)
             && fragment.Contains("rgb = uMaterial._LumenLight.rgb * falloff;", StringComparison.Ordinal)
+            && fragment.Contains("if (uMaterial._LumenLight.a > 0.5)", StringComparison.Ordinal)
+            && fragment.Contains("visibility = 1.0;", StringComparison.Ordinal)
             && fragment.Contains("outColor = vec4(rgb * visibility, 0.0);", StringComparison.Ordinal),
-            "Light-pool accumulation must evaluate (1 - (d/R)^2)^2 times wall visibility with zero alpha.");
+            "Light-pool accumulation must evaluate (1 - (d/R)^2)^2 times wall visibility (or 1 when castShadows=0) with zero alpha.");
         string composite = ShaderSourceLoader.ReadShaderSource(
             Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", LightPoolRenderer.CompositeFile)));
         Require(composite.Contains("if (peak <= 1.0) return color;", StringComparison.Ordinal)

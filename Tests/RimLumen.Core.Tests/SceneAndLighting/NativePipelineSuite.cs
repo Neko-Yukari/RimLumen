@@ -717,6 +717,42 @@ public static class NativePipelineSuite
         NativeTestData.Close(fromJson.DefaultDuration, fromXml.DefaultDuration, "defaultDuration");
     }
 
+    [LumenFact]
+    public static void PointLightCastShadowsDefaultsTrueAndReadsFalseInJsonAndXml()
+    {
+        EffectAsset jsonOmitted = LumenJsonAssetLoader.Parse(
+            """{ "effectId": "pl.omit", "nodes": [{ "name": "n", "pointLight": { "glowRadius": 5, "color": [1, 1, 1] } }] }""");
+        NativeTestData.Check(jsonOmitted.Nodes[0].PointLight!.Value.CastShadows, "JSON omitted castShadows must default to true.");
+
+        EffectAsset jsonTrue = LumenJsonAssetLoader.Parse(
+            """{ "effectId": "pl.true", "nodes": [{ "name": "n", "pointLight": { "glowRadius": 5, "color": [1, 1, 1], "castShadows": true } }] }""");
+        NativeTestData.Check(jsonTrue.Nodes[0].PointLight!.Value.CastShadows, "JSON explicit castShadows=true must be true.");
+
+        EffectAsset jsonFalse = LumenJsonAssetLoader.Parse(
+            """{ "effectId": "pl.false", "nodes": [{ "name": "n", "pointLight": { "glowRadius": 5, "color": [1, 1, 1], "castShadows": false } }] }""");
+        NativeTestData.Check(!jsonFalse.Nodes[0].PointLight!.Value.CastShadows, "JSON explicit castShadows=false must be false.");
+
+        var xmlOmitted = new LumenEffectDef
+        {
+            defName = "pl.xml.omit",
+            nodes = new List<LumenNodeXml>
+            {
+                new() { name = "n", pointLight = new LumenPointLightXml { color = "(1,1,1,1)", radiusCells = 5f } },
+            },
+        }.ToEffectAsset();
+        NativeTestData.Check(xmlOmitted.Nodes[0].PointLight!.Value.CastShadows, "XML omitted castShadows must default to true.");
+
+        var xmlFalse = new LumenEffectDef
+        {
+            defName = "pl.xml.false",
+            nodes = new List<LumenNodeXml>
+            {
+                new() { name = "n", pointLight = new LumenPointLightXml { color = "(1,1,1,1)", radiusCells = 5f, castShadows = false } },
+            },
+        }.ToEffectAsset();
+        NativeTestData.Check(!xmlFalse.Nodes[0].PointLight!.Value.CastShadows, "XML explicit castShadows=false must be false.");
+    }
+
     private const string ConciseJson = """
     {
       // hand-authored .lumen.json: only the non-default fields

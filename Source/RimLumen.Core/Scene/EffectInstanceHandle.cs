@@ -912,11 +912,12 @@ public sealed class EffectInstanceHandle : ILumenEffectHandle
         for (int i = 0; i < asset.Nodes.Length; i++)
         {
             if (!lightOn[i]) continue;
-            float radius = asset.Nodes[i].PointLight!.Value.GlowRadius;
+            PointLightSpec spec = asset.Nodes[i].PointLight!.Value;
+            float radius = spec.GlowRadius;
             Vector3 rgb = lightRgb[i];
             if (radius <= 0f || MathF.Max(rgb.X, MathF.Max(rgb.Y, rgb.Z)) <= 0f) continue;
             Vector3 world = nodeWorldMatrices[i].Translation;
-            into.Add(new VisualPointLight(world.X, MathF.Max(0f, world.Y), world.Z, radius, rgb, VisualPointLightKind.Effect));
+            into.Add(new VisualPointLight(world.X, MathF.Max(0f, world.Y), world.Z, radius, rgb, VisualPointLightKind.Effect, spec.CastShadows));
         }
     }
 

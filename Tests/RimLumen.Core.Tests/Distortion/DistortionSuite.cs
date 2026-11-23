@@ -204,7 +204,8 @@ public static class DistortionSuite
     {
         string packsRoot = Path.Combine(RepoRoot(), "1.7", "ShaderPacks");
         IReadOnlyList<ShaderPackEntry> packs = ShaderPackCatalog.ScanRoots([(packsRoot, "built-in")]);
-        foreach (string id in new[] { "atmospheric", "cinematic", "crisp", "vibrant" })
+        Check(packs.Count == 3, $"Expected 3 built-in packs (default, crisp, foggy), got {packs.Count}.");
+        foreach (string id in new[] { "crisp", "foggy" })
         {
             ShaderPackEntry entry = packs.Single(p => p.Id == id);
             ShaderPackGraphValidator.ExecutionPlan plan = ShaderPackGraphValidator.ExecutionPlan.Compile(entry.Spec);
@@ -221,7 +222,7 @@ public static class DistortionSuite
             CompileFile("Shaders/Distortion/LumenDistortion.vert.glsl", RuntimeShaderStage.Vertex);
             CompileFile("Shaders/Distortion/LumenDistortion.frag.glsl", RuntimeShaderStage.Fragment);
             CompileFile("Shaders/PostFx/RimLumenComposite.frag.glsl", RuntimeShaderStage.Fragment);
-            foreach (string pack in new[] { "Vibrant", "Crisp", "Cinematic", "Atmospheric" })
+            foreach (string pack in new[] { "Crisp", "Foggy" })
                 CompileFile($"ShaderPacks/{pack}/Composite.frag.glsl", RuntimeShaderStage.Fragment);
         });
     }

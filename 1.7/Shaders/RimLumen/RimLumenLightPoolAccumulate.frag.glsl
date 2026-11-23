@@ -10,7 +10,7 @@ layout(location = 0) out vec4 outColor;
 
 layout(set = 2, binding = 0) uniform MaterialUniforms
 {
-    vec4 _LumenLight; // rgb: ColorRgb * effective intensity (>= 0, unclamped); a: 0
+    vec4 _LumenLight; // rgb: ColorRgb * effective intensity (>= 0, unclamped); a: castShadows (1 occluded/shadowed, 0 unoccluded)
     vec4 _LumenLightAt; // xy: light centre in world cells (X, Z); z: Kind (0 effect, 1 vanilla); w: radius
     vec4 _LumenShadowChannel; // ShadowSlot.Selector of the light's object-shadow channel; 0 without object shadows
 } uMaterial;
@@ -44,9 +44,16 @@ void main()
     float visibility = 0.0;
     if (falloff > 0.0)
     {
-        float cover;
-        float solid = lightVisibility(uMaterial._LumenLightAt.xy, vWorldPos.xz, cover);
-        visibility = min(solid, 1.0 - lumenObjectShadow(_LumenObjectShadow, uMaterial._LumenShadowChannel)) * cover;
+        if (uMaterial._LumenLight.a > 0.5)
+        {
+            float cover;
+            float solid = lightVisibility(uMaterial._LumenLightAt.xy, vWorldPos.xz, cover);
+            visibility = min(solid, 1.0 - lumenObjectShadow(_LumenObjectShadow, uMaterial._LumenShadowChannel)) * cover;
+        }
+        else
+        {
+            visibility = 1.0;
+        }
     }
     outColor = vec4(rgb * visibility, 0.0);
 }

@@ -1,6 +1,6 @@
 {
-  "id": "atmospheric",
-  "name": "Atmospheric (荒野夜雾 · 体积光感)",
+  "id": "foggy",
+  "name": "Foggy (雾气)",
   "author": "RimLumen",
   "description": "利用地图屋顶/灯照场自动区分室内外与火把光照：野外夜晚压暗、地面流动薄雾与7级远距空气光散射；同时兼容原版俯视与 IsoRim 倾斜视角。",
   "runOnEmptyFrames": true,

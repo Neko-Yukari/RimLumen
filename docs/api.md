@@ -147,7 +147,8 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
         "glowRadius": 5,
         "color": [1, 1, 1],
         "intensity": 1,
-        "intensityOverTime": [[0, 1], [1, 0]]
+        "intensityOverTime": [[0, 1], [1, 0]],
+        "castShadows": true
       }
     }
   ],
@@ -177,7 +178,7 @@ RimLumen 在启动阶段自动扫描所有启用模组的以下两个目录（�
   粒子尺寸曲线由 L1 和 L2 使用相同的 64 点查找表（LUT）：采样点为 `i/63`（`i = 0…63`），包含两端，再对相邻样本插值。阶跃可能在宽度为 `1/63` 的采样区间内被平滑，不能保证精确保留。点光曲线按秒直接求值，不使用该粒子查找表。
 - **材质颜色**：`materialTint` 默认为 `(1,1,1,1)`，与 `startColor` 和渐变遵循上述颜色范围；`colorSpace` 为 `Stored`（默认）或 `Linear`。令 `vertex = startColor × gradient`。Stored 的 RGB 为 `vertex × tint × texel`；Linear 的 RGB 为 `E(vertex × D(tint) × (贴图为 sRGB ? D(texel) : texel))`。`vertex` 不解码。标量增益 `g = hdrIntensity × intensity` 在材质颜色转入本帧混合空间之后才乘到 RGB 上（Legacy 为 `g × rgb`，Linear 混合空间为 `g × D(rgb)`），不经过任何 sRGB 传递函数放大或压缩；`D` / `E` 分别为 sRGB 解码 / 编码，在非负值上延伸至大于 1，不截断。alpha 始终为三个原始 alpha 的乘积，再应用软粒子覆盖度和混合模式要求的预乘。逐分量计算中，`D(x) = x/12.92`（`x <= 0.04045`），否则为 `((x+0.055)/1.055)^2.4`；`E(x) = 12.92*x`（`x <= 0.0031308`），否则为 `1.055*x^(1/2.4)-0.055`。依据 RimUnity 固定版本 `45ca90987f7d3721715b45c021cab986ee14c468` 的 `Source/Shared/ShaderColorSpace.cs:69-103,122-134`。此处只描述材质计算，不改变玩家混合空间。
 - **渐变（`colorOverLifetime`）**：支持颜色数组（单色常量）或停靠点数组 `[[time, [r,g,b,a]], ...]` 或对象 `{ "stops": [{ "time": 0, "color": [r,g,b,a] }] }`，要求 `time` 严格递增。
-- **`pointLight`**：JSON 下颜色键为 `color`（RGBA），半径键为 `glowRadius`（单位：地图格）。点光是纯视觉光池，不写入原版 `GlowGrid`，不影响心情、种植和工作速度。圆心取节点世界位置在地面上的投影，节点高度 Y（离地格数）决定它投出的高度阴影有多长，见第七章第 4 节。地下的光源（Y < 0）按放在地面上处理。引擎不设最低高度：Y = 0 的光源贴着地面，所有有高度的物体都会投出延伸至光池边缘、沿地面淡出的阴影。想要短阴影就抬高节点；灯具类效果光推荐 Y 为 1～2 格（原版墙高 1 格）。半径 `R = glowRadius`，衰减公式为 `w = (1 - (d/R)^2)^2`，在 `d >= R` 处精确为 `0`。各光源项 `L = color × intensityOverTime × w` 在重叠处线性相加，总和只作用一次：场景变为 `scene × (1 + C(ΣL))`，其中 `C` 在峰值不超过 1 时为恒等，超过后峰值保持 1 并沿色相趋白，因此重叠处最多提亮 2 倍。绘制在原版光照层之后，迷雾、黑暗和屋顶照常覆盖。推荐 `intensity`：常亮灯具 `0.5–1.2`，短促强闪光 `1.0–2.0`；不要把原版 `GlowGrid` 的 `3.6` 尺度照搬到视觉光池上。光池每帧跟随节点。`intensity` 和曲线关键帧值须有限且 `>= 0`，无上限；有效强度 `<= 0` 时不绘制。`overlightRadius` 已移除，JSON 和 XML 解析均直接拒绝。光池会被墙、门和掩体遮挡，掩体遮挡按贴图生成，见第七章第 4 节；遮挡只影响画面，不新增资产字段。原版日影/月影（`SunShadow` 3170、`SunShadowFade` 3175）落在光池里时只压掉日光：阴影乘数由 `c` 改为逐通道 `(c+L)/(1+L)`，`L` 为该像素压缩后的光池项；没有光池的像素与原版逐像素一致。只替换原版材质加原版着色器的阴影绘制，其他模组替换过的阴影（如 RimIris 水面阴影）保持原样并记录一次警告。已知近似：光池把画面提亮到顶处阴影恢复偏少；3101 之后画的折射、加色和雾会一起被提亮；原版灯光不分离；HDR 粒子/泛光层与 IsoRim 3D 阴影不覆盖。需要游戏逻辑光时，见第七章第 3 节的 `CompRimLumenLogicalLight`。
+- **`pointLight`**：JSON 下颜色键为 `color`（RGBA），半径键为 `glowRadius`（单位：地图格）。点光是纯视觉光池，不写入原版 `GlowGrid`，不影响心情、种植和工作速度。圆心取节点世界位置在地面上的投影，节点高度 Y（离地格数）决定它投出的高度阴影有多长，见第七章第 4 节。地下的光源（Y < 0）按放在地面上处理。引擎不设最低高度：Y = 0 的光源贴着地面，所有有高度的物体都会投出延伸至光池边缘、沿地面淡出的阴影。想要短阴影就抬高节点；灯具类效果光推荐 Y 为 1～2 格（原版墙高 1 格）。半径 `R = glowRadius`，衰减公式为 `w = (1 - (d/R)^2)^2`，在 `d >= R` 处精确为 `0`。各光源项 `L = color × intensityOverTime × w` 在重叠处线性相加，总和只作用一次：场景变为 `scene × (1 + C(ΣL))`，其中 `C` 在峰值不超过 1 时为恒等，超过后峰值保持 1 并沿色相趋白，因此重叠处最多提亮 2 倍。绘制在原版光照层之后，迷雾、黑暗和屋顶照常覆盖。推荐 `intensity`：常亮灯具 `0.5–1.2`，短促强闪光 `1.0–2.0`；不要把原版 `GlowGrid` 的 `3.6` 尺度照搬到视觉光池上。光池每帧跟随节点。`intensity` 和曲线关键帧值须有限且 `>= 0`，无上限；有效强度 `<= 0` 时不绘制。`overlightRadius` 已移除，JSON 和 XML 解析均直接拒绝。光池会被墙、门和掩体遮挡，掩体遮挡按贴图生成，见第七章第 4 节。每个特效点光支持布尔资产字段 `castShadows`（JSON 为 `"castShadows"`、XML 为 `<castShadows>`、C# 为 `PointLightSpec.CastShadows`，默认 `true`，无运行时设置 API）：为 `true` 时受墙、门、岩石、掩体遮挡，并在光影包及设置全局 `objectShadows` 开启时投射物体轮廓阴影；设为 `false` 时完全不读遮挡图也不生成物体阴影或占用阴影通道，不受遮挡且不投影（即使全局 `objectShadows` 开启）。原版发光体与接管太阳无此字段，固定投影，仅受全局 `objectShadows` 控制。原版日影/月影（`SunShadow` 3170、`SunShadowFade` 3175）落在光池里时只压掉日光：阴影乘数由 `c` 改为逐通道 `(c+L)/(1+L)`，`L` 为该像素压缩后的光池项；没有光池的像素与原版逐像素一致。只替换原版材质加原版着色器的阴影绘制，其他模组替换过的阴影（如 RimIris 水面阴影）保持原样并记录一次警告。已知近似：光池把画面提亮到顶处阴影恢复偏少；3101 之后画的折射、加色和雾会一起被提亮；原版灯光不分离；HDR 粒子/泛光层与 IsoRim 3D 阴影不覆盖。需要游戏逻辑光时，见第七章第 3 节的 `CompRimLumenLogicalLight`。
 - **力场 `strength`**：JSON、XML 与 C# 均须显式提供；省略时拒绝资产，不使用默认值。
 - **`timelineEvents` / `states` / `initialState` / `stopState`**：见下一节「状态机」。
 - **粒子密度设置**：公开 setter `RimLumenRenderHost.ParticleDensityScale` 接受范围为 `0.1`～`1.0`；范围外的有限值静默截到边界，不记录日志，NaN 和正负无穷抛出 `ArgumentOutOfRangeException`。设置滑条连续取值，显示时四舍五入为整数百分比。密度 `1` 精确；截断后的密度为 `d` 时，脉冲有效密度为 `floor(d * 65536) / 65536`。
@@ -322,7 +323,7 @@ tornado.Stop();                                      // 进入 collapse，播完
 
 1. **ID**：使用 `<defName>`，同样会同时注册裸短名与 `<packageId>:<defName>`。
 2. **节点字段**：额外提供 `<heightOffset>`（会累加到 `localPosition.y`），`localScale` 为单个浮点标量，不提供 `localRotation` 四元数（用 `<localYawDegrees>`）。
-3. **点光键名**：使用 `<radiusCells>`（对应 JSON 的 `glowRadius`）、`<color>`（原始浮点语法 `(r, g, b)` 或 `(r, g, b, a)`）、`<intensity>` 与 `<intensityOverTime>`。曲线直接包含 `<li>` 关键帧，每项可写 `<time>`、`<value>`、`<inTangent>` 和 `<outTangent>`；两个切线默认 0。XML 曲线没有 `multiplier` 字段。
+3. **点光键名**：使用 `<radiusCells>`（对应 JSON 的 `glowRadius`）、`<color>`（原始浮点语法 `(r, g, b)` 或 `(r, g, b, a)`）、`<intensity>`、`<castShadows>`（布尔，默认 `true`）与 `<intensityOverTime>`。曲线直接包含 `<li>` 关键帧，每项可写 `<time>`、`<value>`、`<inTangent>` 和 `<outTangent>`；两个切线默认 0。XML 曲线没有 `multiplier` 字段。
 4. **列表字段**：`<states>`、`<timelineEvents>`、`<interactionEvents>` 与状态的 `<nodes>` 用 `<li>` 列表；状态字段为 `<name>`、`<nodes>`、`<duration>`、`<loop>`、`<next>`，时间轴事件字段为 `<time>`、`<eventName>`、`<targetNodeIndex>`、`<state>`、`<notify>`，环境交互事件（`LumenInteractionEventXml`）字段为 `<trigger>`、`<eventName>`、`<radius>`、`<anchorNodeIndex>`、`<minCursorSpeed>`、`<maxCursorSpeed>`、`<holdSeconds>`、`<minExplosionStrength>`、`<cooldownSeconds>`、`<state>`、`<goToState>`、`<targetNodeIndex>`、`<notify>`；根上另有 `<defaultDuration>`、`<initialState>`、`<stopState>`。含义与默认值同上一节「状态机」。
 
 XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Stored` 和 `(1,1,1,1)`。XML 的 `<startColor>`、渐变停靠点 `<color>`、`<materialTint>` 和点光 `<color>` 使用带括号的原始浮点分量：三分量时 alpha 为 1，四分量时保留给定值，不按字节颜色解释。格式错误或分量数错误会报告资产和字段。
@@ -1062,7 +1063,7 @@ RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled
 
 后续组只重画各自的加法发光拷贝，执行宿主 Bloom 预过滤、降采样、升采样，再将 Bloom 的 RGB 加到场景并保留目标 Alpha，不做色调映射。原始核心已经在场景中，不会再次加入；原生 HDR 粒子、调色、雾、自定义 DAG 和历史缓冲也不会重跑。后续组使用同一帧捕获的当前包 `BloomParams`（强度、阈值、knee、scatter）及请求的 mip 级数；组为空或 mip 级数为 0 时，不添加该组边界或 Pass。
 
-自定义 `bloomPrefilterShader`、`bloomDownShader` 和 `bloomUpShader` 只用于 3152 组，后续组使用宿主着色器，并不等价于任意自定义 Bloom。Cinematic 的后续组不会产生光丝或影响 Adaptation；Atmospheric 的后续 Bloom 不照亮薄雾，也不使用依赖雾的 scatter 增益；Crisp、Vibrant 等包的合成色彩映射不作用于后续 Bloom。光影包 DAG 和历史缓冲只随 3152 组执行一次，不按组重复。
+自定义 `bloomPrefilterShader`、`bloomDownShader` 和 `bloomUpShader` 只用于 3152 组，后续组使用宿主着色器，并不等价于任意自定义 Bloom。Foggy 的后续 Bloom 不照亮薄雾，也不使用依赖雾的 scatter 增益；Crisp 等包的合成色彩映射不作用于后续 Bloom。光影包 DAG 和历史缓冲只随 3152 组执行一次，不按组重复。
 
 已安装原版及 DLC 的静态清单中，3155 仪式蜡烛在 3169 组增强，位于天气雾 3169 和太阳阴影 3170 之前；3177 轨道 / 电力光束及端点在 3178 组增强，位于战争迷雾 3175 之后、Gravship 抓取及 Darkness 3180 之前；3181 重力场、3185 引擎、3201 推进火焰和 4000 Noctol 眼睛在地图末尾增强。清单中 `[3169, 3174]` 和 `[3178, 3179]` 没有符合条件的绘制。末组 Bloom 晚于 3201 Screen 和 3251 VoidNode 抓取，因此不包含在这两次抓取中；不保证所有覆盖层、抓取或第三方绘制顺序。这些是静态顺序契约，实机表现尚未验证。
 
@@ -1160,6 +1161,7 @@ T = Π (1 − o_i)^(Δs_i)
 - 物体自己的贴图不会被自己或别的物体阴影压暗。阴影画在地面高度，贴图像素由场景深度挡住。
 - 物体占据的格子包含光源所在格时，它不给这盏灯投影，例如落地灯不挡自己的光。别的灯照常受它遮挡。
 - 阴影边缘按轮廓几何逐像素计算，没有半影。
+- **单灯 `castShadows` 开关**：特效点光可在资产中声明 `castShadows`（JSON `"castShadows"`、XML `<castShadows>`、C# `PointLightSpec.CastShadows`，默认 `true`，不提供运行时修改 API）。设为 `false` 时，该点光完全跳过遮挡图（不被墙、门、岩石、掩体挡住），也不生成物体阴影几何、不占用阴影遮罩通道，即使全局 `objectShadows` 开启也是如此；设为 `true` 时受墙、门、岩石、掩体遮挡，并在光影包及设置全局 `objectShadows` 开启时投射物体轮廓阴影。原版发光体与接管太阳无 `castShadows` 字段，固定投影，仅受全局 `objectShadows` 控制。
 
 **接管开启时的太阳阴影**
 
@@ -1372,7 +1374,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 | `author` | `string` | `"Unknown"` | 作者名称。 |
 | `description` | `string` | `""` | 包功能说明，显示在设置摘要区。 |
 | `runOnEmptyFrames` | `bool` | `false` | 为 `true` 时，即使当前帧没有任何 HDR 粒子或原版加色重画也强制执行管线；环境压暗、迷雾、全局调色类包应设为 `true`。 |
-| `objectShadows` | `bool` | `true` | 有高度的非 `blockLight` 物体为点光源及接管太阳投射轮廓阴影。设置界面“物件投射光源阴影”按光影包保存，存档键为 `objectShadowOverrides`；关闭后墙、岩石和门仍照常遮挡。内置光影包默认开启，Cinematic、Atmospheric、Vibrant、Crisp 均显式声明为 `true`。 |
+| `objectShadows` | `bool` | `true` | 有高度的非 `blockLight` 物体为点光源及接管太阳投射轮廓阴影。设置界面“物件投射光源阴影”按光影包保存，存档键为 `objectShadowOverrides`；关闭后墙、岩石和门仍照常遮挡。单盏效果点光若将 `castShadows` 设为 `false`，即使全局 `objectShadows` 开启也同样跳过遮挡与物体阴影；原版发光体与接管太阳无 `castShadows` 字段，固定受全局 `objectShadows` 控制。内置光影包默认开启，Crisp 与 Foggy 均显式声明为 `true`。 |
 | `requiresSceneDepth` | `bool` | `false` | 为 `true` 时，空帧也强制将场景深度拷贝到 `depth` 纹理（有 HDR 绘制的帧会自动提供场景深度）。 |
 | `requiresMapLightField` | `bool` | `false` | 为 `true` 时，维护并上传当前地图的 `mapLightField` RGBA8 纹理。 |
 | `bloomMipLevels` | `int` | `5` | 内置 Bloom 金字塔级数，合法范围 `[0, 7]`；设为 `0` 完全关闭内置 Bloom。 |
@@ -1446,7 +1448,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 
 #### 两级错误隔离
 
-- **扫描与校验期隔离**：`pack.json` 语法错、路径越界、使用保留 ID `"default"` 或图校验不通过时，错误仅保存在该条目的 `LoadError` 中（菜单显示 `[损坏]` 且不可选），不会波及同目录或其它模组的光影包；`FindOrDefault` 会自动回退到内置 `default` 包。
+- **扫描与校验期隔离**：`pack.json` 语法错、路径越界、使用保留 ID `"default"` 或图校验不通过时，错误仅保存在该条目的 `LoadError` 中（菜单显示 `[损坏]` 且不可选），不会波及同目录或其它模组的光影包；`FindOrDefault` 会自动回退到内置 `default` 包。若设置中保存的 `selectedShaderPackId` 已不存在（例如已移除的包或损坏条目），启动/应用设置时会记录一条写明原 ID 的 `Log.Warning` 并回落到 `default`，同时丢弃 `objectShadowOverrides` 中找不到对应有效包的旧条目。
 - **编译与录制期隔离**：调用热重载或切包时，`RimLumenRenderHost.ReloadShaderPack` 会先用 Slang 预编译所有自定义 `.frag.glsl`；编译失败则保留当前生效包并在 `LastShaderPackError` 记录详情。若非 `default` 包在渲染线程录制阶段抛异常，运行时立即记录 `LastShaderPackError` 并在主线程自动切回 `default` 包，**不会触发全局管线熔断（`FailSafeTripped`）**。
 
 ---
@@ -1486,7 +1488,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 
 > 混合与 Alpha 提示：`passes` 为空时默认合成 Pass 固定使用 `PremultipliedAlpha` 混合到 3152 边界的地图颜色。若你的合成着色器直接输出最终全屏图像（如含调色、雾效），请输出 `vec4(finalRgb, 1.0)` 或使用显式 `passes` 并设 `"blend": "Opaque"`；若只想把 HDR 粒子与 Bloom 叠加到场景之上，则输出 `vec4(mappedHdr, hdr.a)`：结果为 `mappedHdr + scene * (1 - hdr.a)`，`hdr` 与泛光都为空的像素保持场景原样。色调曲线由各包的合成着色器自行决定；内置默认合成在峰值不超过 1 时原样输出，超过 1 时峰值保持 1，超出部分沿原色相向白色压缩。
 
-> 数值安全提示：`hdr` 是 `RGBA16F`，大量加色粒子叠加后可能溢出成 `Inf`，个别驱动上还可能出现 `NaN`，而不同驱动对它们的处理不一致。凡是直接读取 `hdr` 的 Pass（自定义 prefilter、合成、亮度统计），尤其是写入 `persistent` 历史目标的 Pass，都应先把 `NaN`/`Inf` 置 0 并设上限，否则一个坏像素会被模糊扩散，或长期留在历史缓冲里。内置包的写法见 `Cinematic/Common.glslinc` 中的 `sanitizeHdr`。
+> 数值安全提示：`hdr` 是 `RGBA16F`，大量加色粒子叠加后可能溢出成 `Inf`，个别驱动上还可能出现 `NaN`，而不同驱动对它们的处理不一致。凡是直接读取 `hdr` 的 Pass（自定义 prefilter、合成、亮度统计），尤其是写入 `persistent` 历史目标的 Pass，都应先把 `NaN`/`Inf` 置 0 并设上限，否则一个坏像素会被模糊扩散，或长期留在历史缓冲里。内置包的写法见 `Foggy/Composite.frag.glsl` 中的 `sanitizeHdr`。
 
 #### 固定顶点接口与 `#include`
 
@@ -1528,7 +1530,7 @@ layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
 - **参数映射**：`options[].target` 的 `packParamN`（`N = 0..15`）对应 `ubo.PackParams[N / 4][N % 4]`；已有着色器需将旧向量成员改为 `PackParams` 数组。
 - **当前 ABI**：布局共 224 字节；只声明前 208 字节的包仍有效，但其效果层不折射。`HasHdrDraws`（含早组 glow 拷贝）、`HasSceneDepth`、`HasMapLightField`、`IsPaused` 均为独立的 0/1 float。`DepthValid=1` 表示该边界的真实深度快照，`0` 表示远平面占位，不表示每个像素都有几何体。
 - **`LayerFlags.y`**：开启“RimLumen 接管照明”且本帧生效时为 `1`，`lightSum` 绑定的是本帧光池总和；否则为 `0`，绑定的是全黑占位，原版八边形光照覆盖层照常绘制。读 `lightSum` 的包应在 `y = 0` 时回退到 `mapLightField.G`。不声明 `lightSum` 的包不受影响，UBO 大小和已有偏移不变。
-- `GameSeconds` 为游戏 ticks / 60，暂停停止；`RealSeconds` 为宿主经过的真实秒数。对应 Delta 字段是本帧步长。Cinematic 的 Adapt 与 StreakExtract 读取 `hdr + glow`，合成核心仍只读取 `hdr`；Adapt 使用游戏秒时间常数 0.2 秒，权重 `1-exp(-GameDeltaSeconds/0.2)`。
+- `GameSeconds` 为游戏 ticks / 60，暂停停止；`RealSeconds` 为宿主经过的真实秒数。对应 Delta 字段是本帧步长。
 
 #### Push Constant（16 字节 `vec4`）
 
@@ -1585,12 +1587,10 @@ bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fie
 | 包 ID | Pass / 目标数 | `runOnEmptyFrames` | `requiresSceneDepth` | `requiresMapLightField` | `bloomMipLevels` | 典型技术参考文件 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `default` | 内置合成 / 0 | `false` | `false` | `false` | `5` | `1.7/Shaders/PostFx/RimLumenComposite.frag.glsl` |
-| `atmospheric` | 3 Pass / 2 目标 | `true` | `false` | `true` | `7` | `1.7/ShaderPacks/Atmospheric/` |
-| `cinematic` | 5 Pass / 4 目标（含持久化 `adapt`） | `false` | `false` | `false` | `6` | `1.7/ShaderPacks/Cinematic/` |
 | `crisp` | 单自定义合成 / 0 | `false` | `false` | `false` | `3` | `1.7/ShaderPacks/Crisp/` |
-| `vibrant` | 单自定义合成 / 0 | `false` | `false` | `false` | `6` | `1.7/ShaderPacks/Vibrant/` |
+| `foggy` | 3 Pass / 2 目标 | `true` | `false` | `true` | `7` | `1.7/ShaderPacks/Foggy/` |
 
-`atmospheric` 的 `FogAndMask` 在 binding 4 读取 `lightSum`。`LayerFlags.y = 1` 时用其亮度（Rec.709 系数）经 `min(0.5, 3.6 × 亮度)` 代替 `mapLightField.G`，作为火光保护与暖雾强度；否则仍用 G。它不读场景深度：IsoRim 3D 视图下，墙面上的雾不再减弱。
+`foggy` 的 `FogAndMask` 在 binding 4 读取 `lightSum`。`LayerFlags.y = 1` 时用其亮度（Rec.709 系数）经 `min(0.5, 3.6 × 亮度)` 代替 `mapLightField.G`，作为火光保护与暖雾强度；否则仍用 G。它不读场景深度：IsoRim 3D 视图下，墙面上的雾不再减弱。
 
 ---
 

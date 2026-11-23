@@ -276,11 +276,13 @@ public sealed class EmitterSpec
 // game logic (mood, plant growth, work speed). GlowRadius: finite [0,40] cells, the pool's radius around the node
 // projected to the ground. ColorRgb: finite [0,1] per component. IntensityOverTime: null means 1; otherwise Hermite
 // in elapsed node-light seconds, endpoint-held, multiplier and key values finite >= 0. Light = ColorRgb * intensity with no upper
-// clamp (the 8-bit scene saturates); effective intensity <= 0 draws nothing.
+// clamp (the 8-bit scene saturates); effective intensity <= 0 draws nothing. CastShadows: true (default) occludes by
+// walls/rock/doors/cover and casts silhouette shadows when global objectShadows is on; false bypasses all occlusion and shadows.
 public readonly record struct PointLightSpec(
     float GlowRadius,
     Vector3 ColorRgb,
-    ScalarCurve? IntensityOverTime = null);
+    ScalarCurve? IntensityOverTime = null,
+    bool CastShadows = true);
 
 // TimeSeconds is measured from the entry of State (null = the asset's initial state). Notify raises
 // ILumenEffectHandle.Notify(EventName) when the event fires.

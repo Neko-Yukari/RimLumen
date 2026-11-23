@@ -183,6 +183,42 @@ public static class ObjectShadowSuite
         }
     }
 
+    [LumenFact]
+    public static void CastShadowsFalseLightTakesNoShadowChannelAndNeverBumpsShadowedLights()
+    {
+        var color = new Vector3(1f, 0.8f, 0.6f);
+        VisualPointLight shadowed = new(10.5f, 1f, 10.5f, 6f, color, VisualPointLightKind.Effect, CastShadows: true);
+        VisualPointLight unshadowed = shadowed with { CastShadows = false };
+
+        ShadowSlot[] mixed = ShadowChannels.Assign([unshadowed, shadowed, shadowed, shadowed, shadowed, unshadowed], objectShadows: true, sun: false);
+        Equal(6, mixed.Length);
+        Require(!mixed[0].HasChannel && mixed[0].Selector == Vector4.Zero, "First CastShadows=false light must get no channel.");
+        Require(!mixed[5].HasChannel && mixed[5].Selector == Vector4.Zero, "Last CastShadows=false light must get no channel.");
+        for (int i = 1; i <= 4; i++)
+        {
+            Require(mixed[i].HasChannel && mixed[i].Round == 0, $"Shadowed light {i} should stay in round 0, got {mixed[i]}.");
+        }
+        Equal(4, mixed.Skip(1).Take(4).Select(s => s.Channel).Distinct().Count());
+
+        ShadowSlot[] withSun = ShadowChannels.Assign([unshadowed, shadowed, shadowed, shadowed, unshadowed], objectShadows: true, sun: true);
+        Require(!withSun[0].HasChannel && !withSun[4].HasChannel, "Unshadowed lights take no channel even with sun.");
+        for (int i = 1; i <= 3; i++)
+        {
+            Require(withSun[i].HasChannel && withSun[i].Round == 0 && withSun[i].Channel != ShadowChannels.SunChannel,
+                $"Shadowed light {i} must stay in round 0 off SunChannel, got {withSun[i]}.");
+        }
+
+        ShadowSlot[] disabled = ShadowChannels.Assign([shadowed, unshadowed], objectShadows: false, sun: false);
+        Require(!disabled[0].HasChannel && !disabled[1].HasChannel, "Global objectShadows=false disables all channels.");
+
+        Require(!LightPoolRenderer.NeedsOcclusion([unshadowed], takeover: false), "Unshadowed-only lights need no occlusion without takeover.");
+        Require(LightPoolRenderer.NeedsOcclusion([unshadowed], takeover: true), "Takeover still needs occlusion.");
+        Require(LightPoolRenderer.NeedsOcclusion([unshadowed, shadowed], takeover: false), "Any shadowed light needs occlusion.");
+
+        Equal(new Vector4(color, 1f), LightPoolRenderer.EncodeLightUniform(shadowed));
+        Equal(new Vector4(color, 0f), LightPoolRenderer.EncodeLightUniform(unshadowed));
+    }
+
     private static Caster[] ColumnRing()
     {
         (int X, int Z)[] offsets = [(3, 0), (-3, 0), (0, 3), (0, -3), (2, 2), (-2, 2), (2, -2), (-2, -2)];

@@ -44,12 +44,10 @@ RimLumen 是面向《环世界》1.7（Waylith / Vulkan）的旁路/叠加层（
 - 可选 Chezhou.RimUnity 桥接：读取其导出的预制体 JSON 与 .rutex 贴图，自动接管支持的粒子节点进入 HDR/GPU 管线，未支持模块交回 RimUnity 统一句柄控制。
 
 【面向玩家】
-- 开箱即用 + 5 档内置光影包：
+- 开箱即用 + 3 档内置光影包：
   · Standard（标准平衡）：自然 HDR 泛光基准，不改原版地图色调。
-  · Atmospheric（荒野夜雾）：利用屋顶与光场区分室内外，夜间荒野压暗、地表薄雾与 7 级散射。
-  · Cinematic（电影光丝）：横向变形光丝、6 级柔和泛光与跨帧自适应曝光。
-  · Vibrant（霓虹高饱和）：抑制高光泛白，强化色彩饱和度与能量光晕。
   · Crisp（锐利克制）：高起辉阈值与 3 级紧致泛光，保留地形与 UI 锐利清晰。
+  · Foggy（雾气）：利用屋顶与光场区分室内外，夜间荒野压暗、地表薄雾与 7 级散射。
 - 实时滑杆与热重载：设置页支持实时调节当前光影包参数、热重载、原版发光增强开关（仅在无活动特效且当前光影包不重写场景时，关闭后逐像素还原原版）、粒子密度（10%–100%）与可选娱乐演示建筑（烟花发射器、粒子喷泉与三盏照明对照路灯）。
 - 6 站对照演示说明（见宣传图）：#1 LDR vs HDR 泛光 / #2 L1 速度拉伸 / #3 动态点光照地 / #4 深度软粒子穿墙淡出 / #5 L2 GPU 12k 旋涡 / #6 原版发光自动 HDR。
 - 实测性能参考（1080p · RTX 4080 SUPER · 无校验层 · 3 力场 + 5 级 Bloom + 软粒子，每档 60 帧）：0–50,000 粒子整帧均值 5.54–5.55 ms（~180 FPS），100,000 粒子 5.76 ms（174 FPS），250,000 粒子 8.49 ms（118 FPS），500,000 粒子 14.79 ms（68 FPS）；全档位主线程耗时低于 0.01 ms。1,048,576 个共享槽位耗尽时，跳过新特效，最多每 10 秒记录一次警告。
@@ -85,12 +83,10 @@ HDR here means internal high-dynamic-range rendering, tone-mapped back to a stan
 - When Chezhou.RimUnity is enabled, RimLumen reads exported prefab JSON and .rutex textures, upgrades supported particle nodes to native HDR/GPU rendering, and leaves unsupported modules to RimUnity under a unified playback handle.
 
 [For Players]
-- Plug and Play with 5 Built-in ShaderPacks:
+- Plug and Play with 3 Built-in ShaderPacks:
   · Standard: balanced HDR bloom baseline matching vanilla color tone.
-  · Atmospheric: indoor/outdoor aware night fog and 7-mip air scattering via mapLightField.
-  · Cinematic: anamorphic streaks, 6-mip soft bloom, and adaptive exposure.
-  · Vibrant: suppresses highlight desaturation and boosts energy glow chroma.
   · Crisp: high threshold with tight 3-mip bloom to keep terrain and UI sharp in combat.
+  · Foggy: indoor/outdoor aware night fog and 7-mip air scattering via mapLightField.
 - Live Tuning and Demo Buildings: adjust per-pack sliders, hot-reload shaders, toggle vanilla additive glow (pixel-identical when off only if no RimLumen effects play and the active pack does not rewrite the scene), scale Particle Density (10%–100%), and optionally enable Demo Joy Buildings (Firework Launcher, Particle Fountain, and three lighting-comparison Street Lamps).
 - 6-Station Showcase Legend (see screenshots): #1 LDR vs HDR Bloom / #2 L1 Velocity Stretch / #3 Dynamic Point Light Pool / #4 Soft Particle Wall Fade / #5 L2 GPU 12k Vortex / #6 Auto Vanilla HDR.
 - Measured Benchmark (1080p, RTX 4080 SUPER, validation off, 3 force fields + 5-mip bloom + soft particles, 60 frames/step): 0–50,000 particles at 5.54–5.55 ms (~180 FPS), 100,000 at 5.76 ms (174 FPS), 250,000 at 8.49 ms (118 FPS), and 500,000 at 14.79 ms (68 FPS), with main-thread capture under 0.01 ms. When the 1,048,576 shared slots are exhausted, new effects are skipped and a warning is logged at most every 10 seconds.

@@ -17,7 +17,7 @@ internal enum VisualPointLightKind : byte
 // is PointLightSpec.GlowRadius in cells (> 0), Light is ColorRgb * effective intensity (every component >= 0, max > 0).
 // Vanilla pools: centre is the glower's cell centre at VanillaHeight, Radius its glowRadius, Light glowColor.rgb / 255
 // (design 3.5).
-internal readonly record struct VisualPointLight(float X, float Y, float Z, float Radius, Vector3 Light, VisualPointLightKind Kind)
+internal readonly record struct VisualPointLight(float X, float Y, float Z, float Radius, Vector3 Light, VisualPointLightKind Kind, bool CastShadows = true)
 {
     // CompGlower has no height; one cell, the top of a vanilla wall (Wall staticSunShadowHeight 1.0).
     internal const float VanillaHeight = 1f;
@@ -46,7 +46,8 @@ internal readonly record struct VisualPointLight(float X, float Y, float Z, floa
     }
 
     // Ensures: Effect: Light * Falloff * visibility. Vanilla: ProjectVanilla(Light * VanillaFalloff) * visibility.
-    //          visibility = cover * min(solid, 1 - object shadow m): solid and the casters' mask are opaque blockers and
+    //          visibility = 1 when CastShadows is false (ignores occlusion map and object casters); otherwise
+    //          cover * min(solid, 1 - object shadow m): solid and the casters' mask are opaque blockers and
     //          combine by the darker term, cover alone multiplies. Kind selects only the falloff.
     internal Vector3 EvaluateAt(float worldX, float worldZ, OcclusionFrame walls, IReadOnlyList<Caster> casters)
     {
@@ -54,6 +55,7 @@ internal readonly record struct VisualPointLight(float X, float Y, float Z, floa
         float dz = worldZ - Z;
         float distance = MathF.Sqrt(dx * dx + dz * dz);
         Vector3 light = Kind == VisualPointLightKind.Effect ? Light * Falloff(distance, Radius) : ProjectVanilla(Light * VanillaFalloff(distance, Radius));
+        if (!CastShadows) return light;
         var at = new Vector2(X, Z);
         var target = new Vector2(worldX, worldZ);
         float solid = LightTransport.Visibility(walls, at, target, out float cover);

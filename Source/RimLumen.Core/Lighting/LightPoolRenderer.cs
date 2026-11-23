@@ -47,10 +47,10 @@ internal sealed class LightPoolRenderer : IDisposable
     // RimLumenMapChain.RecordLightPools binds each once its round's casters are drawn; cleared, a slot reads black.
     internal readonly BorrowedRenderTexture FirstMask = new(), LaterMask = new();
     private readonly List<VisualPointLight> staged = new();
-    private readonly List<Vector3> boxes = new();
     private ulong stagedFrameIndex = ulong.MaxValue;
     private ulong preparedFrameIndex = ulong.MaxValue;
     private OcclusionFrame prepared;
+    private bool preparedOcclusion;
     private CasterChunks casters = null!;
     private bool objectShadows;
     // [0] reads FirstMask, [1] LaterMask.
@@ -94,18 +94,29 @@ internal sealed class LightPoolRenderer : IDisposable
         this.objectShadows = objectShadows;
         FrameSunChannel = takeover && objectShadows ? SunChannel : Vector4.Zero;
         if (!takeover && (stagedFrameIndex != frameIndex || staged.Count == 0)) return;
-        prepared = OcclusionField.Capture(map, out casters);
+        preparedOcclusion = NeedsOcclusion(staged, takeover);
+        if (preparedOcclusion) prepared = OcclusionField.Capture(map, out casters);
         preparedFrameIndex = frameIndex;
     }
 
     // ShadowSlot.Selector of the takeover sun on this frame (LightingTakeover.Rebind); zero without object shadows.
     internal Vector4 FrameSunChannel { get; private set; }
 
+    internal static bool NeedsOcclusion(IReadOnlyList<VisualPointLight> lights, bool takeover)
+    {
+        if (takeover) return true;
+        for (int i = 0; i < lights.Count; i++)
+            if (lights[i].CastShadows) return true;
+        return false;
+    }
+
+    internal static Vector4 EncodeLightUniform(VisualPointLight light) => new(light.Light, light.CastShadows ? 1f : 0f);
+
     // Requires: main thread, in RimLumenPipeline.Capture after MeshDrawSubmission.CaptureFlushedSnapshot.
     // Ensures: on a prepared frame, one accumulation draw per staged light into draws, each carrying its _LumenLight,
     //          _LumenLightAt and _LumenShadowChannel through the arena. With object shadows, into shadows: one caster draw
-    //          per light and caster chunk reaching its pool box, and with takeover one sun caster draw per chunk whose
-    //          shadow reaches the view. Returns the number of rounds: one past the last light's round, at least 1 with the
+    //          per shadowed light and caster chunk reaching its pool box, and with takeover one sun caster draw per chunk whose
+    //          shadow reaches the view. Returns the number of rounds: one past the last shadowed light's round, at least 1 with the
     //          sun. Lights staged for another frame are dropped.
     internal int AppendDraws(List<FinalDrawItem> draws, List<FinalDrawItem> shadows, DrawItemFactory maker, DrawPropertyArena arena,
         ulong frameIndex, bool takeover)
@@ -117,21 +128,19 @@ internal sealed class LightPoolRenderer : IDisposable
             return 0;
         }
         materials ??= CreatePoolMaterials();
-        UploadOcclusion(prepared);
-        boxes.Clear();
-        foreach (VisualPointLight light in staged) boxes.Add(new Vector3(light.X, light.Z, light.Radius));
+        if (preparedOcclusion) UploadOcclusion(prepared);
         bool sun = takeover && objectShadows;
-        ShadowSlot[] slots = objectShadows ? ShadowChannels.Assign(boxes, sun) : [];
+        ShadowSlot[] slots = ShadowChannels.Assign(staged, objectShadows, sun);
         float altitude = AltitudeLayer.LightingOverlay.AltitudeFor();
         int rounds = 0;
         for (int i = 0; i < staged.Count; i++)
         {
             VisualPointLight light = staged[i];
-            ShadowSlot slot = objectShadows ? slots[i] : default;
-            Vector4 channel = objectShadows ? slot.Selector : Vector4.Zero;
+            ShadowSlot slot = slots[i];
+            Vector4 channel = slot.Selector;
             int queue = RenderQueue + slot.Round;
             Span<DrawProperty> properties = arena.Allocate(3, out DrawPropertyRange range);
-            properties[0] = DrawProperty.Vector(LightPropertyId, new Vector4(light.Light, 0f));
+            properties[0] = DrawProperty.Vector(LightPropertyId, EncodeLightUniform(light));
             properties[1] = DrawProperty.Vector(LightAtPropertyId, new Vector4(light.X, light.Z, (byte)light.Kind, light.Radius));
             properties[2] = DrawProperty.Vector(ShadowChannelPropertyId, channel);
             float diameter = 2f * light.Radius;
@@ -141,8 +150,8 @@ internal sealed class LightPoolRenderer : IDisposable
             var command = new MeshDrawCommand(MeshPool.plane10.EngineMesh, materials[Math.Min(slot.Round, 1)], range, matrix, 0,
                 Rendering.RimLumenRenderHost.LumenRenderPassId, renderQueueOverride: queue);
             if (maker.TryMake(in command, arena, UnityEngine.Shader.GlobalKeywordKey, i) is { } draw) draws.Add(draw);
+            if (!slot.HasChannel) continue;
             rounds = Math.Max(rounds, slot.Round + 1);
-            if (!objectShadows) continue;
             foreach (CasterChunks.Chunk chunk in casters.Filled)
                 if (chunk.Overlaps(light.X - light.Radius, light.Z - light.Radius, light.X + light.Radius, light.Z + light.Radius))
                     AppendCaster(shadows, maker, arena, chunk, new Vector4(light.X, light.Z, light.Y, light.Radius), Vector4.Zero, channel, queue);

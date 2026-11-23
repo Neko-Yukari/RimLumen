@@ -3,6 +3,7 @@ using System.Numerics;
 using RimLumen.Core.Compat;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Lighting;
+using RimLumen.Core.Lighting.Casters;
 using RimLumen.Core.Lighting.Occlusion;
 using RimLumen.Core.Rendering;
 using RimLumen.Core.Rendering.Logic;
@@ -246,6 +247,36 @@ public static class RenderLogicSuite
         var lamp = new VisualPointLight(3.5f, 0f, 4.5f, 6f, new Vector3(1f, 0.5f, 0.25f), VisualPointLightKind.Effect);
         Equal(Vector3.Zero, VisualPointLight.AccumulateAndCompress([lamp], 7.5f, 4.5f, walls, []));
         Equal(lamp.Light * VisualPointLight.Falloff(4f, 6f), VisualPointLight.AccumulateAndCompress([lamp], 3.5f, 8.5f, walls, []));
+    }
+
+    [LumenFact]
+    public static void PointLightWithCastShadowsFalseIgnoresWallsDoorsCoverAndObjectShadows()
+    {
+        var builder = new OcclusionBuilder(12, 12);
+        builder.Wall(new CellBox(5, 4, 5, 4));
+        builder.Blocker(new CellBox(5, 6, 5, 6), 1f, DoorAxis.Z);
+        builder.Cover(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 8.5f, 1f, 1f), 0.75f);
+        builder.RecomputeDerived(new CellBox(0, 0, 11, 11));
+        var frame = new OcclusionFrame(builder.Publish(), new DoorStates(12, 12, new byte[12 * 12 * 4]));
+        Caster caster = OcclusionStamps.Caster(OcclusionStamps.Opaque, new MaskPlacement(5.5f, 2.5f, 1f, 1f), 1f, fade: false, new CellBox(5, 2, 5, 2));
+
+        var color = new Vector3(1f, 0.5f, 0.25f);
+        float expected4 = VisualPointLight.Falloff(4f, 6f);
+
+        foreach (float z in new[] { 4.5f, 6.5f, 8.5f, 2.5f })
+        {
+            var shadowed = new VisualPointLight(3.5f, 1f, z, 6f, color, VisualPointLightKind.Effect, CastShadows: true);
+            var unshadowed = shadowed with { CastShadows = false };
+            Vector3 litShadowed = shadowed.EvaluateAt(7.5f, z, frame, [caster]);
+            Vector3 litUnshadowed = unshadowed.EvaluateAt(7.5f, z, frame, [caster]);
+            Require(litShadowed.X < litUnshadowed.X, $"Expected z={z} shadowed ({litShadowed.X}) < unshadowed ({litUnshadowed.X}).");
+            Equal(color * expected4, litUnshadowed);
+        }
+
+        var wallBlocked = new VisualPointLight(3.5f, 1f, 4.5f, 6f, color, VisualPointLightKind.Effect, CastShadows: true);
+        var unoccluded = wallBlocked with { CastShadows = false };
+        Equal(Vector3.Zero, unoccluded.EvaluateAt(10.5f, 4.5f, frame, [caster]));
+        Equal(color * expected4, VisualPointLight.AccumulateAndCompress([wallBlocked, unoccluded], 7.5f, 4.5f, frame, [caster]));
     }
 
     [LumenFact]

@@ -72,9 +72,9 @@ public sealed class RimLumenSettings : ModSettings
         ApplyScalarsToRuntime();
 
         IReadOnlyList<ShaderPackEntry> packs = ShaderPackCatalog.GetAvailablePacks(rescan: forceReloadPack);
-        ShaderPackEntry entry = ShaderPackCatalog.FindOrDefault(SelectedShaderPackId, packs);
-        if (!string.Equals(SelectedShaderPackId, entry.Id, StringComparison.OrdinalIgnoreCase))
-            SelectedShaderPackId = entry.Id;
+        ShaderPackEntry entry = ResolvePackSettings(packs, out string? missingPackId);
+        if (missingPackId is not null)
+            Log.Warning($"[RimLumen] Saved shader pack '{missingPackId}' is not available; falling back to Standard ('{entry.Id}').");
 
         if (forceReloadPack || !string.Equals(appliedPackId, entry.Id, StringComparison.OrdinalIgnoreCase))
         {
@@ -87,6 +87,28 @@ public sealed class RimLumenSettings : ModSettings
 
         ShaderPackCatalog.ApplyOptionsToRuntime(entry, PackParamOverrides, RimLumenRenderHost.ShaderPackParams);
         RimLumenRenderHost.SetObjectShadows(entry.Spec, ObjectShadowsFor(entry));
+    }
+
+    internal ShaderPackEntry ResolvePackSettings(IReadOnlyList<ShaderPackEntry> packs, out string? missingPackId)
+    {
+        var validIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ShaderPackCatalog.DefaultPackId };
+        foreach (ShaderPackEntry pack in packs)
+        {
+            if (pack.LoadError is null)
+                validIds.Add(pack.Id);
+        }
+
+        foreach (string staleId in ObjectShadowOverrides.Keys.Where(id => !validIds.Contains(id)).ToList())
+            ObjectShadowOverrides.Remove(staleId);
+
+        ShaderPackEntry entry = ShaderPackCatalog.FindOrDefault(SelectedShaderPackId, packs);
+        string trimmed = SelectedShaderPackId?.Trim() ?? string.Empty;
+        missingPackId = trimmed.Length > 0 && !string.Equals(trimmed, entry.Id, StringComparison.OrdinalIgnoreCase)
+            ? trimmed
+            : null;
+        if (!string.Equals(SelectedShaderPackId, entry.Id, StringComparison.Ordinal))
+            SelectedShaderPackId = entry.Id;
+        return entry;
     }
 
     internal bool ObjectShadowsFor(ShaderPackEntry entry) =>

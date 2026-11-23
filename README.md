@@ -24,8 +24,8 @@ A **sidecar/overlay HDR VFX enhancement layer**, programmable post-processing Sh
 
 ## 玩家 / Players
 
-装上即用：符合条件的原版与其他模组加色发光自动获得 Bloom 泛光，内置 5 档即切光影包，并可加载第三方模组或 `Config/RimLumen/ShaderPacks/` 下的自定义光影包。队列 ≥3152 的发光使用宿主 Bloom 着色器和当前光影包的参数，不包含光影包的完整自定义效果；地图末尾的泛光不会出现在此前的 Screen 和 VoidNode 抓取中。
-Plug and play: eligible vanilla and third-party additive glows automatically get bloom, with 5 built-in ShaderPacks (`Standard`, `Atmospheric`, `Cinematic`, `Vibrant`, `Crisp`) and support for mod or `Config/RimLumen/ShaderPacks/` packs. Glows at render queues >=3152 use host bloom shaders and pack parameters, not the pack's complete custom effects; map-end bloom is absent from earlier Screen and VoidNode grabs.
+装上即用：符合条件的原版与其他模组加色发光自动获得 Bloom 泛光，内置 3 档即切光影包（`Standard`、`Crisp`、`Foggy`），并可加载第三方模组或 `Config/RimLumen/ShaderPacks/` 下的自定义光影包。队列 ≥3152 的发光使用宿主 Bloom 着色器和当前光影包的参数，不包含光影包的完整自定义效果；地图末尾的泛光不会出现在此前的 Screen 和 VoidNode 抓取中。
+Plug and play: eligible vanilla and third-party additive glows automatically get bloom, with 3 built-in ShaderPacks (`Standard`, `Crisp`, `Foggy`) and support for mod or `Config/RimLumen/ShaderPacks/` packs. Glows at render queues >=3152 use host bloom shaders and pack parameters, not the pack's complete custom effects; map-end bloom is absent from earlier Screen and VoidNode grabs.
 
 - 设置：选项 → 模组设置 → RimLumen / Options -> Mod Settings -> RimLumen
   - `EnhanceVanillaAdditiveGlow`（默认开 / default on）：无其他 RimLumen 特效播放且当前光影包不重写场景时，关闭后画面与不装本模组逐像素一致 / off = pixel-identical only when no RimLumen effects are active and the active pack does not rewrite the scene
@@ -126,9 +126,9 @@ RimLumen.Core.Api.RimLumenApi.PlayAtCell("MyFireball", map, pawn.Position);
 
 播放 / play：`RimLumenApi.PlayAtCell("Fireball", map, cell)`；同一 id 也可写成 `<packageId>:<effectId>`。
 
-JSON 规则 / rules：键名 camelCase、大小写不敏感，允许 `//` 注释与尾逗号，**未知键直接报错**。枚举写名称字符串（或整数）。向量 `[x,y,z]` / `{x,y,z}` / 单个数字（等比）；颜色为线性 RGBA `[r,g,b,a]`（`[r,g,b]` 时 a=1）。`startLifetime` / `startSpeed` / `startSize` 写单值即 min=max，也可分写 `...Min` / `...Max`。点光键为 `glowRadius`（格）、`color`、`intensity`（XML 里对应 `radiusCells` / `color`）。
+JSON 规则 / rules：键名 camelCase、大小写不敏感，允许 `//` 注释与尾逗号，**未知键直接报错**。枚举写名称字符串（或整数）。向量 `[x,y,z]` / `{x,y,z}` / 单个数字（等比）；颜色为线性 RGBA `[r,g,b,a]`（`[r,g,b]` 时 a=1）。`startLifetime` / `startSpeed` / `startSize` 写单值即 min=max，也可分写 `...Min` / `...Max`。点光键为 `glowRadius`（格）、`color`、`intensity`、`castShadows`（默认 `true`；设为 `false` 时不受任何遮挡也不投射物件阴影，不受全局 `objectShadows` 影响）（XML 里对应 `radiusCells` / `color` / `intensity` / `castShadows`）。
 
-Keys are camelCase and case-insensitive; `//` comments and trailing commas are allowed; unknown keys throw. Enums are name strings or integers. Vectors: `[x,y,z]`, `{x,y,z}` or one number (uniform); colors are linear RGBA. A single `startLifetime` / `startSpeed` / `startSize` sets min = max. Point-light keys differ from XML: JSON uses `glowRadius` / `color`, XML uses `radiusCells` / `color`.
+Keys are camelCase and case-insensitive; `//` comments and trailing commas are allowed; unknown keys throw. Enums are name strings or integers. Vectors: `[x,y,z]`, `{x,y,z}` or one number (uniform); colors are linear RGBA. A single `startLifetime` / `startSpeed` / `startSize` sets min = max. Point-light keys differ from XML: JSON uses `glowRadius` / `color` / `intensity` / `castShadows` (default `true`; `false` ignores all occlusion and object shadows regardless of global `objectShadows`), XML uses `radiusCells` / `color` / `intensity` / `castShadows`.
 
 ## 构建与发布 / Build and release
 

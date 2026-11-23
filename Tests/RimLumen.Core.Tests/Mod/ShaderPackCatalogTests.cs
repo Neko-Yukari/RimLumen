@@ -23,7 +23,8 @@ public static class ShaderPackCatalogTests
         string packsRoot = Path.Combine(RepoRoot(), "1.7", "ShaderPacks");
         IReadOnlyList<ShaderPackEntry> packs = ShaderPackCatalog.ScanRoots([(packsRoot, "内置")]);
 
-        var expectedIds = new[] { "default", "atmospheric", "cinematic", "crisp", "vibrant" };
+        var expectedIds = new[] { "default", "crisp", "foggy" };
+        Equal(expectedIds.Length, packs.Count);
         foreach (string id in expectedIds)
         {
             ShaderPackEntry? entry = packs.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase));
@@ -31,6 +32,8 @@ public static class ShaderPackCatalogTests
             Require(entry!.LoadError is null, $"Built-in shader pack '{id}' failed to load: {entry.LoadError}");
             ShaderPackGraphValidator.Validate(entry.Spec);
         }
+        ShaderPackEntry foggy = packs.Single(p => string.Equals(p.Id, "foggy", StringComparison.OrdinalIgnoreCase));
+        Equal("Foggy (雾气)", foggy.Name);
 
         WithSlangLoaded(() =>
         {
@@ -108,6 +111,67 @@ public static class ShaderPackCatalogTests
             if (Directory.Exists(tempRoot))
                 Directory.Delete(tempRoot, recursive: true);
         }
+    }
+
+    [LumenFact]
+    public static void UnknownSelectedPackFallsBackToStandardWithOriginalIdAndPrunesStaleObjectShadows()
+    {
+        string packsRoot = Path.Combine(RepoRoot(), "1.7", "ShaderPacks");
+        IReadOnlyList<ShaderPackEntry> packs = ShaderPackCatalog.ScanRoots([(packsRoot, "内置")]);
+
+        foreach (string missingId in new[] { "cinematic", "vibrant", "atmospheric", "nonexistent-pack" })
+        {
+            var settings = new RimLumenSettings
+            {
+                SelectedShaderPackId = missingId,
+                ObjectShadowOverrides = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["default"] = false,
+                    ["crisp"] = false,
+                    ["foggy"] = true,
+                    ["cinematic"] = false,
+                    ["vibrant"] = true,
+                    ["atmospheric"] = false,
+                    ["nonexistent-pack"] = true,
+                },
+            };
+
+            ShaderPackEntry resolved = settings.ResolvePackSettings(packs, out string? missingPackId);
+            Equal("default", resolved.Id);
+            Equal("default", settings.SelectedShaderPackId);
+            Equal(missingId, missingPackId);
+            Equal(3, settings.ObjectShadowOverrides.Count);
+            Require(!settings.ObjectShadowOverrides["default"] && !settings.ObjectShadowOverrides["crisp"] && settings.ObjectShadowOverrides["foggy"],
+                "Valid pack overrides must survive pruning.");
+            Require(!settings.ObjectShadowOverrides.ContainsKey("cinematic")
+                && !settings.ObjectShadowOverrides.ContainsKey("vibrant")
+                && !settings.ObjectShadowOverrides.ContainsKey("atmospheric")
+                && !settings.ObjectShadowOverrides.ContainsKey("nonexistent-pack"),
+                "Stale ObjectShadowOverrides entries must be pruned.");
+        }
+
+        var validSettings = new RimLumenSettings { SelectedShaderPackId = "FOGGY" };
+        ShaderPackEntry foggyResolved = validSettings.ResolvePackSettings(packs, out string? validMissing);
+        Equal("foggy", foggyResolved.Id);
+        Equal("foggy", validSettings.SelectedShaderPackId);
+        Require(validMissing is null, $"Valid pack must not report missing id, got '{validMissing}'.");
+
+        var brokenEntry = new ShaderPackEntry("broken-pack", "Broken", "Author", "", "本地", null, ShaderPackSpec.Default,
+            Array.Empty<ShaderPackOptionDefinition>(), "syntax error");
+        var brokenSettings = new RimLumenSettings
+        {
+            SelectedShaderPackId = "broken-pack",
+            ObjectShadowOverrides = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["default"] = true,
+                ["broken-pack"] = false,
+            },
+        };
+        ShaderPackEntry brokenResolved = brokenSettings.ResolvePackSettings([ShaderPackCatalog.StandardEntry, brokenEntry], out string? brokenMissing);
+        Equal("default", brokenResolved.Id);
+        Equal("broken-pack", brokenMissing);
+        Equal(1, brokenSettings.ObjectShadowOverrides.Count);
+        Require(!brokenSettings.ObjectShadowOverrides.ContainsKey("broken-pack"), "Broken pack override must be discarded.");
     }
 
     [LumenFact]
