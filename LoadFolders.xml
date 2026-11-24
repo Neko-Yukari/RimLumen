@@ -3,6 +3,6 @@
   <v1.7>
     <li>/</li>
     <li>1.7</li>
-    <li IfModActive="Chezhou.RimUnity">1.7/Compat/RimUnity</li>
+    <li>1.7/Compat/RimUnity</li>
   </v1.7>
 </loadFolders>

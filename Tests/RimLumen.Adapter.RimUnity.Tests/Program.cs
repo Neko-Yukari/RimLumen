@@ -46,6 +46,7 @@ internal static class Program
             ("RimUnity same-root reload refreshes catalogs and translations", FileTests.Reload),
             ("RUTX DXT1/BC7 mips, gzip and malformed payloads", FileTests.Textures),
             ("Core assembly architectural independence", IntegrationTests.CoreIndependence),
+            ("RimUnity Map HDR notice session rule", NoticeTests.MapHdrNoticeRule),
         ];
         int passed = 0, failed = 0;
         foreach (var suite in suites)
