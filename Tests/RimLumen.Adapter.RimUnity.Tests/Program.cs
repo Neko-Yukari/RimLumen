@@ -56,6 +56,7 @@ internal static class Program
             (nameof(ExternalHdrRulesSuite.PipelineEligibilityGuardsDepthWriteStencilColorWriteSceneGrabAndQueueWindow), ExternalHdrRulesSuite.PipelineEligibilityGuardsDepthWriteStencilColorWriteSceneGrabAndQueueWindow),
             (nameof(ExternalHdrRulesSuite.MaterialFloatOverridesMirrorWaylithPipelineStateResolution), ExternalHdrRulesSuite.MaterialFloatOverridesMirrorWaylithPipelineStateResolution),
             (nameof(ExternalHdrRulesSuite.ColorSpaceShaderResolutionRequiresExactHdrOutputKeyInLinearMode), ExternalHdrRulesSuite.ColorSpaceShaderResolutionRequiresExactHdrOutputKeyInLinearMode),
+            (nameof(ExternalHdrRulesSuite.KeyInfoNormalizationAndDynamicRegistryInvalidationStayConsistent), ExternalHdrRulesSuite.KeyInfoNormalizationAndDynamicRegistryInvalidationStayConsistent),
             (nameof(ExternalHdrRulesSuite.ShaderNamesDetermineEmissionAcrossMaterialValuesAndOverrides), ExternalHdrRulesSuite.ShaderNamesDetermineEmissionAcrossMaterialValuesAndOverrides),
             (nameof(ExternalHdrRulesSuite.AlphaClampRewriterHandlesLinearProgramsAndPlainShadersWhileRejectingUnsafeShaders), ExternalHdrRulesSuite.AlphaClampRewriterHandlesLinearProgramsAndPlainShadersWhileRejectingUnsafeShaders),
             ("HDR shader name: bright AlphaBack smoke stays on map", ShaderNameTests.BrightSmoke),

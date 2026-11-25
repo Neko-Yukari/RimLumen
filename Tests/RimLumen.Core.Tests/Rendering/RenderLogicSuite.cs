@@ -377,6 +377,19 @@ public static class RenderLogicSuite
         public void RecordHdrDraws(in LumenHdrDrawContext context) { }
     }
 
+    [LumenFact]
+    public static void SceneColorSnapshotSkipsOnlyBuiltInDefaultLegacyWithoutDistortion()
+    {
+        Equal(false, SceneColorSnapshot.NeedsSnapshot(isDefaultPack: true, LumenColorBlendSpace.Legacy, hasDistortion: false));
+        Equal(true, SceneColorSnapshot.NeedsSnapshot(isDefaultPack: true, LumenColorBlendSpace.Legacy, hasDistortion: true));
+        Equal(true, SceneColorSnapshot.NeedsSnapshot(isDefaultPack: true, LumenColorBlendSpace.Linear, hasDistortion: false));
+        Equal(true, SceneColorSnapshot.NeedsSnapshot(isDefaultPack: true, LumenColorBlendSpace.Linear, hasDistortion: true));
+        Equal(true, SceneColorSnapshot.NeedsSnapshot(isDefaultPack: false, LumenColorBlendSpace.Legacy, hasDistortion: false));
+        Equal(true, SceneColorSnapshot.NeedsSnapshot(isDefaultPack: false, LumenColorBlendSpace.Legacy, hasDistortion: true));
+        Equal(true, SceneColorSnapshot.NeedsSnapshot(isDefaultPack: false, LumenColorBlendSpace.Linear, hasDistortion: false));
+        Equal(true, SceneColorSnapshot.NeedsSnapshot(isDefaultPack: false, LumenColorBlendSpace.Linear, hasDistortion: true));
+    }
+
     private static void Equal<T>(T expected, T actual)
     {
         if (!Equals(expected, actual))

@@ -276,11 +276,26 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         reservedCapacity += spec.MaxParticles;
         if (particles.Length < reservedCapacity)
         {
-            Array.Resize(ref particles, reservedCapacity);
-            Array.Resize(ref vertices, checked(reservedCapacity * 4));
-            Array.Resize(ref indices, checked(reservedCapacity * 6));
+            int next = GrowCapacity(particles.Length, reservedCapacity);
+            int minVertices = checked(next * 4);
+            int minIndices = checked(next * 6);
+            Array.Resize(ref particles, next);
+            if (vertices.Length < minVertices) Array.Resize(ref vertices, minVertices);
+            if (indices.Length < minIndices) Array.Resize(ref indices, minIndices);
         }
         return id;
+    }
+
+    internal const int MaxIndexableCapacity = int.MaxValue / 6;
+
+    // Ensures: 2x geometric growth at least required, capped at MaxIndexableCapacity so doubling never causes a
+    //          spurious index-count overflow while still letting checked(next * 6) throw if required exceeds it.
+    internal static int GrowCapacity(int current, int required)
+    {
+        if (current >= required) return current;
+        long doubled = (long)current * 2L;
+        long capped = Math.Min(doubled, MaxIndexableCapacity);
+        return capped >= required ? (int)capped : required;
     }
 
     // Ensures: updates the emitter transform used for spawn shapes and (for local-space emitters)

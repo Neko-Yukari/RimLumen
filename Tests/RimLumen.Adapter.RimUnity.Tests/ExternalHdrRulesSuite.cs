@@ -521,6 +521,56 @@ public static class ExternalHdrRulesSuite
         return bytes;
     }
 
+    public static void KeyInfoNormalizationAndDynamicRegistryInvalidationStayConsistent()
+    {
+        // Suffix stripping follows exact order: _HdrOutput -> _GpuSkin -> _Linear.
+        var full = ExternalHdrMaterialRules.GetKeyInfo("RimUnity_WorldParticleAdditive_Linear_GpuSkin_HdrOutput");
+        Equal("RimUnity_WorldParticleAdditive", full.BaseKey);
+        Equal("RimUnity_WorldParticleAdditive_Linear_GpuSkin_HdrOutput_HdrOutput", full.LinearTargetKey);
+        Equal(true, full.IsStaticEmissive);
+        Equal(true, full.HasSuffix);
+
+        var gpuSkinLinear = ExternalHdrMaterialRules.GetKeyInfo("RimUnity_WorldParticleAdditive_GpuSkin_Linear");
+        // _Linear strips after _GpuSkin, so _GpuSkin remains when ordered _GpuSkin_Linear; matches prior EndsWith order.
+        Equal("RimUnity_WorldParticleAdditive_GpuSkin", gpuSkinLinear.BaseKey);
+        Equal(false, gpuSkinLinear.IsStaticEmissive);
+        Equal(true, gpuSkinLinear.HasSuffix);
+
+        var bare = ExternalHdrMaterialRules.GetKeyInfo("RimUnity_ParticleAdditive");
+        Equal("RimUnity_ParticleAdditive", bare.BaseKey);
+        Equal("RimUnity_ParticleAdditive_HdrOutput", bare.LinearTargetKey);
+        Equal(true, bare.IsStaticEmissive);
+        Equal(false, bare.HasSuffix);
+
+        var nonWhitelist = ExternalHdrMaterialRules.GetKeyInfo("RimUnity_StandardParticle2_Linear");
+        Equal("RimUnity_StandardParticle2", nonWhitelist.BaseKey);
+        Equal("RimUnity_StandardParticle2_Linear_HdrOutput", nonWhitelist.LinearTargetKey);
+        Equal(false, nonWhitelist.IsStaticEmissive);
+        Equal(true, nonWhitelist.HasSuffix);
+
+        // Caching immutable key metadata must never cache mutable shader resolution or compatibility across replacements.
+        var layoutA = new object();
+        var layoutB = new object();
+        var source = new FakeShader("Mod.Dynamic.Glow", layoutA, HasErrors: false, HasSceneGrab: false);
+        var targetV1 = new FakeShader("Mod.Dynamic.Glow_HdrOutput", layoutA, HasErrors: false, HasSceneGrab: false);
+        var targetV2BadLayout = new FakeShader("Mod.Dynamic.Glow_HdrOutput", layoutB, HasErrors: false, HasSceneGrab: false);
+        var targetV3Good = new FakeShader("Mod.Dynamic.Glow_HdrOutput", layoutA, HasErrors: false, HasSceneGrab: false);
+        FakeShader? current = targetV1;
+        static bool Compatible(FakeShader s, FakeShader c) => !c.HasErrors && !c.HasSceneGrab && ReferenceEquals(s.Layout, c.Layout);
+
+        Require(ExternalHdrMaterialRules.TryResolveShaderForBlendSpace<FakeShader>(source, source.Key, false, false,
+            LumenColorBlendSpace.Linear, _ => current, static s => s.Key, Compatible, out FakeShader r1) && ReferenceEquals(r1, targetV1),
+            "First dynamic resolve must return v1.");
+        current = targetV2BadLayout;
+        Require(!ExternalHdrMaterialRules.TryResolveShaderForBlendSpace<FakeShader>(source, source.Key, false, false,
+            LumenColorBlendSpace.Linear, _ => current, static s => s.Key, Compatible, out _),
+            "Replacing registered shader with incompatible layout must be rejected dynamically.");
+        current = targetV3Good;
+        Require(ExternalHdrMaterialRules.TryResolveShaderForBlendSpace<FakeShader>(source, source.Key, false, false,
+            LumenColorBlendSpace.Linear, _ => current, static s => s.Key, Compatible, out FakeShader r3) && ReferenceEquals(r3, targetV3Good),
+            "Replacing registered shader with a fresh compatible object must return the new instance.");
+    }
+
     private sealed record FakeShader(string Key, object Layout, bool HasErrors, bool HasSceneGrab);
 
     private static Material NamedMaterial(string name, params MaterialUniformSlot[] slots)

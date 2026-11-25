@@ -148,7 +148,14 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         HdrTargets.Slot slot = owner.Targets.Ensure(ctx.SubmissionFrameIndex, scene, payload.BloomMipLevels);
         ctx.CommandBuffer.BeginDebugLabel("RimLumen/MapSplit\0"u8, new float4(1f, 0.5f, 0f, 1f));
         labelOpen = true;
-        SceneColorSnapshot.Record(ctx.CommandBuffer, scene, slot.SceneSnapshot);
+        ShaderPackSpec pack = owner.ShaderPack.Spec;
+        RenderTexture? sceneSnapshot = null;
+        if (SceneColorSnapshot.NeedsSnapshot(RimLumenRenderHost.IsDefaultShaderPack(pack), payload.ColorBlendSpace,
+            payload.DistortionMesh is not null))
+        {
+            sceneSnapshot = owner.Targets.EnsureSceneSnapshot(slot);
+            SceneColorSnapshot.Record(ctx.CommandBuffer, scene, sceneSnapshot);
+        }
         if (payload.HasSceneDepth)
         {
             HdrDepthSnapshot.Record(in ctx, scene, slot.DepthSnapshot, depthCopy);
@@ -187,16 +194,15 @@ internal sealed class RimLumenMapChain(RimLumenPipeline owner) : IDisposable
         RenderTexture hdrSource = slot.Color;
         RenderTexture? distortion = payload.DistortionMesh is { } offsets
             ? (distortionPass ??= new DistortionPass(owner.App)).Record(in ctx, offsets, scene) : null;
-        ShaderPackSpec pack = owner.ShaderPack.Spec;
         try
         {
-            owner.ShaderPack.RecordOffscreen(in ctx, slot, hdrSource, slot.SceneSnapshot, distortion, lightSum, in uniforms,
+            owner.ShaderPack.RecordOffscreen(in ctx, slot, hdrSource, sceneSnapshot, scene.Width, scene.Height, distortion, lightSum, in uniforms,
                 payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
             FrameContext composite = attachment.MakeFrameContext(in ctx);
             BeginPass(in composite, clear: false, ref renderPassOpen);
             try
             {
-                owner.ShaderPack.RecordComposite(in composite, slot, hdrSource, slot.SceneSnapshot, distortion, lightSum, in uniforms,
+                owner.ShaderPack.RecordComposite(in composite, slot, hdrSource, sceneSnapshot, scene.Width, scene.Height, distortion, lightSum, in uniforms,
                     payload.HasHdrDraws, payload.HasGlowDraws, payload.HasSceneDepth);
             }
             finally { EndPass(in composite, ref renderPassOpen); }

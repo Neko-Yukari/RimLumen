@@ -16,7 +16,8 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         // Vanilla/third-party additive copies: bloom and pack input only, never part of the composite core term.
         internal RenderTexture Glow = null!;
         internal RenderTexture DepthSnapshot = null!;
-        internal RenderTexture SceneSnapshot = null!;
+        // Allocated lazily per submission slot on the first frame that needs a scene colour snapshot.
+        internal RenderTexture? SceneSnapshot;
         // Linear sum of the frame's light pools; allocated on the first frame that has any.
         internal RenderTexture? LightSum;
         internal VkFramebuffer LightSumFramebuffer;
@@ -74,8 +75,6 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
                     slot.Color = Make(width, height, $"RimLumen.Hdr.{frame}");
                     slot.Glow = Make(width, height, $"RimLumen.Glow.{frame}");
                     slot.DepthSnapshot = MakeDepthSnapshot(width, height, $"RimLumen.DepthSnapshot.{frame}");
-                    slot.SceneSnapshot = new RenderTexture(width, height, sceneFormat, name: $"RimLumen.SceneSnapshot.{frame}");
-                    slot.SceneSnapshot.Create();
                     slot.Down = new RenderTexture[sizes.Length];
                     slot.Up = new RenderTexture[Math.Max(0, sizes.Length - 1)];
                     for (int level = 0; level < sizes.Length; level++)
@@ -102,6 +101,11 @@ internal sealed class HdrTargets(EngineApplication app) : IDisposable
         }
         return result;
     }
+
+    // Requires: Ensure returned this slot for the current scene in this submission.
+    // Ensures: the slot owns a full-size scene colour snapshot retired with the other slot targets.
+    internal RenderTexture EnsureSceneSnapshot(Slot slot) =>
+        slot.SceneSnapshot ??= Make(width, height, sceneFormat, $"RimLumen.SceneSnapshot.{Array.IndexOf(Slots, slot)}");
 
     // Requires: Ensure returned this slot for the current scene in this submission.
     // Ensures: the slot owns a full-size RGBA16F light-pool target and its framebuffer over the slot's scene depth,

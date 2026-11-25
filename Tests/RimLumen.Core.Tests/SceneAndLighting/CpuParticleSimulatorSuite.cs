@@ -1061,6 +1061,51 @@ public static class CpuParticleSimulatorSuite
         -forward.X, -forward.Y, -forward.Z, 0f,
         0f, 0f, 0f, 1f);
 
+    [LumenFact]
+    public static void GeometricCapacityGrowthPreservesTrailExpandedBuffersAndIndexBounds()
+    {
+        Check(CpuParticleSimulator.GrowCapacity(0, 32) == 32, "Initial growth takes required");
+        Check(CpuParticleSimulator.GrowCapacity(32, 32) == 32, "Sufficient capacity stays unchanged");
+        Check(CpuParticleSimulator.GrowCapacity(32, 33) == 64, "Small step doubles capacity");
+        Check(CpuParticleSimulator.GrowCapacity(32, 100) == 100, "Large jump above 2x takes required");
+        Check(CpuParticleSimulator.GrowCapacity(200_000_000, 250_000_000) == CpuParticleSimulator.MaxIndexableCapacity,
+            "Doubling caps at MaxIndexableCapacity instead of triggering spurious index overflow");
+        Check(CpuParticleSimulator.GrowCapacity(200_000_000, CpuParticleSimulator.MaxIndexableCapacity + 1)
+            == CpuParticleSimulator.MaxIndexableCapacity + 1,
+            "Required above MaxIndexableCapacity still surfaces to checked index arithmetic");
+
+        // Trails expand vertices/indices well beyond MaxParticles*4; subsequent AcquireEmitter growth must not shrink them.
+        var sim = new CpuParticleSimulator(7);
+        var trailEmitter = new EmitterSpec
+        {
+            Name = "trails", MaxParticles = 8, Duration = 10f, Looping = true,
+            Bursts = new[] { new ParticleBurstSpec(0f, 8) },
+            StartLifetimeMin = 5f, StartLifetimeMax = 5f, StartSpeedMin = 4f, StartSpeedMax = 4f,
+            Trails = new ParticleTrailSpec { Lifetime = 0.5f, MinVertexDistance = 0.05f, MaxPoints = 16 },
+        };
+        sim.AcquireEmitter(trailEmitter, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u);
+        for (ulong f = 1; f <= 20; f++) Step(sim, 0.05f, frameIndex: f);
+        int trailVerticesBefore = sim.Vertices.Length;
+        int trailIndicesBefore = sim.Indices.Length;
+        Check(trailVerticesBefore > 8 * 4 && trailIndicesBefore > 8 * 6, "Trails should expand vertex/index output beyond particle quads");
+
+        // Grow reservedCapacity from 8 -> 16 (minVertices = 64 < trailVerticesBefore): backing arrays must not shrink
+        // before CaptureMainThread rebuilds the batch, or existing Vertices/Indices spans would throw or truncate.
+        sim.AcquireEmitter(new EmitterSpec { Name = "small-grow", MaxParticles = 8, StartLifetimeMin = 5f, StartLifetimeMax = 5f },
+            new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 2u);
+        Check(sim.Vertices.Length == trailVerticesBefore && sim.Indices.Length == trailIndicesBefore,
+            "AcquireEmitter growth must not shrink trail-expanded vertex/index buffers before next CaptureMainThread");
+        _ = sim.Vertices[trailVerticesBefore - 1];
+        _ = sim.Indices[trailIndicesBefore - 1];
+
+        for (int i = 0; i < 40; i++)
+            sim.AcquireEmitter(new EmitterSpec { Name = "burst", MaxParticles = 8, StartLifetimeMin = 5f, StartLifetimeMax = 5f },
+                new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), (uint)(i + 3));
+        Step(sim, 0.05f, frameIndex: 21);
+        Check(sim.LiveParticleCount == 8 && sim.Vertices.Length >= trailVerticesBefore,
+            "Subsequent geometric emitter growth must keep trail vertex/index data intact");
+    }
+
     private static void Step(CpuParticleSimulator simulator, float dt, Matrix4x4? view = null, int mapIndex = -1, ulong frameIndex = 0)
     {
         simulator.CaptureMainThread(new LumenCaptureContext

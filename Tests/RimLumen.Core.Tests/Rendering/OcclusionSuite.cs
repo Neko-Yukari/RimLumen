@@ -253,6 +253,48 @@ public static class OcclusionSuite
         Require(incremental.Coarse.AsSpan().SequenceEqual(expected.Coarse), "Coarse texels differ from a full rebuild.");
     }
 
+    [LumenFact]
+    public static void ConvexCornerVisibilitySelectsBetterFaceAndPreservesSolidCoverSeparation()
+    {
+        // 3x3 block [5, 7]^2 lit from SW (3.5, 3.5): corner (5, 5) has both W (x=4.875) and S (z=4.875) faces free.
+        // Case 1: Asymmetric cover (W=0.75 heavier than S=0.25) -> Z face has larger solid*cover and wins, keeping solid=1 & cover=coverS.
+        var asym = new OcclusionBuilder(12, 12);
+        asym.Wall(new CellBox(5, 5, 7, 7));
+        asym.Cover(Full, new MaskPlacement(4.5f, 5.5f, 1f, 1f), 0.75f);
+        asym.Cover(Full, new MaskPlacement(5.5f, 4.5f, 1f, 1f), 0.25f);
+        OcclusionFrame asymFrame = Frame(asym);
+        var light = new Vector2(3.5f, 3.5f);
+        var target = new Vector2(5.25f, 5.25f);
+        float solidW = LightTransport.Visibility(asymFrame, light, new Vector2(4.875f, target.Y), out float coverW);
+        float solidS = LightTransport.Visibility(asymFrame, light, new Vector2(target.X, 4.875f), out float coverS);
+        float solid = LightTransport.Visibility(asymFrame, light, target, out float cover);
+        Require(solidS * coverS > solidW * coverW && coverS < 1f && solidS == 1f,
+            $"Expected S face to beat W face with separated solid/cover; W=({solidW},{coverW}), S=({solidS},{coverS}).");
+        Equal(solidS, solid);
+        Equal(coverS, cover);
+
+        // Case 2: Symmetric 0.5 cover -> equal partial solid*cover across both free faces.
+        var sym = new OcclusionBuilder(12, 12);
+        sym.Wall(new CellBox(5, 5, 7, 7));
+        sym.Cover(Full, new MaskPlacement(4.5f, 5.5f, 1f, 1f), 0.5f);
+        sym.Cover(Full, new MaskPlacement(5.5f, 4.5f, 1f, 1f), 0.5f);
+        OcclusionFrame symFrame = Frame(sym);
+        float symW = LightTransport.Visibility(symFrame, light, new Vector2(4.875f, target.Y), out float symCoverW);
+        float symS = LightTransport.Visibility(symFrame, light, new Vector2(target.X, 4.875f), out float symCoverS);
+        float symSolid = LightTransport.Visibility(symFrame, light, target, out float symCover);
+        Equal(symW * symCoverW, symS * symCoverS);
+        Equal(symW, symSolid);
+        Equal(symCoverW, symCover);
+
+        // Case 3: Unobstructed corner hits full (1, 1) on X face and breaks before evaluating Z.
+        var clearBuilder = new OcclusionBuilder(12, 12);
+        clearBuilder.Wall(new CellBox(5, 5, 7, 7));
+        OcclusionFrame clearFrame = Frame(clearBuilder);
+        float clearSolid = LightTransport.Visibility(clearFrame, light, target, out float clearCover);
+        Equal(1f, clearSolid);
+        Equal(1f, clearCover);
+    }
+
     private sealed record FakeThing(CellBox Occupied, MaskPlacement Art, bool Solid, bool Linked = false);
 
     private sealed class FakeMap(params FakeThing[] things) : IOcclusionSource<FakeThing>

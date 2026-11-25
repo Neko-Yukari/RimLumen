@@ -8,7 +8,7 @@ bool lumenInside(ivec2 p, ivec2 size) { return all(greaterThanEqual(p, ivec2(0))
 float lumenDoorOpacityWithState(ivec2 p, float value, int flags, vec4 door)
 {
     bool axisZ = (flags & 2) != 0;
-    float local = (float((axisZ ? p.y : p.x) % 4) + 0.5) * 0.25;
+    float local = (float((axisZ ? p.y : p.x) & 3) + 0.5) * 0.25;
     float index = round(door.g * 255.0);
     float width = round(door.b * 255.0);
     float u = (index + local) / width - 0.5;
@@ -18,7 +18,7 @@ float lumenDoorOpacityWithState(ivec2 p, float value, int flags, vec4 door)
 float lumenDoorOpacity(ivec2 p, float value, int flags)
 {
     if ((flags & 1) == 0) return value;
-    return lumenDoorOpacityWithState(p, value, flags, texelFetch(_LumenDoorOpen, p / 4, 0));
+    return lumenDoorOpacityWithState(p, value, flags, texelFetch(_LumenDoorOpen, p >> 2, 0));
 }
 
 // OcclusionLayout.DecodeDistance: B as the signed distance in texels, positive inside.
@@ -114,7 +114,7 @@ void lumenSample(vec2 p, bool doors, out float solid, out float cover)
         int flag = int(round(flags[i] * 255.0));
         if (doors && (flag & 1) != 0)
         {
-            ivec2 cell = points[i] / 4;
+            ivec2 cell = points[i] >> 2;
             int found = -1;
             for (int j = 0; j < doorCount; j++) if (doorCells[j] == cell) { found = j; break; }
             if (found < 0)
@@ -182,7 +182,7 @@ float lumenTransport(vec2 light, vec2 target, out float cover)
                 solidVisibility = min(solidVisibility, min(pendingSolid, 1.0 - s));
                 pendingSolid = 1.0;
             }
-            coverVisibility *= pow(1.0 - o, ds);
+            if (o > 0.0) coverVisibility *= pow(1.0 - o, ds);
             if (solidVisibility * coverVisibility < 1.0 / 255.0) return 0.0;
         }
         distance = end;
@@ -191,31 +191,40 @@ float lumenTransport(vec2 light, vec2 target, out float cover)
     return min(solidVisibility, lightRun > 0.0 ? 1.0 : pendingSolid);
 }
 
-bool lumenFace(vec2 light, vec2 face, inout float best, inout float bestCover)
-{
-    if (lumenSolid(face)) return false;
-    float cover;
-    float solid = lumenTransport(light, face, cover);
-    if (solid * cover <= best * bestCover) return true;
-    best = solid;
-    bestCover = cover;
-    return true;
-}
-
 // LightTransport.Visibility: returns the solid term, cover receives the cover term. A target on a solid texel takes the
 // better of the points half a texel outside its cell's light-facing free edges, level with it; when both edges face
 // the light and neither is free, the point half a texel outside the corner between them (an inner corner); else 0.
 float lightVisibility(vec2 light, vec2 target, out float cover)
 {
-    if (!lumenSolid(target)) return lumenTransport(light, target, cover);
-    vec2 cell = floor(target);
+    vec2 candidates[2];
+    int count = 0;
+    if (!lumenSolid(target))
+    {
+        candidates[count++] = target;
+    }
+    else
+    {
+        vec2 cell = floor(target);
+        vec2 face = vec2(light.x > cell.x ? cell.x + 1.125 : cell.x - 0.125, light.y > cell.y ? cell.y + 1.125 : cell.y - 0.125);
+        bool facesX = light.x > cell.x + 1.0 || light.x < cell.x, facesZ = light.y > cell.y + 1.0 || light.y < cell.y;
+        vec2 cx = vec2(face.x, target.y), cz = vec2(target.x, face.y);
+        if (facesX && !lumenSolid(cx)) candidates[count++] = cx;
+        if (facesZ && !lumenSolid(cz)) candidates[count++] = cz;
+        if (count == 0 && facesX && facesZ && !lumenSolid(face)) candidates[count++] = face;
+    }
     float best = 0.0;
-    vec2 face = vec2(light.x > cell.x ? cell.x + 1.125 : cell.x - 0.125, light.y > cell.y ? cell.y + 1.125 : cell.y - 0.125);
-    bool facesX = light.x > cell.x + 1.0 || light.x < cell.x, facesZ = light.y > cell.y + 1.0 || light.y < cell.y;
     cover = 0.0;
-    bool freeX = facesX && lumenFace(light, vec2(face.x, target.y), best, cover);
-    bool freeZ = facesZ && lumenFace(light, vec2(target.x, face.y), best, cover);
-    if (facesX && facesZ && !freeX && !freeZ) lumenFace(light, face, best, cover);
+    for (int i = 0; i < count; i++)
+    {
+        float c;
+        float s = lumenTransport(light, candidates[i], c);
+        if (s * c > best * cover)
+        {
+            best = s;
+            cover = c;
+            if (best * cover >= 1.0) break;
+        }
+    }
     return best;
 }
 

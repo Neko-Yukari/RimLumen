@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using RimLumen.Core.Contracts;
 using Waylith.Rendering;
@@ -181,7 +182,7 @@ internal static class ExternalHdrMaterialRules
             return false;
         }
 
-        string expectedKey = sourceKey + LinearShaderKeySuffix;
+        string expectedKey = GetKeyInfo(sourceKey).LinearTargetKey;
         TShader? candidate = resolveByKey(expectedKey);
         // ShaderRegistry.TryResolve falls back to NormalizePath (which truncates at '.'); require exact key match.
         if (candidate is null
@@ -229,20 +230,44 @@ internal static class ExternalHdrMaterialRules
         "RimUnity_Custom_4a9538a51376368d7aefbcf07e0f773b843d010d4c1320119fba7b8eac9d0f91_62ce6ceea0d3243a2dd3aec7975393ded0084d496726d555095f10c55125a8f3",
     };
 
-    internal static bool IsEmissiveShader(Shader shader)
+    internal sealed record ShaderKeyInfo(string BaseKey, string LinearTargetKey, bool IsStaticEmissive, bool HasSuffix);
+
+    private const int MaxCachedKeys = 4096;
+    private static readonly ConcurrentDictionary<string, ShaderKeyInfo> KeyCache = new(StringComparer.Ordinal);
+
+    // Pure immutable key metadata: normalized base key, exact _HdrOutput key, and static whitelist hit.
+    // Never caches mutable Shader objects, layouts, error state or bindings (Shader.ReloadLayouts / ShaderRegistry.Register).
+    internal static ShaderKeyInfo GetKeyInfo(string key)
     {
-        string key = shader.Key;
+        if (KeyCache.TryGetValue(key, out ShaderKeyInfo? cached)) return cached;
+        ShaderKeyInfo computed = ComputeKeyInfo(key);
+        if (KeyCache.Count < MaxCachedKeys) KeyCache.TryAdd(key, computed);
+        return computed;
+    }
+
+    private static ShaderKeyInfo ComputeKeyInfo(string key)
+    {
         string baseKey = key;
         if (baseKey.EndsWith(LinearShaderKeySuffix, StringComparison.Ordinal)) baseKey = baseKey[..^LinearShaderKeySuffix.Length];
         if (baseKey.EndsWith("_GpuSkin", StringComparison.Ordinal)) baseKey = baseKey[..^"_GpuSkin".Length];
         if (baseKey.EndsWith("_Linear", StringComparison.Ordinal)) baseKey = baseKey[..^"_Linear".Length];
-        if (EmissiveShaderNames.Contains(baseKey)) return true;
-        if (baseKey != key)
+        return new ShaderKeyInfo(
+            baseKey,
+            key + LinearShaderKeySuffix,
+            EmissiveShaderNames.Contains(baseKey),
+            !ReferenceEquals(baseKey, key));
+    }
+
+    internal static bool IsEmissiveShader(Shader shader)
+    {
+        ShaderKeyInfo info = GetKeyInfo(shader.Key);
+        if (info.IsStaticEmissive) return true;
+        if (info.HasSuffix)
         {
-            if (!ShaderRegistry.TryResolve(baseKey, out Shader? original) || original.Key != baseKey) return false;
+            if (!ShaderRegistry.TryResolve(info.BaseKey, out Shader? original) || original.Key != info.BaseKey) return false;
             shader = original;
         }
-        return EmissiveShaderNames.Contains(global::RimUnity.Shader.FromEngineShader(baseKey, shader).name);
+        return EmissiveShaderNames.Contains(global::RimUnity.Shader.FromEngineShader(info.BaseKey, shader).name);
     }
 
     internal static bool IsMaterialEligible(Material material, LumenColorBlendSpace blendSpace)

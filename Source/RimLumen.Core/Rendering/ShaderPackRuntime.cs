@@ -153,13 +153,17 @@ internal sealed class ShaderPackRuntime : IDisposable
             uniformBinding: 5);
     }
 
+    // scene: same-frame scene colour snapshot, or null when skipped (built-in default pack + Legacy + no distortion);
+    //        when null, a valid sampleable black placeholder is bound while sceneWidth/sceneHeight carry the real extent.
     // distortion: this frame's DistortionPass target, null when the frame has no distortion draws.
     // lightSum: this record's light-pool sum, null when the record wrote none (uniforms.LayerFlags.y says which).
     internal void RecordOffscreen(
         in FrameContext ctx,
         HdrTargets.Slot slot,
         RenderTexture hdrSource,
-        RenderTexture scene,
+        RenderTexture? scene,
+        int sceneWidth,
+        int sceneHeight,
         RenderTexture? distortion,
         RenderTexture? lightSum,
         in ShaderPackUniforms uniforms,
@@ -167,14 +171,15 @@ internal sealed class ShaderPackRuntime : IDisposable
         bool hasGlowDraws,
         bool hasSceneDepth)
     {
-        EnsurePlaceholdersAndTargets(ctx.CommandBuffer, scene.Width, scene.Height);
+        EnsurePlaceholdersAndTargets(ctx.CommandBuffer, sceneWidth, sceneHeight);
 
+        RenderTexture sceneTex = scene ?? black1x1!;
         RenderTexture depthTex = hasSceneDepth ? slot.DepthSnapshot : depth1x1!;
         RenderTexture glowTex = hasGlowDraws ? slot.Glow : black1x1!;
         bool skipBuiltInBloom = plan.BloomMipLevels == 0 || (!hasHdrDraws && !plan.HasCustomBloomShader);
 
         if (!skipBuiltInBloom && slot.Down.Length > 0)
-            RecordBloom(in ctx, slot, in uniforms, bloomDown, bloomUp, hdrSource, glowTex, scene, depthTex);
+            RecordBloom(in ctx, slot, in uniforms, bloomDown, bloomUp, hdrSource, glowTex, sceneTex, depthTex);
 
         RenderTexture bloomTex = skipBuiltInBloom || slot.Bloom is null ? black1x1! : slot.Bloom;
         RenderTexture distortionTex = distortion ?? black1x1!;
@@ -187,7 +192,7 @@ internal sealed class ShaderPackRuntime : IDisposable
             PostEffectPass pass = customOffscreenPasses[i];
             foreach (PlannedInput input in passSpec.Inputs)
             {
-                BindInputSource(pass, input, hdrSource, glowTex, bloomTex, scene, depthTex, distortionTex, lightSumTex,
+                BindInputSource(pass, input, hdrSource, glowTex, bloomTex, sceneTex, depthTex, distortionTex, lightSumTex,
                     ctx.SubmissionFrameIndex, writeOrdinal);
             }
             pass.SetUniforms(in uniforms);
@@ -254,7 +259,9 @@ internal sealed class ShaderPackRuntime : IDisposable
         in FrameContext ctx,
         HdrTargets.Slot slot,
         RenderTexture hdrSource,
-        RenderTexture scene,
+        RenderTexture? scene,
+        int sceneWidth,
+        int sceneHeight,
         RenderTexture? distortion,
         RenderTexture? lightSum,
         in ShaderPackUniforms uniforms,
@@ -262,6 +269,7 @@ internal sealed class ShaderPackRuntime : IDisposable
         bool hasGlowDraws,
         bool hasSceneDepth)
     {
+        RenderTexture sceneTex = scene ?? black1x1!;
         RenderTexture depthTex = hasSceneDepth ? slot.DepthSnapshot : depth1x1!;
         RenderTexture glowTex = hasGlowDraws ? slot.Glow : black1x1!;
         bool skipBuiltInBloom = plan.BloomMipLevels == 0 || (!hasHdrDraws && !plan.HasCustomBloomShader);
@@ -272,13 +280,13 @@ internal sealed class ShaderPackRuntime : IDisposable
         PlannedPass finalSpec = plan.Passes[^1];
         foreach (PlannedInput input in finalSpec.Inputs)
         {
-            BindInputSource(compositePass, input, hdrSource, glowTex, bloomTex, scene, depthTex, distortionTex, lightSumTex,
+            BindInputSource(compositePass, input, hdrSource, glowTex, bloomTex, sceneTex, depthTex, distortionTex, lightSumTex,
                 ctx.SubmissionFrameIndex, lastRenderedPersistentOrdinal);
         }
         compositePass.SetUniforms(in uniforms);
         Vector4 finalPc = finalSpec.UsesBuiltInComposite
             ? new Vector4(uniforms.BloomParams.X, 0f, 0f, 0f)
-            : new Vector4(1f / scene.Width, 1f / scene.Height, finalSpec.ExtraParams.X, finalSpec.ExtraParams.Y);
+            : new Vector4(1f / sceneWidth, 1f / sceneHeight, finalSpec.ExtraParams.X, finalSpec.ExtraParams.Y);
         compositePass.SetPushConstants(in finalPc);
         compositePass.RecordInline(in ctx, ctx.RenderPass, ctx.SampleCount);
     }

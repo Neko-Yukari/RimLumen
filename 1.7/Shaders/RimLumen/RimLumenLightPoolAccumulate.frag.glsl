@@ -41,19 +41,16 @@ void main()
         falloff = q * q;
         rgb = uMaterial._LumenLight.rgb * falloff;
     }
-    float visibility = 0.0;
-    if (falloff > 0.0)
+    if (falloff <= 0.0) discard;
+    float visibility = 1.0;
+    if (uMaterial._LumenLight.a > 0.5)
     {
-        if (uMaterial._LumenLight.a > 0.5)
-        {
-            float cover;
-            float solid = lightVisibility(uMaterial._LumenLightAt.xy, vWorldPos.xz, cover);
-            visibility = min(solid, 1.0 - lumenObjectShadow(_LumenObjectShadow, uMaterial._LumenShadowChannel)) * cover;
-        }
-        else
-        {
-            visibility = 1.0;
-        }
+        float objVis = 1.0 - lumenObjectShadow(_LumenObjectShadow, uMaterial._LumenShadowChannel);
+        if (objVis <= 0.0) discard;
+        float cover;
+        float solid = lightVisibility(uMaterial._LumenLightAt.xy, vWorldPos.xz, cover);
+        visibility = min(solid, objVis) * cover;
+        if (visibility <= 0.0) discard;
     }
     outColor = vec4(rgb * visibility, 0.0);
 }

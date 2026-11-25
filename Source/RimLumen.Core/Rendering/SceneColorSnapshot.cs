@@ -1,11 +1,18 @@
 using System;
 using Brutal.VulkanApi;
+using RimLumen.Core.Contracts;
 using Waylith.Rendering;
 
 namespace RimLumen.Core.Rendering;
 
 internal static class SceneColorSnapshot
 {
+    // Built-in default pack in Legacy mode without distortion never samples sceneImage
+    // (RimLumenBloomPrefilter.frag.glsl omits it; RimLumenComposite.frag.glsl returns before reading it when sceneUv == uv).
+    // Any custom pack, Linear blend space, or active distortion still requires the same-frame scene colour snapshot.
+    internal static bool NeedsSnapshot(bool isDefaultPack, LumenColorBlendSpace colorBlendSpace, bool hasDistortion) =>
+        !isDefaultPack || colorBlendSpace != LumenColorBlendSpace.Legacy || hasDistortion;
+
     internal static void Record(CommandBuffer cmd, RenderTexture scene, RenderTexture target)
     {
         VkImageLayout previous = target.Color.CurrentLayout;

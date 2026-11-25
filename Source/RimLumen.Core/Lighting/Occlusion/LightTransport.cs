@@ -54,26 +54,46 @@ internal static class LightTransport
     //          the ground just in front of its free face or corner, and the cells behind it stay dark.
     internal static float Visibility(in OcclusionFrame frame, Vector2 light, Vector2 target, out float cover)
     {
-        if (!Solid(frame, target)) return Transport(frame, light, target, out cover);
-        float cellX = MathF.Floor(target.X), cellZ = MathF.Floor(target.Y), best = 0f;
-        float faceX = light.X > cellX ? cellX + 1.125f : cellX - 0.125f, faceZ = light.Y > cellZ ? cellZ + 1.125f : cellZ - 0.125f;
-        bool facesX = light.X > cellX + 1f || light.X < cellX, facesZ = light.Y > cellZ + 1f || light.Y < cellZ;
+        Vector2 c0 = default, c1 = default;
+        int count = 0;
+        if (!Solid(frame, target))
+        {
+            c0 = target;
+            count = 1;
+        }
+        else
+        {
+            float cellX = MathF.Floor(target.X), cellZ = MathF.Floor(target.Y);
+            float faceX = light.X > cellX ? cellX + 1.125f : cellX - 0.125f, faceZ = light.Y > cellZ ? cellZ + 1.125f : cellZ - 0.125f;
+            bool facesX = light.X > cellX + 1f || light.X < cellX, facesZ = light.Y > cellZ + 1f || light.Y < cellZ;
+            var cx = new Vector2(faceX, target.Y);
+            var cz = new Vector2(target.X, faceZ);
+            if (facesX && !Solid(frame, cx)) { c0 = cx; count = 1; }
+            if (facesZ && !Solid(frame, cz))
+            {
+                if (count == 0) c0 = cz;
+                else c1 = cz;
+                count++;
+            }
+            if (count == 0 && facesX && facesZ)
+            {
+                var corner = new Vector2(faceX, faceZ);
+                if (!Solid(frame, corner)) { c0 = corner; count = 1; }
+            }
+        }
+        float best = 0f;
         cover = 0f;
-        bool freeX = facesX && Face(frame, light, new Vector2(faceX, target.Y), ref best, ref cover);
-        bool freeZ = facesZ && Face(frame, light, new Vector2(target.X, faceZ), ref best, ref cover);
-        if (facesX && facesZ && !freeX && !freeZ) Face(frame, light, new Vector2(faceX, faceZ), ref best, ref cover);
+        for (int i = 0; i < count; i++)
+        {
+            float solid = Transport(frame, light, i == 0 ? c0 : c1, out float c);
+            if (solid * c > best * cover)
+            {
+                best = solid;
+                cover = c;
+                if (best * cover >= 1f) break;
+            }
+        }
         return best;
-    }
-
-    // Ensures: whether face is free (not solid); a free face's solid * cover replaces the best when larger.
-    private static bool Face(in OcclusionFrame frame, Vector2 light, Vector2 face, ref float best, ref float bestCover)
-    {
-        if (Solid(frame, face)) return false;
-        float solid = Transport(frame, light, face, out float cover);
-        if (solid * cover <= best * bestCover) return true;
-        best = solid;
-        bestCover = cover;
-        return true;
     }
 
     // Ensures: both in [0, 1]; 1 when target == light; both 0 when the segment is blocked. Smoothed per 1.8: solid as
@@ -128,7 +148,7 @@ internal static class LightTransport
                     solidVisibility = MathF.Min(solidVisibility, MathF.Min(pendingSolid, 1f - s));
                     pendingSolid = 1f;
                 }
-                coverVisibility *= MathF.Pow(1f - o, ds);
+                if (o > 0f) coverVisibility *= MathF.Pow(1f - o, ds);
                 if (solidVisibility * coverVisibility < 1f / 255f) return 0f;
             }
             distance = end;
@@ -162,11 +182,11 @@ internal static class LightTransport
     private static float Opacity(in OcclusionFrame frame, int x, int z, byte value, byte flags)
     {
         if ((flags & OcclusionLayout.FlagDoor) == 0) return value / 255f;
-        int cellX = x / 4, cellZ = z / 4;
+        int cellX = x >> 2, cellZ = z >> 2;
         int i = (cellZ * frame.Map.Width + cellX) * 4;
         byte[] doors = frame.Doors.Cells;
         bool axisZ = (flags & OcclusionLayout.FlagDoorAxisZ) != 0;
-        float local = ((axisZ ? z : x) % 4 + 0.5f) * 0.25f;
+        float local = (((axisZ ? z : x) & 3) + 0.5f) * 0.25f;
         float u = (doors[i + 1] + local) / doors[i + 2] - 0.5f;
         return DoorGap.Opacity(u, doors[i] / 510f, value / 255f);
     }
