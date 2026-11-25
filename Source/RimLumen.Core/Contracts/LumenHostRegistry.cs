@@ -2,14 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using RimLumen.Core.Assets;
-using RimLumen.Core.Rendering;
-using Waylith.Rendering;
 
 namespace RimLumen.Core.Contracts;
 
 internal enum LumenAssetResolution { Found, NotFound, Rejected }
 
-public static class LumenHostRegistry
+public static partial class LumenHostRegistry
 {
     private static readonly object Sync = new();
     private static readonly List<ILumenFrameContributor> Contributors = new();
@@ -17,23 +15,6 @@ public static class LumenHostRegistry
     private static readonly List<ILumenAssetProvider> AssetProviders = new();
     private static readonly LumenAssetValidationCache ValidatedAssets = new();
     private static readonly ILumenNodeFeatureBackend?[] NodeFeatureBackends = new ILumenNodeFeatureBackend?[Enum.GetValues<LumenNodeFeature>().Length];
-
-    internal static readonly Dictionary<byte, DrawAdapterPass> DrawAdapters = new();
-
-    // Main thread, at startup. Passes and adapters are process-lived; no global layer is assigned.
-    public static byte RegisterDrawAdapter(string passName, ILumenDrawAdapter adapter)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(passName);
-        ArgumentNullException.ThrowIfNull(adapter);
-        byte id = RenderPassRegistry.Register("RimLumen.Adapter." + passName);
-        if (DrawAdapters.TryGetValue(id, out var existing))
-        {
-            if (!ReferenceEquals(existing.Adapter, adapter))
-                throw new InvalidOperationException($"A draw adapter is already registered for '{passName}'.");
-        }
-        else DrawAdapters.Add(id, new DrawAdapterPass(id, adapter));
-        return id;
-    }
 
     public static ILumenVfxService? VfxService { get; private set; }
     public static ILumenGpuParticleEngine? GpuParticleEngine { get; private set; }
