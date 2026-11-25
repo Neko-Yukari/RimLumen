@@ -1245,9 +1245,9 @@ min(S, s_d)
 - 光池半径以外不画物体阴影。
 - 阴影按贴图在地面上的轮廓投出。直立贴图（如柱子）在相邻格连排时轮廓首尾相连，连成一整条影子，柱子之间不透光。
 
-## 八、可选 `Chezhou.RimUnity` 桥接说明
+## 八、可选 RimUnity 桥接说明
 
-当游戏同时启用 `Chezhou.RimUnity` 时，`RimLumen.Adapter.RimUnity` 会读取其导出的 `catalog.json`、预制体 JSON（含 `.json.gz`）和 `.rutex` 贴图，并将粒子节点按功能自动分流：
+当游戏中存在 RimUnity 运行时（独立版 `Chezhou.RimUnity`，或其他模组内嵌的 RimUnity）时，`RimLumen.Adapter.RimUnity` 会读取其导出的 `catalog.json`、预制体 JSON（含 `.json.gz`）和 `.rutex` 贴图，并将粒子节点按功能自动分流：
 
 - **转入原生 HDR / GPU（或 CPU）**：受支持的基础形状及其形状局部位置、旋转、缩放（TRS）、曲线、渐变、贴图、序列帧、周期发射、受概率控制的计划脉冲，以及 `mode = PerParticle` 的粒子 `trails` 模块（配合 `renderer.trailMaterial`，`worldSpace` 按 RimUnity 默认值 `false` 读取，`MaxPoints` 按 `clamp(ceil(maxParticleLifetime * trailLifetime * (sizeAffectsLifetime ? maxSize : 1) * 60) + 2, 16, 256)` 推导，贴图通过 `RimUnityAssetProvider` 注册）。
 - **保留在原 RimUnity 播放器混播（`External`）**：节点启用了 `subEmitters`（含子发射器依赖）、`collision`、`trigger`、`renderMode.Mesh` 或未知 `renderMode`、超出原生颜色范围的材质 `_Color`、线性 `velocityOverLifetime`、`rotationOverLifetime`、变化曲线 `forceOverLifetime`、任何启用的 `lights` 模块（含 `ratio = 1`）、`trails` 的不支持选项（如 `trails.mode.Ribbon` / `trails.mode.<n>`、`trails.ratio.domain`、`trails.minVertexDistance.domain`、`trails.lifetime.dualCurve` / `.variable` / `.curve` / `.domain`、`trails.widthOverTrail.dualCurve` / `.variable` / `.weighted` / `.domain`、`trails.colorOverLifetime` 或 `trails.colorOverTrail` 的 `.random` / `.perceptualBlend` / `.domain`、`trails.textureMode.<n>`、`trails.generateLightingData`、`trails.trailMaterial.null` 以及 `trailMaterial` 的 `_Color.domain`），以及动态圆弧 / 半径模式、align、变化速度 / 力 / 旋转曲线、双曲线随机、几何或形状纹理等尚未覆盖的功能。

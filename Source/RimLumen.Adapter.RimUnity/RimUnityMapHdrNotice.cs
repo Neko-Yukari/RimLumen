@@ -1,13 +1,15 @@
 using System;
 using HarmonyLib;
+using RimLumen.Core.Mod;
 using RimWorld;
 using Verse;
 
 namespace RimLumen.Adapter.RimUnity;
 
 /// <summary>
-/// Session rule for the RimUnity Map HDR conflict notice: notify the first time an enabled mode is seen,
-/// again when the player switches to a different enabled mode, and again when it is re-enabled after being off.
+/// Session rule for the RimUnity Map HDR notice. The combination is active when RimUnity's Map HDR is on and
+/// RimLumen's HDR glow or lighting takeover is on. Notify the first time it becomes active, again when the player
+/// switches to a different Map HDR mode, and again when it becomes active after being inactive.
 /// </summary>
 internal sealed class MapHdrNoticeRule
 {
@@ -15,9 +17,9 @@ internal sealed class MapHdrNoticeRule
 
     private string? notifiedMode;
 
-    public bool ShouldNotify(string mode)
+    public bool ShouldNotify(string mode, bool rimLumenMapHdrOn)
     {
-        if (mode == Off)
+        if (mode == Off || !rimLumenMapHdrOn)
         {
             notifiedMode = null;
             return false;
@@ -29,8 +31,8 @@ internal sealed class MapHdrNoticeRule
 }
 
 /// <summary>
-/// Tells the player to turn RimUnity's Map HDR off themselves. Notification only: RimUnity's settings are only
-/// read, and RimLumen's own rendering is left unchanged.
+/// Tells the player that RimUnity's Map HDR and RimLumen's map HDR are both on. Notification only: neither mod's
+/// settings are changed.
 /// Checked after a game finishes loading and whenever a mod settings window closes (RimUnity applies the mode
 /// from the next frame, so a change made in-game matters immediately).
 /// </summary>
@@ -54,10 +56,11 @@ internal static class RimUnityMapHdrNotice
     private static void Evaluate()
     {
         string mode = runtime.ReadMapHdrMode();
-        if (!Rule.ShouldNotify(mode)) return;
+        RimLumenSettings settings = RimLumenMod.Settings;
+        if (!Rule.ShouldNotify(mode, settings.EnhanceVanillaAdditiveGlow || settings.LightingTakeover)) return;
         string provider = runtime.Provider.Name;
-        Log.Warning($"[RimLumen.Adapter.RimUnity] RimUnity {runtime.Version} (provided by {provider}) has Map HDR mode {mode}; " +
-            "it conflicts with RimLumen's lighting and can crash the game. Turn it off in RimUnity's mod settings.");
+        Log.Warning($"[RimLumen.Adapter.RimUnity] RimUnity {runtime.Version} (provided by {provider}) Map HDR mode {mode} is on " +
+            "together with RimLumen HDR glow or lighting takeover; this combination has crashed without a known cause on the author's machine.");
         Find.WindowStack.Add(new Dialog_MessageBox(
             "RimLumen_RimUnityMapHdrConflict".Translate(provider, mode),
             title: "RimLumen_RimUnityMapHdrConflictTitle".Translate()));

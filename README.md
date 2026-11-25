@@ -21,7 +21,7 @@ A **sidecar/overlay HDR VFX enhancement layer**, programmable post-processing Sh
 | 遮挡与投影 / Occlusion & shadows | 点光受墙、门、岩石遮挡，有高度的物体按贴图轮廓投影（光影包 `objectShadows` 开关）；点光 `castShadows: false` 时不受任何遮挡也不投影 / point lights are occluded by walls, doors and rock, and height-bearing things cast sprite-silhouette shadows (ShaderPack `objectShadows`); `castShadows: false` makes a light ignore all occlusion and cast no shadows |
 
 三种原生接入方式 / three entry points：XML `LumenEffectDef`、`1.7/Data/RimLumen/**/*.lumen.json`、C# `RimLumenApi`。
-可选 `Chezhou.RimUnity` 桥接位于 `1.7/Compat/RimUnity`，仅在该模组启用时加载（`LoadFolders.xml` 的 `IfModActive`）/ optional bridge, loaded only when that mod is active.
+可选 RimUnity 桥接位于 `1.7/Compat/RimUnity`，独立版 `Chezhou.RimUnity` 或其他模组内嵌的 RimUnity 运行时在场时生效：翻译其导出特效，并把 RimUnity 世界特效的粒子、网格、拖尾接入 HDR 发光 / optional RimUnity bridge, active when standalone `Chezhou.RimUnity` or a RimUnity runtime embedded in another mod is present: it translates exported effects and routes RimUnity world-effect particles, meshes and trails into the HDR glow layer.
 
 完整 API：[`docs/api.md`](docs/api.md)（中文）/ [`docs/api.en.md`](docs/api.en.md)（English）。
 

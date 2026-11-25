@@ -63,6 +63,6 @@
   <RimLumen_PreviewReplay>重新播放</RimLumen_PreviewReplay>
   <RimLumen_PreviewStatesHeader>状态机 ({0})</RimLumen_PreviewStatesHeader>
   <RimLumen_PreviewReloadFailedSeeLog>有 {0} 个文件重载失败，请查看游戏日志了解详情。</RimLumen_PreviewReloadFailedSeeLog>
-  <RimLumen_RimUnityMapHdrConflictTitle>RimUnity 地图 HDR 与 RimLumen 冲突</RimLumen_RimUnityMapHdrConflictTitle>
-  <RimLumen_RimUnityMapHdrConflict>RimUnity 的地图 HDR 模式当前为 {1}，它与 RimLumen 的光照冲突，可能导致游戏崩溃。\n\n提供 RimUnity 运行时的模组：{0}\n\n关闭方法：选项 → 模组设置 → RimUnity → 渲染设置 → 地图渲染 → 地图 HDR 模式，选择“无”。\n\nRimLumen 不会修改 RimUnity 的设置，请自行更改此项。</RimLumen_RimUnityMapHdrConflict>
+  <RimLumen_RimUnityMapHdrConflictTitle>RimUnity 地图 HDR 与 RimLumen 同时开启</RimLumen_RimUnityMapHdrConflictTitle>
+  <RimLumen_RimUnityMapHdrConflict>RimUnity 的地图 HDR 模式当前为 {1}，同时 RimLumen 的「原版与模组特效 HDR 发光」或「接管地图照明与日影」处于开启状态。在作者的设备上，这一组合出现过原因不明的崩溃。\n\n提供 RimUnity 运行时的模组：{0}\n\n如遇崩溃，关闭以下任一方即可：\n· RimUnity：选项 → 模组设置 → RimUnity → 渲染设置 → 地图渲染 → 地图 HDR 模式，选择“无”。\n· RimLumen：选项 → 模组设置 → RimLumen，关闭上述两项。\n\n本提示不会修改任何一方的设置。</RimLumen_RimUnityMapHdrConflict>
 </LanguageData>

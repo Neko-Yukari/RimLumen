@@ -63,6 +63,6 @@
   <RimLumen_PreviewReplay>Replay</RimLumen_PreviewReplay>
   <RimLumen_PreviewStatesHeader>State Machine ({0})</RimLumen_PreviewStatesHeader>
   <RimLumen_PreviewReloadFailedSeeLog>{0} file(s) failed to reload; see the game log for details.</RimLumen_PreviewReloadFailedSeeLog>
-  <RimLumen_RimUnityMapHdrConflictTitle>RimUnity Map HDR conflicts with RimLumen</RimLumen_RimUnityMapHdrConflictTitle>
-  <RimLumen_RimUnityMapHdrConflict>RimUnity's Map HDR mode is set to {1}. It conflicts with RimLumen's lighting and can crash the game.\n\nThe RimUnity runtime is provided by: {0}\n\nTo turn it off: Options > Mod settings > RimUnity > Rendering > Map rendering > Map HDR mode, and choose None.\n\nRimLumen does not change RimUnity's settings; please change this one yourself.</RimLumen_RimUnityMapHdrConflict>
+  <RimLumen_RimUnityMapHdrConflictTitle>RimUnity Map HDR and RimLumen are both on</RimLumen_RimUnityMapHdrConflictTitle>
+  <RimLumen_RimUnityMapHdrConflict>RimUnity's Map HDR mode is set to {1}, and RimLumen's "HDR glow for vanilla and mod effects" or "Replace map lighting and sun shadows" is on. On the author's machine this combination has crashed for no known reason.\n\nThe RimUnity runtime is provided by: {0}\n\nIf you run into crashes, turning off either side is enough:\n· RimUnity: Options > Mod settings > RimUnity > Rendering > Map rendering > Map HDR mode, choose None.\n· RimLumen: Options > Mod settings > RimLumen, turn off both options above.\n\nThis notice does not change either mod's settings.</RimLumen_RimUnityMapHdrConflict>
 </LanguageData>
