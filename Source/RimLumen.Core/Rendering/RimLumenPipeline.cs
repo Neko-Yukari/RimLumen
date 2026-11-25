@@ -46,6 +46,7 @@ internal sealed class RimLumenPipeline : IDisposable
     // Main-thread scratch ownership for appenders; moved into a rented MeshDrawFrame only when non-empty.
     private readonly List<FinalDrawItem> scratchDraws = new();
     private readonly List<FinalDrawItem> scratchShadows = new();
+    private readonly ExternalHdrDrawAdapter.DepthRanker externalDepthOrder = new();
     internal readonly RimLumenMapChain MapChain;
     private bool disposed;
 
@@ -135,6 +136,14 @@ internal sealed class RimLumenPipeline : IDisposable
         && RimWorld.Planet.WorldRendererUtility.DrawingMap
         && MapGenerator.mapBeingGenerated == null;
 
+    internal static bool IsMapRenderedNow() =>
+        Current.ProgramState == ProgramState.Playing
+        && !LongEventHandler.ShouldWaitForEvent
+        && Current.Game != null
+        && Current.CameraDriver?.MyCamera != null
+        && Find.CurrentMap is { Disposed: false }
+        && IsMapRendered();
+
     internal void BeginCapture(in FrameTiming timing)
     {
         // FrameRenderer.BeginMainThreadFrame:220-230 runs all early hooks before CaptureFrame:186-192.
@@ -213,7 +222,10 @@ internal sealed class RimLumenPipeline : IDisposable
     {
         Captured = null;
         if (!renderMapFrame || SimulatableMap() == null || !IsMapRendered() || Current.CameraDriver?.MyCamera == null)
+        {
+            RestorePendingExternalHdrCommandsIfMapActive();
             return null;
+        }
         MeshDrawSubmissionSnapshot snapshot = MeshDrawSubmission.CaptureFlushedSnapshot(App.GraphicsDevice!);
         MeshDrawFrame? mesh = null, glowMesh = null, lightMesh = null, shadowMesh = null, distortionMesh = null;
         try
@@ -225,6 +237,7 @@ internal sealed class RimLumenPipeline : IDisposable
         {
             if (Captured is null)
             {
+                RestoreAllExternalHdrCommands(in snapshot);
                 mesh?.Dispose();
                 glowMesh?.Dispose();
                 lightMesh?.Dispose();
@@ -234,6 +247,31 @@ internal sealed class RimLumenPipeline : IDisposable
         }
     }
 
+    internal void RestorePendingExternalHdrCommandsIfMapActive()
+    {
+        if (RimLumenRenderHost.ExternalHdrPassId == 0 || App.GraphicsDevice is null || !IsMapRendered())
+            return;
+        MeshDrawSubmissionSnapshot snapshot = MeshDrawSubmission.CaptureFlushedSnapshot(App.GraphicsDevice);
+        RestoreAllExternalHdrCommands(in snapshot);
+    }
+
+    internal static void RestoreAllExternalHdrCommands(in MeshDrawSubmissionSnapshot snapshot)
+    {
+        byte externalPass = RimLumenRenderHost.ExternalHdrPassId;
+        if (externalPass == 0) return;
+        MeshDrawCommand[] commands = snapshot.Commands;
+        for (int i = 0; i < snapshot.CommandCount; i++)
+        {
+            MeshDrawCommand command = commands[i];
+            if (command.PassId == externalPass)
+                commands[i] = WithPassId(in command, LayerPassRouter.Resolve(command.Layer));
+        }
+    }
+
+    private static MeshDrawCommand WithPassId(in MeshDrawCommand command, byte passId) =>
+        new(command.Mesh, command.Material, command.PropertyRange, command.Matrix, command.SubmeshIndex,
+            passId, command.Instancing, command.RenderQueueOverride, command.Layer, command.Storage);
+
     private PipelineFrame? CaptureFrame(in FrameTiming timing, MeshDrawSubmissionSnapshot snapshot,
         ref MeshDrawFrame? mesh, ref MeshDrawFrame? glowMesh, ref MeshDrawFrame? lightMesh, ref MeshDrawFrame? shadowMesh,
         ref MeshDrawFrame? distortionMesh)
@@ -241,6 +279,11 @@ internal sealed class RimLumenPipeline : IDisposable
         try
         {
             DrawItemFactory maker = MeshDrawSubmission.DrawItemMaker ?? throw new InvalidOperationException("DrawItemFactory is unavailable.");
+            int externalBloomMask = RimLumenRenderHost.ExternalBloomLayerMaskProvider?.Invoke() ?? 0;
+            Matrix4x4 viewMatrix = view.View;
+            bool hasExternalDepthOrder = RimLumenRenderHost.ExternalHdrPassId != 0
+                && externalDepthOrder.ComputeForPass(snapshot.Commands, snapshot.CommandCount,
+                    RimLumenRenderHost.ExternalHdrPassId, in viewMatrix);
         for (int i = 0; i < snapshot.CommandCount; i++)
         {
             MeshDrawCommand command = snapshot.Commands[i];
@@ -256,11 +299,52 @@ internal sealed class RimLumenPipeline : IDisposable
                 }
                 continue;
             }
+            bool externalHdr = RimLumenRenderHost.ExternalHdrPassId != 0 && command.PassId == RimLumenRenderHost.ExternalHdrPassId;
+            if (externalHdr)
+            {
+                if (!RimLumenRenderHost.CanRouteExternalHdrNow)
+                {
+                    snapshot.Commands[i] = WithPassId(in command, LayerPassRouter.Resolve(command.Layer));
+                    continue;
+                }
+                ushort hostOrder = hasExternalDepthOrder ? externalDepthOrder[i] : (ushort)0;
+                FinalDrawItem? candidateDraw = maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i, null, hostOrder);
+                if (candidateDraw == null)
+                {
+                    snapshot.Commands[i] = WithPassId(in command, LayerPassRouter.Resolve(command.Layer));
+                    continue;
+                }
+                if (candidateDraw.RenderQueue == int.MaxValue)
+                {
+                    FinalDrawItem.Return(candidateDraw);
+                    snapshot.Commands[i] = WithPassId(in command, LayerPassRouter.Resolve(command.Layer));
+                    continue;
+                }
+                FinalDrawItem? adapted = ExternalHdrDrawAdapter.TryAdapt(candidateDraw, colorBlendSpace);
+                FinalDrawItem.Return(candidateDraw);
+                if (adapted is null)
+                {
+                    // Final capture-time state or per-draw MaterialPropertyBlock overrides made this draw ineligible;
+                    // restore its original passId in the shared snapshot so MapRenderFeature draws it normally in MapMain.
+                    snapshot.Commands[i] = WithPassId(in command, LayerPassRouter.Resolve(command.Layer));
+                    continue;
+                }
+                if (adapted.Binding.PipelineState.Depth.Write)
+                {
+                    FinalDrawItem.Return(adapted);
+                    throw new InvalidOperationException("RimLumen routed materials must not write shared scene depth.");
+                }
+                mesh ??= NewFrame(in timing);
+                mesh.Draws.Add(adapted);
+                continue;
+            }
             bool vanillaGlow = command.PassId != RimLumenRenderHost.LumenRenderPassId;
             if (vanillaGlow)
             {
-                if (!RimLumenRenderHost.EnableVanillaAdditiveBloom ||
-                    (command.PassId != 0 && command.PassId != RimWorldWaylith.Rendering.RenderPassIds.MapMain)) continue;
+                if (!RimLumenRenderHost.EnableVanillaAdditiveBloom
+                    || (command.PassId != 0 && command.PassId != RimWorldWaylith.Rendering.RenderPassIds.MapMain)
+                    || ((uint)command.Layer < 32u && (externalBloomMask & (1 << command.Layer)) != 0))
+                    continue;
                 try
                 {
                     FinalDrawItem? candidate = maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i);
@@ -289,9 +373,7 @@ internal sealed class RimLumenPipeline : IDisposable
                     continue;
                 }
                 // Preserve the original MapMain submission; only this fresh glow copy changes pass.
-                command = new MeshDrawCommand(command.Mesh, command.Material, command.PropertyRange, command.Matrix,
-                    command.SubmeshIndex, RimLumenRenderHost.LumenRenderPassId, command.Instancing,
-                    command.RenderQueueOverride, command.Layer, command.Storage);
+                command = WithPassId(in command, RimLumenRenderHost.LumenRenderPassId);
             }
             FinalDrawItem? draw = maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i);
             if (draw == null) continue;

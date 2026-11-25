@@ -39,12 +39,13 @@ public static class RimUnityAdapterBootstrap
         var harmony = new Harmony("NekoYukari.RimLumen.RimUnity");
         harmony.Patch(dispose, prefix: new HarmonyMethod(typeof(RimUnityAdapterBootstrap), nameof(MapRemoved)));
         if (runtime.CanReadMapHdrMode) RimUnityMapHdrNotice.Install(runtime, harmony);
+        bool particleHdr = RimUnityParticleHdrTakeover.Install(runtime);
         LumenSceneBootstrap.EnsureInitialized();
         LumenHostRegistry.RegisterAssetProvider(provider);
         LumenHostRegistry.RegisterVfxService(new RimUnityHybridVfxService(
             LumenHostRegistry.VfxService!, provider, new RimUnityLegacyFallbackPlayer()));
         Log.Message($"[RimLumen.Adapter.RimUnity] RimUnity {runtime.Version} provided by {runtime.Provider.Name}; " +
-            $"registered {provider.PackageCount} RimUnity package(s)");
+            $"registered {provider.PackageCount} RimUnity package(s), particleHdr={particleHdr}");
     }
 
     private static void MapRemoved(Map __instance) => RimUnityLegacyFallbackPlayer.ExternalHandle.ReleaseMap(__instance.uniqueID);

@@ -71,6 +71,14 @@ internal static class RimLumenMapHooks
             harmony.Patch(record, prefix: Patch(nameof(RecordPrefix)), finalizer: Patch(nameof(RecordFinalizer)));
             target = grab.DeclaringType!.FullName + "." + grab.Name;
             harmony.Patch(grab, prefix: Patch(nameof(GrabPrefix)));
+            MethodInfo? reloadLayouts = typeof(Shader).GetMethod("ReloadLayouts",
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.DeclaredOnly,
+                null, Type.EmptyTypes, null);
+            if (reloadLayouts is { ReturnType: var returnType } && returnType == typeof(void))
+            {
+                target = reloadLayouts.DeclaringType!.FullName + "." + reloadLayouts.Name;
+                harmony.Patch(reloadLayouts, postfix: Patch(nameof(ReloadLayoutsPostfix)));
+            }
             armed = true;
         }
         catch (Exception ex)
@@ -153,6 +161,9 @@ internal static class RimLumenMapHooks
     }
 
     private static void RecordFinalizer() => current = null;
+
+    private static void ReloadLayoutsPostfix(Shader __instance) =>
+        Compat.ExternalHdrAlphaClampShaders.Invalidate(__instance);
 
     private static bool GrabPrefix(SceneGrabPoint point)
     {

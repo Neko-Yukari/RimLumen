@@ -47,6 +47,9 @@ internal static class Program
             ("RUTX DXT1/BC7 mips, gzip and malformed payloads", FileTests.Textures),
             ("Core assembly architectural independence", IntegrationTests.CoreIndependence),
             ("RimUnity Map HDR notice session rule", NoticeTests.MapHdrNoticeRule),
+            ("RimUnity particle HDR submit context gate matrix", ParticleHdrTakeoverTests.SubmitContextGateMatrix),
+            ("RimUnity world HDR DrawMesh gate matrix", ParticleHdrTakeoverTests.DrawMeshGateMatrix),
+            ("RimUnity particle HDR hook target binding", ParticleHdrTakeoverTests.RimUnityPatchTargetsBindCleanly),
         ];
         int passed = 0, failed = 0;
         foreach (var suite in suites)

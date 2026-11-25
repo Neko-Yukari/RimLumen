@@ -22,29 +22,37 @@ public static class RenderLogicSuite
         LumenColorBlendSpace originalFrame = RimLumenRenderHost.CurrentFrameColorBlendSpace;
         bool originalRefract = RimLumenRenderHost.DistortionRefractsEffects;
         bool originalFrameRefract = RimLumenRenderHost.CurrentFrameDistortionRefractsEffects;
+        bool originalGlow = RimLumenRenderHost.EnableVanillaAdditiveBloom;
+        bool originalFrameGlow = RimLumenRenderHost.CurrentFrameEnableVanillaAdditiveBloom;
         try
         {
             RimLumenRenderHost.ColorBlendSpace = LumenColorBlendSpace.Legacy;
             RimLumenRenderHost.DistortionRefractsEffects = true;
+            RimLumenRenderHost.EnableVanillaAdditiveBloom = true;
             RimLumenRenderHost.LatchFrameSettings();
             RimLumenRenderHost.ColorBlendSpace = LumenColorBlendSpace.Linear;
             RimLumenRenderHost.DistortionRefractsEffects = false;
+            RimLumenRenderHost.EnableVanillaAdditiveBloom = false;
             Equal(LumenColorBlendSpace.Legacy, RimLumenRenderHost.CurrentFrameColorBlendSpace);
             Equal(true, RimLumenRenderHost.CurrentFrameDistortionRefractsEffects);
+            Equal(true, RimLumenRenderHost.CurrentFrameEnableVanillaAdditiveBloom);
             ThrowsOutOfRange(() => RimLumenRenderHost.ColorBlendSpace = (LumenColorBlendSpace)255);
             Equal(LumenColorBlendSpace.Linear, RimLumenRenderHost.ColorBlendSpace);
             Equal(LumenColorBlendSpace.Legacy, RimLumenRenderHost.CurrentFrameColorBlendSpace);
             RimLumenRenderHost.LatchFrameSettings();
             Equal(LumenColorBlendSpace.Linear, RimLumenRenderHost.CurrentFrameColorBlendSpace);
             Equal(false, RimLumenRenderHost.CurrentFrameDistortionRefractsEffects);
+            Equal(false, RimLumenRenderHost.CurrentFrameEnableVanillaAdditiveBloom);
         }
         finally
         {
             RimLumenRenderHost.ColorBlendSpace = originalFrame;
             RimLumenRenderHost.DistortionRefractsEffects = originalFrameRefract;
+            RimLumenRenderHost.EnableVanillaAdditiveBloom = originalFrameGlow;
             RimLumenRenderHost.LatchFrameSettings();
             RimLumenRenderHost.ColorBlendSpace = original;
             RimLumenRenderHost.DistortionRefractsEffects = originalRefract;
+            RimLumenRenderHost.EnableVanillaAdditiveBloom = originalGlow;
         }
     }
 

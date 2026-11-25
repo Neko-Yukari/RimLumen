@@ -252,6 +252,14 @@ internal sealed class LightPoolShadows
         return copy;
     }
 
+    internal static FinalDrawItem CopyWithBinding(FinalDrawItem draw, MaterialBinding binding, byte? passIdOverride = null)
+    {
+        FinalDrawItem copy = rent!(draw.Matrix, passIdOverride ?? draw.PassId, draw.Mesh, binding, hasOverride: true,
+            in draw.Uniforms, in draw.Resources, 0, draw.RenderQueue, draw.Instancing, draw.Layer, 0, draw.Storage);
+        setSortKey!(copy, draw.SortKey);
+        return copy;
+    }
+
     // Ensures: a copy of draw through binding, raised by dy along world y and sorted at renderQueue (Rent's own key).
     //          Draw matrices use Unity's column-vector layout (UnityStubs Matrix4x4: m13 = M24), so M24 is the y translation.
     internal static FinalDrawItem MoveDraw(FinalDrawItem draw, MaterialBinding binding, int renderQueue, float dy,
