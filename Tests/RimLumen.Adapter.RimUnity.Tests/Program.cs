@@ -50,6 +50,16 @@ internal static class Program
             ("RimUnity particle HDR submit context gate matrix", ParticleHdrTakeoverTests.SubmitContextGateMatrix),
             ("RimUnity world HDR DrawMesh gate matrix", ParticleHdrTakeoverTests.DrawMeshGateMatrix),
             ("RimUnity particle HDR hook target binding", ParticleHdrTakeoverTests.RimUnityPatchTargetsBindCleanly),
+            (nameof(ExternalHdrRulesSuite.AdditiveBlendsNormalizeAttachmentAlphaToPreserveSceneAttenuation), ExternalHdrRulesSuite.AdditiveBlendsNormalizeAttachmentAlphaToPreserveSceneAttenuation),
+            (nameof(ExternalHdrRulesSuite.CoverageAlphaBlendsNormalizeAttachmentAlphaForExactPorterDuffComposite), ExternalHdrRulesSuite.CoverageAlphaBlendsNormalizeAttachmentAlphaForExactPorterDuffComposite),
+            (nameof(ExternalHdrRulesSuite.NonComposableBlendsAreRejected), ExternalHdrRulesSuite.NonComposableBlendsAreRejected),
+            (nameof(ExternalHdrRulesSuite.PipelineEligibilityGuardsDepthWriteStencilColorWriteSceneGrabAndQueueWindow), ExternalHdrRulesSuite.PipelineEligibilityGuardsDepthWriteStencilColorWriteSceneGrabAndQueueWindow),
+            (nameof(ExternalHdrRulesSuite.MaterialFloatOverridesMirrorWaylithPipelineStateResolution), ExternalHdrRulesSuite.MaterialFloatOverridesMirrorWaylithPipelineStateResolution),
+            (nameof(ExternalHdrRulesSuite.ColorSpaceShaderResolutionRequiresExactHdrOutputKeyInLinearMode), ExternalHdrRulesSuite.ColorSpaceShaderResolutionRequiresExactHdrOutputKeyInLinearMode),
+            (nameof(ExternalHdrRulesSuite.ShaderNamesDetermineEmissionAcrossMaterialValuesAndOverrides), ExternalHdrRulesSuite.ShaderNamesDetermineEmissionAcrossMaterialValuesAndOverrides),
+            (nameof(ExternalHdrRulesSuite.AlphaClampRewriterHandlesLinearProgramsAndPlainShadersWhileRejectingUnsafeShaders), ExternalHdrRulesSuite.AlphaClampRewriterHandlesLinearProgramsAndPlainShadersWhileRejectingUnsafeShaders),
+            ("HDR shader name: bright AlphaBack smoke stays on map", ShaderNameTests.BrightSmoke),
+            ("HDR shader name: mapped Linear CoverageAlpha particle", ShaderNameTests.MappedParticle),
         ];
         int passed = 0, failed = 0;
         foreach (var suite in suites)

@@ -4,7 +4,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
-using RimLumen.Core.Compat;
+using RimLumen.Core.Contracts;
 using RimLumen.Core.Rendering;
 using Verse;
 using Waylith.Rendering;
@@ -18,7 +18,7 @@ namespace RimLumen.Adapter.RimUnity;
 /// sprite batches, particle trails), <c>MeshRenderer</c> (including <c>SpriteRenderer</c>'s backing renderer),
 /// <c>SkinnedMeshRenderer</c>, <c>TrailRenderer</c> and <c>LineRenderer</c>. Simulation stays in RimUnity; eligible
 /// emissive main-map draws keep their original Unity layer untouched and receive RimLumen's private
-/// <see cref="RimLumenRenderHost.ExternalHdrPassId"/> inside <c>RimUnity.Graphics.DrawMesh</c>. At capture time,
+/// adapter pass inside <c>RimUnity.Graphics.DrawMesh</c>. At capture time,
 /// RimLumen adapts them into <c>RimLumenHdr</c> or restores any rejected command's passId back to <c>MapMain</c> so
 /// no unrelated layer is ever claimed and no rejected draw is ever dropped.
 /// </summary>
@@ -46,7 +46,7 @@ internal static class RimUnityParticleHdrTakeover
     private static Func<RU.ParticleSystemRenderer, bool> isUiRenderer = null!;
     private static Func<bool> isCapturing = null!;
     private static MethodInfo layerPassResolveTarget = null!;
-    private static bool installed;
+    private static byte drawPassId;
 
     [ThreadStatic] private static bool mainMapSceneActive;
     [ThreadStatic] private static int activeBloomLayerMask;
@@ -202,7 +202,7 @@ internal static class RimUnityParticleHdrTakeover
 
     internal static bool Install(RimUnityRuntime rimUnity)
     {
-        if (installed) return true;
+        if (drawPassId != 0) return true;
 
         var harmony = new Harmony(HarmonyId);
         try
@@ -227,18 +227,20 @@ internal static class RimUnityParticleHdrTakeover
                 prefix: Patch(nameof(DrawMeshPrefix)),
                 transpiler: Patch(nameof(DrawMeshTranspiler)),
                 finalizer: Patch(nameof(DrawMeshFinalizer)));
-            RimLumenRenderHost.ExternalBloomLayerMaskProvider = rimUnity.ReadEffectiveBloomLayerMask;
-            installed = true;
+            MethodInfo? reload = AccessTools.DeclaredMethod(typeof(Shader), "ReloadLayouts", Type.EmptyTypes);
+            if (reload?.ReturnType == typeof(void)) harmony.Patch(reload, postfix: Patch(nameof(ReloadLayoutsPostfix)));
+            drawPassId = LumenHostRegistry.RegisterDrawAdapter("RimUnity", new ExternalHdrDrawAdapter(rimUnity.ReadEffectiveBloomLayerMask));
             return true;
         }
         catch (Exception ex)
         {
-            RimLumenRenderHost.ExternalBloomLayerMaskProvider = null;
             harmony.UnpatchAll(HarmonyId);
             Log.Error($"[RimLumen.Adapter.RimUnity] Failed to install RimUnity world HDR draw takeover; leaving RimUnity world draws unchanged: {ex}");
             return false;
         }
     }
+
+    private static void ReloadLayoutsPostfix(Shader __instance) => ExternalHdrAlphaClampShaders.Invalidate(__instance);
 
     private static HarmonyMethod Patch(string name) =>
         new(typeof(RimUnityParticleHdrTakeover).GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic)!);
@@ -263,7 +265,7 @@ internal static class RimUnityParticleHdrTakeover
         bool active = camera != null
             && ReferenceEquals(camera, RU.Camera.main)
             && camera.targetTexture == null
-            && RimLumenRenderHost.CanRouteExternalHdrNow
+            && RimLumenRenderHost.CanRouteAdapterDrawsNow
             && runtime.IsMapHdrOff();
         mainMapSceneActive = active;
         activeBloomLayerMask = active ? runtime.ReadEffectiveBloomLayerMask() : ~0;
@@ -317,7 +319,7 @@ internal static class RimUnityParticleHdrTakeover
         if (__state.HasValue) inParticleBatchFlush = __state.Value;
     }
 
-    private static void DrawMeshPrefix(RU.Material? material, int layer, RU.MaterialPropertyBlock? properties, out bool? __state)
+    private static void DrawMeshPrefix(RU.Material? material, int layer, out bool? __state)
     {
         __state = overrideNextDrawMeshPass;
         if (!mainMapSceneActive || material == null || (uint)layer > 31)
@@ -336,7 +338,7 @@ internal static class RimUnityParticleHdrTakeover
         bool materialEligible = passCount == 1
             && !triangleEdges
             && material.engineMaterial is not null
-            && ExternalHdrMaterialRules.IsMaterialEligible(material.engineMaterial, properties,
+            && ExternalHdrMaterialRules.IsMaterialEligible(material.engineMaterial,
                 RimLumenRenderHost.CurrentFrameColorBlendSpace);
 
         overrideNextDrawMeshPass = ShouldRouteDrawMesh(
@@ -371,5 +373,5 @@ internal static class RimUnityParticleHdrTakeover
     }
 
     private static byte ResolveDrawMeshPass(int layer) =>
-        overrideNextDrawMeshPass ? RimLumenRenderHost.ExternalHdrPassId : LayerPassRouter.Resolve(layer);
+        overrideNextDrawMeshPass ? drawPassId : LayerPassRouter.Resolve(layer);
 }

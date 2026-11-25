@@ -1,16 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
-using RimLumen.Core.Compat;
+using System.IO;
 using RimLumen.Core.Contracts;
 using Waylith.Rendering;
 
-namespace RimLumen.Core.Tests.Rendering;
+namespace RimLumen.Adapter.RimUnity.Tests;
 
-[LumenTestSuite]
 public static class ExternalHdrRulesSuite
 {
-    [LumenFact]
     public static void AdditiveBlendsNormalizeAttachmentAlphaToPreserveSceneAttenuation()
     {
         // Additive variants must keep destination coverage alpha untouched (Zero, One, Add) so composite does not darken the scene.
@@ -32,7 +30,6 @@ public static class ExternalHdrRulesSuite
         }
     }
 
-    [LumenFact]
     public static void CoverageAlphaBlendsNormalizeAttachmentAlphaForExactPorterDuffComposite()
     {
         // AlphaBlend (SrcAlpha, OneMinusSrcAlpha) and Premultiplied (One, OneMinusSrcAlpha) normalize attachment alpha
@@ -56,7 +53,6 @@ public static class ExternalHdrRulesSuite
         }
     }
 
-    [LumenFact]
     public static void NonComposableBlendsAreRejected()
     {
         BlendState[] rejected =
@@ -81,7 +77,6 @@ public static class ExternalHdrRulesSuite
         }
     }
 
-    [LumenFact]
     public static void PipelineEligibilityGuardsDepthWriteStencilColorWriteSceneGrabAndQueueWindow()
     {
         var depthBias = new DepthBiasState(-1f, -2f);
@@ -131,7 +126,6 @@ public static class ExternalHdrRulesSuite
         }
     }
 
-    [LumenFact]
     public static void MaterialFloatOverridesMirrorWaylithPipelineStateResolution()
     {
         var baseState = new PipelineState(BlendState.Opaque, new DepthState(Test: true, Write: true), FaceCull.Back);
@@ -193,7 +187,6 @@ public static class ExternalHdrRulesSuite
             "_ZWriteMode=1 override must reject the material.");
     }
 
-    [LumenFact]
     public static void ColorSpaceShaderResolutionRequiresExactHdrOutputKeyInLinearMode()
     {
         var layoutA = new object();
@@ -250,52 +243,38 @@ public static class ExternalHdrRulesSuite
             ResolveNone, static s => s.Key, Compatible, out _), "SceneGrab source must be rejected.");
     }
 
-    [LumenFact]
-    public static void HdrEmissiveDetectionAcceptsHdrColorsAndMultipliersWhileRejectingSdrAndNonColorProps()
+    public static void ShaderNamesDetermineEmissionAcrossMaterialValuesAndOverrides()
     {
-        // 1. CFXR Procedural Glow layout: authored @default _HdrMultiply=2, plus alpha-curve floats _GlowMax & _MaxValue.
-        MaterialLayout cfxrProcGlow = BuildLayout(
+        Material cfxrProcGlow = NamedMaterial("Cartoon FX/Remaster/Particle Procedural Glow",
             FloatSlot(0, "_GlowMax", 1f, hasDefault: true),
             FloatSlot(4, "_GlowMin", 0f, hasDefault: true),
             FloatSlot(8, "_HdrMultiply", 2f, hasDefault: true),
             FloatSlot(12, "_MaxValue", 10f, hasDefault: true));
 
-        // SpaceElevator soft glow (SDR): overrides _HdrMultiply=0 while keeping _GlowMax=1.5 and _MaxValue=2.0 -> MUST stay SDR.
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(cfxrProcGlow,
-            [
+        Equal(true, Submitted(cfxrProcGlow, [
                 PropFloat("_GlowMax", 1.5f),
                 PropFloat("_MaxValue", 2.0f),
                 PropFloat("_HdrMultiply", 0.0f),
-            ]), "Non-HDR _GlowMax/_MaxValue with _HdrMultiply=0 must stay SDR.");
+            ]));
 
-        // Explicit HDR glow: _HdrMultiply=6 -> HDR.
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(cfxrProcGlow,
-            [
+        Equal(true, Submitted(cfxrProcGlow, [
                 PropFloat("_GlowMax", 0.58f),
                 PropFloat("_MaxValue", 2.0f),
                 PropFloat("_HdrMultiply", 6.0f),
-            ]), "_HdrMultiply=6 must be detected as HDR.");
+            ]));
 
-        // Un-overridden authored default _HdrMultiply=2 -> HDR.
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(cfxrProcGlow, ReadOnlySpan<DrawProperty>.Empty),
-            "Un-overridden authored default _HdrMultiply=2 must be detected as HDR.");
+        Equal(true, Submitted(cfxrProcGlow, ReadOnlySpan<DrawProperty>.Empty));
 
-        // 2. FireSphere layout: _Color (color), _Emission (float default 2), _Frequency (10), _StartFrequency (4).
-        MaterialLayout fireSphere = BuildLayout(
+        Material fireSphere = NamedMaterial("EGA/Particles/FireSphere",
             ColorSlot(0, "_Color", Vector4.One, hasDefault: true),
             FloatSlot(16, "_Emission", 2f, hasDefault: true),
             FloatSlot(20, "_Frequency", 10f, hasDefault: true),
             FloatSlot(24, "_StartFrequency", 4f, hasDefault: true));
 
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(fireSphere,
-            [PropVector("_Color", Vector4.One), PropFloat("_Emission", 12f), PropFloat("_Frequency", 10f)]),
-            "FireSphere with _Emission=12 must be HDR.");
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(fireSphere,
-            [PropVector("_Color", Vector4.One), PropFloat("_Emission", 1f), PropFloat("_Frequency", 10f), PropFloat("_StartFrequency", 2f)]),
-            "FireSphere with _Emission=1 must stay SDR despite _Frequency=10.");
+        Equal(true, Submitted(fireSphere, [PropVector("_Color", Vector4.One), PropFloat("_Emission", 12f), PropFloat("_Frequency", 10f)]));
+        Equal(true, Submitted(fireSphere, [PropVector("_Color", Vector4.One), PropFloat("_Emission", 1f), PropFloat("_Frequency", 10f), PropFloat("_StartFrequency", 2f)]));
 
-        // 3. Vefects trail layout: _EmissiveIntensity + non-color UV/pan vectors.
-        MaterialLayout vefectsTrail = BuildLayout(
+        Material vefectsTrail = NamedMaterial("Vefects/SH_Vefects_VFX_BIRP_Trail_New",
             ColorSlot(0, "_Color01", new Vector4(1, 1, 1, 0), hasDefault: true),
             VectorSlot(16, "_ColorPanSpeed", Vector4.Zero, hasDefault: true),
             VectorSlot(32, "_DissolveTex_ST", new Vector4(0, 0, 1, 1), hasDefault: true),
@@ -303,103 +282,64 @@ public static class ExternalHdrRulesSuite
             FloatSlot(52, "_DistortionIntensity", 1f, hasDefault: true),
             FloatSlot(56, "_MaskDistortionIntensity", 1f, hasDefault: true));
 
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(vefectsTrail,
-            [PropFloat("_EmissiveIntensity", 3f)]), "Vefects trail with _EmissiveIntensity=3 must be HDR.");
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(vefectsTrail,
-            [
+        Equal(true, Submitted(vefectsTrail, [PropFloat("_EmissiveIntensity", 3f)]));
+        Equal(true, Submitted(vefectsTrail, [
                 PropVector("_ColorPanSpeed", new Vector4(5f, 5f, 0f, 0f)),
                 PropVector("_DissolveTex_ST", new Vector4(2f, 0.2f, 0f, 0f)),
                 PropFloat("_EmissiveIntensity", 1f),
                 PropFloat("_DistortionIntensity", 3f),
                 PropFloat("_MaskDistortionIntensity", 4f),
-            ]), "Non-color vectors and distortion floats > 1 must not trigger HDR.");
+            ]));
 
-        // 4. Color slots: accepts both DrawProperty.Color and DrawProperty.Vector (as written by third-party loaders),
-        //    ignores alpha > 1 when RGB <= 1, respects latest duplicate override, and rejects NaN/Inf and undeclared props.
-        MaterialLayout tintLayout = BuildLayout(
+        Material tintLayout = NamedMaterial("Custom/StarPortal",
             ColorSlot(0, "_Color", Vector4.One, hasDefault: true),
             FloatSlot(16, "_CenterFresnelPower", 2f, hasDefault: true),
             FloatSlot(20, "_TonemapStrength", 7f, hasDefault: true),
             FloatSlot(24, "_Brightness", 1f, hasDefault: true));
 
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(tintLayout,
-            [PropColor("_Color", new Vector4(2.5f, 0.4f, 0.1f, 1f))]), "HDR DrawProperty.Color must be detected.");
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(tintLayout,
-            [PropVector("_Color", new Vector4(0.1f, 3.0f, 0.2f, 1f))]), "HDR DrawProperty.Vector on IsColor slot must be detected.");
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(tintLayout,
-            [PropVector("_Color", new Vector4(1f, 1f, 1f, 2f))]), "Alpha-only > 1 with SDR RGB must not trigger HDR.");
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(tintLayout,
-            [PropFloat("_CenterFresnelPower", 3.5f), PropFloat("_TonemapStrength", 16f), PropFloat("_Brightness", 0.6f)]),
-            "Non-emissive floats and SDR _Brightness must not trigger HDR.");
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(tintLayout,
-            [PropFloat("_Brightness", 3f)]), "_Brightness=3 (StarPortal) must be detected as HDR.");
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(tintLayout,
-            [PropVector("_Color", new Vector4(4f, 4f, 4f, 1f)), PropVector("_Color", Vector4.One)]),
-            "Later SDR override of _Color must win over earlier HDR entry.");
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(tintLayout,
-            [PropColor("_Color", new Vector4(float.PositiveInfinity, 0f, 0f, 1f)), PropFloat("_Brightness", float.NaN)]),
-            "Non-finite values must not trigger HDR.");
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(tintLayout,
-            [PropFloat("_HdrMultiply", 8f), PropColor("_UndeclaredHdrColor", new Vector4(5f, 5f, 5f, 1f))]),
-            "Properties absent from MaterialLayout.UniformSlots must be ignored.");
+        Equal(true, Submitted(tintLayout, [PropColor("_Color", new Vector4(2.5f, 0.4f, 0.1f, 1f))]));
+        Equal(true, Submitted(tintLayout, [PropVector("_Color", new Vector4(0.1f, 3.0f, 0.2f, 1f))]));
+        Equal(true, Submitted(tintLayout, [PropVector("_Color", new Vector4(1f, 1f, 1f, 2f))]));
+        Equal(true, Submitted(tintLayout, [PropFloat("_CenterFresnelPower", 3.5f), PropFloat("_TonemapStrength", 16f), PropFloat("_Brightness", 0.6f)]));
+        Equal(true, Submitted(tintLayout, [PropFloat("_Brightness", 3f)]));
+        Equal(true, Submitted(tintLayout, [PropVector("_Color", new Vector4(4f, 4f, 4f, 1f)), PropVector("_Color", Vector4.One)]));
+        Equal(true, Submitted(tintLayout, [PropColor("_Color", new Vector4(float.PositiveInfinity, 0f, 0f, 1f)), PropFloat("_Brightness", float.NaN)]));
+        Equal(true, Submitted(tintLayout, [PropFloat("_HdrMultiply", 8f), PropColor("_UndeclaredHdrColor", new Vector4(5f, 5f, 5f, 1f))]));
 
-        // 5. _EmissionColor gated by _EmissionEnabled (StandardParticle).
-        MaterialLayout stdParticle = BuildLayout(
+        Material stdParticle = NamedMaterial("RimUnity_StandardParticle2",
             ColorSlot(0, "_Color", Vector4.One, hasDefault: true),
             ColorSlot(16, "_EmissionColor", new Vector4(0, 0, 0, 1), hasDefault: true),
             FloatSlot(32, "_EmissionEnabled", 0f, hasDefault: true));
 
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(stdParticle,
-            [PropColor("_EmissionColor", new Vector4(4f, 2f, 0f, 1f)), PropFloat("_EmissionEnabled", 0f)]),
-            "Disabled _EmissionEnabled=0 must ignore HDR _EmissionColor.");
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(stdParticle,
-            [PropColor("_EmissionColor", new Vector4(4f, 2f, 0f, 1f)), PropFloat("_EmissionEnabled", 1f)]),
-            "Enabled _EmissionEnabled=1 with HDR _EmissionColor must be detected as HDR.");
+        Equal(false, Submitted(stdParticle, [PropColor("_EmissionColor", new Vector4(4f, 2f, 0f, 1f)), PropFloat("_EmissionEnabled", 0f)]));
+        Equal(false, Submitted(stdParticle, [PropColor("_EmissionColor", new Vector4(4f, 2f, 0f, 1f)), PropFloat("_EmissionEnabled", 1f)]));
 
-        // 6. Per-draw MaterialPropertyBlock overrides (both directions) AND capture-time MaterialUniformBytes reads.
-        // Shared HDR material overridden down to SDR -> MUST stay SDR (prevents night-glowing smoke).
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(cfxrProcGlow,
-            [PropFloat("_HdrMultiply", 6.0f)],
-            [PropFloat("_HdrMultiply", 0.0f)]),
-            "Per-draw override _HdrMultiply=0 must suppress shared material _HdrMultiply=6.");
-        // Shared SDR material overridden up to HDR -> MUST be detected as HDR.
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(cfxrProcGlow,
-            [PropFloat("_HdrMultiply", 0.0f)],
-            [PropFloat("_HdrMultiply", 6.0f)]),
-            "Per-draw override _HdrMultiply=6 must promote shared material _HdrMultiply=0 to HDR.");
-        // Same bidirectional check on @color slots.
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(tintLayout,
-            [PropColor("_Color", new Vector4(4f, 2f, 1f, 1f))],
-            [PropColor("_Color", new Vector4(0.5f, 0.5f, 0.5f, 1f))]),
-            "Per-draw SDR _Color override must suppress shared HDR _Color.");
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(tintLayout,
-            [PropColor("_Color", Vector4.One)],
-            [PropColor("_Color", new Vector4(3f, 0.5f, 0.2f, 1f))]),
-            "Per-draw HDR _Color override must promote shared SDR _Color.");
+        Equal(true, Submitted(cfxrProcGlow, [PropFloat("_HdrMultiply", 6.0f)],
+            [PropFloat("_HdrMultiply", 0.0f)]));
+        Equal(true, Submitted(cfxrProcGlow, [PropFloat("_HdrMultiply", 0.0f)],
+            [PropFloat("_HdrMultiply", 6.0f)]));
+        Equal(true, Submitted(tintLayout, [PropColor("_Color", new Vector4(4f, 2f, 1f, 1f))],
+            [PropColor("_Color", new Vector4(0.5f, 0.5f, 0.5f, 1f))]));
+        Equal(true, Submitted(tintLayout, [PropColor("_Color", Vector4.One)],
+            [PropColor("_Color", new Vector4(3f, 0.5f, 0.2f, 1f))]));
 
-        // Capture-time resolved GPU MaterialUniformBytes check (mirrors draw.Uniforms after ApplyOverrides).
         var resolvedSdr = default(MaterialUniformBytes);
         resolvedSdr.Write(0, MaterialUniformValue.FromVector(MaterialUniformType.Vector4, Vector4.One));
         resolvedSdr.Write(16, MaterialUniformValue.FromVector(MaterialUniformType.Vector4, new Vector4(4f, 2f, 0f, 1f)));
         resolvedSdr.Write(32, MaterialUniformValue.FromFloat(0f));
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(stdParticle, in resolvedSdr),
-            "Resolved MaterialUniformBytes with _EmissionEnabled=0 must stay SDR.");
+        Equal(false, Captured(stdParticle, in resolvedSdr));
 
         var resolvedHdr = resolvedSdr;
         resolvedHdr.Write(32, MaterialUniformValue.FromFloat(1f));
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(stdParticle, in resolvedHdr),
-            "Resolved MaterialUniformBytes with _EmissionEnabled=1 and HDR _EmissionColor must be HDR.");
+        Equal(false, Captured(stdParticle, in resolvedHdr));
 
         var resolvedMultOff = default(MaterialUniformBytes);
         resolvedMultOff.Write(8, MaterialUniformValue.FromFloat(0f));
-        Require(!ExternalHdrMaterialRules.IsHdrEmissive(cfxrProcGlow, in resolvedMultOff),
-            "Resolved MaterialUniformBytes with _HdrMultiply=0 must stay SDR.");
+        Equal(true, Captured(cfxrProcGlow, in resolvedMultOff));
         resolvedMultOff.Write(8, MaterialUniformValue.FromFloat(6f));
-        Require(ExternalHdrMaterialRules.IsHdrEmissive(cfxrProcGlow, in resolvedMultOff),
-            "Resolved MaterialUniformBytes with _HdrMultiply=6 must be HDR.");
+        Equal(true, Captured(cfxrProcGlow, in resolvedMultOff));
     }
 
-    [LumenFact]
     public static void AlphaClampRewriterHandlesLinearProgramsAndPlainShadersWhileRejectingUnsafeShaders()
     {
         const string rimUnityLinearFrag = """
@@ -583,8 +523,38 @@ public static class ExternalHdrRulesSuite
 
     private sealed record FakeShader(string Key, object Layout, bool HasErrors, bool HasSceneGrab);
 
-    private static MaterialLayout BuildLayout(params MaterialUniformSlot[] slots) =>
-        new(slots, [], slots.Length * 16);
+    private static Material NamedMaterial(string name, params MaterialUniformSlot[] slots)
+    {
+        string game = Environment.GetEnvironmentVariable("RIMWORLD_DIR")!;
+        ShaderSourceLoader.RegisterShaderSourceDirectory(Path.Combine(game, "Rendering/Shaders"));
+        var program = new ShaderProgramDefinition { vertexShaderFileName = "SceneDefault.vert.glsl",
+            fragmentShaderFileName = "SceneDefault.frag.glsl", transparent = true, depthWrite = false };
+        var state = new PipelineState(new BlendState(true, BlendFactor.One, BlendFactor.One, BlendOp.Add,
+            BlendFactor.One, BlendFactor.One, BlendOp.Add), new DepthState(true, false), FaceCull.None, default, true);
+        var shader = new Shader("TestExport." + name, name, program, materialLayout: new MaterialLayout(slots, [], slots.Length * 16),
+            pipelineState: state);
+        global::RimUnity.Shader.FromEngineShader(shader.Key, shader).name = name;
+        return new Material(shader) { RenderQueue = 3000 };
+    }
+
+    private static bool Submitted(Material template, ReadOnlySpan<DrawProperty> values, ReadOnlySpan<DrawProperty> overrides = default)
+    {
+        var instance = new Material(template);
+        instance.SetProperties(values);
+        foreach (var property in overrides) instance.SetProperty(in property);
+        return ExternalHdrMaterialRules.IsMaterialEligible(instance, LumenColorBlendSpace.Legacy);
+    }
+
+    private static bool Captured(Material material, in MaterialUniformBytes uniforms)
+    {
+        var shader = material.Shader;
+        var variant = new ShaderVariantKey(shader, 0, string.Empty, shader.UseTexture, false, false);
+        var binding = new MaterialBinding(1, 1, 1, shader.Key, shader, shader.MaterialLayout, uniforms, default,
+            material.RenderQueue, variant, shader.PipelineState, null, false);
+        var geometry = new MeshDrawGeometry(0, 0, [], "empty", Waylith.Graphics.Meshes.VertexLayout.Empty, null, default, 0, 0, 0, default, default);
+        var draw = new FinalDrawItem(Matrix4x4.Identity, geometry, binding);
+        return new ExternalHdrDrawAdapter(() => 0).AdaptBinding(draw, LumenColorBlendSpace.Legacy) != null;
+    }
 
     private static MaterialUniformSlot ColorSlot(int offset, string name, Vector4 defaultVal, bool hasDefault) =>
         new(offset, MaterialUniformType.Vector4, name, ShaderPropertyId.GetOrCreate(name),

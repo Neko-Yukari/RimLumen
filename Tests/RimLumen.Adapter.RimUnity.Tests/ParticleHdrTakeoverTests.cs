@@ -31,7 +31,7 @@ internal static class ParticleHdrTakeoverTests
             mainMapScene: true, inParticleSubmitScope: false, inBatchFlush: false, submitContextCanRoute: false,
             layer: 0, isMapMainLayer: true, effectiveBloomLayerMask: 0, capturing: false,
             passCount: 1, usesTriangleEdges: false, materialEligible: true),
-            "Eligible direct world renderer draw must route via ExternalHdrPassId");
+            "Eligible direct world renderer draw must route via the private adapter pass");
 
         // Unbatched world particle (including MaterialPropertyBlock path)
         Check.True(RimUnityParticleHdrTakeover.ShouldRouteDrawMesh(

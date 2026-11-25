@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LanguageData>
-  <RimLumen_EnhanceAdditiveGlow>自动增强原版与第三方加色发光特效</RimLumen_EnhanceAdditiveGlow>
-  <RimLumen_EnhanceAdditiveGlowTooltip>开启后，火焰、爆炸、能量护盾等加色发光特效会自动获得 HDR 泛光。\n关闭后，在未开启全屏光影包时回到零像素差的纯框架模式（与未安装 RimLumen 时画面逐像素一致）。</RimLumen_EnhanceAdditiveGlowTooltip>
+  <RimLumen_EnhanceAdditiveGlow>原版与模组特效 HDR 发光（含 RimUnity 特效）</RimLumen_EnhanceAdditiveGlow>
+  <RimLumen_EnhanceAdditiveGlowTooltip>开启后，火焰、爆炸、能量护盾等加色发光特效会自动获得 HDR 泛光。\n关闭后，在未开启全屏光影包时回到零像素差的纯框架模式（与未安装 RimLumen 时画面逐像素一致）。\n也接管 RimUnity 特效的粒子、网格、拖尾的 HDR 发光。\nRimUnity 自己 Bloom 的图层仍由 RimUnity 泛光，RimLumen 不重复叠加；RimUnity 的『地图 HDR 模式』请保持为『无』。</RimLumen_EnhanceAdditiveGlowTooltip>
   <RimLumen_LightingTakeover>接管地图照明与日影</RimLumen_LightingTakeover>
   <RimLumen_LightingTakeoverTip>改变地图的照明画面，不改变游戏逻辑使用的光照值。进入 IsoRim 的 3D 视图后自动关闭；与 RimIris 不兼容。</RimLumen_LightingTakeoverTip>
   <RimLumen_ObjectShadows>物件投射光源阴影</RimLumen_ObjectShadows>
@@ -10,7 +10,7 @@
   <RimLumen_ColorBlendSpace>粒子混合方式：</RimLumen_ColorBlendSpace>
   <RimLumen_ColorBlendLegacy>经典</RimLumen_ColorBlendLegacy>
   <RimLumen_ColorBlendLinear>线性</RimLumen_ColorBlendLinear>
-  <RimLumen_ColorBlendSpaceTooltip>经典方式保持原有画面。线性方式下，半透明粒子和粒子柔和的边缘会更亮，不透明粒子相互叠加的地方会更暗。</RimLumen_ColorBlendSpaceTooltip>
+  <RimLumen_ColorBlendSpaceTooltip>经典方式保持原有画面。线性方式下，半透明粒子和粒子柔和的边缘会更亮，不透明粒子相互叠加的地方会更暗。\n同样作用于被接管的 RimUnity 特效：经典方式更接近原版外观，但强烈爆发的外圈光晕较弱；线性方式保留 HDR 亮度，光晕更明显。</RimLumen_ColorBlendSpaceTooltip>
   <RimLumen_DistortionRefractsEffects>扭曲也折射 RimLumen 特效</RimLumen_DistortionRefractsEffects>
   <RimLumen_DistortionRefractsEffectsTooltip>开启时，热浪、冲击波等屏幕扭曲会让后方的 RimLumen 粒子、拖尾和泛光一起弯曲。关闭时只弯曲原版画面和光池。</RimLumen_DistortionRefractsEffectsTooltip>
   <RimLumen_EnableDemoBuildings>启用娱乐演示建筑：烟花发射器、粒子喷泉与光照对照路灯</RimLumen_EnableDemoBuildings>

@@ -121,17 +121,8 @@ public static class RimLumenRenderHost
     // Ensures: the passId registered via RenderPassRegistry.Register("RimLumenHdr"); 0 before Install.
     public static byte LumenRenderPassId { get; private set; }
 
-    // Private passId for opted-in third-party world HDR draws (never registered in LayerPassRouter, so no public
-    // Unity layer 0..31 is claimed globally and any draw rejected at capture restores cleanly back to MapMain).
-    public static byte ExternalHdrPassId { get; private set; }
-
-    // Optional provider returning a bitmask of Unity layers currently claimed by an external post-process Bloom
-    // (e.g. RimUnityMod.Bloom.EffectiveLayerMask), so RimLumen's vanilla additive glow copy never double-blooms them.
-    public static Func<int>? ExternalBloomLayerMaskProvider { get; set; }
-
     // Ensures: true iff the HDR pipeline is live, external enhancement is enabled for this frame, and the map is rendering.
-    public static bool CanRouteExternalHdrNow => LumenRenderPassId != 0
-        && ExternalHdrPassId != 0
+    public static bool CanRouteAdapterDrawsNow => LumenRenderPassId != 0
         && !FailSafeTripped
         && CurrentFrameEnableVanillaAdditiveBloom
         && EnableVanillaAdditiveBloom
@@ -163,11 +154,9 @@ public static class RimLumenRenderHost
         byte passId = RenderPassRegistry.Register("RimLumenHdr");
         // UnityStubs LayerMask allocates named layers at 16..31; vanilla uses Default=0. Reserve 15 for native RimLumen.
         LayerPassRouter.RegisterLayerMask(1 << 15, passId);
-        byte externalPassId = RenderPassRegistry.Register("RimLumenExternalHdr");
         byte distortionPassId = RenderPassRegistry.Register("RimLumenDistortion");
         LayerPassRouter.RegisterLayerMask(1 << 14, distortionPassId);
         DistortionPassId = distortionPassId;
-        ExternalHdrPassId = externalPassId;
         LumenRenderPassId = passId;
         Pipeline = new RimLumenPipeline(EngineApplication.Instance);
         Pipeline.Attach();

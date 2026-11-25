@@ -6,10 +6,10 @@ using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Threading;
 using RimLumen.Core.Contracts;
-using RimLumen.Core.Rendering;
+using System.Reflection;
 using Waylith.Rendering;
 
-namespace RimLumen.Core.Compat;
+namespace RimLumen.Adapter.RimUnity;
 
 // Compiles and caches alpha-clamped fragment shader variants for third-party CoverageAlpha (AlphaBlend / Premultiplied)
 // draws entering RimLumen's RGBA16F HDR layer. Vulkan RGBA16F does not clamp fragment alpha to [0,1] before blend
@@ -123,6 +123,7 @@ internal static class ExternalHdrAlphaClampShaders
         ArgumentNullException.ThrowIfNull(sourceShader);
         if (!ExternalHdrMaterialRules.TryResolveShaderForBlendSpace(sourceShader, blendSpace, out Shader baseTarget))
         {
+            LogFailureOnce(sourceShader.Key, blendSpace, "Compatible output shader is unavailable.");
             targetShader = null!;
             return false;
         }
@@ -144,7 +145,7 @@ internal static class ExternalHdrAlphaClampShaders
                     || !ReferenceEquals(slot.SourceLayout, liveLayout)
                     || !ReferenceEquals(slot.SourceVertexInputLayout, liveVertexLayout))
                 {
-                    Shader? built = TryBuildClampedShader(baseTarget, blendSpace);
+                    Shader? built = TryBuildClampedShader(sourceShader, baseTarget, blendSpace);
                     slot = new ClampedSlot(built, liveLayout, liveVertexLayout);
                     if (blendSpace == LumenColorBlendSpace.Linear) Volatile.Write(ref slots.Linear, slot);
                     else Volatile.Write(ref slots.Legacy, slot);
@@ -418,31 +419,35 @@ internal static class ExternalHdrAlphaClampShaders
         return new string(buffer);
     }
 
-    private static Shader? TryBuildClampedShader(Shader baseTarget, LumenColorBlendSpace blendSpace)
+    private static Shader? TryBuildClampedShader(Shader source, Shader baseTarget, LumenColorBlendSpace blendSpace)
     {
-        if (baseTarget.MaterialLayout.UniformBlocks.Length != 0)
-            return null;
-
-        if (!TryReadShaderSource(baseTarget.FragmentShaderFileName, baseTarget.Key, blendSpace, out string fragmentSource))
-            return null;
-
-        // RimUnity's CustomShaderLoader always attaches PrecompiledShaderStages even when compiling raw GLSL files
-        // directly from rooted paths on disk. Allow plain disk rewrite for non-precompiled shaders AND rooted custom
-        // disk shaders, while still rejecting in-memory transformed variants (_Linear / _GpuSkin) whose disk file
-        // differs from the live SPIR-V.
-        bool allowPlainDiskRewrite = baseTarget.PrecompiledStages is null
-            || (Path.IsPathRooted(baseTarget.FragmentShaderFileName)
-                && !IsInMemoryTransformedShaderKey(baseTarget.Key));
-
-        if (!TryRewriteFragmentForAlphaClamp(fragmentSource, blendSpace, allowPlainDiskRewrite, out string rewrittenFragment))
-            return null;
-
         string clampedKey = baseTarget.Key + (blendSpace == LumenColorBlendSpace.Linear
             ? LinearClampedKeySuffix
             : LegacyClampedKeySuffix);
 
         try
         {
+            if (baseTarget.MaterialLayout.UniformBlocks.Length != 0)
+                throw new NotSupportedException("Additional material uniform blocks cannot be rewritten.");
+            string fragmentSource = ReadShaderSource(baseTarget.FragmentShaderFileName);
+            bool transformed = IsInMemoryTransformedShaderKey(baseTarget.Key);
+            if (transformed && baseTarget.Key.StartsWith("RimUnity_", StringComparison.Ordinal)
+                && (baseTarget.Key.EndsWith("_Linear", StringComparison.Ordinal)
+                    || baseTarget.Key.EndsWith("_Linear_HdrOutput", StringComparison.Ordinal)))
+            {
+                // MappedColorSpaceShader.Wrap (RimUnity 2e29802) uses this converter on both disk stages.
+                // Replay it so the generated sampler flags, decode operations and output wrapper match the live program.
+                fragmentSource = MappedConverter.Convert(ReadShaderSource(baseTarget.VertexShaderFileName), fragmentSource).Fragment;
+                byte[] encoded = RuntimeShaderCompiler.Compile(fragmentSource, source.Key + ".frag.glsl", "main",
+                    RuntimeShaderLanguage.Glsl, RuntimeShaderStage.Fragment);
+                if (source.PrecompiledStages is not { } live || !encoded.AsSpan().SequenceEqual(live.Fragment))
+                    throw new NotSupportedException("Reconstructed mapped fragment differs from the live SPIR-V.");
+            }
+            bool allowPlainDiskRewrite = !transformed && (baseTarget.PrecompiledStages is null
+                || Path.IsPathRooted(baseTarget.FragmentShaderFileName));
+            if (!TryRewriteFragmentForAlphaClamp(fragmentSource, blendSpace, allowPlainDiskRewrite, out string rewrittenFragment))
+                throw new NotSupportedException("Cannot verify the fragment output and main wrapper against its live variant.");
+
             // Verify the disk-rewritten fragment matches the live MaterialLayout (rejects in-memory transformed
             // shaders such as GPU-skinned variants whose disk source lacks injected set-2 storage buffers).
             MaterialLayout rewrittenLayout = ShaderMetadataParser.ExtractMaterialLayout(rewrittenFragment, clampedKey + ".frag.glsl", 2);
@@ -461,11 +466,9 @@ internal static class ExternalHdrAlphaClampShaders
             }
             else
             {
-                if (!TryReadShaderSource(baseTarget.VertexShaderFileName, baseTarget.Key, blendSpace, out string vertexSource)
-                    || HasPreprocessorConditional(vertexSource))
-                {
-                    return null;
-                }
+                string vertexSource = ReadShaderSource(baseTarget.VertexShaderFileName);
+                if (HasPreprocessorConditional(vertexSource))
+                    throw new NotSupportedException("Vertex preprocessing requires a precompiled live stage.");
                 vertexSpirV = RuntimeShaderCompiler.Compile(
                     vertexSource,
                     clampedKey + ".vert.glsl",
@@ -553,41 +556,24 @@ internal static class ExternalHdrAlphaClampShaders
         return true;
     }
 
-    private static bool TryReadShaderSource(string? fileName, string shaderKey, LumenColorBlendSpace blendSpace, out string source)
+    private static string ReadShaderSource(string fileName) => Path.IsPathRooted(fileName)
+        ? File.ReadAllText(fileName) : ShaderSourceLoader.ReadShaderSource(fileName);
+
+    private static class MappedConverter
     {
-        source = string.Empty;
-        if (string.IsNullOrWhiteSpace(fileName))
-            return false;
-
-        try
-        {
-            if (Path.IsPathRooted(fileName))
-            {
-                if (!File.Exists(fileName))
-                    return false;
-                source = File.ReadAllText(fileName);
-                return true;
-            }
-
-            if (!ShaderSourceLoader.TryResolveShaderPath(fileName, out _))
-                return false;
-            source = ShaderSourceLoader.ReadShaderSource(fileName);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            LogFailureOnce(shaderKey, blendSpace, $"Could not read shader source '{fileName}': {ex.Message}");
-            return false;
-        }
+        internal static readonly Func<string, string, (string Vertex, string Fragment)> Convert =
+            typeof(global::RimUnity.ParticleSystemRenderer).Assembly.GetType("RimUnity.Rendering.ShaderColorSpace", true)!
+                .GetMethod("Convert", BindingFlags.Static | BindingFlags.NonPublic, [typeof(string), typeof(string)])!
+                .CreateDelegate<Func<string, string, (string, string)>>();
     }
 
-    private static void LogFailureOnce(string shaderKey, LumenColorBlendSpace blendSpace, string reason)
+    internal static void LogFailureOnce(string shaderKey, LumenColorBlendSpace blendSpace, string reason)
     {
         string key = $"{shaderKey}|{blendSpace}";
         bool shouldLog;
         lock (LoggedFailures)
             shouldLog = LoggedFailures.Add(key);
         if (shouldLog)
-            RimLumenRenderHost.LogWarning($"[RimLumen] Alpha-clamped HDR shader unavailable for '{shaderKey}' ({blendSpace}); leaving CoverageAlpha draws on MapMain: {reason}");
+            Verse.Log.Warning($"[RimLumen.Adapter.RimUnity] HDR shader unavailable for '{shaderKey}' ({blendSpace}); leaving draws on MapMain: {reason}");
     }
 }

@@ -245,17 +245,13 @@ internal sealed class LightPoolShadows
     }
 
     internal static FinalDrawItem CopyDraw(FinalDrawItem draw, Kind kind, in MaterialUniformBytes uniforms, in MaterialTextureResourceSet<Texture?> resources)
-    {
-        FinalDrawItem copy = rent!(draw.Matrix, draw.PassId, draw.Mesh, kind.BindingFor(draw.Binding), hasOverride: true,
-            in uniforms, in resources, 0, draw.RenderQueue, draw.Instancing, draw.Layer, 0, draw.Storage);
-        setSortKey!(copy, draw.SortKey);
-        return copy;
-    }
+        => CopyWithBinding(draw, kind.BindingFor(draw.Binding), draw.PassId, in uniforms, in resources);
 
-    internal static FinalDrawItem CopyWithBinding(FinalDrawItem draw, MaterialBinding binding, byte? passIdOverride = null)
+    internal static FinalDrawItem CopyWithBinding(FinalDrawItem draw, MaterialBinding binding, byte passId,
+        in MaterialUniformBytes uniforms, in MaterialTextureResourceSet<Texture?> resources)
     {
-        FinalDrawItem copy = rent!(draw.Matrix, passIdOverride ?? draw.PassId, draw.Mesh, binding, hasOverride: true,
-            in draw.Uniforms, in draw.Resources, 0, draw.RenderQueue, draw.Instancing, draw.Layer, 0, draw.Storage);
+        FinalDrawItem copy = rent!(draw.Matrix, passId, draw.Mesh, binding, hasOverride: true,
+            in uniforms, in resources, 0, draw.RenderQueue, draw.Instancing, draw.Layer, 0, draw.Storage);
         setSortKey!(copy, draw.SortKey);
         return copy;
     }

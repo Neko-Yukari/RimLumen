@@ -46,7 +46,6 @@ internal sealed class RimLumenPipeline : IDisposable
     // Main-thread scratch ownership for appenders; moved into a rented MeshDrawFrame only when non-empty.
     private readonly List<FinalDrawItem> scratchDraws = new();
     private readonly List<FinalDrawItem> scratchShadows = new();
-    private readonly ExternalHdrDrawAdapter.DepthRanker externalDepthOrder = new();
     internal readonly RimLumenMapChain MapChain;
     private bool disposed;
 
@@ -223,7 +222,7 @@ internal sealed class RimLumenPipeline : IDisposable
         Captured = null;
         if (!renderMapFrame || SimulatableMap() == null || !IsMapRendered() || Current.CameraDriver?.MyCamera == null)
         {
-            RestorePendingExternalHdrCommandsIfMapActive();
+            RestorePendingAdapterCommandsIfMapActive();
             return null;
         }
         MeshDrawSubmissionSnapshot snapshot = MeshDrawSubmission.CaptureFlushedSnapshot(App.GraphicsDevice!);
@@ -237,7 +236,7 @@ internal sealed class RimLumenPipeline : IDisposable
         {
             if (Captured is null)
             {
-                RestoreAllExternalHdrCommands(in snapshot);
+                RestoreAllAdapterCommands(in snapshot);
                 mesh?.Dispose();
                 glowMesh?.Dispose();
                 lightMesh?.Dispose();
@@ -247,23 +246,22 @@ internal sealed class RimLumenPipeline : IDisposable
         }
     }
 
-    internal void RestorePendingExternalHdrCommandsIfMapActive()
+    internal void RestorePendingAdapterCommandsIfMapActive()
     {
-        if (RimLumenRenderHost.ExternalHdrPassId == 0 || App.GraphicsDevice is null || !IsMapRendered())
+        if (LumenHostRegistry.DrawAdapters.Count == 0 || App.GraphicsDevice is null || !IsMapRendered())
             return;
         MeshDrawSubmissionSnapshot snapshot = MeshDrawSubmission.CaptureFlushedSnapshot(App.GraphicsDevice);
-        RestoreAllExternalHdrCommands(in snapshot);
+        RestoreAllAdapterCommands(in snapshot);
     }
 
-    internal static void RestoreAllExternalHdrCommands(in MeshDrawSubmissionSnapshot snapshot)
+    internal static void RestoreAllAdapterCommands(in MeshDrawSubmissionSnapshot snapshot)
     {
-        byte externalPass = RimLumenRenderHost.ExternalHdrPassId;
-        if (externalPass == 0) return;
+        if (LumenHostRegistry.DrawAdapters.Count == 0) return;
         MeshDrawCommand[] commands = snapshot.Commands;
         for (int i = 0; i < snapshot.CommandCount; i++)
         {
             MeshDrawCommand command = commands[i];
-            if (command.PassId == externalPass)
+            if (LumenHostRegistry.DrawAdapters.ContainsKey(command.PassId))
                 commands[i] = WithPassId(in command, LayerPassRouter.Resolve(command.Layer));
         }
     }
@@ -279,11 +277,13 @@ internal sealed class RimLumenPipeline : IDisposable
         try
         {
             DrawItemFactory maker = MeshDrawSubmission.DrawItemMaker ?? throw new InvalidOperationException("DrawItemFactory is unavailable.");
-            int externalBloomMask = RimLumenRenderHost.ExternalBloomLayerMaskProvider?.Invoke() ?? 0;
+            int excludedGlowLayers = 0;
             Matrix4x4 viewMatrix = view.View;
-            bool hasExternalDepthOrder = RimLumenRenderHost.ExternalHdrPassId != 0
-                && externalDepthOrder.ComputeForPass(snapshot.Commands, snapshot.CommandCount,
-                    RimLumenRenderHost.ExternalHdrPassId, in viewMatrix);
+            foreach (DrawAdapterPass pass in LumenHostRegistry.DrawAdapters.Values)
+            {
+                excludedGlowLayers |= pass.Adapter.ExcludedGlowLayerMask;
+                pass.Prepare(snapshot.Commands, snapshot.CommandCount, in viewMatrix);
+            }
         for (int i = 0; i < snapshot.CommandCount; i++)
         {
             MeshDrawCommand command = snapshot.Commands[i];
@@ -299,43 +299,30 @@ internal sealed class RimLumenPipeline : IDisposable
                 }
                 continue;
             }
-            bool externalHdr = RimLumenRenderHost.ExternalHdrPassId != 0 && command.PassId == RimLumenRenderHost.ExternalHdrPassId;
-            if (externalHdr)
+            if (LumenHostRegistry.DrawAdapters.TryGetValue(command.PassId, out DrawAdapterPass? route))
             {
-                if (!RimLumenRenderHost.CanRouteExternalHdrNow)
+                FinalDrawItem? candidate = RimLumenRenderHost.CanRouteAdapterDrawsNow
+                    ? maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i, null, route.Order(i))
+                    : null;
+                if (candidate != null)
                 {
-                    snapshot.Commands[i] = WithPassId(in command, LayerPassRouter.Resolve(command.Layer));
-                    continue;
+                    try
+                    {
+                        MaterialBinding? binding = candidate.RenderQueue == int.MaxValue ? null
+                            : route.Adapter.AdaptBinding(candidate, colorBlendSpace);
+                        if (binding != null)
+                        {
+                            if (binding.PipelineState.Depth.Write)
+                                throw new InvalidOperationException("RimLumen routed materials must not write shared scene depth.");
+                            mesh ??= NewFrame(in timing);
+                            mesh.Draws.Add(LightPoolShadows.CopyWithBinding(candidate, binding, RimLumenRenderHost.LumenRenderPassId,
+                                in candidate.Uniforms, in candidate.Resources));
+                            continue;
+                        }
+                    }
+                    finally { FinalDrawItem.Return(candidate); }
                 }
-                ushort hostOrder = hasExternalDepthOrder ? externalDepthOrder[i] : (ushort)0;
-                FinalDrawItem? candidateDraw = maker.TryMake(in command, snapshot.PropertyArena, UnityEngine.Shader.GlobalKeywordKey, i, null, hostOrder);
-                if (candidateDraw == null)
-                {
-                    snapshot.Commands[i] = WithPassId(in command, LayerPassRouter.Resolve(command.Layer));
-                    continue;
-                }
-                if (candidateDraw.RenderQueue == int.MaxValue)
-                {
-                    FinalDrawItem.Return(candidateDraw);
-                    snapshot.Commands[i] = WithPassId(in command, LayerPassRouter.Resolve(command.Layer));
-                    continue;
-                }
-                FinalDrawItem? adapted = ExternalHdrDrawAdapter.TryAdapt(candidateDraw, colorBlendSpace);
-                FinalDrawItem.Return(candidateDraw);
-                if (adapted is null)
-                {
-                    // Final capture-time state or per-draw MaterialPropertyBlock overrides made this draw ineligible;
-                    // restore its original passId in the shared snapshot so MapRenderFeature draws it normally in MapMain.
-                    snapshot.Commands[i] = WithPassId(in command, LayerPassRouter.Resolve(command.Layer));
-                    continue;
-                }
-                if (adapted.Binding.PipelineState.Depth.Write)
-                {
-                    FinalDrawItem.Return(adapted);
-                    throw new InvalidOperationException("RimLumen routed materials must not write shared scene depth.");
-                }
-                mesh ??= NewFrame(in timing);
-                mesh.Draws.Add(adapted);
+                snapshot.Commands[i] = WithPassId(in command, LayerPassRouter.Resolve(command.Layer));
                 continue;
             }
             bool vanillaGlow = command.PassId != RimLumenRenderHost.LumenRenderPassId;
@@ -343,7 +330,7 @@ internal sealed class RimLumenPipeline : IDisposable
             {
                 if (!RimLumenRenderHost.EnableVanillaAdditiveBloom
                     || (command.PassId != 0 && command.PassId != RimWorldWaylith.Rendering.RenderPassIds.MapMain)
-                    || ((uint)command.Layer < 32u && (externalBloomMask & (1 << command.Layer)) != 0))
+                    || ((uint)command.Layer < 32u && (excludedGlowLayers & (1 << command.Layer)) != 0))
                     continue;
                 try
                 {

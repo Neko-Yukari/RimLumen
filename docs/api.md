@@ -1723,6 +1723,10 @@ void main()
 
 `LumenHostRegistry` 注册服务、贡献者、GPU 引擎、节点后端和资产提供者。`RegisterContributor` 和 `RegisterAssetProvider` 对同一实例重复注册无效果；贡献者有 `UnregisterContributor`，快照供管线使用。`RegisterGpuParticleEngine` 同时注册贡献者；`RegisterVfxService` 和 GPU 引擎注册会替换对应属性；替换 GPU 引擎不会自动注销原贡献者，调用方应自行注销。节点后端每种 feature 只能有一个不同实例，冲突抛 `InvalidOperationException`；注销只影响后续播放，已有句柄继续持有后端。
 
+主线程启动时调用 `byte LumenHostRegistry.RegisterDrawAdapter(string passName, ILumenDrawAdapter adapter)`。补丁安装成功后再注册。返回的私有 pass 不占用 Unity 图层，与适配器一样在进程内有效。只在 `RimLumenRenderHost.CanRouteAdapterDrawsNow` 和 `RimLumenRenderHost.IsMapMainLayer(layer)` 都为真时，用这个 pass 提交绘制。
+
+每次主线程地图捕获时，宿主按位或合并各适配器的 `int ExcludedGlowLayerMask`，排除对应图层的原版发光拷贝。宿主在每个私有 pass 内按由远到近排序，再调用 `MaterialBinding? AdaptBinding(FinalDrawItem source, LumenColorBlendSpace blendSpace)`。`source` 仅在调用期间借用。返回 `null` 时，宿主按原图层还原绘制；否则，宿主复制到 HDR pass 并管理绘制对象池。返回的 binding 不得写深度，且须在所有在途帧内保持不可变。宿主原样复制源网格、uniform 和资源，因此顶点输入和材质布局必须兼容。不能接管时返回 `null`；抛出异常会触发宿主的渲染故障保护。
+
 `ILumenAssetProvider.TryResolveEffect` 按 ID 提供 `EffectAsset`。提供者按注册逆序查询，命中资产在解析时校验；无效资产被拒绝并记录错误，不继续尝试其他提供者。已解析资产及其嵌套数组视为不可变；热重载返回新实例。Core 的 `InMemoryAssetCatalog` 与 `RimUnityAssetProvider` 是实现；Core 的播放路径在主线程解析提供者。
 
 `ILumenVfxService` 公开 `Capabilities` 和主线程 `Play`：找到资产返回活动句柄，未找到返回无效的已结束句柄。Core 的 `LumenVfxService` 在资产被拒绝或粒子池耗尽时也返回已结束句柄，并记录相应错误或警告。它提供原生播放；适配器的 `RimUnityHybridVfxService` 包装它并处理外部部分。`LumenSceneBootstrap.EnsureInitialized()` 幂等注册 Core 目录、服务及贡献者，服务先于模拟器。

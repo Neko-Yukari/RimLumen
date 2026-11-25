@@ -24,7 +24,7 @@ internal sealed class RimLumenPreBackbufferFeature(RimLumenPipeline owner) : IRe
             try { return owner.Capture(in timing); }
             catch (Exception ex) { owner.TripRenderFailSafe(ex); }
         }
-        owner.RestorePendingExternalHdrCommandsIfMapActive();
+        owner.RestorePendingAdapterCommandsIfMapActive();
         owner.Captured = null;
         return null;
     }
