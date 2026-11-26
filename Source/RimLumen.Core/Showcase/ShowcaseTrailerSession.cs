@@ -393,7 +393,8 @@ internal static class ShowcaseTrailerSession
                         StartSizeMax = 0.17f,
                         StartColor = Vector4.One,
                         HdrIntensity = 1.6f,
-                        SoftParticleFadeDistance = 1.2f,
+                        // Same top-down altitude gap as station #4: 9 dims the vortex over the walls, not over the ground.
+                        SoftParticleFadeDistance = 9f,
                         ColorOverLifetime = new ColorGradient(new[]
                         {
                             new ColorStop(0f, new Vector4(0.15f, 0.75f, 1.0f, 0.0f)),

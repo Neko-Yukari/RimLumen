@@ -137,7 +137,7 @@ public static class ShowcaseStage
             ("#1 LDR vs HDR泛光", "上: Transparent 8-bit | 下: L1 HDR 8.5x+Bloom"),
             ("#2 L1拉伸脉冲", "StretchedVelocity 锥形喷射 + 3D重力 + 渐变曲线"),
             ("#3 动态点光照地", "WorldSpace 拖尾 + 7.5格绕行纯视觉光池"),
-            ("#4 深度软粒子穿墙", "上: SoftFade=0 硬切花岗岩墙 | 下: SoftFade=1.4 柔化"),
+            ("#4 深度软粒子柔化", "上: SoftFade=0 不柔化 | 下: SoftFade=18 贴近墙体淡出"),
             ("#5 L2 GPU 12k旋涡", "12,000 GPU粒子: Curl湍流 + 涡旋 + 中心吸引"),
             ("#6 原版发光自动HDR", "EnableVanillaAdditiveBloom + MoteGlow 自动HDR"),
         };
@@ -414,7 +414,10 @@ public static class ShowcaseStage
         catalog.Register(CreateStation2StretchedAsset(ground));
         catalog.Register(CreateStation3OrbitAsset(ground));
         catalog.Register(CreateStation4MistAsset(StationEffectIds[3], ground, softFadeDistance: 0f));
-        catalog.Register(CreateStation4MistAsset(StationEffectIds[4], ground, softFadeDistance: 1.4f));
+        // The top-down 2D camera draws this mist at MoteOverhead (~10.2 eye units above terrain, ~4.7 above a wall's
+        // Building layer), so a fade of 18 gives alpha ~0.53 over the ground and ~0.26 over the wall: below bloom clipping,
+        // the wall footprint reads as a darker patch.
+        catalog.Register(CreateStation4MistAsset(StationEffectIds[4], ground, softFadeDistance: 18f));
         catalog.Register(CreateStation5VortexAsset(ground));
 
         var anchor1 = stations[0].AnchorCell;
@@ -831,8 +834,8 @@ public sealed class LumenShowcaseMapComponent : MapComponent, IDisposable
             DrawWorldPill(new IntVec3(state.Station1Anchor.x, 0, state.Station1Anchor.z + 6), "上: 8-bit 封顶无泛光");
             DrawWorldPill(new IntVec3(state.Station1Anchor.x, 0, state.Station1Anchor.z - 6), "下: RGBA16F 炽核+橘金泛光");
             IntVec3 anchor4 = state.Stations[3].AnchorCell;
-            DrawWorldPill(new IntVec3(anchor4.x, 0, anchor4.z + 6), "上: 硬切穿墙 (fade=0)");
-            DrawWorldPill(new IntVec3(anchor4.x, 0, anchor4.z - 6), "下: 软粒子柔化 (fade=1.4)");
+            DrawWorldPill(new IntVec3(anchor4.x, 0, anchor4.z + 6), "上: 不柔化 (fade=0)");
+            DrawWorldPill(new IntVec3(anchor4.x, 0, anchor4.z - 6), "下: 贴近墙体淡出 (fade=18)");
         }
         finally
         {

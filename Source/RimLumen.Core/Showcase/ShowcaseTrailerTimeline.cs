@@ -44,7 +44,9 @@ internal static class ShowcaseTrailerTimeline
     // Segment B camera, relative to the arena centre, and its zoom.
     internal const float VortexCameraX = 0.5f;
     internal const float VortexCameraZ = 1.0f;
-    internal const float VortexRootSize = 6f;
+    // Vanilla's closest zoom (CameraMapConfig.sizeRange.min). Below it the camera drops under altitude 15 and its 0.5 near
+    // plane clips the upper altitude layers: MoteOverhead (RimLumen's HDR layer) and the lighting overlay.
+    internal const float VortexRootSize = 11f;
 
     internal static readonly TrailerCue[] Cues = Build();
 
