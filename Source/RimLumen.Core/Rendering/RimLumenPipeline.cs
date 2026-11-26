@@ -91,14 +91,25 @@ internal sealed class RimLumenPipeline : IDisposable
 
     internal void Detach()
     {
+        CompleteL1Simulation();
         App.WaitForRenderThreadIdle();
         App.FrameRenderer.RemoveFeature(Pre);
+    }
+
+    // Ensures: main thread. No capture completes the job once the feature is gone, so finish it here and log its
+    //          exception instead of letting WaylithJobRuntime discard it with the handle; cleanup continues. Callers run
+    //          it before WaitForRenderThreadIdle, which rethrows a faulted render thread's exception.
+    private static void CompleteL1Simulation()
+    {
+        try { LumenSceneBootstrap.Simulator.CompleteOffThread(); }
+        catch (Exception ex) { Log.Error("[RimLumen] L1 simulation job failed: " + ex); }
     }
 
     // Ensures: any thread. Removal is queued for the main thread: the render thread must not edit the feature list, and Detach()
     //   would deadlock there on WaitForRenderThreadIdle. Frames already captured keep their own feature snapshot and no-op once tripped.
     internal void DetachAfterFailSafe() => App.FrameRenderer.RenderToMainThread.Enqueue(() =>
     {
+        CompleteL1Simulation();
         App.FrameRenderer.RemoveFeature(Pre);
         // The render thread may already be faulted and would never answer WaitForRenderThreadIdle; the CPU
         // light-field state must still be dropped, so release without waiting for it.
@@ -529,6 +540,7 @@ internal sealed class RimLumenPipeline : IDisposable
     {
         // EngineApplication.Dispose:866 runs other features before BeforeGraphicsShutdown:868 inside
         // one catch-all. Retire our work earlier too, so another feature throwing cannot skip cleanup.
+        CompleteL1Simulation();
         App.WaitForRenderThreadIdle();
         App.GraphicsDevice?.WaitIdleAndRun(() => { });
         Detach();
@@ -546,6 +558,7 @@ internal sealed class RimLumenPipeline : IDisposable
         App.PrePollEvents -= LatchFrameSettings;
         App.BeforeGraphicsShutdown -= Shutdown;
         App.OnShutdown -= Quiesce;
+        CompleteL1Simulation();
         LumenSceneBootstrap.Simulator.HdrRendererAttached = false;
         Release("L1Particles", L1Renderer.Dispose);
         Release("LightPool", LightPool.Dispose);

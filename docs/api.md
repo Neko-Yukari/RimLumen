@@ -1739,9 +1739,9 @@ void main()
 
 主线程 `CaptureMainThread` 期间，自定义粒子后端或适配器可通过 `LumenHostRegistry.GetEnvironmentForces(int mapIndex, LumenEnvironmentChannel channels)` 与 `LumenHostRegistry.GetCursors(int mapIndex)` 只读读取本帧已冻结的世界空间环境力切片 `ReadOnlySpan<LumenEnvironmentForce>`（含 `Channel`、`Shape`、`CenterWorld`、`Radius`、`Strength`、`WaveRadius`、`ShellHalfThickness`）与活动光标快照 `ReadOnlySpan<LumenCursorSnapshot>`（含地面 `PositionXZ`、屏幕高度速度向量 `ScreenVelocity`、标量 `Speed` 与来源 `Source`）；无活动源或光标时返回空切片。
 
-L1 的 `CpuParticleSimulator` 在 Waylith 工作线程上模拟。每帧捕获先完成上一帧的模拟作业并暂存其结果，再在主线程收集本帧全部宿主状态，然后调度下一次模拟，因此 L1 画面固定晚一帧。作业异常在下一次完成时重新抛出，走管线的渲染熔断，不回退到同步模拟。
+L1 的 `CpuParticleSimulator` 在 Waylith 工作线程上模拟。每帧捕获先完成上一帧的模拟作业并暂存其结果，再在主线程收集本帧全部宿主状态，然后调度下一次模拟，因此 L1 画面固定晚一帧。作业异常在下一次完成时重新抛出，走管线的渲染熔断，不回退到同步模拟。管线摘除或关闭时也会完成在跑的作业，此时 RimLumen 只用 `Log.Error` 记录一次异常，不重新抛出，其余清理照常执行。Waylith 作业运行时在作业出错时也会自行记一条日志。
 
-`AcquireEmitter`、`SetEmitterTransform`、`SetEmitterParams`、`EmitBurst`、`RestartEmitter` 和 `ReleaseEmitter` 都是主线程命令，在下一次捕获时按调用顺序应用。`AcquireEmitter` 当即返回 ID；`EmitBurst` 按调用时的粒子密度稀释。`LiveParticleCount`、`GetLiveParticleCount` 和内部的发射器存活查询读取最近一次完成的模拟。`ReleaseEmitter(id, immediate: true)` 当即让该 ID 失效，应用它的那一帧不再绘制该发射器的粒子和拖尾。对已失效 ID 的调用被忽略。WebSim 和离线测试调用 `CaptureMainThread`，同步执行同一份模拟。
+`AcquireEmitter`、`SetEmitterTransform`、`SetEmitterParams`、`EmitBurst`、`RestartEmitter` 和 `ReleaseEmitter` 都是主线程命令，在下一次捕获时按调用顺序应用。`AcquireEmitter` 当即返回 ID；`EmitBurst` 按调用时的粒子密度稀释。`LiveParticleCount`、`GetLiveParticleCount` 和内部的发射器存活查询读取最近一次完成的模拟。`LiveParticles` 直接读模拟状态，作业进行中读取会抛出 `InvalidOperationException`。游戏内只要 L1 有工作，两次捕获之间都有作业在跑，所以它只适合 WebSim 和离线测试这类调用 `CaptureMainThread` 的宿主。`ReleaseEmitter(id, immediate: true)` 当即让该 ID 失效，应用它的那一帧不再绘制该发射器的粒子和拖尾。对已失效 ID 的调用被忽略。WebSim 和离线测试调用 `CaptureMainThread`，同步执行同一份模拟。
 
 ### 3. GPU 粒子与节点后端
 

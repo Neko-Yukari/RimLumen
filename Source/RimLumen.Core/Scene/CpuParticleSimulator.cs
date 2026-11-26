@@ -281,10 +281,11 @@ public sealed partial class CpuParticleSimulator : ILumenFrameContributor
     // Ensures: number of live particles after the last completed simulation.
     public int LiveParticleCount => front.ParticleCount;
 
-    // Requires: no simulation in flight (hosts that call CaptureMainThread).
+    // Requires: no simulation in flight. In game a job runs between captures whenever L1 has work, so this throws
+    //           there; WebSim and offline hosts that call CaptureMainThread can always read it.
     // Ensures: read-only view of the live particles, ordered as stored (swap-remove compaction order).
     public ReadOnlySpan<CpuParticle> LiveParticles => simulationInFlight
-        ? throw new InvalidOperationException("L1 particles are being simulated off the main thread.")
+        ? throw new InvalidOperationException("An L1 simulation job is in flight; read LiveParticles after CompleteOffThread.")
         : particles.AsSpan(0, particleCount);
 
     // Ensures: particle quad and trail strip vertices/indices of the last completed simulation.
