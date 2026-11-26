@@ -24,9 +24,12 @@ internal readonly record struct TrailerCue(float Time, TrailerCueKind Kind, int 
 internal static class ShowcaseTrailerTimeline
 {
     internal const float LeadInSeconds = 1f;
-    internal const float SegmentAEnd = 12f;
-    internal const float FreezeEnd = 13f;
-    internal const float SegmentBEnd = 23f;
+    // Segment A pans until PanSeconds, then holds on the fireworks until the last one has faded (FireworkVisibleSeconds
+    // after its launch) before the freeze frame.
+    internal const float PanSeconds = 12f;
+    internal const float SegmentAEnd = 13f;
+    internal const float FreezeEnd = SegmentAEnd + 1f;
+    internal const float SegmentBEnd = FreezeEnd + 10f;
 
     // Segment A pans at constant speed from PanStartX to PanEndX at zoom PanRootSize.
     internal const float PanStartX = -24f;
@@ -52,12 +55,12 @@ internal static class ShowcaseTrailerTimeline
 
     // Ensures: camera X offset of segment A at take time t, clamped to the pan's end points.
     internal static float PanX(float t) =>
-        PanStartX + (PanEndX - PanStartX) * Math.Clamp(t / SegmentAEnd, 0f, 1f);
+        PanStartX + (PanEndX - PanStartX) * Math.Clamp(t / PanSeconds, 0f, 1f);
 
     private static TrailerCue[] Build()
     {
         var cues = new List<TrailerCue> { new(0f, TrailerCueKind.SegmentAStart) };
-        float speed = (PanEndX - PanStartX) / SegmentAEnd;
+        float speed = (PanEndX - PanStartX) / PanSeconds;
         for (int i = 0; i < StationOffsetsX.Length; i++)
             cues.Add(new(Math.Max(0f, (StationOffsetsX[i] - StationLead - PanStartX) / speed), TrailerCueKind.StartStation, i));
         for (int i = 0; i < FireworkOffsets.Length; i++)

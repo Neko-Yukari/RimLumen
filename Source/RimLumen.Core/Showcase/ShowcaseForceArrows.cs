@@ -56,7 +56,7 @@ internal static class ShowcaseForceArrows
 internal sealed class ShowcaseForceArrowRenderer
 {
     // Mirrors LumenForceArrowTypes.glsl.
-    private const int Samples = 32;
+    private const int Samples = 16;
     private const int Channels = 7;
     private const int ArrowBytes = 48;
     private const int ArrowsPerEmitter = Samples * Channels;

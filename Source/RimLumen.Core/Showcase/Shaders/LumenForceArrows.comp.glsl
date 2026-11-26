@@ -27,7 +27,7 @@ void writeArrow(uint index, uint channel, vec3 start, vec3 vector, float scale, 
         arrows[index] = GpuForceArrow(vec4(0.0), vec4(0.0), vec4(0.0));
         return;
     }
-    float drawn = min(magnitude * scale, LUMEN_ARROW_MAX_LENGTH);
+    float drawn = clamp(magnitude * scale, LUMEN_ARROW_MIN_LENGTH, LUMEN_ARROW_MAX_LENGTH);
     arrows[index] = GpuForceArrow(vec4(start, float(channel + 1u)), vec4(vector * (drawn / magnitude), drawn),
         vec4(anchor, 0.0, 0.0));
 }

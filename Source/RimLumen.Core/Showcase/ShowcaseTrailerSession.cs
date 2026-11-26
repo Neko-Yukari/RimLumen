@@ -362,7 +362,8 @@ internal static class ShowcaseTrailerSession
         private static void Mark(string what, float takeSeconds) =>
             Log.Message($"[RimLumen trailer] {what} t={takeSeconds:F3}s at {DateTime.Now:HH:mm:ss.fff}");
 
-        // Segment B: L2 vortex + curl turbulence + attractor + light gravity/drag, soft-faded against the walls.
+        // Segment B: L2 vortex + curl turbulence + attractor + sideways wind/drag, soft-faded against the walls. The
+        // GravityDrag direction is horizontal so its arrow survives the top-down camera (a vertical one projects to 0).
         private static EffectAsset CreateVortexAsset() => new()
         {
             EffectId = VortexEffectId,
@@ -407,7 +408,7 @@ internal static class ShowcaseTrailerSession
                             new ForceFieldSpec(ForceFieldKind.Vortex, Vector3.UnitY, new Vector3(0.8f, 0.3f, 0f), 6f, 5.2f),
                             new ForceFieldSpec(ForceFieldKind.CurlTurbulence, Vector3.Zero, Vector3.Zero, 6f, 1.6f, 0.9f),
                             new ForceFieldSpec(ForceFieldKind.PointAttractor, Vector3.Zero, Vector3.Zero, 6f, 2.0f),
-                            new ForceFieldSpec(ForceFieldKind.GravityDrag, new Vector3(0f, -1f, 0f), new Vector3(0.6f, 0f, 0f), 0f, 0.5f),
+                            new ForceFieldSpec(ForceFieldKind.GravityDrag, Vector3.Normalize(new Vector3(1f, 0f, -0.5f)), new Vector3(0.6f, 0f, 0f), 0f, 1.2f),
                         },
                     },
                 },

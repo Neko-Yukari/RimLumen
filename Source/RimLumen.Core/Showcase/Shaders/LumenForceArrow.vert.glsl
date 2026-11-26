@@ -49,12 +49,12 @@ void main()
     if (screenLength < 1e-4) return;
     vec2 direction = screen / screenLength;
     vec3 side = right * -direction.y + up * direction.x;
-    float headLength = min(0.35 * screenLength, 0.3);
+    float headLength = min(0.35 * screenLength, 0.22);
     float t = inPosition.x < 0.5 ? 0.0 : inPosition.x < 1.5 ? 1.0 - headLength / screenLength : 1.0;
-    float halfWidth = inPosition.z > 0.5 ? 0.12 : 0.035;
+    float halfWidth = inPosition.z > 0.5 ? 0.11 : 0.045;
     vec3 worldPosition = tail + along * t + side * (inPosition.y * halfWidth);
     gl_Position = camera.ViewProj * vec4(worldPosition, 1.0);
     // Premultiplied over the HDR layer (blend One/OneMinusSrcAlpha).
-    const float alpha = 0.9;
+    const float alpha = 1.0;
     vColor = vec4(LUMEN_ARROW_COLORS[uint(arrow.Start.w) - 1u] * alpha, alpha);
 }

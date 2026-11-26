@@ -4,6 +4,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
+using RimLumen.Core.Demo;
 using RimLumen.Core.Showcase;
 using Verse;
 
@@ -188,8 +189,9 @@ public static class ShowcaseSuite
             True(cue.Time < ShowcaseTrailerTimeline.SegmentAEnd);
             True(MathF.Abs(ShowcaseTrailerTimeline.StationOffsetsX[cue.Index] - ShowcaseTrailerTimeline.PanX(cue.Time)) <= halfWidth);
         }
-        // 1.0 s is the firework climb before its burst (RimLumenDemoEffects.CreateFireworkAsset).
-        True(cues.Where(c => c.Kind == TrailerCueKind.LaunchFirework).All(c => c.Time + 1f < ShowcaseTrailerTimeline.SegmentAEnd));
+        // Every firework climbs, bursts and fades out before the freeze frame.
+        True(cues.Where(c => c.Kind == TrailerCueKind.LaunchFirework)
+            .All(c => c.Time + RimLumenDemoEffects.FireworkVisibleSeconds <= ShowcaseTrailerTimeline.SegmentAEnd));
         TrailerCue segmentB = cues.Single(c => c.Kind == TrailerCueKind.SegmentBStart);
         True(cues.Single(c => c.Kind == TrailerCueKind.Freeze).Time < segmentB.Time);
         var packs = cues.Where(c => c.Kind == TrailerCueKind.SwitchPack).ToArray();

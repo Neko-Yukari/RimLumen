@@ -13,7 +13,7 @@ struct GpuForceArrow
 };
 
 // Sampled particles per emitter and arrows per sampled particle.
-const uint LUMEN_ARROW_SAMPLES = 32u;
+const uint LUMEN_ARROW_SAMPLES = 16u;
 const uint LUMEN_ARROW_CHANNELS = 7u;
 
 // Channels: 0 velocity, 1 gravity (GravityDrag acceleration), 2 drag (-drag * velocity), 3 vortex, 4 curl turbulence,
@@ -21,19 +21,22 @@ const uint LUMEN_ARROW_CHANNELS = 7u;
 const uint LUMEN_ARROW_VELOCITY = 0u;
 const uint LUMEN_ARROW_DRAG = 2u;
 
-// Drawn length = min(|v| * scale, LUMEN_ARROW_MAX_LENGTH) cells; scale is seconds for velocity, seconds^2 for forces.
-const float LUMEN_ARROW_VELOCITY_SCALE = 0.25;
-const float LUMEN_ARROW_FORCE_SCALE = 0.08;
-const float LUMEN_ARROW_MAX_LENGTH = 1.5;
+// Drawn length = clamp(|v| * scale, LUMEN_ARROW_MIN_LENGTH, LUMEN_ARROW_MAX_LENGTH) cells; scale is seconds for
+// velocity, seconds^2 for forces. The minimum keeps weak force terms readable next to the velocity arrow.
+const float LUMEN_ARROW_VELOCITY_SCALE = 0.3;
+const float LUMEN_ARROW_FORCE_SCALE = 0.25;
+const float LUMEN_ARROW_MIN_LENGTH = 0.45;
+const float LUMEN_ARROW_MAX_LENGTH = 1.6;
 
 const vec3 LUMEN_ARROW_COLORS[7] = vec3[7](
+    // Hues kept away from the trailer vortex's cyan-to-purple particles.
     vec3(1.0, 1.0, 1.0),   // velocity: white
-    vec3(1.0, 0.85, 0.1),  // gravity: yellow
-    vec3(0.55, 0.55, 0.55),// drag: grey
-    vec3(0.1, 0.85, 1.0),  // vortex: cyan
-    vec3(1.0, 0.2, 0.9),   // curl turbulence: magenta
-    vec3(0.2, 1.0, 0.3),   // attractor: green
-    vec3(1.0, 0.5, 0.1));  // ring wave / pulse: orange
+    vec3(1.0, 0.9, 0.1),   // gravity / wind: yellow
+    vec3(0.6, 0.6, 0.6),   // drag: grey
+    vec3(1.0, 0.15, 0.1),  // vortex: red
+    vec3(0.55, 1.0, 0.1),  // curl turbulence: lime
+    vec3(1.0, 0.5, 0.05),  // attractor: orange
+    vec3(1.0, 0.4, 0.7));  // ring wave / pulse: pink
 
 uint lumenArrowChannelOfKind(uint kind)
 {
