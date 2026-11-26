@@ -342,7 +342,7 @@ internal sealed class RimLumenPipeline : IDisposable
             bool vanillaGlow = command.PassId != RimLumenRenderHost.LumenRenderPassId;
             if (vanillaGlow)
             {
-                if (!RimLumenRenderHost.EnableVanillaAdditiveBloom
+                if (!RimLumenRenderHost.VanillaAdditiveBloomActive
                     || (command.PassId != 0 && command.PassId != RimWorldWaylith.Rendering.RenderPassIds.MapMain)
                     || ((uint)command.Layer < 32u && (excludedGlowLayers & (1 << command.Layer)) != 0))
                     continue;
@@ -364,7 +364,7 @@ internal sealed class RimLumenPipeline : IDisposable
                 {
                     // Native RimLumen effects keep rendering; only the third-party/vanilla glow enhancement is dropped.
                     Log.Error($"[RimLumen] Vanilla additive compatibility fail-safe tripped; disabling vanilla glow enhancement: {ex}");
-                    RimLumenRenderHost.EnableVanillaAdditiveBloom = false;
+                    RimLumenRenderHost.TripVanillaAdditiveFuse();
                     // Drop the copies this frame already took too, so the tripping frame shows no enhancement either.
                     if (glowMesh is not null)
                     {
