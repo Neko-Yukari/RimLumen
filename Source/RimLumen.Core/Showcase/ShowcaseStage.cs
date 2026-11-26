@@ -92,6 +92,9 @@ public static class ShowcaseStage
         public required Map Map;
         public required IReadOnlyList<ShowcaseStationInfo> Stations;
         public required List<ILumenEffectHandle> Handles;
+        // Play requests per station (#4 has two); StationStarted gates their effects and the #1/#6 comparison quads.
+        public required LumenPlayRequest[][] StationRequests;
+        public readonly bool[] StationStarted = new bool[6];
         public required List<Thing> SpawnedWalls;
         public required IntVec3 Station1Anchor;
         public required IntVec3 Station3Anchor;
@@ -155,20 +158,14 @@ public static class ShowcaseStage
     //   afterwards), frames the camera over all 6 left-to-right stations, and spawns all 6 live showcase stations via
     //   LumenSceneBootstrap / RimLumenRenderHost, remembering the player's EnableVanillaAdditiveBloom for Clear. A showcase still
     //   active on another map is cleared first, so its handles and walls are never orphaned.
-    public static IReadOnlyList<ShowcaseStationInfo> BuildOrRebuild(Map map)
+    public static IReadOnlyList<ShowcaseStationInfo> BuildOrRebuild(Map map) => BuildOrRebuild(map, startStations: true);
+
+    // Ensures: as BuildOrRebuild(map); with startStations false every station stays idle until StartStation.
+    internal static IReadOnlyList<ShowcaseStationInfo> BuildOrRebuild(Map map, bool startStations)
     {
         ArgumentNullException.ThrowIfNull(map);
 
-        Map? otherMap;
-        lock (StateLock)
-        {
-            otherMap = activeState?.Map;
-        }
-        if (otherMap is not null && !ReferenceEquals(otherMap, map))
-        {
-            Clear(otherMap);
-        }
-        Clear(map);
+        ClearActive();
         LumenSceneBootstrap.EnsureInitialized();
         RuntimeHelpers.RunClassConstructor(typeof(LumenGpuParticlesBootstrap).TypeHandle);
         EnsureMapComponents(map);
@@ -190,7 +187,9 @@ public static class ShowcaseStage
         Find.CameraDriver?.SetRootPosAndSize(new UnityEngine.Vector3(center.x + 0.5f, 0f, center.z + 0.5f), 17.5f);
 
         var walls = SpawnStation4Walls(map, stations[3].AnchorCell);
-        var handles = SpawnAllStationEffects(map, stations, out ActiveShowcaseState state, walls);
+        ActiveShowcaseState state = CreateStationState(map, stations, walls);
+        if (startStations)
+            for (int i = 0; i < stations.Count; i++) StartStation(state, i);
 
         lock (StateLock)
         {
@@ -200,8 +199,25 @@ public static class ShowcaseStage
         }
         RimLumenRenderHost.EnableVanillaAdditiveBloom = true;
 
-        Log.Message($"[RimLumen] Showcase built: map={map.uniqueID}, center={center}, stations={stations.Count}, handles={handles.Count}");
+        Log.Message($"[RimLumen] Showcase built: map={map.uniqueID}, center={center}, stations={stations.Count}, handles={state.Handles.Count}");
         return stations;
+    }
+
+    // Requires: main thread; the showcase was built on map; stationIndex in [0, 6).
+    // Ensures: starts that station's effects once; a repeated call does nothing.
+    internal static void StartStation(Map map, int stationIndex)
+    {
+        if (!TryGetActiveState(map, out ActiveShowcaseState? state))
+            throw new InvalidOperationException("No showcase is active on this map.");
+        StartStation(state!, stationIndex);
+    }
+
+    private static void StartStation(ActiveShowcaseState state, int stationIndex)
+    {
+        if (state.StationStarted[stationIndex]) return;
+        state.StationStarted[stationIndex] = true;
+        foreach (LumenPlayRequest request in state.StationRequests[stationIndex])
+            state.Handles.Add(LumenSceneBootstrap.Service.Play(request));
     }
 
     // Requires: main thread; map is non-null.
@@ -247,6 +263,17 @@ public static class ShowcaseStage
         }
 
         RimLumenRenderHost.EnableVanillaAdditiveBloom = prior.PreviousVanillaAdditiveBloom;
+    }
+
+    // Requires: main thread. Ensures: clears the active showcase on whichever map holds it; none active does nothing.
+    internal static void ClearActive()
+    {
+        Map? activeMap;
+        lock (StateLock)
+        {
+            activeMap = activeState?.Map;
+        }
+        if (activeMap is not null) Clear(activeMap);
     }
 
     public static bool ToggleLabels(Map map)
@@ -372,17 +399,16 @@ public static class ShowcaseStage
         walls.Add(wall);
     }
 
-    private static List<ILumenEffectHandle> SpawnAllStationEffects(
+    // Registers the station assets and returns the state holding each station's play requests; nothing plays yet.
+    private static ActiveShowcaseState CreateStationState(
         Map map,
         IReadOnlyList<ShowcaseStationInfo> stations,
-        out ActiveShowcaseState state,
         List<Thing> spawnedWalls)
     {
         // Node heights are cells above the ground (Y = 0), not draw altitudes.
         const float ground = 0f;
 
         var catalog = LumenSceneBootstrap.Catalog;
-        var service = LumenSceneBootstrap.Service;
 
         catalog.Register(CreateStation1HdrAsset(ground));
         catalog.Register(CreateStation2StretchedAsset(ground));
@@ -398,12 +424,13 @@ public static class ShowcaseStage
         var anchor5 = stations[4].AnchorCell;
         var anchor6 = stations[5].AnchorCell;
 
-        var handles = new List<ILumenEffectHandle>(6);
+        var requests = new LumenPlayRequest[6][];
         var builtState = new ActiveShowcaseState
         {
             Map = map,
             Stations = stations,
-            Handles = handles,
+            Handles = new List<ILumenEffectHandle>(6),
+            StationRequests = requests,
             SpawnedWalls = spawnedWalls,
             Station1Anchor = anchor1,
             Station3Anchor = anchor3,
@@ -412,21 +439,21 @@ public static class ShowcaseStage
             MoteGlowMaterial = MaterialPool.MatFrom("Other/ForceField", ShaderDatabase.MoteGlow, new UnityEngine.Color(1f, 0.38f, 0.78f, 1f)),
         };
 
-        handles.Add(service.Play(new LumenPlayRequest
+        requests[0] = new[] { new LumenPlayRequest
         {
             EffectId = StationEffectIds[0],
             MapIndex = map.uniqueID,
             OriginWorld = new Vector3(anchor1.x + 0.5f, 0f, anchor1.z - 3.5f),
-        }));
+        } };
 
-        handles.Add(service.Play(new LumenPlayRequest
+        requests[1] = new[] { new LumenPlayRequest
         {
             EffectId = StationEffectIds[1],
             MapIndex = map.uniqueID,
             OriginWorld = new Vector3(anchor2.x + 0.5f, 0f, anchor2.z + 0.5f),
-        }));
+        } };
 
-        handles.Add(service.Play(new LumenPlayRequest
+        requests[2] = new[] { new LumenPlayRequest
         {
             EffectId = StationEffectIds[2],
             MapIndex = map.uniqueID,
@@ -441,31 +468,34 @@ public static class ShowcaseStage
                 rotationDegrees = -theta * (180f / MathF.PI);
                 return true;
             },
-        }));
+        } };
 
-        handles.Add(service.Play(new LumenPlayRequest
+        requests[3] = new[]
         {
-            EffectId = StationEffectIds[3],
-            MapIndex = map.uniqueID,
-            OriginWorld = new Vector3(anchor4.x + 0.5f, 0f, anchor4.z + 4.0f),
-        }));
+            new LumenPlayRequest
+            {
+                EffectId = StationEffectIds[3],
+                MapIndex = map.uniqueID,
+                OriginWorld = new Vector3(anchor4.x + 0.5f, 0f, anchor4.z + 4.0f),
+            },
+            new LumenPlayRequest
+            {
+                EffectId = StationEffectIds[4],
+                MapIndex = map.uniqueID,
+                OriginWorld = new Vector3(anchor4.x + 0.5f, 0f, anchor4.z - 3.0f),
+            },
+        };
 
-        handles.Add(service.Play(new LumenPlayRequest
-        {
-            EffectId = StationEffectIds[4],
-            MapIndex = map.uniqueID,
-            OriginWorld = new Vector3(anchor4.x + 0.5f, 0f, anchor4.z - 3.0f),
-        }));
-
-        handles.Add(service.Play(new LumenPlayRequest
+        requests[4] = new[] { new LumenPlayRequest
         {
             EffectId = StationEffectIds[5],
             MapIndex = map.uniqueID,
             OriginWorld = new Vector3(anchor5.x + 0.5f, 0f, anchor5.z + 0.5f),
-        }));
+        } };
 
-        state = builtState;
-        return handles;
+        // #6 is the vanilla MoteGlow quad drawn by LumenShowcaseMapComponent; it has no RimLumen effect.
+        requests[5] = Array.Empty<LumenPlayRequest>();
+        return builtState;
     }
 
     private static EffectAsset CreateStation1HdrAsset(float height) => new()
@@ -740,14 +770,14 @@ public sealed class LumenShowcaseMapComponent : MapComponent, IDisposable
         state.PulseTime += dt;
 
         float yMote = AltitudeLayer.MoteOverhead.AltitudeFor();
-        if (state.LdrMaterial is not null)
+        if (state.LdrMaterial is not null && state.StationStarted[0])
         {
             var ldrPos = new UnityEngine.Vector3(state.Station1Anchor.x + 0.5f, yMote, state.Station1Anchor.z + 4.5f);
             var ldrMatrix = UnityEngine.Matrix4x4.TRS(ldrPos, UnityEngine.Quaternion.identity, new UnityEngine.Vector3(2.6f, 1f, 2.6f));
             UnityEngine.Graphics.DrawMesh(MeshPool.plane10, ldrMatrix, state.LdrMaterial, 0);
         }
 
-        if (state.MoteGlowMaterial is not null)
+        if (state.MoteGlowMaterial is not null && state.StationStarted[5])
         {
             var compatPos = new UnityEngine.Vector3(state.Station6Anchor.x + 0.5f, yMote, state.Station6Anchor.z + 0.5f);
             float outerScale = 3.2f + 0.9f * MathF.Sin(state.PulseTime * 2.4f);

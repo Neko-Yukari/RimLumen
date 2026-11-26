@@ -563,6 +563,36 @@ public static class ParticleShaderTests
     [LumenFact]
     public static void RuntimeSlangCompilesAllStagesAndPreservesStorageStrides() => WithRuntimeSlang(_ => CompileAndCheckStorageStrides());
 
+    // The Showcase force arrows decompose forces through the simulation's own ParticleForces.glsl, compiled by the host
+    // Slang from the source tree (they never ship), and their material layout matches ShowcaseForceArrowRenderer.
+    [LumenFact]
+    public static void ForceArrowShadersCompileThroughSharedForceTerms() => WithRuntimeSlang(_ =>
+    {
+        string directory = Path.GetFullPath(Path.Combine(ShaderDirectory(), "..", "..", "..", "Source", "RimLumen.Core", "Showcase", "Shaders"));
+        string computePath = Path.Combine(directory, "LumenForceArrows.comp.glsl");
+        string compute = File.ReadAllText(computePath);
+        Require(compute.Contains("#include \"../../../../1.7/Shaders/Particles/ParticleForces.glsl\"", StringComparison.Ordinal)
+            && compute.Contains("lumenAccumulateFieldForce(emitter, field, position, term, drag);", StringComparison.Ordinal),
+            "Force arrows must split forces through the simulation's lumenAccumulateFieldForce.");
+        var computeInstructions = Instructions(CompileFile("Showcase/LumenForceArrows.comp.glsl", RuntimeShaderStage.Compute, computePath));
+        foreach (uint stride in new uint[] { 64, 480, 48 })
+            Require(HasArrayStride(computeInstructions, stride), $"Force-arrow compute SPIR-V missing {stride}-byte storage array stride.");
+        string vertexPath = Path.Combine(directory, "LumenForceArrow.vert.glsl");
+        string fragmentPath = Path.Combine(directory, "LumenForceArrow.frag.glsl");
+        Require(HasArrayStride(Instructions(CompileFile("Showcase/LumenForceArrow.vert.glsl", RuntimeShaderStage.Vertex, vertexPath)), 48),
+            "Force-arrow vertex SPIR-V missing the 48-byte arrow stride.");
+        CompileFile("Showcase/LumenForceArrow.frag.glsl", RuntimeShaderStage.Fragment, fragmentPath);
+        string vertexSource = ShaderSourceLoader.ReadShaderSource(vertexPath);
+        string fragmentSource = ShaderSourceLoader.ReadShaderSource(fragmentPath);
+        MaterialLayout layout = ShaderMetadataParser.ExtractMaterialLayout(fragmentSource, "LumenForceArrow.frag");
+        Require(!layout.HasErrors && layout.UniformSize == 48, "Force-arrow material UBO must parse as 48 bytes.");
+        CheckOverrideSlots(layout, ("_LumenArrowDraw", 0), ("_LumenCameraRight", 16), ("_LumenCameraUp", 32));
+        Require(layout.StorageBufferSlots.Select(x => (x.Binding, x.PropertyName)).SequenceEqual(new[] { (1, "_LumenForceArrows") }),
+            "Force-arrow storage binding differs from ShowcaseForceArrowRenderer.");
+        Require(ShaderMetadataParser.ValidateStageInterface(vertexSource, fragmentSource, "LumenForceArrow.vert", "LumenForceArrow.frag").Count == 0,
+            "Waylith reports mismatched force-arrow varyings.");
+    });
+
     [LumenFact]
     public static void TrailGpuShadersCompileWithMatchingSpirvStrides() => WithRuntimeSlang(_ =>
     {

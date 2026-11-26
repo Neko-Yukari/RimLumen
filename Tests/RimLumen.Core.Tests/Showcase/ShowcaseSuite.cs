@@ -2,6 +2,7 @@ using System;
 using System.Buffers.Binary;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using RimLumen.Core.Showcase;
 using Verse;
@@ -169,6 +170,34 @@ public static class ShowcaseSuite
             }
         }
         return crc ^ 0xFFFFFFFFu;
+    }
+
+    // Storyboard contract: cues run in time order; each station lights up on screen during the pan (half width 16 cells
+    // at the pan zoom on 16:9); every firework has climbed before the freeze; segment B switches Standard -> Crisp -> Foggy
+    // and turns the arrows on in its second half.
+    [LumenFact]
+    public static void TrailerTimelineKeepsStoryboardOrder()
+    {
+        TrailerCue[] cues = ShowcaseTrailerTimeline.Cues;
+        for (int i = 1; i < cues.Length; i++) True(cues[i - 1].Time <= cues[i].Time);
+        float halfWidth = ShowcaseTrailerTimeline.PanRootSize * 16f / 9f;
+        var stations = cues.Where(c => c.Kind == TrailerCueKind.StartStation).ToArray();
+        Equal(ShowcaseTrailerTimeline.StationOffsetsX.Length, stations.Length);
+        foreach (TrailerCue cue in stations)
+        {
+            True(cue.Time < ShowcaseTrailerTimeline.SegmentAEnd);
+            True(MathF.Abs(ShowcaseTrailerTimeline.StationOffsetsX[cue.Index] - ShowcaseTrailerTimeline.PanX(cue.Time)) <= halfWidth);
+        }
+        // 1.0 s is the firework climb before its burst (RimLumenDemoEffects.CreateFireworkAsset).
+        True(cues.Where(c => c.Kind == TrailerCueKind.LaunchFirework).All(c => c.Time + 1f < ShowcaseTrailerTimeline.SegmentAEnd));
+        TrailerCue segmentB = cues.Single(c => c.Kind == TrailerCueKind.SegmentBStart);
+        True(cues.Single(c => c.Kind == TrailerCueKind.Freeze).Time < segmentB.Time);
+        var packs = cues.Where(c => c.Kind == TrailerCueKind.SwitchPack).ToArray();
+        True(packs.Select(c => c.PackId).SequenceEqual(new[] { ShaderPackCatalogIds.Standard, ShaderPackCatalogIds.Crisp, ShaderPackCatalogIds.Foggy }));
+        True(packs.All(c => c.Time >= segmentB.Time && c.Time < ShowcaseTrailerTimeline.SegmentBEnd));
+        True(cues.Single(c => c.Kind == TrailerCueKind.ArrowsOn).Time
+            >= (segmentB.Time + ShowcaseTrailerTimeline.SegmentBEnd) / 2f);
+        Equal(TrailerCueKind.End, cues[^1].Kind);
     }
 
     private static void True(bool condition)

@@ -22,6 +22,18 @@ public static class ShowcaseDebugActions
         ShowcaseStage.Clear(map);
     }
 
+    // Storyboard: ShowcaseTrailerTimeline. Rebuilds the showcase, so it can be re-shot any number of times.
+    [DebugAction("RimLumen", "Play Trailer Take", allowedGameStates = AllowedGameStates.PlayingOnMap)]
+    public static void PlayTrailerTake()
+    {
+        Map? map = Find.CurrentMap;
+        if (map is null) return;
+        ShowcaseTrailerSession.TryStart(map);
+    }
+
+    [DebugAction("RimLumen", "Toggle L2 Force Arrows", allowedGameStates = AllowedGameStates.PlayingOnMap)]
+    public static void ToggleForceArrows() => ShowcaseForceArrows.SetEnabled(!ShowcaseForceArrows.Enabled);
+
     [DebugAction("RimLumen", "Toggle Vanilla Additive HDR", allowedGameStates = AllowedGameStates.PlayingOnMap)]
     public static void ToggleVanillaAdditiveHdr()
     {

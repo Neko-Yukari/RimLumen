@@ -568,7 +568,17 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         frame.CommandBuffer.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit,
             VkPipelineStageFlags.VertexShaderBit | VkPipelineStageFlags.DrawIndirectBit, VkDependencyFlags.None,
             default(ReadOnlySpan<VkMemoryBarrier>), exitBarriers[..exitCount], default(ReadOnlySpan<VkImageMemoryBarrier>));
+        RecordDevCompute(frame, snapshot, resources);
     }
+
+    // Dev-only hooks, implemented under Showcase/. The ship build strips that directory, so the compiler removes both
+    // calls together with their argument evaluation.
+    // Requires: render thread, after this frame's simulation and its exit barrier.
+    partial void RecordDevCompute(in FrameContext frame, ParticleFrame snapshot, ParticleGpuFrame resources);
+
+    // Requires: main thread, inside AppendHdrDraws after this frame's billboard and trail draws.
+    partial void AppendDevDraws(ParticleQueuedFrame frame, List<FinalDrawItem> draws, DrawItemFactory maker,
+        DrawPropertyArena arena, int queueOrder);
 
     private static void RecordBurstStateCopy(in FrameContext frame, GpuComputeBuffer from, GpuComputeBuffer to)
     {
@@ -663,6 +673,8 @@ internal sealed partial class LumenGpuParticleEngine : ILumenHdrDrawAppender
         if (!pendingFrames.TryGet(frameIndex, out ParticleQueuedFrame? frame) || frame.Gpu is null) return;
         drawResources.AppendDraws(frame.Snapshot, frame.Gpu, sceneDepth, frame.Textures, frame.TexturePresent, frame.Gpu.TextureSrgb,
             draws, maker, arena, queueOrder, frameIndex);
+        AppendDevDraws(frame, draws, maker, arena,
+            queueOrder + frame.Snapshot.Emitters.Length + frame.Snapshot.TrailEmitters.Length);
     }
 
     private void RetireFrame(RenderFrame frame)
