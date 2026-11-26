@@ -157,6 +157,7 @@ internal sealed class RimLumenPipeline : IDisposable
         Map? map = SimulatableMap();
         if (Current.Game == null || map == null || camera == null)
         {
+            LumenSceneBootstrap.Simulator.CompleteOffThread();
             MapLightFieldCollector.BeginCapture(App, null);
             return;
         }
@@ -192,7 +193,9 @@ internal sealed class RimLumenPipeline : IDisposable
         {
             // The service can activate a later contributor in this very capture.
             if (!contributor.HasActiveWork) continue;
-            contributor.CaptureMainThread(in capture);
+            // L1 simulates on a Waylith worker; this frame stages the simulation scheduled by the previous one.
+            if (ReferenceEquals(contributor, LumenSceneBootstrap.Simulator)) LumenSceneBootstrap.Simulator.CaptureOffThread(in capture);
+            else contributor.CaptureMainThread(in capture);
             if (!renderMap) continue;
             activeContributorBuffer.Add(contributor);
             contributor.EnqueuePreCompute(in compute);

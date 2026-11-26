@@ -131,8 +131,6 @@ internal sealed partial class LumenGpuParticleEngine : ILumenGpuParticleEngine, 
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         ArgumentNullException.ThrowIfNull(spec);
-        if (spec.BillboardMode == LumenBillboardMode.Mesh)
-            throw new NotSupportedException("L2 GPU particles do not support Mesh billboards.");
         var scheduler = new EmissionScheduler(spec, emissionSeed);
         var curves = new GpuCurveSample[64];
         GpuCurveAtlasPacker.Pack(spec.SizeOverLifetime, spec.ColorOverLifetime, curves);

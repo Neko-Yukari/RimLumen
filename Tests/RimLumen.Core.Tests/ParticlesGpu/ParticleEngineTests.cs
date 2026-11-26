@@ -331,7 +331,7 @@ public static class ParticleEngineTests
         service.GpuEngineProvider = () => gpu;
         using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7 });
         var frame = Frame(8f / 60);
-        Require(!service.Simulator.HasActiveWork, "The wait state has not activated L1 yet.");
+        Require(service.Simulator.HasActiveWork, "The dormant L1 acquisition waits for the capture that applies it.");
         ILumenFrameContributor[] contributors = [service, service.Simulator, gpu];
         foreach (var contributor in contributors)
             if (contributor.HasActiveWork) contributor.CaptureMainThread(frame);

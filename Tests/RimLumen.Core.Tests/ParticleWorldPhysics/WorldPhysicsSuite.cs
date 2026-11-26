@@ -152,8 +152,11 @@ public static class WorldPhysicsSuite
             using var handle = service.Play(new LumenPlayRequest { EffectId = asset.EffectId, MapIndex = 7 });
             Check(handle.IsAlive, "Both node orders must be valid.");
             handle.Stop(true);
-            service.CaptureMainThread(Frame(1f / 60)); // No CPU capture: the contributor has no work.
             var cpu = service.Simulator;
+            service.CaptureMainThread(Frame(1f / 60));
+            cpu.CaptureMainThread(Frame(1f / 60)); // Applies the queued releases; both empty emitters are reclaimed.
+            service.CaptureMainThread(Frame(1f / 60)); // The handle observes the reclaim on its next frame.
+
             return (handle.IsAlive, cpu.LiveParticleCount, cpu.ActiveEmitterCount, cpu.HasActiveWork);
         }
         var sourceFirst = Drain(false);
@@ -181,8 +184,9 @@ public static class WorldPhysicsSuite
             Check(l1.IsAlive && l2.IsAlive && service.Simulator.ActiveEmitterCount == 3 && gpu.HasActiveWork, "Both chains must bind.");
             l1.Stop(true);
             l2.Stop(true);
-            Check(!l1.IsAlive && service.Simulator.ActiveEmitterCount == 0 && !service.Simulator.HasActiveWork,
-                "All three empty L1 emitters must be reclaimed without a simulation capture.");
+            service.Simulator.CaptureMainThread(Frame(0f));
+            Check(service.Simulator.ActiveEmitterCount == 0 && !service.Simulator.HasActiveWork,
+                "The capture that applies the drain must reclaim all three empty L1 emitters at once.");
             int steps = 0;
             while (gpu.HasActiveWork && steps < 5)
             {
@@ -192,7 +196,7 @@ public static class WorldPhysicsSuite
                 Check(gpu.CapturedFrame!.Emitters.All(e => e.Parameters.Slots.Z == 0f), "Stopping before capture admits no births.");
             }
             service.CaptureMainThread(Frame(0f, 6));
-            Check(!gpu.HasActiveWork && !l2.IsAlive, "Each L2 source gets a final integration and its child a final lifetime; the chain must end.");
+            Check(!gpu.HasActiveWork && !l2.IsAlive && !l1.IsAlive, "Each L2 source gets a final integration and its child a final lifetime; the chain must end.");
             return steps;
         }
         int forward = Drain(false), reverse = Drain(true);

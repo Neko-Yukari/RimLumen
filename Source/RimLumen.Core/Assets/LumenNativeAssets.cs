@@ -724,6 +724,9 @@ internal static partial class LumenAssetRules
         ValidateEnum(emitter.Shape, path + ".shape");
         ValidateEnum(emitter.BlendMode, path + ".blendMode");
         ValidateEnum(emitter.BillboardMode, path + ".billboardMode");
+        // Neither particle tier renders a mesh per particle yet; reject instead of drawing a camera quad.
+        if (emitter.BillboardMode == LumenBillboardMode.Mesh)
+            throw new InvalidDataException($"{path}.billboardMode: Mesh billboards are not supported yet; use Camera, Horizontal, Vertical, Local or StretchedVelocity.");
 
         ValidateCurve(emitter.SizeOverLifetime, path + ".sizeOverLifetime", normalized: true);
         ValidateGradient(emitter.ColorOverLifetime, path + ".colorOverLifetime");

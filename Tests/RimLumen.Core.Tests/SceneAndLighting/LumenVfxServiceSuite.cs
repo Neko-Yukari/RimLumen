@@ -203,6 +203,7 @@ public static class LumenVfxServiceSuite
         VfxAssert.Equal(1, service.LiveHandleCount);
         VfxAssert.Check(!first.IsAlive && !last.IsAlive && survivor.IsAlive, "Only map B's handle survives");
         VfxAssert.Equal(1, service.Simulator.ActiveEmitterCount);
+        VfxTestData.Step(service, 0f, mapA.MapIndex);
         VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
         VfxAssert.Equal(0, service.Simulator.Vertices.Length);
         VfxAssert.Check(!gpu.IsInstanceAlive(0) && gpu.IsInstanceAlive(1) && !gpu.IsInstanceAlive(2),

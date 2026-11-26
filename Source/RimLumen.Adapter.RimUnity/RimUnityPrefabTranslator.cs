@@ -356,7 +356,8 @@ public sealed class RimUnityPrefabTranslator
             {
                 0 => Integer(Member(renderer?.members, "alignment")) == 2 ? LumenBillboardMode.Local : LumenBillboardMode.Camera,
                 1 => LumenBillboardMode.StretchedVelocity, 2 => LumenBillboardMode.Horizontal,
-                3 => LumenBillboardMode.Vertical, 4 => LumenBillboardMode.Mesh,
+                3 => LumenBillboardMode.Vertical,
+                // renderMode 4 (Mesh) is classified External and never reaches native conversion.
                 var mode => throw new NotSupportedException("Unsupported particle render mode: " + mode),
             },
             VelocityStretchFactor = Number(Member(renderer?.members, "velocityScale")),

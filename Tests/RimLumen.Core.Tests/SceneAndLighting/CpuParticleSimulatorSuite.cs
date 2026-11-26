@@ -17,19 +17,25 @@ public static class CpuParticleSimulatorSuite
         Check(simulator.Name == "L1_NativeCpu", "Contributor name");
         Check(!simulator.HasActiveWork, "New simulator is idle");
         int id = simulator.AcquireEmitter(new EmitterSpec { Name = "idle" }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
+        Check(simulator.HasActiveWork, "A queued acquisition is work for the next capture");
+        Step(simulator, 0f);
         Check(!simulator.HasActiveWork, "Non-emitting acquisition is idle");
         Check(simulator.ActiveEmitterCount == 1, "Acquired emitter count");
         simulator.SetEmitterParams(id, true, 1f, 1f);
+        Step(simulator, 0f);
         Check(simulator.HasActiveWork, "Emission makes active");
         simulator.EmitBurst(id, 2);
         simulator.ReleaseEmitter(id, true);
+        Check(simulator.ActiveEmitterCount == 0, "Immediate release retires the emitter at the call");
+        Step(simulator, 0f);
         Check(!simulator.HasActiveWork && simulator.LiveParticleCount == 0 && simulator.ActiveEmitterCount == 0,
             "Immediate release removes work");
         simulator.ReleaseEmitter(id, true);
         simulator.SetEmitterTransform(id, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity));
         simulator.SetEmitterParams(id, true, 1f, 1f);
         simulator.EmitBurst(id, 2);
-        Check(simulator.GetLiveParticleCount(id) == 0, "Unknown ids are ignored");
+        Step(simulator, 0f);
+        Check(simulator.GetLiveParticleCount(id) == 0 && simulator.LiveParticleCount == 0, "Unknown ids are ignored");
     }
 
     [LumenFact]
@@ -324,6 +330,7 @@ public static class CpuParticleSimulatorSuite
         simulator.EmitBurst(live, 3);
         Step(simulator, 0f);
         simulator.ReleaseEmitter(live, true);
+        Step(simulator, 0f);
         Check(simulator.Vertices.Length == 0 && simulator.Indices.Length == 0 && !simulator.HasActiveWork,
             "Immediate removal clears existing batch");
     }
@@ -400,13 +407,13 @@ public static class CpuParticleSimulatorSuite
     }
 
     [LumenFact]
-    public static void HorizontalStretchedAndMeshBillboards()
+    public static void HorizontalStretchedAndCameraBillboards()
     {
         var simulator = new CpuParticleSimulator();
         int horizontal = simulator.AcquireEmitter(new EmitterSpec { Name = "horizontal", BillboardMode = LumenBillboardMode.Horizontal, StartSizeMin = 2f, StartSizeMax = 2f }, new LumenEmitterTransform(Matrix4x4.CreateTranslation(0f, 5f, 0f), Quaternion.Identity), 1u, false);
         int stretched = simulator.AcquireEmitter(new EmitterSpec { Name = "stretched", BillboardMode = LumenBillboardMode.StretchedVelocity, StartSizeMin = 2f, StartSizeMax = 2f, StartSpeedMin = 2f, StartSpeedMax = 2f, VelocityStretchFactor = 2f }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
-        int mesh = simulator.AcquireEmitter(new EmitterSpec { Name = "mesh", BillboardMode = LumenBillboardMode.Mesh, StartSizeMin = 2f, StartSizeMax = 2f }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
-        simulator.EmitBurst(horizontal, 1); simulator.EmitBurst(stretched, 1); simulator.EmitBurst(mesh, 1);
+        int camera = simulator.AcquireEmitter(new EmitterSpec { Name = "camera", BillboardMode = LumenBillboardMode.Camera, StartSizeMin = 2f, StartSizeMax = 2f }, new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity), 1u, false);
+        simulator.EmitBurst(horizontal, 1); simulator.EmitBurst(stretched, 1); simulator.EmitBurst(camera, 1);
         Step(simulator, 0f);
         Vector(new Vector3(-1f, 5f, -1f), simulator.Vertices[0].Position);
         Vector(new Vector3(1f, 5f, -1f), simulator.Vertices[1].Position);
@@ -1105,6 +1112,57 @@ public static class CpuParticleSimulatorSuite
         Check(sim.LiveParticleCount == 8 && sim.Vertices.Length >= trailVerticesBefore,
             "Subsequent geometric emitter growth must keep trail vertex/index data intact");
     }
+
+    [LumenFact]
+    public static void CommandsApplyInCallOrderAtTheNextCapture()
+    {
+        var simulator = new CpuParticleSimulator();
+        var spec = new EmitterSpec { Name = "order", MaxParticles = 8, StartLifetimeMin = 10f, StartLifetimeMax = 10f };
+        var origin = new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity);
+        int burstThenDrain = simulator.AcquireEmitter(spec, origin, 1u, false);
+        int drainThenBurst = simulator.AcquireEmitter(spec, origin, 2u, false);
+        simulator.EmitBurst(burstThenDrain, 2);
+        simulator.ReleaseEmitter(burstThenDrain, false);
+        simulator.ReleaseEmitter(drainThenBurst, false);
+        simulator.EmitBurst(drainThenBurst, 2);
+        Check(simulator.LiveParticleCount == 0 && simulator.ActiveEmitterCount == 2, "Calls only queue until the next capture");
+        Step(simulator, 0.1f);
+        Check(simulator.GetLiveParticleCount(burstThenDrain) == 2, "A pulse queued before the drain is admitted");
+        Check(simulator.LiveParticleCount == 2 && simulator.ActiveEmitterCount == 1, "A pulse queued after the drain is ignored and its empty emitter reclaimed");
+    }
+
+    [LumenFact]
+    public static void OffThreadQueriesLagOneFrameAndImmediateReleaseDrawsNothingInItsFrame()
+    {
+        var simulator = new CpuParticleSimulator();
+        var spec = new EmitterSpec { Name = "lag", MaxParticles = 8, StartLifetimeMin = 10f, StartLifetimeMax = 10f };
+        var origin = new LumenEmitterTransform(Matrix4x4.Identity, Quaternion.Identity);
+        int released = simulator.AcquireEmitter(spec, origin, 1u, false);
+        int kept = simulator.AcquireEmitter(spec, origin, 2u, false);
+        simulator.EmitBurst(released, 3);
+        simulator.EmitBurst(kept, 2);
+        StepOffThread(simulator, 0.1f);
+        Check(simulator.LiveParticleCount == 0 && simulator.Indices.Length == 0, "The first capture only schedules the simulation");
+        StepOffThread(simulator, 0.1f);
+        Check(simulator.GetLiveParticleCount(released) == 3 && simulator.GetLiveParticleCount(kept) == 2 && simulator.Indices.Length == 30,
+            "The next capture publishes the previous frame's simulation");
+        simulator.ReleaseEmitter(released, immediate: true);
+        Check(simulator.ActiveEmitterCount == 1 && simulator.GetLiveParticleCount(released) == 0, "Immediate release retires the id at the call");
+        StepOffThread(simulator, 0.1f);
+        Check(simulator.LiveParticleCount == 2 && simulator.Indices.Length == 12 && simulator.SubBatches.Count == 1
+            && simulator.SubBatches[0].IndexCount == 12, "The capture that applies the release drops its quads from the published batch");
+        simulator.ReleaseEmitter(kept, immediate: true);
+        StepOffThread(simulator, 0.1f);
+        Check(simulator.LiveParticleCount == 0 && simulator.Indices.Length == 0 && simulator.SubBatches.Count == 0 && !simulator.HasActiveWork,
+            "Releasing the last emitter leaves an empty, idle simulator without another simulation");
+    }
+
+    private static void StepOffThread(CpuParticleSimulator simulator, float dt)
+        => simulator.CaptureOffThread(new LumenCaptureContext
+        {
+            FrameIndex = 1, DeltaTime = dt, ViewportWidth = 100, ViewportHeight = 100,
+            ViewMatrix = Matrix4x4.Identity, ProjectionMatrix = Matrix4x4.Identity, LumenRenderPassId = 0,
+        });
 
     private static void Step(CpuParticleSimulator simulator, float dt, Matrix4x4? view = null, int mapIndex = -1, ulong frameIndex = 0)
     {

@@ -75,6 +75,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
         bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(cameraRight, cameraUp, yScaleRatio);
         Vector3 groundUp = CameraBillboardBasis.GroundUp(cameraUp);
         float vanillaMoteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
+        float northBehindLift = CameraBillboardBasis.NorthBehindLift(vanillaMoteY);
         foreach (Ribbon ribbon in ribbons.Values)
         {
             if (context.CurrentMapIndex >= 0 && ribbon.MapIndex >= 0 && ribbon.MapIndex != context.CurrentMapIndex) continue;
@@ -88,7 +89,7 @@ internal sealed class LumenRibbonBackend : ILumenNodeFeatureBackend
             var sampler = new NodeRibbonSampler(spec);
             int indexStart = RibbonStripGeometry.AppendStrip(path, drawn, count,
                 ground ? Vector3.UnitX : cameraRight, ground ? Vector3.UnitZ : cameraUp,
-                ground ? 1f : yScaleRatio, CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, ribbon.DepthReferenceZ, vanillaMoteY),
+                ground ? 1f : yScaleRatio, CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, ribbon.DepthReferenceZ, northBehindLift),
                 spec.TextureMode, spec.HdrIntensity * ribbon.Intensity, in sampler,
                 ref vertices, ref vertexCount, ref indices, ref indexCount);
             subBatches.Add(new L1SubBatch(spec.TextureKey, spec.BlendMode, indexStart, indexCount - indexStart, spec.SoftParticleFadeDistance));

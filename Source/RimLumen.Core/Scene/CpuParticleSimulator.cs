@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using RimLumen.Core.Assets;
 using RimLumen.Core.Contracts;
 using RimLumen.Core.Rendering;
@@ -12,10 +13,14 @@ namespace RimLumen.Core.Scene;
 
 /// <summary>
 /// L1 (<see cref="LumenParticleTier.L1_NativeCpu"/>) pooled CPU particle simulator.
-/// Steady-state frames allocate nothing: capacity is reserved per emitter on
-/// <see cref="AcquireEmitter"/> and reused for the life of the emitter.
+/// Every public mutation is a main-thread command applied in call order by the next capture; queries read the
+/// result of the most recently completed simulation. <see cref="CaptureMainThread"/> simulates synchronously
+/// (generic hosts, WebSim, offline tests); the game pipeline calls <c>CaptureOffThread</c>, which runs the same
+/// simulation as a Waylith job and stages it one frame later.
+/// Steady-state frames allocate nothing: capacity is reserved per emitter when its acquisition is applied
+/// and reused for the life of the emitter.
 /// </summary>
-public sealed class CpuParticleSimulator : ILumenFrameContributor
+public sealed partial class CpuParticleSimulator : ILumenFrameContributor
 {
     private enum EmissionState { Dormant, Paused, Emitting, Draining }
 
@@ -40,7 +45,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         public bool WorldInteraction;
         public float NodeTime;
         public ParticleMapGrid? CollisionGrid;
-        public ReadOnlyMemory<LumenEnvironmentForce> Environment;
+        // This frame's environment forces: a range of the simulator's gathered copy.
+        public int EnvironmentStart;
+        public int EnvironmentCount;
         public int[] Targets = Array.Empty<int>();
         public readonly HashSet<int> Sources = new();
         public float? FrameDelta;
@@ -183,22 +190,74 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         }
     }
 
+    private enum CommandKind : byte { Acquire, Transform, DisplayState, Params, Burst, Restart, FrameDelta, Bind, Release }
+
+    // One queued public call. Flag: Params emitting, DisplayState isVertical3D, Release immediate.
+    // Value0: Params rate, Burst density at call time, FrameDelta delta. Value1: Params intensity.
+    private struct Command
+    {
+        public CommandKind Kind;
+        public int EmitterId;
+        public bool Flag;
+        public float Value0;
+        public float Value1;
+        public int Count;
+        public float? DepthReferenceZ;
+        public LumenEmitterTransform Transform;
+        public Emitter? Created;
+        public int[]? NodeIds;
+    }
+
+    // One simulation result. The simulation writes the back buffer while the main thread stages the front one.
+    private sealed class FrameOutput
+    {
+        public ParticleVertex[] Vertices = Array.Empty<ParticleVertex>();
+        public uint[] Indices = Array.Empty<uint>();
+        // Owning emitter of each particle quad (quad k holds indices [6k, 6k + 6)) and of each trail sub-batch, in order.
+        public int[] QuadOwners = Array.Empty<int>();
+        public readonly List<int> TrailOwners = new();
+        public readonly List<L1SubBatch> SubBatches = new();
+        public readonly Dictionary<int, int> LiveCounts = new();
+        public int VertexCount;
+        public int IndexCount;
+        public int QuadCount;
+        public int ParticleCount;
+        public bool HasActiveWork;
+    }
+
+    // Every host value the simulation reads, gathered on the main thread before it runs.
+    private readonly record struct FrameInput(int ActiveMapIndex, float DeltaTime, float UnscaledDeltaTime, float Density,
+        Matrix4x4 View, bool RendersMap, float VanillaMoteY, float NorthBehindLift);
+
     private readonly int seed;
+
+    // Simulation state: owned by the simulation job while one is in flight, by the main thread otherwise.
     private readonly Dictionary<int, Emitter> emitters = new();
     private readonly List<int> emitterIds = new();
     private CpuParticle[] particles = Array.Empty<CpuParticle>();
-    private ParticleVertex[] vertices = Array.Empty<ParticleVertex>();
-    private uint[] indices = Array.Empty<uint>();
     private Vector3[] trailPath = Array.Empty<Vector3>();
     private Vector3[] trailDrawn = Array.Empty<Vector3>();
-    private int nextId;
+    private LumenEnvironmentForce[] environment = Array.Empty<LumenEnvironmentForce>();
     private int reservedCapacity;
     private int particleCount;
-    private int vertexCount;
-    private int indexCount;
-    private int activeMapIndex = -1;
-    private Matrix4x4 view = Matrix4x4.Identity;
     private readonly List<ParticleSubEvent> subEvents = new();
+    private readonly List<int> reclaimed = new();
+    private readonly Dictionary<(string? TextureKey, LumenBlendMode BlendMode, float SoftParticleFadeDistance, Vector4 MaterialTint, LumenColorSpace ColorSpace), int> groupIds = new();
+    private readonly List<(string? TextureKey, LumenBlendMode BlendMode, float SoftParticleFadeDistance, Vector4 MaterialTint, LumenColorSpace ColorSpace)> groupKeys = new();
+    private int[] groupCounts = Array.Empty<int>();
+    private int[] groupCursors = Array.Empty<int>();
+    private FrameOutput back = new();
+
+    // Main-thread state.
+    private readonly List<Command> commands = new();
+    private readonly HashSet<int> aliveIds = new();
+    private readonly HashSet<int> droppedIds = new();
+    private readonly Dictionary<(int MapIndex, LumenEnvironmentChannel Channels), (int Start, int Count)> environmentRanges = new();
+    private readonly List<L1SubBatch> keptBatches = new();
+    private FrameOutput front = new();
+    private int nextId;
+    private bool active;
+    private bool simulationInFlight;
 
     // Requires: seed is any int; identical seeds and inputs produce identical particle states.
     public CpuParticleSimulator(int seed = 0x5EED) => this.seed = seed;
@@ -209,52 +268,39 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     // Set by the pipeline while its HDR renderer is attached.
     internal bool HdrRendererAttached { get; set; }
 
-    // Ensures: live/pending particles or any activated, unfinished emission clock keep capture active,
-    //          including paused clocks; dormant and completed emitters otherwise remain idle.
-    public bool HasActiveWork
-    {
-        get
-        {
-            if (particleCount > 0) return true;
-            foreach (int id in emitterIds)
-            {
-                Emitter emitter = emitters[id];
-                if (emitter.PendingBurst > 0 || emitter.TrailPool is { LiveTrailCount: > 0 } ||
-                    ((emitter.State is EmissionState.Emitting or EmissionState.Paused) && !emitter.Scheduler.Finished)) return true;
-            }
-            return false;
-        }
-    }
+    // Ensures: true while commands wait for the next capture or a simulation is in flight; otherwise true iff the
+    //          last completed simulation left live/pending particles, live trails or an activated, unfinished emission
+    //          clock (including paused clocks). Effect handles queue transform and params every frame, so a live handle
+    //          keeps this true; with no core work such a capture only applies commands and schedules no simulation.
+    public bool HasActiveWork => commands.Count > 0 || simulationInFlight || active;
 
-    // Ensures: number of emitters that have not been released (emitting or draining).
-    public int ActiveEmitterCount => emitterIds.Count;
+    // Ensures: number of acquired emitters that the latest completed simulation has not reclaimed yet (emitting or
+    //          draining); an immediate release removes its emitter at once.
+    public int ActiveEmitterCount => aliveIds.Count;
 
-    // Ensures: number of live particles after the last CaptureMainThread.
-    public int LiveParticleCount => particleCount;
+    // Ensures: number of live particles after the last completed simulation.
+    public int LiveParticleCount => front.ParticleCount;
 
+    // Requires: no simulation in flight (hosts that call CaptureMainThread).
     // Ensures: read-only view of the live particles, ordered as stored (swap-remove compaction order).
-    public ReadOnlySpan<CpuParticle> LiveParticles => particles.AsSpan(0, particleCount);
+    public ReadOnlySpan<CpuParticle> LiveParticles => simulationInFlight
+        ? throw new InvalidOperationException("L1 particles are being simulated off the main thread.")
+        : particles.AsSpan(0, particleCount);
 
-    // Ensures: particle quad and trail strip vertices/indices from the last CaptureMainThread.
-    public ReadOnlySpan<ParticleVertex> Vertices => vertices.AsSpan(0, vertexCount);
+    // Ensures: particle quad and trail strip vertices/indices of the last completed simulation.
+    public ReadOnlySpan<ParticleVertex> Vertices => front.Vertices.AsSpan(0, front.VertexCount);
 
-    public ReadOnlySpan<uint> Indices => indices.AsSpan(0, indexCount);
+    public ReadOnlySpan<uint> Indices => front.Indices.AsSpan(0, front.IndexCount);
 
-    private readonly List<L1SubBatch> subBatches = new();
-    private readonly Dictionary<(string? TextureKey, LumenBlendMode BlendMode, float SoftParticleFadeDistance, Vector4 MaterialTint, LumenColorSpace ColorSpace), int> groupIds = new();
-    private readonly List<(string? TextureKey, LumenBlendMode BlendMode, float SoftParticleFadeDistance, Vector4 MaterialTint, LumenColorSpace ColorSpace)> groupKeys = new();
-    private int[] groupCounts = Array.Empty<int>();
-    private int[] groupCursors = Array.Empty<int>();
-
-    // Ensures: contiguous index sub-batches grouped by (TextureKey, BlendMode) for the last CaptureMainThread,
+    // Ensures: contiguous index sub-batches grouped by (TextureKey, BlendMode) for the last completed simulation,
     //          in group first-acquisition order, empty groups omitted. IndexStart/IndexCount address Indices;
     //          together the ranges cover exactly LiveParticleCount * 6 indices. A single-group frame keeps
     //          LiveParticles order in Vertices/Indices.
-    public IReadOnlyList<L1SubBatch> SubBatches => subBatches;
+    public IReadOnlyList<L1SubBatch> SubBatches => front.SubBatches;
 
     // Requires: validated spec, paired finite worldTransform, nonzero emissionSeed, finite nonnegative rateMultiplier.
-    // Ensures: reserves capacity, seeds a deterministic particle-birth PRNG from (seed, emitterId),
-    //          returns a non-negative emitter id that stays valid until ReleaseEmitter.
+    // Ensures: returns a non-negative emitter id at once and queues the acquisition; the next capture reserves its
+    //          capacity. The particle-birth PRNG is seeded deterministically from (seed, emitterId).
     // Ensures: realTime == true makes this emitter advance on context.UnscaledDeltaTime when that is
     //          positive (walls keep burning while the game is paused or running at another speed).
     public int AcquireEmitter(EmitterSpec spec, LumenEmitterTransform worldTransform, uint emissionSeed, bool emitting = true, float rateMultiplier = 1f, bool realTime = false, int mapIndex = -1)
@@ -263,26 +309,17 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         uint random = Hash(unchecked((uint)seed) ^ unchecked((uint)id + 0x9E3779B9u));
         var curves = new GpuCurveSample[GpuCurveAtlasPacker.SamplesPerRow];
         GpuCurveAtlasPacker.Pack(spec.SizeOverLifetime, spec.ColorOverLifetime, curves);
-        emitters.Add(id, new Emitter
+        var emitter = new Emitter
         {
             Curves = curves,
             Scheduler = new EmissionScheduler(spec, emissionSeed),
-            Spec = spec, Transform = worldTransform, RealTime = realTime, MapIndex = mapIndex, Group = GroupOf(spec),
+            Spec = spec, Transform = worldTransform, RealTime = realTime, MapIndex = mapIndex,
             State = emitting ? EmissionState.Emitting : EmissionState.Dormant,
             RateMultiplier = rateMultiplier, RandomState = random == 0 ? 1u : random,
             TrailPool = spec.Trails is { } trailSpec ? new ParticleTrailPool(spec, trailSpec, Hash(random ^ 0x517CC1B7u)) : null,
-        });
-        emitterIds.Add(id);
-        reservedCapacity += spec.MaxParticles;
-        if (particles.Length < reservedCapacity)
-        {
-            int next = GrowCapacity(particles.Length, reservedCapacity);
-            int minVertices = checked(next * 4);
-            int minIndices = checked(next * 6);
-            Array.Resize(ref particles, next);
-            if (vertices.Length < minVertices) Array.Resize(ref vertices, minVertices);
-            if (indices.Length < minIndices) Array.Resize(ref indices, minIndices);
-        }
+        };
+        commands.Add(new Command { Kind = CommandKind.Acquire, EmitterId = id, Created = emitter });
+        aliveIds.Add(id);
         return id;
     }
 
@@ -298,63 +335,176 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         return capped >= required ? (int)capped : required;
     }
 
-    // Ensures: updates the emitter transform used for spawn shapes and (for local-space emitters)
+    // Ensures: queues the emitter transform used for spawn shapes and (for local-space emitters)
     //          for transforming particle positions at vertex-build time. Unknown ids are ignored.
     public void SetEmitterTransform(int emitterId, LumenEmitterTransform worldTransform)
-    {
-        if (emitters.TryGetValue(emitterId, out var emitter)) emitter.Transform = worldTransform;
-    }
+        => Enqueue(new Command { Kind = CommandKind.Transform, EmitterId = emitterId, Transform = worldTransform });
 
     // depthReferenceZ: the node's LumenDepthMask reference this frame; null without a mask.
     internal void SetEmitterDisplayState(int emitterId, bool isVertical3D, float? depthReferenceZ)
-    {
-        if (!emitters.TryGetValue(emitterId, out var emitter)) return;
-        emitter.IsVertical3D = isVertical3D;
-        emitter.DepthReferenceZ = depthReferenceZ;
-    }
+        => Enqueue(new Command { Kind = CommandKind.DisplayState, EmitterId = emitterId, Flag = isVertical3D, DepthReferenceZ = depthReferenceZ });
 
     // Requires: rateMultiplier and intensityMultiplier are finite and >= 0 (validated by the public SetParam boundary).
-    // Ensures: sets emission on/off plus the runtime rate/intensity multipliers. Turning emission off
+    // Ensures: queues emission on/off plus the runtime rate/intensity multipliers. Turning emission off
     //          never kills live particles. Unknown ids are ignored.
     public void SetEmitterParams(int emitterId, bool emitting, float rateMultiplier, float intensityMultiplier)
-    {
-        if (!emitters.TryGetValue(emitterId, out var emitter) || emitter.State == EmissionState.Draining) return;
-        if (emitting) emitter.State = EmissionState.Emitting;
-        else if (emitter.State != EmissionState.Dormant) emitter.State = EmissionState.Paused;
-        emitter.RateMultiplier = rateMultiplier;
-        emitter.IntensityMultiplier = intensityMultiplier;
-    }
+        => Enqueue(new Command { Kind = CommandKind.Params, EmitterId = emitterId, Flag = emitting, Value0 = rateMultiplier, Value1 = intensityMultiplier });
 
     // Requires: count >= 0.
     // Ensures: queues a pulse for the next capture, admitted after expired particles reclaim their slots.
     //          Newly admitted particles have age zero; pausing or restarting does not discard accepted pulses.
-    // Ensures: global particle density uses this emitter's shared burst carry at enqueue time.
+    // Ensures: global particle density as of this call thins the pulse through this emitter's shared burst carry.
     public void EmitBurst(int emitterId, int count)
+        => Enqueue(new Command { Kind = CommandKind.Burst, EmitterId = emitterId, Count = count, Value0 = RimLumenRenderHost.ParticleDensityScale });
+
+    // Ensures: the emitter emits again from the start of its schedule: its clock, rate remainder and time-0 burst
+    //          reset exactly as on acquisition, so burst times and Duration count from the next capture. Live particles
+    //          keep their age. Same semantics as ILumenGpuParticleEngine.RestartInstance. Unknown or released ids are ignored.
+    public void RestartEmitter(int emitterId)
+        => Enqueue(new Command { Kind = CommandKind.Restart, EmitterId = emitterId });
+
+    internal void SetEmitterFrameDelta(int emitterId, float frameDelta)
+        => Enqueue(new Command { Kind = CommandKind.FrameDelta, EmitterId = emitterId, Value0 = frameDelta });
+
+    // Ensures: false once an immediate release is queued or the latest completed simulation reclaimed the emitter.
+    internal bool IsEmitterAlive(int emitterId) => aliveIds.Contains(emitterId);
+
+    internal void BindNodeInstances(int[] ids, ILumenGpuParticleEngine? gpu, int[] gpuIds)
     {
-        if (emitters.TryGetValue(emitterId, out var emitter) && emitter.State != EmissionState.Draining)
+        commands.Add(new Command { Kind = CommandKind.Bind, NodeIds = (int[])ids.Clone() });
+        gpu?.BindNodeInstances(gpuIds);
+    }
+
+    // Ensures: live particle count owned by this emitter after the last completed simulation; 0 for unknown or
+    //          released ids.
+    public int GetLiveParticleCount(int emitterId)
+        => aliveIds.Contains(emitterId) && front.LiveCounts.TryGetValue(emitterId, out int count) ? count : 0;
+
+    // Ensures: immediate == true queues removal of the emitter and all of its particles, and they are no longer drawn
+    //          from the capture that applies it on; immediate == false stops new emission and lets existing particles
+    //          finish their lifetime.
+    public void ReleaseEmitter(int emitterId, bool immediate = false)
+    {
+        Enqueue(new Command { Kind = CommandKind.Release, EmitterId = emitterId, Flag = immediate });
+        if (immediate) aliveIds.Remove(emitterId);
+    }
+
+    // Ensures: drops calls on unknown, immediately released and reclaimed ids, which the capture would ignore.
+    private void Enqueue(in Command command)
+    {
+        if (aliveIds.Contains(command.EmitterId)) commands.Add(command);
+    }
+
+    // Requires: main thread; context.DeltaTime >= 0; no CaptureOffThread on this instance.
+    // Ensures: applies the queued commands in call order, simulates this frame synchronously and publishes the
+    //          result (see Simulate).
+    public void CaptureMainThread(in LumenCaptureContext context)
+    {
+        ApplyCommands();
+        // This capture's output is simulated after the releases, so nothing needs dropping.
+        droppedIds.Clear();
+        FrameInput input = Gather(in context);
+        Simulate(in input, BeginSimulation());
+        Publish();
+    }
+
+    // Ensures: no-op; L1 does no GPU compute.
+    public void EnqueuePreCompute(in LumenComputeContext context) { }
+
+    // Ensures: no-op; L1 records no buffer barriers.
+    public void RecordBufferBarriers(in LumenBarrierContext context) { }
+
+    // Ensures: no command-buffer work. MeshBatchRenderer records the draws appended by the pipeline
+    //   from the L1 mesh staged during main-thread capture.
+    public void RecordHdrDraws(in LumenHdrDrawContext context) { }
+
+    // Requires: main thread, no simulation in flight.
+    private void ApplyCommands()
+    {
+        try
         {
-            emitter.PendingBurst = (int)Math.Min((long)emitter.PendingBurst
-                + emitter.Scheduler.AcceptBurst(count, RimLumenRenderHost.ParticleDensityScale), emitter.Spec.MaxParticles);
+            foreach (ref readonly Command command in CollectionsMarshal.AsSpan(commands))
+                Apply(in command);
+        }
+        finally
+        {
+            commands.Clear();
         }
     }
 
-    // Ensures: the emitter emits again from the start of its schedule: its clock, rate remainder and time-0 burst
-    //          reset exactly as on AcquireEmitter, so burst times and Duration count from now. Live particles keep
-    //          their age. Same semantics as ILumenGpuParticleEngine.RestartInstance. Unknown or released ids are ignored.
-    public void RestartEmitter(int emitterId)
+    private void Apply(in Command command)
     {
-        if (!emitters.TryGetValue(emitterId, out var emitter) || emitter.State == EmissionState.Draining) return;
-        emitter.Scheduler.Restart();
-        emitter.NodeTime = 0f;
-        emitter.State = EmissionState.Emitting;
-        emitter.FrameDelta = null;
+        int id = command.EmitterId;
+        switch (command.Kind)
+        {
+            case CommandKind.Acquire:
+                Insert(id, command.Created!);
+                return;
+            case CommandKind.Bind:
+                Bind(command.NodeIds!);
+                return;
+        }
+        if (!emitters.TryGetValue(id, out Emitter? emitter)) return;
+        switch (command.Kind)
+        {
+            case CommandKind.Transform:
+                emitter.Transform = command.Transform;
+                break;
+            case CommandKind.FrameDelta:
+                emitter.FrameDelta = command.Value0;
+                break;
+            case CommandKind.DisplayState:
+                emitter.IsVertical3D = command.Flag;
+                emitter.DepthReferenceZ = command.DepthReferenceZ;
+                break;
+            case CommandKind.Params:
+                if (emitter.State == EmissionState.Draining) break;
+                if (command.Flag) emitter.State = EmissionState.Emitting;
+                else if (emitter.State != EmissionState.Dormant) emitter.State = EmissionState.Paused;
+                emitter.RateMultiplier = command.Value0;
+                emitter.IntensityMultiplier = command.Value1;
+                break;
+            case CommandKind.Burst:
+                if (emitter.State == EmissionState.Draining) break;
+                emitter.PendingBurst = (int)Math.Min((long)emitter.PendingBurst
+                    + emitter.Scheduler.AcceptBurst(command.Count, command.Value0), emitter.Spec.MaxParticles);
+                break;
+            case CommandKind.Restart:
+                if (emitter.State == EmissionState.Draining) break;
+                emitter.Scheduler.Restart();
+                emitter.NodeTime = 0f;
+                emitter.State = EmissionState.Emitting;
+                emitter.FrameDelta = null;
+                break;
+            case CommandKind.Release:
+                Release(id, emitter, command.Flag);
+                break;
+        }
     }
 
-    internal void SetEmitterFrameDelta(int emitterId, float frameDelta) => emitters[emitterId].FrameDelta = frameDelta;
+    private void Insert(int id, Emitter emitter)
+    {
+        emitter.Group = GroupOf(emitter.Spec);
+        emitters.Add(id, emitter);
+        emitterIds.Add(id);
+        reservedCapacity += emitter.Spec.MaxParticles;
+        if (particles.Length >= reservedCapacity) return;
+        int next = GrowCapacity(particles.Length, reservedCapacity);
+        Array.Resize(ref particles, next);
+        Reserve(front, next);
+        Reserve(back, next);
+    }
 
-    internal bool IsEmitterAlive(int emitterId) => emitters.ContainsKey(emitterId);
+    private static void Reserve(FrameOutput output, int particleCapacity)
+    {
+        int minVertices = checked(particleCapacity * 4);
+        int minIndices = checked(particleCapacity * 6);
+        if (output.Vertices.Length < minVertices) Array.Resize(ref output.Vertices, minVertices);
+        if (output.Indices.Length < minIndices) Array.Resize(ref output.Indices, minIndices);
+        if (output.QuadOwners.Length < particleCapacity) Array.Resize(ref output.QuadOwners, particleCapacity);
+    }
 
-    internal void BindNodeInstances(int[] ids, ILumenGpuParticleEngine? gpu, int[] gpuIds)
+    private void Bind(int[] ids)
     {
         foreach (int id in ids)
         {
@@ -368,36 +518,139 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 emitters[target].Sources.Add(id);
             }
         }
-        gpu?.BindNodeInstances(gpuIds);
     }
 
-    // Ensures: live particle count owned by this emitter; 0 for unknown ids.
-    public int GetLiveParticleCount(int emitterId)
-        => emitters.TryGetValue(emitterId, out var emitter) ? emitter.LiveCount : 0;
-
-    // Ensures: immediate == true removes the emitter and all of its particles now; immediate == false
-    //          stops new emission and lets existing particles finish their lifetime.
-    public void ReleaseEmitter(int emitterId, bool immediate = false)
+    private void Release(int id, Emitter emitter, bool immediate)
     {
-        if (!emitters.TryGetValue(emitterId, out var emitter)) return;
         emitter.State = EmissionState.Draining;
         if (immediate)
         {
             emitter.PendingBurst = 0;
             for (int i = particleCount - 1; i >= 0; i--)
-                if (particles[i].EmitterId == emitterId) RemoveParticle(i);
+                if (particles[i].EmitterId == id) RemoveParticle(i);
             emitter.TrailPool?.ClearAll();
-            BuildBatch();
+            droppedIds.Add(id);
         }
-        if (immediate || emitter.CanReclaim) RemoveEmitter(emitterId, emitter);
+        if (immediate || emitter.CanReclaim) RemoveEmitter(id, emitter);
     }
 
-    // Requires: main thread; context.DeltaTime >= 0.
+    // Requires: main thread, no simulation in flight. Reads every host value the simulation needs: the environment
+    //          clocks and forces (copied, since ParticleEnvironment refills its buffers next frame), the collision
+    //          grids (immutable snapshots), the particle density and the vanilla mote altitude.
+    private FrameInput Gather(in LumenCaptureContext context)
+    {
+        ParticleEnvironment.BeginFrame(in context);
+        environmentRanges.Clear();
+        int environmentUsed = 0;
+        foreach (int id in emitterIds)
+        {
+            Emitter emitter = emitters[id];
+            emitter.WorldInteraction = emitter.Spec.WorldSpaceSimulation || Matrix4x4.Invert(emitter.Transform.World, out emitter.InverseWorld);
+            emitter.CollisionGrid = emitter.WorldInteraction ? ParticleCollisionFields.Capture(emitter.MapIndex, emitter.Spec.Collision) : null;
+            (emitter.EnvironmentStart, emitter.EnvironmentCount) = emitter.WorldInteraction ? EnvironmentRange(emitter, ref environmentUsed) : (0, 0);
+        }
+        float vanillaMoteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
+        return new FrameInput(context.CurrentMapIndex, context.DeltaTime, context.UnscaledDeltaTime,
+            RimLumenRenderHost.ParticleDensityScale, context.ViewMatrix, context.RendersMap,
+            vanillaMoteY, CameraBillboardBasis.NorthBehindLift(vanillaMoteY));
+    }
+
+    private (int Start, int Count) EnvironmentRange(Emitter emitter, ref int used)
+    {
+        var key = (emitter.MapIndex, emitter.Spec.EnvironmentChannels);
+        if (environmentRanges.TryGetValue(key, out var range)) return range;
+        ReadOnlySpan<LumenEnvironmentForce> forces = ParticleEnvironment.ForMap(key.MapIndex, key.EnvironmentChannels).Span;
+        if (environment.Length < used + forces.Length)
+            Array.Resize(ref environment, Math.Max(used + forces.Length, 2 * environment.Length));
+        forces.CopyTo(environment.AsSpan(used));
+        range = (used, forces.Length);
+        used += forces.Length;
+        environmentRanges.Add(key, range);
+        return range;
+    }
+
+    // Requires: main thread, no simulation in flight.
+    // Ensures: hands the back buffer to one Simulate; the simulation state is its own until Publish.
+    private FrameOutput BeginSimulation()
+    {
+        simulationInFlight = true;
+        return back;
+    }
+
+    // Requires: main thread, the output just written by Simulate.
+    private void Publish()
+    {
+        simulationInFlight = false;
+        (front, back) = (back, front);
+        active = front.HasActiveWork;
+        DrainReclaimed();
+    }
+
+    private void DrainReclaimed()
+    {
+        foreach (int id in reclaimed) aliveIds.Remove(id);
+        reclaimed.Clear();
+    }
+
+    // Ensures: removes from the published batch every quad and trail strip owned by an emitter that an applied
+    //          immediate release removed after that batch was simulated; sub-batches left empty are dropped.
+    private void DropReleased()
+    {
+        if (droppedIds.Count == 0) return;
+        FrameOutput output = front;
+        foreach (int id in droppedIds)
+            if (output.LiveCounts.Remove(id, out int count)) output.ParticleCount -= count;
+        int quadIndices = output.QuadCount * 6, write = 0, trail = 0;
+        keptBatches.Clear();
+        foreach (L1SubBatch batch in output.SubBatches)
+        {
+            int start = write;
+            if (batch.IndexStart < quadIndices)
+            {
+                for (int quad = batch.IndexStart / 6, end = (batch.IndexStart + batch.IndexCount) / 6; quad < end; quad++)
+                {
+                    if (droppedIds.Contains(output.QuadOwners[quad])) continue;
+                    output.Indices.AsSpan(quad * 6, 6).CopyTo(output.Indices.AsSpan(write, 6));
+                    write += 6;
+                }
+            }
+            else if (!droppedIds.Contains(output.TrailOwners[trail++]))
+            {
+                output.Indices.AsSpan(batch.IndexStart, batch.IndexCount).CopyTo(output.Indices.AsSpan(write));
+                write += batch.IndexCount;
+            }
+            if (write > start) keptBatches.Add(batch with { IndexStart = start, IndexCount = write - start });
+        }
+        output.SubBatches.Clear();
+        output.SubBatches.AddRange(keptBatches);
+        output.IndexCount = write;
+        if (write == 0) output.VertexCount = 0;
+        droppedIds.Clear();
+    }
+
+    // live/pending particles or any activated, unfinished emission clock keep the simulation active,
+    // including paused clocks; dormant and completed emitters otherwise remain idle.
+    private bool HasCoreWork
+    {
+        get
+        {
+            if (particleCount > 0) return true;
+            foreach (int id in emitterIds)
+            {
+                Emitter emitter = emitters[id];
+                if (emitter.PendingBurst > 0 || emitter.TrailPool is { LiveTrailCount: > 0 } ||
+                    ((emitter.State is EmissionState.Emitting or EmissionState.Paused) && !emitter.Scheduler.Finished)) return true;
+            }
+            return false;
+        }
+    }
+
+    // Pure: reads only the simulation state and input, calls no Verse, Waylith rendering or UnityEngine API.
     // Ensures: advances emitter time, spawns rate/burst particles, integrates the force-field
-    //          kinds, expires particles, and rebuilds the quad/vertex/index batch for this frame.
-    // Ensures: a real-time emitter uses context.UnscaledDeltaTime when it is positive, so it keeps
+    //          kinds, expires particles, and rebuilds the quad/vertex/index batch into output.
+    // Ensures: a real-time emitter uses input.UnscaledDeltaTime when it is positive, so it keeps
     //          running while the game is paused; every particle owned by it uses the same delta.
-    //          RimLumenRenderHost.ParticleDensityScale < 1 thins rate/burst spawns (1.0 stays bit-exact).
+    //          input.Density < 1 thins rate/burst spawns (1.0 stays bit-exact).
     // Ensures: a Looping emitter wraps its time at Duration and keeps emitting. A non-looping emitter
     //          starts its emission clock on first activation and then advances even while paused, skipping
     //          crossed bursts without replay. A never-activated emitter stays at time zero. Emission stops
@@ -405,20 +658,15 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
     //          stays acquired until ReleaseEmitter, so RestartEmitter can run it again.
     //          Burst times are emission-local for a non-looping emitter. Particles already spawned always
     //          finish their own lifetime.
-    public void CaptureMainThread(in LumenCaptureContext context)
+    private void Simulate(in FrameInput input, FrameOutput output)
     {
-        activeMapIndex = context.CurrentMapIndex;
-        float dt = context.DeltaTime;
-        float unscaledDt = context.UnscaledDeltaTime;
-        float density = RimLumenRenderHost.ParticleDensityScale;
-        ParticleEnvironment.BeginFrame(in context);
+        float dt = input.DeltaTime;
+        float unscaledDt = input.UnscaledDeltaTime;
+        float density = input.Density;
         subEvents.Clear();
         foreach (int id in emitterIds)
         {
             Emitter emitter = emitters[id];
-            emitter.WorldInteraction = emitter.Spec.WorldSpaceSimulation || Matrix4x4.Invert(emitter.Transform.World, out emitter.InverseWorld);
-            emitter.CollisionGrid = emitter.WorldInteraction ? ParticleCollisionFields.Capture(emitter.MapIndex, emitter.Spec.Collision) : null;
-            emitter.Environment = emitter.WorldInteraction ? ParticleEnvironment.ForMap(emitter.MapIndex, emitter.Spec.EnvironmentChannels) : default;
             float scheduleDt = emitter.FrameDelta ?? (emitter.RealTime && unscaledDt > 0f ? unscaledDt : dt);
             emitter.FrameDelta = null;
             if (emitter.State != EmissionState.Dormant) emitter.NodeTime += scheduleDt;
@@ -498,26 +746,20 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         // Dictionary permits removal during enumeration, including targets reclaimed by the same cascade.
         foreach (var (id, emitter) in emitters)
             if (emitter.CanReclaim) RemoveEmitter(id, emitter);
-        view = context.ViewMatrix;
-        if (!context.RendersMap)
+        if (input.RendersMap) BuildBatch(in input, output);
+        else
         {
-            vertexCount = 0;
-            indexCount = 0;
-            subBatches.Clear();
-            return;
+            output.VertexCount = 0;
+            output.IndexCount = 0;
+            output.QuadCount = 0;
+            output.SubBatches.Clear();
+            output.TrailOwners.Clear();
         }
-        BuildBatch();
+        output.ParticleCount = particleCount;
+        output.LiveCounts.Clear();
+        foreach (int id in emitterIds) output.LiveCounts[id] = emitters[id].LiveCount;
+        output.HasActiveWork = HasCoreWork;
     }
-
-    // Ensures: no-op; L1 does no GPU compute.
-    public void EnqueuePreCompute(in LumenComputeContext context) { }
-
-    // Ensures: no-op; L1 records no buffer barriers.
-    public void RecordBufferBarriers(in LumenBarrierContext context) { }
-
-    // Ensures: no command-buffer work. MeshBatchRenderer records the draws appended by the pipeline
-    //   from the L1 mesh staged during main-thread capture.
-    public void RecordHdrDraws(in LumenHdrDrawContext context) { }
 
     private void RemoveParticle(int index)
     {
@@ -536,6 +778,7 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         reservedCapacity -= emitter.Spec.MaxParticles;
         emitters.Remove(id);
         emitterIds.Remove(id);
+        reclaimed.Add(id);
     }
 
     private static uint Hash(uint value)
@@ -707,12 +950,12 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         return group;
     }
 
-    private static void ApplyForces(ref CpuParticle particle, Emitter emitter, float dt)
+    private void ApplyForces(ref CpuParticle particle, Emitter emitter, float dt)
     {
         Vector3 force = ParticleForceMath.Acceleration(emitter.Spec, emitter.Transform.World, particle.Position, out float drag, emitter.NodeTime);
-        if (!emitter.Environment.IsEmpty)
-            force += ParticleEnvironmentMath.Acceleration(emitter.Environment.Span, emitter.Spec, emitter.Transform.World,
-                emitter.InverseWorld, particle.Position);
+        if (emitter.EnvironmentCount != 0)
+            force += ParticleEnvironmentMath.Acceleration(environment.AsSpan(emitter.EnvironmentStart, emitter.EnvironmentCount),
+                emitter.Spec, emitter.Transform.World, emitter.InverseWorld, particle.Position);
         particle.Velocity = (particle.Velocity + force * dt) * MathF.Exp(-drag * dt);
     }
 
@@ -725,11 +968,14 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
         subEvents.Add(new(particle.EmitterId, trigger, world ? particle.Position : Vector3.Transform(particle.Position, emitter.Transform.World), color, size));
     }
 
-    private void BuildBatch()
+    private void BuildBatch(in FrameInput input, FrameOutput output)
     {
-        subBatches.Clear();
-        vertexCount = 0;
-        indexCount = 0;
+        output.SubBatches.Clear();
+        output.TrailOwners.Clear();
+        output.VertexCount = 0;
+        output.IndexCount = 0;
+        output.QuadCount = 0;
+        int activeMapIndex = input.ActiveMapIndex;
 
         bool hasLiveTrails = false;
         foreach (int id in emitterIds)
@@ -762,21 +1008,24 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 if (count > 0)
                 {
                     var (textureKey, blendMode, softFade, tint, colorSpace) = groupKeys[group];
-                    subBatches.Add(new L1SubBatch(textureKey, blendMode, offset * 6, count * 6, softFade)
+                    output.SubBatches.Add(new L1SubBatch(textureKey, blendMode, offset * 6, count * 6, softFade)
                         { MaterialTint = tint, ColorSpace = colorSpace });
                 }
 
                 offset += count;
             }
         }
-        RibbonStripGeometry.EnsureStripCapacity(offset * 4, offset * 6, ref vertices, ref indices);
-        vertexCount = offset * 4;
-        indexCount = offset * 6;
+        RibbonStripGeometry.EnsureStripCapacity(offset * 4, offset * 6, ref output.Vertices, ref output.Indices);
+        output.VertexCount = offset * 4;
+        output.IndexCount = offset * 6;
+        output.QuadCount = offset;
+        ParticleVertex[] vertices = output.Vertices;
+        uint[] indices = output.Indices;
 
-        CameraBillboardBasis.Extract(view, out Vector3 cameraRight, out Vector3 cameraUp, out float yScaleRatio);
+        CameraBillboardBasis.Extract(input.View, out Vector3 cameraRight, out Vector3 cameraUp, out float yScaleRatio);
         bool isTopDown2D = CameraBillboardBasis.IsStraightTopDown2D(cameraRight, cameraUp, yScaleRatio);
         Vector3 groundUp = CameraBillboardBasis.GroundUp(cameraUp);
-        float vanillaMoteY = Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.MoteOverhead);
+        float vanillaMoteY = input.VanillaMoteY;
         for (int i = 0; i < particleCount; i++)
         {
             ref var particle = ref particles[i];
@@ -831,8 +1080,9 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
             float u1 = u0 + 1f / spec.FlipbookTilesX, v1 = v0 + 1f / spec.FlipbookTilesY;
             if (activeMapIndex >= 0 && emitter.MapIndex >= 0 && emitter.MapIndex != activeMapIndex) continue;
             int slot = groupCursors[emitter.Group]++;
+            output.QuadOwners[slot] = particle.EmitterId;
             int vertex = slot * 4, index = slot * 6;
-            Vector2 mask = CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, emitter.DepthReferenceZ, vanillaMoteY);
+            Vector2 mask = CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, emitter.DepthReferenceZ, input.NorthBehindLift);
             vertices[vertex] = new(position - right - up, new Vector2(u0, v0), particle.Color, Vector2.Zero, gain, mask);
             vertices[vertex + 1] = new(position + right - up, new Vector2(u1, v0), particle.Color, Vector2.UnitX, gain, mask);
             vertices[vertex + 2] = new(position + right + up, new Vector2(u1, v1), particle.Color, Vector2.One, gain, mask);
@@ -857,13 +1107,13 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                 trailPath = new Vector3[needed];
                 trailDrawn = new Vector3[needed];
             }
-            int trailIndexStart = indexCount;
+            int trailIndexStart = output.IndexCount;
             ParticleTrailSpec spec = pool.Spec;
             bool ground = spec.Alignment == LumenRibbonAlignment.Ground;
             Vector3 axisX = ground ? Vector3.UnitX : cameraRight;
             Vector3 axisY = ground ? Vector3.UnitZ : cameraUp;
             float axisYScale = ground ? 1f : yScaleRatio;
-            Vector2 mask = CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, owner.DepthReferenceZ, vanillaMoteY);
+            Vector2 mask = CameraBillboardBasis.DepthMaskAttribute(isTopDown2D, owner.DepthReferenceZ, input.NorthBehindLift);
             float gain = spec.HdrIntensity * owner.IntensityMultiplier;
             for (int s = 0; s < pool.HeaderCapacity; s++)
             {
@@ -893,16 +1143,17 @@ public sealed class CpuParticleSimulator : ILumenFrameContributor
                     owner.IsVertical3D, isTopDown2D, yScaleRatio, groundUp, vanillaMoteY, anchorXZ);
                 var sampler = new ParticleTrailSampler(pool.Curves, header.BaseWidth, header.Color);
                 RibbonStripGeometry.AppendStrip(trailPath, trailDrawn, n, axisX, axisY, axisYScale, mask,
-                    spec.TextureMode, gain, in sampler, ref vertices, ref vertexCount, ref indices, ref indexCount);
+                    spec.TextureMode, gain, in sampler, ref output.Vertices, ref output.VertexCount, ref output.Indices, ref output.IndexCount);
             }
-            if (indexCount > trailIndexStart)
+            if (output.IndexCount > trailIndexStart)
             {
-                subBatches.Add(new L1SubBatch(spec.TextureKey, spec.BlendMode, trailIndexStart, indexCount - trailIndexStart,
+                output.SubBatches.Add(new L1SubBatch(spec.TextureKey, spec.BlendMode, trailIndexStart, output.IndexCount - trailIndexStart,
                     spec.SoftParticleFadeDistance)
                 {
                     MaterialTint = spec.MaterialTint,
                     ColorSpace = spec.ColorSpace,
                 });
+                output.TrailOwners.Add(id);
             }
         }
     }

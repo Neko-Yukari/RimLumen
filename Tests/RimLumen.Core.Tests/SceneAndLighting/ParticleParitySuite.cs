@@ -278,10 +278,12 @@ public static class ParticleParitySuite
         using var gpu = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
         int gpuId = gpu.CreateInstance(spec, transform, -1, false, 1u);
         gpu.UpdateInstance(gpuId, transform, false, 1f, 1f);
+        Step(cpu, 0f);
         Require(!cpu.HasActiveWork, "A dormant loop without live or pending particles stays inactive.");
         Step(cpu, 0.75f); gpu.CaptureMainThread(BurstFrame(0.75f));
         cpu.SetEmitterParams(cpuId, true, 1f, 1f);
         cpu.SetEmitterParams(cpuId, false, 1f, 1f);
+        Step(cpu, 0f);
         Require(cpu.HasActiveWork, "A loop activated then paused before its first capture still needs its clock advanced.");
         cpu.SetEmitterParams(cpuId, true, 1f, 1f);
         gpu.UpdateInstance(gpuId, transform, true, 1f, 1f);

@@ -473,11 +473,11 @@ XML 发射器使用 `<colorSpace>` 和 `<materialTint>`，默认分别为 `Store
 
 ### 1. 粒子系统枚举（`RimLumen.Core.Contracts`）
 
-- **`LumenParticleTier`**：`External`（外部兼容播放器）/ `L1_NativeCpu`（原生 CPU 模拟，适合少粒子或需频繁代码交互）/ `L2_GpuCompute`（Vulkan Compute 模拟，默认，适合大数量与力场粒子）。
+- **`LumenParticleTier`**：`External`（外部兼容播放器）/ `L1_NativeCpu`（原生 CPU 模拟，适合读取游戏状态、做视觉或声音反馈的小型粒子系统；粒子从不修改游戏逻辑；画面比主线程状态晚一帧）/ `L2_GpuCompute`（Vulkan Compute 模拟，默认，适合大数量与力场粒子）。两层都由 `preferredTier` 显式选择。
 - **`LumenShapeKind`**：`Point`（0）、`Sphere`（1）、`CircleXZ`（2）、`Cone`（3）、`Box`（4）、`SphereShell`（5）、`Hemisphere`（6）、`HemisphereShell`（7）、`CircleEdgeXZ`（8）、`ConeShell`（9）、`ConeVolume`（10）、`ConeVolumeShell`（11）、`SingleSidedEdge`（12）、`BoxShell`（13）、`BoxEdge`（14）、`Donut`（15）、`Rectangle`（16）。
 - **`LumenBlendMode`**：`Additive`（0，推荐发光与火焰）/ `AlphaBlend`（1，烟雾与水雾）/ `Premultiplied`（2）。
 - **`LumenDepthMask`**：`None`（`0`，默认）/ `NorthBehindReference`（`1`，原版正俯视 2D 相机下在 `Projectile` 层测试参考线北侧的遮挡）。
-- **`LumenBillboardMode`**：`Camera`（0，面向相机）/ `Horizontal`（1，水平贴地面片）/ `StretchedVelocity`（2，按速度方向拉伸，配合 `VelocityStretchFactor` 与 `LengthScale`）/ `Mesh`（3，延期）/ `Vertical`（4）/ `Local`（5）。
+- **`LumenBillboardMode`**：`Camera`（0，面向相机）/ `Horizontal`（1，水平贴地面片）/ `StretchedVelocity`（2，按速度方向拉伸，配合 `VelocityStretchFactor` 与 `LengthScale`）/ `Mesh`（3，暂不支持：JSON 和 XML 解析器都以带字段路径的错误拒绝，如 `node 0 ('root').emitter.billboardMode`）/ `Vertical`（4）/ `Local`（5）。
 - **`LumenEnvironmentChannel`**：`[Flags]` 位掩码：`None`（`0`）、`Explosion`（`1`）、`Cursor`（`2`）。
 - **`LumenEnvironmentForceShape`**：`HorizontalRadial`（`0`，地面 XZ 线性衰减）/ `SphericalRadial`（`1`，三维球面线性衰减）/ `SphericalWave`（`2`，向外扩张的三维球壳波，仅用于瞬态脉冲）。
 - **`LumenInteractionTrigger`**：`CursorEnter`（`0`）/ `CursorExit`（`1`）/ `CursorStay`（`2`）/ `CursorSwipe`（`3`）/ `Explosion`（`4`）。
@@ -1738,6 +1738,10 @@ void main()
 以 `FrameIndex` 关联捕获和录制，录制可能滞后或帧被丢弃；`SubmissionFrameIndex` 只是循环资源槽。上下文不是 GPU 二进制布局。渲染线程借用的帧、纹理只在回调内有效，不可保留或释放，也不可读取游戏主线程 API。捕获上下文提供地图 ID、时间、相机矩阵、视口与本帧地图渲染锁存值 `RendersMap`（对象构造初值为 `true`，`default` 零值为 `false`；世界图层、无标准窗口的长事件或生成地图期间为 `false`，此时管线仍对活动贡献者调用 `CaptureMainThread` 推进状态与时钟，但不调用 `EnqueuePreCompute` 与后续录制回调，第三方贡献者在 `false` 时应只推进状态而不提交绘制或做 GPU 暂存）；计算上下文提供帧与时钟；屏障上下文提供帧命令缓冲；绘制上下文提供 HDR 目标、可空深度和相机数据。Core 服务、CPU 模拟器、GPU 引擎及扭曲和 Ribbon 后端均注册贡献者；适配器的外部播放器也使用贡献者。管线回调异常会触发渲染熔断并记录错误。
 
 主线程 `CaptureMainThread` 期间，自定义粒子后端或适配器可通过 `LumenHostRegistry.GetEnvironmentForces(int mapIndex, LumenEnvironmentChannel channels)` 与 `LumenHostRegistry.GetCursors(int mapIndex)` 只读读取本帧已冻结的世界空间环境力切片 `ReadOnlySpan<LumenEnvironmentForce>`（含 `Channel`、`Shape`、`CenterWorld`、`Radius`、`Strength`、`WaveRadius`、`ShellHalfThickness`）与活动光标快照 `ReadOnlySpan<LumenCursorSnapshot>`（含地面 `PositionXZ`、屏幕高度速度向量 `ScreenVelocity`、标量 `Speed` 与来源 `Source`）；无活动源或光标时返回空切片。
+
+L1 的 `CpuParticleSimulator` 在 Waylith 工作线程上模拟。每帧捕获先完成上一帧的模拟作业并暂存其结果，再在主线程收集本帧全部宿主状态，然后调度下一次模拟，因此 L1 画面固定晚一帧。作业异常在下一次完成时重新抛出，走管线的渲染熔断，不回退到同步模拟。
+
+`AcquireEmitter`、`SetEmitterTransform`、`SetEmitterParams`、`EmitBurst`、`RestartEmitter` 和 `ReleaseEmitter` 都是主线程命令，在下一次捕获时按调用顺序应用。`AcquireEmitter` 当即返回 ID；`EmitBurst` 按调用时的粒子密度稀释。`LiveParticleCount`、`GetLiveParticleCount` 和内部的发射器存活查询读取最近一次完成的模拟。`ReleaseEmitter(id, immediate: true)` 当即让该 ID 失效，应用它的那一帧不再绘制该发射器的粒子和拖尾。对已失效 ID 的调用被忽略。WebSim 和离线测试调用 `CaptureMainThread`，同步执行同一份模拟。
 
 ### 3. GPU 粒子与节点后端
 

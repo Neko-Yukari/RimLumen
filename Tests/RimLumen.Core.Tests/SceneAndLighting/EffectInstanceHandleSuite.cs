@@ -23,10 +23,9 @@ public static class EffectInstanceHandleSuite
                     Name = "gpu",
                     Emitter = new EmitterSpec
                     {
-                        Name = "unsupported-mesh",
-                        MaxParticles = 4,
+                        Name = "pool-exhausted",
+                        MaxParticles = 16,
                         Duration = 1f,
-                        BillboardMode = LumenBillboardMode.Mesh,
                         PreferredTier = LumenParticleTier.L2_GpuCompute,
                     },
                 },
@@ -35,7 +34,8 @@ public static class EffectInstanceHandleSuite
         var service = VfxTestData.Service(asset);
         using var engine = new RimLumen.Core.ParticlesGpu.LumenGpuParticleEngine(8);
         service.GpuEngineProvider = () => engine;
-        VfxAssert.Throws<NotSupportedException>(() => service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId }));
+        // The GPU pool cannot hold the second node: Play degrades to the inert handle after the rollback.
+        VfxAssert.Check(!service.Play(new LumenPlayRequest { MapIndex = 111, EffectId = asset.EffectId }).IsAlive, "Exhausted pool yields the inert handle");
         VfxAssert.Equal(0, service.Simulator.ActiveEmitterCount);
         VfxAssert.Equal(0, service.LiveHandleCount);
     }
@@ -140,6 +140,7 @@ public static class EffectInstanceHandleSuite
         handle.Dispose();
         handle.Trigger("flash");
         handle.Trigger("idle");
+        VfxTestData.Step(service, 0f);
         VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
     }
 
@@ -391,18 +392,18 @@ public static class EffectInstanceHandleSuite
         VfxAssert.Equal(2, service.Simulator.LiveParticleCount);
         first.Stop(false);
         VfxAssert.Check(!first.IsAlive, "Immediate stop is immediate");
-        VfxAssert.Equal(1, service.Simulator.LiveParticleCount);
+        VfxAssert.Equal(1, service.Simulator.ActiveEmitterCount);
         VfxAssert.Equal(0, first.LightCount);
         VfxAssert.Equal(1, second.LightCount);
         second.Dispose();
         second.Dispose();
-        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
         VfxAssert.Equal(0, service.Simulator.ActiveEmitterCount);
         VfxAssert.Equal(0, second.LightCount);
         VfxAssert.Equal(0, first.CpuEmitterCount);
         VfxAssert.Equal(0, finished);
         VfxAssert.Check(service.HasActiveWork, "Finished is still owed, so the service needs one more frame");
         VfxTestData.Step(service, 0f, currentMapIndex: 111);
+        VfxAssert.Equal(0, service.Simulator.LiveParticleCount);
         VfxAssert.Equal(0, service.Lights.Count);
         VfxAssert.Equal(2, finished);
         VfxAssert.Check(!service.HasActiveWork, "Immediate teardown leaves no service work once Finished is raised");

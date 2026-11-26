@@ -223,6 +223,15 @@ public static class NativeAssetBoundarySuite
     }
 
     [LumenFact]
+    public static void MeshBillboardIsRejectedByBothParsersWithItsFieldPath()
+    {
+        const string field = "node 0 ('root').emitter.billboardMode";
+        RejectJson("\"emitter\": { \"billboardMode\": \"Mesh\" }", field, "Mesh billboards are not supported");
+        RejectXml(new LumenNodeXml { name = "root", emitter = new LumenEmitterXml { billboardMode = LumenBillboardMode.Mesh } },
+            field, "Mesh billboards are not supported");
+    }
+
+    [LumenFact]
     public static void F8JsonForceStrengthIsRequiredAndNamesAsset()
         => RejectJson("\"emitter\": { \"forceFields\": [{ \"kind\": \"GravityDrag\" }] }", "forceFields[0].strength", "required");
 

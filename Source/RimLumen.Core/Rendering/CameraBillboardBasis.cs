@@ -87,8 +87,8 @@ internal static class CameraBillboardBasis
         => vanillaMoteY - Verse.Altitudes.AltitudeFor(Verse.AltitudeLayer.Projectile);
 
     // ParticleVertex.DepthMask: (lift, reference Z) under the straight-down 2D camera for a masked owner; zero otherwise.
-    internal static Vector2 DepthMaskAttribute(bool isTopDown2D, float? depthReferenceZ, float vanillaMoteY)
-        => isTopDown2D && depthReferenceZ is { } z ? new Vector2(NorthBehindLift(vanillaMoteY), z) : Vector2.Zero;
+    internal static Vector2 DepthMaskAttribute(bool isTopDown2D, float? depthReferenceZ, float northBehindLift)
+        => isTopDown2D && depthReferenceZ is { } z ? new Vector2(northBehindLift, z) : Vector2.Zero;
 
     // scaleVelocityY: legacy emitters pre-squash world Y so a velocity along world Y does not vanish on screen;
     // Vertical3D passes false because its velocity is already a true 3D direction.

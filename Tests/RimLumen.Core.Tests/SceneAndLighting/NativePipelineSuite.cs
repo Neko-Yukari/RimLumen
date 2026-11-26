@@ -587,6 +587,7 @@ public static class NativePipelineSuite
         simulator.ReleaseEmitter(alpha, immediate: true);
         simulator.ReleaseEmitter(beta, immediate: true);
         simulator.ReleaseEmitter(gamma, immediate: true);
+        NativeTestData.Step(simulator, 0f, 0f);
         NativeTestData.Check(simulator.SubBatches.Count == 0 && simulator.Indices.Length == 0, "No particles means no sub-batches");
     }
 
