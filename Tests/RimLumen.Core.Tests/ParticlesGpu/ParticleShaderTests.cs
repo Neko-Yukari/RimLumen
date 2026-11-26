@@ -179,8 +179,12 @@ public static class ParticleShaderTests
     [LumenFact]
     public static void ParityForceTwinPinsGpuAccelerationAndAnalyticCurl()
     {
-        string shader = Read("ParticleSim.comp.glsl");
+        string shader = Read("ParticleForces.glsl");
         string twin = File.ReadAllText(Path.Combine(ShaderDirectory(), "..", "..", "..", "Source", "RimLumen.Core", "Scene", "ParticleForceMath.cs"));
+        string sim = File.ReadAllText(Path.Combine(ShaderDirectory(), "ParticleSim.comp.glsl"));
+        Require(sim.Contains("#include \"ParticleForces.glsl\"", StringComparison.Ordinal)
+            && sim.Contains("lumenAccumulateFieldForce(emitter, field, position, total, drag);", StringComparison.Ordinal),
+            "ParticleSim.comp.glsl must integrate every field through the shared ParticleForces.glsl terms.");
         Require(shader.Contains("total += axisOrCenter * strength", StringComparison.Ordinal)
             && shader.Contains("drag += max(0.0, parameters.x)", StringComparison.Ordinal)
             && shader.Contains("cross(axis, radialDirection) * strength - radialDirection * parameters.x", StringComparison.Ordinal)

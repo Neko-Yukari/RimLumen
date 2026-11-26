@@ -345,12 +345,12 @@ public static class WorldPhysicsSuite
     [LumenFact]
     public static void WorldPhysicsShadersPinTheProductionCpuEquations()
     {
-        string sim = Shader("ParticleSim.comp.glsl"), collision = Shader("ParticleCollision.glsl");
-        Check(sim.Contains("abs(length(delta) - waveRadius) / halfThickness", StringComparison.Ordinal)
-            && sim.Contains("waveRadius > endRadius", StringComparison.Ordinal)
-            && sim.Contains("parameters.x * emitter.WorldPhysics.x", StringComparison.Ordinal)
-            && sim.Contains("delta.y = 0.0", StringComparison.Ordinal)
-            && sim.Contains("emitter.WorldInverse * vec4(force, 0.0)", StringComparison.Ordinal), "Force space, clock or distance formula changed.");
+        string sim = Shader("ParticleSim.comp.glsl"), forces = Shader("ParticleForces.glsl"), collision = Shader("ParticleCollision.glsl");
+        Check(forces.Contains("abs(length(delta) - waveRadius) / halfThickness", StringComparison.Ordinal)
+            && forces.Contains("waveRadius > endRadius", StringComparison.Ordinal)
+            && forces.Contains("parameters.x * emitter.WorldPhysics.x", StringComparison.Ordinal)
+            && forces.Contains("delta.y = 0.0", StringComparison.Ordinal)
+            && forces.Contains("emitter.WorldInverse * vec4(force, 0.0)", StringComparison.Ordinal), "Force space, clock or distance formula changed.");
         Check(sim.Contains("(velocity - normal * ((1.0 + emitter.Collision.y) * approach)) * (1.0 - emitter.Collision.z)", StringComparison.Ordinal)
             && sim.Contains("particle.PositionAndAge.w += particle.VelocityAndLifetime.w * emitter.Collision.w", StringComparison.Ordinal)
             && sim.Contains("if (collision) appendEvent(emitter, particle, 1u)", StringComparison.Ordinal)

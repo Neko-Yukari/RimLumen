@@ -166,9 +166,9 @@ public static class EnvironmentInteractionSuite
             GpuForceField sphGpu = gpu.CapturedFrame!.Fields.Single();
             Near(7f, sphGpu.CenterOrAxisAndKind.W);
 
-            string shader = File.ReadAllText(Path.Combine(Repo(), "1.7", "Shaders", "Particles", "ParticleSim.comp.glsl"));
+            string shader = File.ReadAllText(Path.Combine(Repo(), "1.7", "Shaders", "Particles", "ParticleForces.glsl"));
             Check(shader.Contains("if (kind == 6u) delta.y = 0.0;", StringComparison.Ordinal),
-                "ParticleSim.comp.glsl must zero delta.y only for HorizontalRadial (kind 6u), keeping 3D delta for SphericalRadial (kind 7u).");
+                "ParticleForces.glsl must zero delta.y only for HorizontalRadial (kind 6u), keeping 3D delta for SphericalRadial (kind 7u).");
         }
         finally
         {

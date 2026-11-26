@@ -4,7 +4,7 @@ using RimLumen.Core.Contracts;
 
 namespace RimLumen.Core.Scene;
 
-// CPU twin of ParticleSim.comp.glsl acceleration/potentialGradient.
+// CPU twin of ParticleForces.glsl lumenAccumulateFieldForce/potentialGradient.
 internal static class ParticleForceMath
 {
     internal static Vector3 Acceleration(EmitterSpec spec, in Matrix4x4 world, Vector3 position, out float drag, float nodeTime = 0f)
