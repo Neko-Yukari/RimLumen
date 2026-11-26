@@ -1,3 +1,6 @@
+#ifndef RIMLUMEN_DISTORTION_INCLUDED
+#define RIMLUMEN_DISTORTION_INCLUDED
+
 // Scene UV seen through the `distortion` input: its texel is the summed sample offset of this frame's distortion-pass
 // draws in framebuffer pixels (+x right, +y down). Zero or non-finite offsets return uv itself, so undistorted pixels
 // keep the bit-exact scene paths.
@@ -19,4 +22,6 @@ vec2 lumenLayerUv(vec2 uv, vec2 sceneUv)
 {
     return ubo.LayerFlags.x > 0.5 ? sceneUv : uv;
 }
+#endif
+
 #endif

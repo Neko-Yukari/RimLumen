@@ -999,7 +999,7 @@ Linear mode decodes straight material RGB before alpha / hardware blending. The 
 
 Draws on `RimLumenRenderHost.DistortionPassId` accumulate into the `R16G16SFloat` `distortion` input in group 0 at 3152. Third parties can draw on layer 14 or submit a dynamic `MeshDrawCommand` with that pass ID; persistent draw sources are unsupported. RG is the scene sample offset in framebuffer pixels, +x right and +y down; write the opposite offset to push the scene outward from a center. Blending is `One, One`, without a depth attachment; the target is cleared each frame. With no distortion draws, no target or distortion pass is allocated and a zero placeholder is used.
 
-The player setting “Distortion also refracts RimLumen effects” defaults to on. Custom composites can include `PostFx/RimLumenDistortion.glslinc` after declaring the UBO: `lumenRefractedUv(distortionImage, uv)` returns the scene sample UV, and `lumenLayerUv(uv, sceneUv)` selects the effect-layer UV according to the setting. The latter requires the 224-byte UBO from `PostFx/RimLumenPackUniforms.glslinc`. Zero or nonfinite offsets retain the original UV.
+The player setting “Distortion also refracts RimLumen effects” defaults to on. Custom composites can include `PostFx/RimLumenDistortion.glslinc` after declaring the UBO: `lumenRefractedUv(distortionImage, uv)` returns the scene sample UV, and `lumenLayerUv(uv, sceneUv)` selects the effect-layer UV according to the setting. The latter requires the 224-byte UBO from `PostFx/RimLumenPackUniforms.glslinc`. Zero or nonfinite offsets retain the original UV. `PostFx/RimLumenPackComposite.glslinc` already includes both and provides the full standard composite entry; see “Standard Composite Entry” in chapter 9, section 4.
 
 ### 6. Environment Pulses and Sustained Force / Cursor Sources
 
@@ -1053,7 +1053,7 @@ For Linear materials, main-thread texture resolution reads `Texture2D.CpuData.Li
 
 By default, RimLumen draws an extra copy of vanilla and third-party additive draws (`Blend.Enabled`, `DstColor == One`, `ColorOp == Add`, `SrcColor` is `SrcAlpha` or `One`, and `!Depth.Write`) for HDR bloom, with five built-in fullscreen/ambient shader exclusions: `GlowOverlay`, `OxygenOverlayIndoors`, `GravshipLensFlare`, `UnlitAdditive`, and `MoteWater`.
 
-The vanilla draw is left untouched, so the vanilla scene still draws the glow core. Copies go only into a separate `glow` target, never into the `hdr` layer or the composite's core term. Early copies feed the built-in bloom prefilter and the pack's `glow` input; later copies feed host bloom only. The ground under a glow is therefore never darkened. Turning the toggle off, or its fail-safe tripping, removes every enhancement of vanilla glow; the image is vanilla when no other native HDR effect is active and the current pack does not rewrite the scene.
+The vanilla draw is left untouched, so the vanilla scene still draws the glow core. Copies go only into a separate `glow` target, never into the `hdr` layer or the composite's core term. Early copies feed the built-in bloom prefilter and the pack's `glow` input; later copies feed host bloom only. The ground under a glow is therefore never darkened. Turning the toggle off, or its fail-safe tripping, removes every enhancement of vanilla glow. A tripped fail-safe stays tripped for the rest of the game process; changing settings does not clear it, and restarting the game does; the image is vanilla when no other native HDR effect is active and the current pack does not rewrite the scene.
 
 Four groups use the effective `FinalDrawItem.RenderQueue` and execute at map-pass boundaries: `q < 3152` → 3152, `[3152, 3169)` → 3169, `[3169, 3178)` → 3178, and `[3178, int.MaxValue)` → map end `int.MaxValue`. Groups are not merged; each boundary runs before vanilla scene grabs at the same queue.
 
@@ -1377,7 +1377,7 @@ Each ShaderPack is a standalone subdirectory containing at least a `pack.json` m
 | `objectShadows` | `bool` | `true` | Height-bearing non-`blockLight` things cast silhouette shadows from point lights and the takeover sun. The “Things cast shadows from lights” setting is saved per shader pack under `objectShadowOverrides`; walls, rock and doors still occlude when off. Individual effect point lights with `castShadows: false` skip occlusion and object shadows even when global `objectShadows` is on; vanilla glowers and the takeover sun have no `castShadows` field and always follow global `objectShadows`. The built-in pack defaults to on; Crisp and Foggy both explicitly declare `true`. |
 | `requiresSceneDepth` | `bool` | `false` | When `true`, copies scene depth to `depth` on every active frame including empty frames (frames with HDR draws already populate scene depth automatically). |
 | `requiresMapLightField` | `bool` | `false` | When `true`, maintains and uploads the active map's `mapLightField` RGBA8 texture. |
-| `bloomMipLevels` | `int` | `5` | Built-in Bloom pyramid mip count, valid in `[0, 7]`; `0` disables built-in Bloom. |
+| `bloomMipLevels` | `int` | `5` | Built-in Bloom pyramid mip count, valid in `[0, 7]`; `0` disables built-in Bloom in all four groups. Vanilla glow bloom enhancement, including the later groups, turns off with it; early glow copies still reach the `glow` input and are visible only to packs that read `glow` themselves. |
 | `compositeShader` | `string?` | `null` | Custom final composite fragment shader used when `passes` is empty or the final pass omits `shader`; falls back to built-in `RimLumenComposite.frag.glsl`. |
 | `bloomPrefilterShader` | `string?` | `null` | Overrides built-in Bloom prefilter shader (`RimLumenBloomPrefilter.frag.glsl`). |
 | `bloomDownShader` | `string?` | `null` | Overrides built-in Bloom downsample shader (`RimLumenBloomDown.frag.glsl`). |
@@ -1488,7 +1488,7 @@ The RGB of `hdr`, `glow` and `scene` share one encoding, so they add directly wi
 
 > Blend & alpha note: When `passes` is empty, the composite pass is hardcoded to `PremultipliedAlpha` blending onto map colour at the 3152 boundary. If your composite outputs the full scene (e.g., color grading or fog), output `vec4(finalRgb, 1.0)` or use an explicit `passes` entry with `"blend": "Opaque"`. If you only want to layer HDR particles and bloom over the untouched scene, output `vec4(mappedHdr, hdr.a)`: the result is `mappedHdr + scene * (1 - hdr.a)`, so pixels where both `hdr` and bloom are empty keep the scene unchanged. Each pack's composite shader owns its tone curve; the built-in default composite passes colour through unchanged while its peak is at most 1, and above 1 holds the peak at 1 and compresses the excess toward white along the colour's own hue.
 
-> Numeric safety note: `hdr` is `RGBA16F`; heavy additive overlap can overflow to `Inf`, some drivers can also produce `NaN`, and drivers handle both inconsistently. Any pass that reads `hdr` directly (custom prefilter, composite, luminance statistics), and especially one that writes a `persistent` history target, should zero `NaN`/`Inf` and cap the value first; otherwise one bad pixel spreads through blurs or stays in the history buffer. See `sanitizeHdr` in the built-in `Foggy/Composite.frag.glsl`.
+> Numeric safety note: `hdr` is `RGBA16F`; heavy additive overlap can overflow to `Inf`, some drivers can also produce `NaN`, and drivers handle both inconsistently. Any pass that reads `hdr` directly (custom prefilter, composite, luminance statistics), and especially one that writes a `persistent` history target, should zero `NaN`/`Inf` and cap the value first; otherwise one bad pixel spreads through blurs or stays in the history buffer. Call `lumenSanitizeHdr` from `PostFx/RimLumenPackComposite.glslinc`.
 
 #### Fixed Vertex Interface and `#include`
 
@@ -1501,6 +1501,24 @@ layout(location = 0) out vec4 outColor;
 ```
 
 Relative `#include "Common.glslinc"` files inside the same pack directory are supported.
+
+#### Standard Composite Entry
+
+`PostFx/RimLumenPackComposite.glslinc` collects the conventions every built-in composite follows: sanitize `hdr`, sample the scene through distortion and refract the effect layer per the player setting, encode once per blend space, and weight the scene by coverage. Once the host registers its shader root, use it with `#include "PostFx/RimLumenPackComposite.glslinc"`.
+
+It includes `RimLumen/RimLumenColorSpace.glsl`, `PostFx/RimLumenPackUniforms.glslinc` and `PostFx/RimLumenDistortion.glslinc`, so it declares the 224-byte `ubo`; a pack including it must not declare its own UBO. Samplers stay in the pack with any bindings it chooses. Existing packs that do not include it are unaffected.
+
+| Function | Purpose |
+| --- | --- |
+| `LumenLayerSample lumenSampleLayer(hdrImage, bloomImage, distortionImage, uv, bloomScale)` | Computes `sceneUv = lumenRefractedUv(...)` and `layerUv = lumenLayerUv(...)`, then samples `hdr` and `bloom × bloomScale` at `layerUv`. The returned struct has `uv`, `sceneUv`, `layerUv`, `hdr` (RGB passed through `lumenSanitizeHdr`, A the raw coverage) and `bloom`. |
+| `vec3 lumenSanitizeHdr(vec3 c)` | Zeroes `NaN`/`Inf` and clamps the rest to `[0, 1024]`. |
+| `vec3 lumenCompressHighlights(vec3 color)` | The built-in default composite's highlight compression: unchanged while the peak is at most 1, above 1 compressed toward white along the colour's own hue. |
+| `bool lumenLayerIsEmpty(LumenLayerSample s)` | `hdr` and `bloom` are both zero. |
+| `vec3 lumenOverScene(sceneStored, layer, coverage, linearBlendSpace)` | Puts the effect layer over a stored-space scene with coverage used as given (the caller decides whether to clamp). Legacy is `layer + scene × (1 - coverage)`; Linear is `E(max(D(scene) × (1 - coverage) + layer, 0))`, encoded once. Suited to `Opaque` composites. |
+| `vec4 lumenCompositeOver(LumenLayerSample s, sampler2D sceneImage, vec3 layer)` | The standard output of a `PremultipliedAlpha` composite; `layer` is the pack's tone-mapped effect layer. A Legacy undistorted pixel returns `(layer, hdr.a)` for the hardware blend; a Linear empty undistorted pixel returns `vec4(0)` and leaves the scene bit-exact; every other pixel is written opaquely over the refracted scene with coverage clamped to `[0, 1]`. |
+| `vec4 lumenCompositeDefault(LumenLayerSample s, sampler2D sceneImage)` | The complete built-in default composite. |
+
+The built-in default composite, Crisp and Foggy are built on it: the default calls `lumenCompositeDefault`, Crisp `lumenCompositeOver` and Foggy `lumenOverScene`.
 
 #### Uniform Buffer (`set = 0, binding = 5`, 224-byte `std140`)
 
@@ -1620,7 +1638,8 @@ Place the following two files in `Config/RimLumen/ShaderPacks/WarmNight/` (or a 
         { "binding": 0, "source": "hdr" },
         { "binding": 1, "source": "bloom" },
         { "binding": 2, "source": "scene" },
-        { "binding": 3, "source": "mapLightField" }
+        { "binding": 3, "source": "mapLightField" },
+        { "binding": 6, "source": "distortion" }
       ]
     }
   ],
@@ -1642,31 +1661,14 @@ Place the following two files in `Config/RimLumen/ShaderPacks/WarmNight/` (or a 
 
 ```glsl
 #version 450
-
-layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
-{
-    mat4 InvViewProjection;
-    vec4 ScreenAndMapSize;
-    float GameSeconds;
-    float RealSeconds;
-    float SkyGlow;
-    float ZoomRootSize;
-    float HasHdrDraws;
-    float HasSceneDepth;
-    float HasMapLightField;
-    float IsPaused;
-    float DepthValid;
-    float GameDeltaSeconds;
-    float RealDeltaSeconds;
-    float ColorBlendSpace;
-    vec4 BloomParams;
-    vec4 PackParams[4];
-} ubo;
+// Declares the 224-byte ubo and the standard composite functions.
+#include "PostFx/RimLumenPackComposite.glslinc"
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
 layout(set = 0, binding = 1) uniform sampler2D bloomImage;
 layout(set = 0, binding = 2) uniform sampler2D sceneImage;
 layout(set = 0, binding = 3) uniform sampler2D mapLightField;
+layout(set = 0, binding = 6) uniform sampler2D distortionImage;
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 outColor;
 
@@ -1678,9 +1680,9 @@ vec3 unproject(vec2 ndc, float z)
 
 void main()
 {
-    vec3 scene = texture(sceneImage, uv).rgb;
-    vec4 hdr = texture(hdrImage, uv);
-    vec3 bloom = texture(bloomImage, uv).rgb * ubo.BloomParams.x;
+    // hdr is sanitized; the scene is sampled through distortion and the layer refracts per the player setting.
+    LumenLayerSample s = lumenSampleLayer(hdrImage, bloomImage, distortionImage, uv, ubo.BloomParams.x);
+    vec3 scene = texture(sceneImage, s.sceneUv).rgb;
 
     vec2 ndc = uv * 2.0 - 1.0;
     vec3 nearP = unproject(ndc, 0.0);
@@ -1704,14 +1706,17 @@ void main()
     }
 
     vec3 base = scene * mix(vec3(1.0), vec3(0.76, 0.86, 1.06), darkness) * (1.0 - darkness * 0.65);
-    vec3 hdrAccum = hdr.rgb + bloom;
+    vec3 hdrAccum = s.hdr.rgb + s.bloom;
     float peak = max(hdrAccum.r, max(hdrAccum.g, hdrAccum.b));
     float shoulder = max(peak - 1.0, 0.0);
     float desat = shoulder / (shoulder + 4.0);
     vec3 hue = hdrAccum / max(peak, 0.00001);
     vec3 mappedHdr = mix(hue, vec3(1.0), desat) * (1.0 - exp(-peak));
 
-    outColor = vec4(base * (1.0 - hdr.a) + mappedHdr, 1.0);
+    // Legacy, or a pixel with no effect: the darkened scene in stored units.
+    // Linear: the layer over the decoded scene in linear light, encoded once.
+    bool linear = ubo.ColorBlendSpace > 0.5 && !lumenLayerIsEmpty(s);
+    outColor = vec4(lumenOverScene(base, mappedHdr, clamp(s.hdr.a, 0.0, 1.0), linear), 1.0);
 }
 ```
 

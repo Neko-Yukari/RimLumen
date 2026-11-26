@@ -1,23 +1,14 @@
 #version 450
-#include "../RimLumen/RimLumenColorSpace.glsl"
-#include "RimLumenPackUniforms.glslinc"
+#include "RimLumenPackComposite.glslinc"
 layout(set = 0, binding = 0) uniform sampler2D sourceImage;
 // Vanilla/third-party additive glow copies; the scene already shows their core, so they only feed bloom.
 layout(set = 0, binding = 1) uniform sampler2D glowImage;
 layout(push_constant) uniform Params { vec4 value; } pc;
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 outColor;
-// Half-float overflow and driver NaN handling differ across GPUs; zero NaN/Inf and cap the rest so one bad
-// pixel cannot spread through the bloom chain.
-vec3 sanitizeHdr(vec3 c)
-{
-    if (any(isnan(c)) || any(isinf(c))) return vec3(0.0);
-    return clamp(c, vec3(0.0), vec3(1024.0));
-}
-
 void main()
 {
-    vec3 color = sanitizeHdr(texture(sourceImage, uv).rgb);
+    vec3 color = lumenSanitizeHdr(texture(sourceImage, uv).rgb);
     float brightness = max(color.r, max(color.g, color.b));
     float threshold = pc.value.z;
     float knee = pc.value.w;
@@ -27,7 +18,7 @@ void main()
     float contribution = extracted / max(brightness, 0.00001);
     // Glow copies hold only additive emissive content drawn into the 8-bit scene, so each copy stays at or below 1
     // and a threshold would remove them entirely; they bloom in full and the threshold applies to hdr only.
-    vec3 glow = sanitizeHdr(texture(glowImage, uv).rgb);
+    vec3 glow = lumenSanitizeHdr(texture(glowImage, uv).rgb);
     // Glow copies are stored-space scene draws; a Linear frame blooms in linear radiance, so decode them first.
     if (ubo.ColorBlendSpace > 0.5) glow = lumenDecodeStored(glow);
     outColor = vec4(color * contribution + glow, 0.0);

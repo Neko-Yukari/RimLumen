@@ -108,10 +108,13 @@ public static class ParticleShaderTests
         Require(!File.Exists(Path.Combine(postFx, "RimLumenEncodeStored.frag.glsl")),
             "The pre-encoded E(L*a) layer is retired; composites blend in linear light instead.");
         string composite = ShaderSourceLoader.ReadShaderSource(Path.Combine(postFx, "RimLumenComposite.frag.glsl"));
-        Require(composite.Contains("if (hdr == vec4(0.0) && bloom == vec3(0.0)", StringComparison.Ordinal)
-            && composite.Contains("float a = clamp(hdr.a, 0.0, 1.0);", StringComparison.Ordinal)
-            && composite.Contains("scene * (1.0 - a) + hdr.rgb + bloom", StringComparison.Ordinal)
-            && composite.Contains("vec4(lumenEncodeStored(compressHighlights(linear)), 1.0)", StringComparison.Ordinal),
+        string standard = ShaderSourceLoader.ReadShaderSource(Path.Combine(postFx, "RimLumenPackComposite.glslinc"));
+        Require(composite.Contains("outColor = lumenCompositeDefault(", StringComparison.Ordinal)
+            && standard.Contains("if (lumenLayerIsEmpty(s) && s.sceneUv == s.uv) return vec4(0.0);", StringComparison.Ordinal)
+            && standard.Contains("return s.hdr == vec4(0.0) && s.bloom == vec3(0.0);", StringComparison.Ordinal)
+            && standard.Contains("float a = clamp(s.hdr.a, 0.0, 1.0);", StringComparison.Ordinal)
+            && standard.Contains("scene * (1.0 - a) + s.hdr.rgb + s.bloom", StringComparison.Ordinal)
+            && standard.Contains("vec4(lumenEncodeStored(lumenCompressHighlights(linear)), 1.0)", StringComparison.Ordinal),
             "Linear composite must skip empty pixels and encode D(scene)(1-a)+hdr+bloom once, opaquely.");
         string prefilter = ShaderSourceLoader.ReadShaderSource(Path.Combine(postFx, "RimLumenBloomPrefilter.frag.glsl"));
         Require(prefilter.Contains("if (ubo.ColorBlendSpace > 0.5) glow = lumenDecodeStored(glow);", StringComparison.Ordinal),

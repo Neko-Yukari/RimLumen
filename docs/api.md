@@ -999,7 +999,7 @@ Linear 模式先对直通材质 RGB 解码，再进行 alpha / 硬件混合。�
 
 `RimLumenRenderHost.DistortionPassId` 的绘制在 3152 组累加到 `R16G16SFloat` 的 `distortion` 输入。第三方可在 layer 14 绘制，或提交带该 pass ID 的动态 `MeshDrawCommand`；不支持持久绘制源。RG 是场景采样偏移，单位为帧缓冲像素，+x 向右、+y 向下；要让场景从中心向外移动，写入反向偏移。混合为 `One, One`，无深度附件，每帧清零。没有扭曲绘制时不分配目标或录制扭曲 pass，使用全零占位。
 
-玩家设置“Distortion also refracts RimLumen effects”默认开启。自定义合成可在 UBO 声明之后包含 `PostFx/RimLumenDistortion.glslinc`：`lumenRefractedUv(distortionImage, uv)` 返回场景采样 UV，`lumenLayerUv(uv, sceneUv)` 根据设置选择效果层采样 UV。后者要求使用 `PostFx/RimLumenPackUniforms.glslinc` 的 224 字节 UBO。零偏移或非有限偏移保持原 UV。
+玩家设置“Distortion also refracts RimLumen effects”默认开启。自定义合成可在 UBO 声明之后包含 `PostFx/RimLumenDistortion.glslinc`：`lumenRefractedUv(distortionImage, uv)` 返回场景采样 UV，`lumenLayerUv(uv, sceneUv)` 根据设置选择效果层采样 UV。后者要求使用 `PostFx/RimLumenPackUniforms.glslinc` 的 224 字节 UBO。零偏移或非有限偏移保持原 UV。`PostFx/RimLumenPackComposite.glslinc` 已包含这两个函数，并提供完整的标准合成入口，见第九章第 4 节“标准合成入口”。
 
 ### 6. 环境脉冲与持续力源 / 光标源
 
@@ -1053,7 +1053,7 @@ Linear 材质在主线程解析贴图时读取 `Texture2D.CpuData.Linear`：原�
 
 RimLumen 默认对原版及第三方模组的加法混合绘制（`Blend.Enabled` 且 `DstColor == One`、`ColorOp == Add`、`SrcColor` 为 `SrcAlpha` 或 `One`、且不写深度）额外画一份拷贝进入 HDR 泛光，并内置排除了 5 个全屏/环境遮罩键：`GlowOverlay`、`OxygenOverlayIndoors`、`GravshipLensFlare`、`UnlitAdditive`、`MoteWater`。
 
-原版绘制保持原样，发光核心仍由原版场景画出；拷贝只写入独立的 `glow` 目标，不进入 `hdr` 层，也不参与合成的核心项。早组拷贝供内置 Bloom 预过滤和光影包的 `glow` 输入使用，后续组只供宿主 Bloom 使用。因此发光下方的地面不会被压暗。关闭该开关或触发其熔断后，原版发光不再有任何增强；没有其他原生 HDR 效果、且当前光影包不改写场景时，画面与原版一致。
+原版绘制保持原样，发光核心仍由原版场景画出；拷贝只写入独立的 `glow` 目标，不进入 `hdr` 层，也不参与合成的核心项。早组拷贝供内置 Bloom 预过滤和光影包的 `glow` 输入使用，后续组只供宿主 Bloom 使用。因此发光下方的地面不会被压暗。关闭该开关或触发其熔断后，原版发光不再有任何增强。熔断在本次游戏进程内一直保持，修改设置不会解除，重启游戏后恢复；没有其他原生 HDR 效果、且当前光影包不改写场景时，画面与原版一致。
 
 按有效 `FinalDrawItem.RenderQueue` 分为四组，分别在地图 Pass 内的边界执行：`q < 3152` → 3152、`[3152, 3169)` → 3169、`[3169, 3178)` → 3178、`[3178, int.MaxValue)` → 地图末尾 `int.MaxValue`。各组不合并；边界在同队列的原版场景抓取之前执行。
 
@@ -1377,7 +1377,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 | `objectShadows` | `bool` | `true` | 有高度的非 `blockLight` 物体为点光源及接管太阳投射轮廓阴影。设置界面“物件投射光源阴影”按光影包保存，存档键为 `objectShadowOverrides`；关闭后墙、岩石和门仍照常遮挡。单盏效果点光若将 `castShadows` 设为 `false`，即使全局 `objectShadows` 开启也同样跳过遮挡与物体阴影；原版发光体与接管太阳无 `castShadows` 字段，固定受全局 `objectShadows` 控制。内置光影包默认开启，Crisp 与 Foggy 均显式声明为 `true`。 |
 | `requiresSceneDepth` | `bool` | `false` | 为 `true` 时，空帧也强制将场景深度拷贝到 `depth` 纹理（有 HDR 绘制的帧会自动提供场景深度）。 |
 | `requiresMapLightField` | `bool` | `false` | 为 `true` 时，维护并上传当前地图的 `mapLightField` RGBA8 纹理。 |
-| `bloomMipLevels` | `int` | `5` | 内置 Bloom 金字塔级数，合法范围 `[0, 7]`；设为 `0` 完全关闭内置 Bloom。 |
+| `bloomMipLevels` | `int` | `5` | 内置 Bloom 金字塔级数，合法范围 `[0, 7]`；设为 `0` 完全关闭内置 Bloom，四个分组都不运行。原版发光的泛光增强（包括后续组）随之一起关闭；早组发光拷贝仍写入 `glow` 输入，只对自行读取 `glow` 的包可见。 |
 | `compositeShader` | `string?` | `null` | 默认合成片段着色器；当 `passes` 为空或最后一个 Pass 未填写 `shader` 时使用，均为空则回退内置 `RimLumenComposite.frag.glsl`。 |
 | `bloomPrefilterShader` | `string?` | `null` | 替换内置 Bloom 预过滤着色器（`RimLumenBloomPrefilter.frag.glsl`）。 |
 | `bloomDownShader` | `string?` | `null` | 替换内置 Bloom 降采样着色器（`RimLumenBloomDown.frag.glsl`）。 |
@@ -1488,7 +1488,7 @@ RimLumen 支持声明式多 Pass 光影包（ShaderPacks）。模组作者或玩
 
 > 混合与 Alpha 提示：`passes` 为空时默认合成 Pass 固定使用 `PremultipliedAlpha` 混合到 3152 边界的地图颜色。若你的合成着色器直接输出最终全屏图像（如含调色、雾效），请输出 `vec4(finalRgb, 1.0)` 或使用显式 `passes` 并设 `"blend": "Opaque"`；若只想把 HDR 粒子与 Bloom 叠加到场景之上，则输出 `vec4(mappedHdr, hdr.a)`：结果为 `mappedHdr + scene * (1 - hdr.a)`，`hdr` 与泛光都为空的像素保持场景原样。色调曲线由各包的合成着色器自行决定；内置默认合成在峰值不超过 1 时原样输出，超过 1 时峰值保持 1，超出部分沿原色相向白色压缩。
 
-> 数值安全提示：`hdr` 是 `RGBA16F`，大量加色粒子叠加后可能溢出成 `Inf`，个别驱动上还可能出现 `NaN`，而不同驱动对它们的处理不一致。凡是直接读取 `hdr` 的 Pass（自定义 prefilter、合成、亮度统计），尤其是写入 `persistent` 历史目标的 Pass，都应先把 `NaN`/`Inf` 置 0 并设上限，否则一个坏像素会被模糊扩散，或长期留在历史缓冲里。内置包的写法见 `Foggy/Composite.frag.glsl` 中的 `sanitizeHdr`。
+> 数值安全提示：`hdr` 是 `RGBA16F`，大量加色粒子叠加后可能溢出成 `Inf`，个别驱动上还可能出现 `NaN`，而不同驱动对它们的处理不一致。凡是直接读取 `hdr` 的 Pass（自定义 prefilter、合成、亮度统计），尤其是写入 `persistent` 历史目标的 Pass，都应先把 `NaN`/`Inf` 置 0 并设上限，否则一个坏像素会被模糊扩散，或长期留在历史缓冲里。可直接调用 `PostFx/RimLumenPackComposite.glslinc` 的 `lumenSanitizeHdr`。
 
 #### 固定顶点接口与 `#include`
 
@@ -1501,6 +1501,24 @@ layout(location = 0) out vec4 outColor;
 ```
 
 同一光影包内可使用相对路径 `#include "Common.glslinc"` 复用公共函数与 UBO 声明。
+
+#### 标准合成入口
+
+`PostFx/RimLumenPackComposite.glslinc` 汇集内置合成共用的约定：清理 `hdr`、按扭曲采样场景并按玩家设置折射效果层、按混合空间只编码一次、按覆盖度压暗场景。宿主注册着色器根目录后，写 `#include "PostFx/RimLumenPackComposite.glslinc"` 即可使用。
+
+它已包含 `RimLumen/RimLumenColorSpace.glsl`、`PostFx/RimLumenPackUniforms.glslinc` 和 `PostFx/RimLumenDistortion.glslinc`，因此声明了 224 字节的 `ubo`。包含它的包不得再声明自己的 UBO。sampler 由包自己声明，绑定号不受限制。不包含它的已有包不受影响。
+
+| 函数 | 作用 |
+| --- | --- |
+| `LumenLayerSample lumenSampleLayer(hdrImage, bloomImage, distortionImage, uv, bloomScale)` | 计算 `sceneUv = lumenRefractedUv(...)` 和 `layerUv = lumenLayerUv(...)`，在 `layerUv` 处采样 `hdr` 和 `bloom × bloomScale`。返回结构的字段为 `uv`、`sceneUv`、`layerUv`、`hdr`（RGB 已经过 `lumenSanitizeHdr`，A 为原始覆盖度）和 `bloom`。 |
+| `vec3 lumenSanitizeHdr(vec3 c)` | `NaN`/`Inf` 置 0，其余钳制到 `[0, 1024]`。 |
+| `vec3 lumenCompressHighlights(vec3 color)` | 内置默认合成的高光压缩：峰值不超过 1 时原样输出，超过 1 时沿原色相向白色压缩。 |
+| `bool lumenLayerIsEmpty(LumenLayerSample s)` | `hdr` 与 `bloom` 全为 0。 |
+| `vec3 lumenOverScene(sceneStored, layer, coverage, linearBlendSpace)` | 把效果层叠到 Stored 场景上，覆盖度原样使用，由调用方决定是否钳制。Legacy 为 `layer + scene × (1 - coverage)`；Linear 为 `E(max(D(scene) × (1 - coverage) + layer, 0))`，只编码一次。适合 `Opaque` 合成。 |
+| `vec4 lumenCompositeOver(LumenLayerSample s, sampler2D sceneImage, vec3 layer)` | `PremultipliedAlpha` 合成的标准输出，`layer` 是包色调映射后的效果层。Legacy 未折射像素返回 `(layer, hdr.a)`，交给硬件混合；Linear 未折射的空像素返回 `vec4(0)`，场景逐位不变；其余像素以钳制到 `[0, 1]` 的覆盖度，不透明地写到折射后的场景上。 |
+| `vec4 lumenCompositeDefault(LumenLayerSample s, sampler2D sceneImage)` | 内置默认合成的完整算法。 |
+
+内置默认合成、Crisp 和 Foggy 都基于它实现：默认合成调用 `lumenCompositeDefault`，Crisp 调用 `lumenCompositeOver`，Foggy 调用 `lumenOverScene`。
 
 #### Uniform Buffer（`set = 0, binding = 5`，224 字节 `std140`）
 
@@ -1620,7 +1638,8 @@ bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fie
         { "binding": 0, "source": "hdr" },
         { "binding": 1, "source": "bloom" },
         { "binding": 2, "source": "scene" },
-        { "binding": 3, "source": "mapLightField" }
+        { "binding": 3, "source": "mapLightField" },
+        { "binding": 6, "source": "distortion" }
       ]
     }
   ],
@@ -1642,31 +1661,14 @@ bool insideMap = fieldUv.x >= 0.0 && fieldUv.x <= 1.0 && fieldUv.y >= 0.0 && fie
 
 ```glsl
 #version 450
-
-layout(std140, set = 0, binding = 5) uniform ShaderPackUniforms
-{
-    mat4 InvViewProjection;
-    vec4 ScreenAndMapSize;
-    float GameSeconds;
-    float RealSeconds;
-    float SkyGlow;
-    float ZoomRootSize;
-    float HasHdrDraws;
-    float HasSceneDepth;
-    float HasMapLightField;
-    float IsPaused;
-    float DepthValid;
-    float GameDeltaSeconds;
-    float RealDeltaSeconds;
-    float ColorBlendSpace;
-    vec4 BloomParams;
-    vec4 PackParams[4];
-} ubo;
+// 声明 224 字节 ubo，并提供标准合成函数。
+#include "PostFx/RimLumenPackComposite.glslinc"
 
 layout(set = 0, binding = 0) uniform sampler2D hdrImage;
 layout(set = 0, binding = 1) uniform sampler2D bloomImage;
 layout(set = 0, binding = 2) uniform sampler2D sceneImage;
 layout(set = 0, binding = 3) uniform sampler2D mapLightField;
+layout(set = 0, binding = 6) uniform sampler2D distortionImage;
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 outColor;
 
@@ -1678,9 +1680,9 @@ vec3 unproject(vec2 ndc, float z)
 
 void main()
 {
-    vec3 scene = texture(sceneImage, uv).rgb;
-    vec4 hdr = texture(hdrImage, uv);
-    vec3 bloom = texture(bloomImage, uv).rgb * ubo.BloomParams.x;
+    // hdr 已清理 NaN/Inf；场景按扭曲采样，效果层按玩家设置折射。
+    LumenLayerSample s = lumenSampleLayer(hdrImage, bloomImage, distortionImage, uv, ubo.BloomParams.x);
+    vec3 scene = texture(sceneImage, s.sceneUv).rgb;
 
     vec2 ndc = uv * 2.0 - 1.0;
     vec3 nearP = unproject(ndc, 0.0);
@@ -1704,14 +1706,17 @@ void main()
     }
 
     vec3 base = scene * mix(vec3(1.0), vec3(0.76, 0.86, 1.06), darkness) * (1.0 - darkness * 0.65);
-    vec3 hdrAccum = hdr.rgb + bloom;
+    vec3 hdrAccum = s.hdr.rgb + s.bloom;
     float peak = max(hdrAccum.r, max(hdrAccum.g, hdrAccum.b));
     float shoulder = max(peak - 1.0, 0.0);
     float desat = shoulder / (shoulder + 4.0);
     vec3 hue = hdrAccum / max(peak, 0.00001);
     vec3 mappedHdr = mix(hue, vec3(1.0), desat) * (1.0 - exp(-peak));
 
-    outColor = vec4(base * (1.0 - hdr.a) + mappedHdr, 1.0);
+    // Legacy 或无效果的像素：按 Stored 值写出压暗后的场景。
+    // Linear：在线性光下把效果层叠到解码后的场景上，只编码一次。
+    bool linear = ubo.ColorBlendSpace > 0.5 && !lumenLayerIsEmpty(s);
+    outColor = vec4(lumenOverScene(base, mappedHdr, clamp(s.hdr.a, 0.0, 1.0), linear), 1.0);
 }
 ```
 

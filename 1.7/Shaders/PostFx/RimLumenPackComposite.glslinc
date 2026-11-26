@@ -1,0 +1,93 @@
+#ifndef RIMLUMEN_PACK_COMPOSITE_INCLUDED
+#define RIMLUMEN_PACK_COMPOSITE_INCLUDED
+
+// Standard ShaderPack composite entry, the conventions every built-in composite follows: sanitized hdr, the scene
+// sampled through distortion and the layer refracted per the player setting, one encode per blend space, and the
+// scene weighted by the layer's coverage. Declares the 224-byte `ubo`, so a pack including this must not declare its
+// own block. Samplers stay in the pack, which keeps its own bindings.
+#include "../RimLumen/RimLumenColorSpace.glsl"
+#include "RimLumenPackUniforms.glslinc"
+#include "RimLumenDistortion.glslinc"
+
+struct LumenLayerSample
+{
+    vec2 uv;      // unrefracted screen UV
+    vec2 sceneUv; // lumenRefractedUv
+    vec2 layerUv; // lumenLayerUv
+    vec4 hdr;     // RGB sanitized, A the raw coverage
+    vec3 bloom;   // bloom at layerUv times bloomScale
+};
+
+// Half-float overflow and driver NaN handling differ across GPUs; zero NaN/Inf and cap the rest so one bad
+// pixel cannot spread through a blur or stay in a history target.
+vec3 lumenSanitizeHdr(vec3 c)
+{
+    if (any(isnan(c)) || any(isinf(c))) return vec3(0.0);
+    return clamp(c, vec3(0.0), vec3(1024.0));
+}
+
+// Identity up to a peak of 1, so the layer adds exactly what was drawn. Above 1 the peak holds at 1 and the
+// excess whitens the colour toward white along its own hue instead of clipping per channel.
+vec3 lumenCompressHighlights(vec3 color)
+{
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak <= 1.0) return color;
+    float excess = peak - 1.0;
+    return mix(color / peak, vec3(1.0), excess / (excess + 4.0));
+}
+
+LumenLayerSample lumenSampleLayer(sampler2D hdrImage, sampler2D bloomImage, sampler2D distortionImage, vec2 uv,
+    float bloomScale)
+{
+    LumenLayerSample s;
+    s.uv = uv;
+    s.sceneUv = lumenRefractedUv(distortionImage, uv);
+    s.layerUv = lumenLayerUv(uv, s.sceneUv);
+    s.hdr = texture(hdrImage, s.layerUv);
+    s.hdr.rgb = lumenSanitizeHdr(s.hdr.rgb);
+    s.bloom = texture(bloomImage, s.layerUv).rgb * bloomScale;
+    return s;
+}
+
+bool lumenLayerIsEmpty(LumenLayerSample s)
+{
+    return s.hdr == vec4(0.0) && s.bloom == vec3(0.0);
+}
+
+// The layer over a stored-space scene, with coverage used as given. Legacy adds in stored units; Linear blends over
+// the decoded scene in linear light, so coverage weights radiance instead of its sRGB encoding, and encodes once.
+vec3 lumenOverScene(vec3 sceneStored, vec3 layer, float coverage, bool linearBlendSpace)
+{
+    if (!linearBlendSpace) return layer + sceneStored * (1.0 - coverage);
+    return lumenEncodeStored(max(lumenDecodeStored(sceneStored) * (1.0 - coverage) + layer, vec3(0.0)));
+}
+
+// For PremultipliedAlpha composites; layer is the pack's tone-mapped hdr and bloom. A Legacy undistorted pixel
+// returns (layer, coverage) for the hardware blend; a Linear empty undistorted pixel returns vec4(0) and leaves the
+// scene bit-exact; every other pixel is written opaquely over the refracted scene.
+// RGBA16F coverage is unclamped; Legacy's UNORM OneMinusSrcAlpha blend sees it clamped to [0, 1].
+vec4 lumenCompositeOver(LumenLayerSample s, sampler2D sceneImage, vec3 layer)
+{
+    bool linear = ubo.ColorBlendSpace > 0.5;
+    if (s.sceneUv == s.uv)
+    {
+        if (!linear) return vec4(layer, s.hdr.a);
+        if (lumenLayerIsEmpty(s)) return vec4(0.0);
+    }
+    return vec4(lumenOverScene(texture(sceneImage, s.sceneUv).rgb, layer, clamp(s.hdr.a, 0.0, 1.0), linear), 1.0);
+}
+
+// The built-in default composite: Legacy compresses hdr + bloom; Linear compresses the whole linear pixel,
+// D(scene)(1 - a) + hdr + bloom, summed in that order. Identity up to 1, so hdr, bloom -> 0 reproduces the scene.
+vec4 lumenCompositeDefault(LumenLayerSample s, sampler2D sceneImage)
+{
+    if (ubo.ColorBlendSpace < 0.5)
+        return lumenCompositeOver(s, sceneImage, lumenCompressHighlights(s.hdr.rgb + s.bloom));
+    if (lumenLayerIsEmpty(s) && s.sceneUv == s.uv) return vec4(0.0);
+    float a = clamp(s.hdr.a, 0.0, 1.0);
+    vec3 scene = lumenDecodeStored(texture(sceneImage, s.sceneUv).rgb);
+    vec3 linear = max(scene * (1.0 - a) + s.hdr.rgb + s.bloom, vec3(0.0));
+    return vec4(lumenEncodeStored(lumenCompressHighlights(linear)), 1.0);
+}
+
+#endif

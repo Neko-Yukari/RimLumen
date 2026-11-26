@@ -18,7 +18,16 @@ public static class RimLumenRenderHost
 
     public static bool EnableVanillaAdditiveBloom { get; set; } = true;
 
-    // Requires: main thread after Install. Frame latch of EnableVanillaAdditiveBloom for external HDR producers.
+    // One-way for the process: the compatibility fail-safe trips it, and settings writing EnableVanillaAdditiveBloom
+    // back cannot clear it. Main thread only, like capture and the frame latch.
+    private static bool vanillaAdditiveFuseTripped;
+
+    internal static void TripVanillaAdditiveFuse() => vanillaAdditiveFuseTripped = true;
+
+    // Ensures: the player's setting unless the compatibility fail-safe has tripped this process.
+    internal static bool VanillaAdditiveBloomActive => EnableVanillaAdditiveBloom && !vanillaAdditiveFuseTripped;
+
+    // Requires: main thread after Install. Frame latch of VanillaAdditiveBloomActive for external HDR producers.
     public static bool CurrentFrameEnableVanillaAdditiveBloom { get; private set; } = true;
 
     // Requires: main thread.
@@ -54,7 +63,7 @@ public static class RimLumenRenderHost
     {
         currentFrameColorBlendSpace = requestedColorBlendSpace;
         CurrentFrameDistortionRefractsEffects = DistortionRefractsEffects;
-        CurrentFrameEnableVanillaAdditiveBloom = EnableVanillaAdditiveBloom;
+        CurrentFrameEnableVanillaAdditiveBloom = VanillaAdditiveBloomActive;
     }
 
     // Ensures: finite input silently clamps to [0.1, 1.0]; nonfinite input throws ArgumentOutOfRangeException
@@ -125,7 +134,7 @@ public static class RimLumenRenderHost
     public static bool CanRouteAdapterDrawsNow => LumenRenderPassId != 0
         && !FailSafeTripped
         && CurrentFrameEnableVanillaAdditiveBloom
-        && EnableVanillaAdditiveBloom
+        && VanillaAdditiveBloomActive
         && RimLumenPipeline.IsMapRenderedNow();
 
     // Ensures: true iff layer resolves to the default / MapMain pass rather than a dedicated custom pass (e.g. distortion/HDR).
